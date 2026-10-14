@@ -276,10 +276,12 @@ fn box_arg(obj: &Bound<'_, PyAny>) -> PyResult<ndarray::Array2<f64>> {
     }
 }
 
-/// IoU of two `(S, 2)` boxes in the same space.
+/// IoU of two `(S, 2)` boxes in the same space.  Refused for boxes of
+/// different numbers of axes or of none (`ValueError`), and for a bound that
+/// is not finite or a `lo` above its `hi` (E406).
 #[pyfunction]
-fn agreement_box_iou(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<f64> {
-    Ok(ag::box_iou_f64(&box_arg(a)?, &box_arg(b)?))
+fn agreement_box_iou(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> R<f64> {
+    Ok(ag::box_iou_f64_checked(&box_arg(a)?, &box_arg(b)?)?)
 }
 
 // -- scrub -------------------------------------------------------------------------------

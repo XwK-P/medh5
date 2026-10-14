@@ -57,7 +57,9 @@ or, in the fallback, the `StudyInstanceUID`, and `identity.id_source` says
 which. `medh5 scrub` reports them for that reason; see
 [De-identify](deidentify.md#2-apply-with-a-salt) for replacing them with
 pseudonyms before the files leave your control. A multi-subject import names its
-files after the same ids, and `scrub` reports that too.
+files after the same ids, and `scrub` reports that too. A sample id is ASCII
+(§2.3), so a `PatientID` of `Müller^Hans` names sample and file `Muller_Hans`,
+and the subject id keeps it whole.
 
 If that fallback happened, you have one file per *study*, not per subject, and
 splitting by file is no longer subject-safe.
@@ -100,16 +102,42 @@ was wrong, both commands will agree with it.
 ## 3. Expect refusals, and read them
 
 The importer would rather stop than write a file whose geometry is invented. A
-series is refused when its slices disagree about orientation, spacing, matrix
-size or rescale; when slice gaps are irregular; when a required tag is missing or malformed; or
-when the stack is **sheared** — the slice origins drift within the slice plane,
-as a tilted gantry makes them in head CT. The grid the importer writes is
+series is refused when its slices disagree about orientation, pixel spacing,
+matrix size or rescale; when a slice is not where a regular stack puts it; when
+a required tag is missing or malformed; when its pixels do not decode — a
+compressed transfer syntax that no installed decoder reads, say; or when the
+stack is **sheared** — the slice origins drift within the slice plane, as a
+tilted gantry makes them in head CT. The grid the importer writes is
 orthonormal, so a sheared stack would place the far slices centimetres from
 where the scanner put them; the refusal names the tilt angle and the worst
 slice's offset, and de-tilting is left to a tool that records what it did. The
 tolerance is half a pixel, and a passing check is recorded as a
 `slice_alignment` decision. The messages name the offending `SOPInstanceUID` or
 series.
+
+**The slice-position tolerance is a physical bound.** The slice spacing is
+measured from the slice positions, never read from `SliceThickness`, which is
+the slab: it is the median gap between neighbouring slices or, where that does
+not place every slice, the least-squares step over all of them. Every slice
+must then lie within **a tenth of that spacing, and at least 0.01 mm**, of
+where the regular stack puts it along the slice normal — 0.25 mm for 2.5 mm
+slices. Positions written to two decimals pass, because rounding does not
+accumulate; gaps that each look regular but drift, until the middle of a long
+stack is millimetres off, do not. Nothing is resampled to make a stack fit.
+The `slice_spacing` decision records the spacing, how it was estimated and the
+worst slice's distance (`max_through_plane_error_mm`); a refusal names the
+slice and how far off it is, a gap of whole steps as missing slices, and two
+slices at one position as duplicates. The same bound holds the planes of a
+DICOM SEG that `read_dicom_seg` stacks.
+
+**One refused series does not stop the tree.** It is left out with a warning
+(`series`) that names it and why, and the series beside it are imported; a
+subject left with none gets no file, and a warning (`subject`) says so. Only
+when no series at all can be imported is the import refused. Objects that are
+not images — the RT Dose grid beside every radiotherapy export — are skipped
+with a note, and multi-frame objects with a warning: this importer reads
+classic series, a file per slice. A warning fails the command's exit status,
+so a partial import is never taken for a complete one.
 
 One thing is assumed rather than refused, and the report records it as a guess
 (`slice_spacing`): a single-slice series that states no `SliceThickness` has no
@@ -124,8 +152,16 @@ MEDH5 file yet. [The reasoning for each is here](../explanation/refusals.md#dico
 ```bash
 medh5 info out/case_0001.medh5
 medh5 timeline out/case_0001.medh5     # did the visits land as you expect?
-medh5 validate out/*.medh5 --level strict
+medh5 validate out/*.medh5 --level integrity
 ```
+
+`--level integrity` runs every check, every byte against its digest included,
+and fails on errors. `--level strict` is the same with warnings promoted to
+errors, so it fails every freshly imported file: the importer writes no
+de-identification record (`W903`, below), and classes an import mints with no
+ontology code, as an RTSTRUCT's are from its ROI names, raise `W912`. Strict is
+the gate for a dataset you publish, once [de-identification](deidentify.md) and
+the label set's codes have dealt with both.
 
 Images are named for their modality and visit — `CT_tp0` for the first
 visit's CT — and values are stored as the scanner wrote them, with the

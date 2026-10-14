@@ -274,6 +274,7 @@ pub(super) fn write(
 pub(super) fn mutate(path: &Path, edit: impl FnOnce(&hdf5::Group) -> Result<()>) -> Result<()> {
     crate::h5::init();
     let file = hdf5::File::open_rw(path)?;
+    crate::h5::file::close_on_exec(&file);
     let root = file.as_group()?;
     edit(&root)?;
     drop(root);
@@ -1441,7 +1442,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(157);
+    let mut cases = Vec::with_capacity(163);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -1454,6 +1455,7 @@ pub(super) fn registry() -> Vec<Case> {
     // 2.0 / format 1.1: the clinical profile.
     cases.extend(super::clinical::cases());
     sixth_batch(&mut cases);
+    seventh_batch(&mut cases);
     cases
 }
 
@@ -2296,6 +2298,87 @@ fn sixth_batch(cases: &mut Vec<Case>) {
     ]);
 }
 
+/// 2.0.2: what a corrupt container hid.  Each of these passed every level,
+/// strict included: a name of the layout that is no object of its kind, a
+/// member that resolves to nothing, an image that is not numbers, and a file
+/// in which no digest parses.
+fn seventh_batch(cases: &mut Vec<Case>) {
+    cases.extend([
+        invalid_core(
+            "E703-every-digest-malformed",
+            "The only digest in the file does not parse. With no digest left to check, the malformed one and the \
+             `content_id` that no longer recomputes went unreported.",
+            "§13.1",
+            &["E702", "E703"],
+            |f| set_str(f, "images/CT", "digest", "not-a-digest"),
+        )
+        .level("integrity"),
+        invalid_core(
+            "E008-dangling-images",
+            "`images` is a soft link to nothing: no image is there to read.",
+            "§2.3",
+            &["E008"],
+            |f| {
+                f.unlink("images")?;
+                Ok(f.link_soft("/nowhere", "images")?)
+            },
+        ),
+        invalid(
+            "E001-dangling-image",
+            "One of two images is a soft link to nothing: every rule that walks `images` skipped it.",
+            "§2.3",
+            &["E001"],
+            core_two_images,
+            |f| {
+                let images = f.group("images")?;
+                images.unlink("PET")?;
+                Ok(images.link_soft("/nowhere", "PET")?)
+            },
+        ),
+        invalid_core(
+            "E004-meta-not-a-dataset",
+            "`meta` is a group, not the dataset holding the sample document.",
+            "§2.4",
+            &["E004"],
+            |f| {
+                f.unlink("meta")?;
+                f.create_group("meta")?;
+                Ok(())
+            },
+        ),
+        invalid_core(
+            "E008-images-not-a-group",
+            "`images` is a dataset where the layout has a group of images.",
+            "§2.3",
+            &["E008"],
+            |f| {
+                f.unlink("images")?;
+                data::create(f, "images", &NdArray::from_vec(&[2], vec![0i16, 1])?, &Layout::contiguous())?;
+                Ok(())
+            },
+        ),
+        invalid_core(
+            "E001-non-numeric-image",
+            "An image stored as strings, of its grid's shape and with every attribute an image needs: no reader can \
+             read its samples, which §4.2 makes numbers.",
+            "§4.2",
+            &["E001"],
+            |f| {
+                let images = f.group("images")?;
+                let old = images.dataset("CT")?;
+                let text = images.new_dataset::<hdf5::types::FixedAscii<4>>().shape(SHAPE).create("CT.text")?;
+                for attr in attrs::names(&old)? {
+                    attrs::copy_raw(&old, &text, &attr)?;
+                }
+                drop(old);
+                drop(text);
+                images.unlink("CT")?;
+                Ok(images.relink("CT.text", "CT")?)
+            },
+        ),
+    ]);
+}
+
 /// A transform between grids in metres is in metres --- the writer's
 /// default, taken from the grids, where it used to be `mm` whatever they were.
 fn reg_in_metres(path: &Path) -> Result<()> {
@@ -2362,11 +2445,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 157);
+        assert_eq!(cases.len(), 163);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 157);
+        assert_eq!(names.len(), 163);
     }
 
     #[test]

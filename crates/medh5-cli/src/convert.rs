@@ -5,14 +5,15 @@
 //! (0.x files, Appendix B) is native; the format converters are Python
 //! integrations and run in the Python package, through the [`Host`].
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use clap::{ArgAction, ArgMatches};
 use serde_json::{Map, Value};
 
 use medh5::convert::legacy::{build_label_set, load_sidecar, migrate_paths, write_sidecar};
 use medh5::convert::report::ConversionReport;
-use medh5::json::pretty;
+use medh5::h5::file::same_file;
+use medh5::json::{pretty, repr_str};
 
 use crate::app;
 use crate::common::*;
@@ -76,9 +77,57 @@ pub fn convert(argv: &[String], m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     }
 }
 
+/// Refuse a file `migrate` would write that is one it reads, before anything
+/// is written: `--report` or `--write-labels` naming an input replaced it
+/// with JSON, and a `--report` directory was refused only after the cohort
+/// had been migrated.
+fn check_writes(m: &ArgMatches, sources: &[&Path]) -> Result<(), String> {
+    let report = get_str(m, "report").map(Path::new);
+    let labels = get_str(m, "write_labels").map(Path::new);
+    if let Some(path) = report {
+        let shown = repr_str(&path.to_string_lossy());
+        if path.is_dir() {
+            return Err(format!("--report {shown} is a directory; name a file"));
+        }
+        // `migrate` creates its output directory, so a report may go there.
+        let lexical = |p: &Path| -> PathBuf { p.components().filter(|c| *c != Component::CurDir).collect() };
+        let out = get_str(m, "out").map(|o| lexical(Path::new(o)));
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty() && !p.is_dir()) {
+            if out != Some(lexical(parent)) {
+                return Err(format!("--report {shown} cannot be written: its directory does not exist"));
+            }
+        }
+    }
+    if let (Some(r), Some(l)) = (report, labels) {
+        if r == l || same_file(r, l) {
+            return Err(format!("--report and --write-labels both name {}", repr_str(&r.to_string_lossy())));
+        }
+    }
+    let read: Vec<&Path> = sources.iter().copied().chain(get_str(m, "label_set").map(Path::new)).collect();
+    for (flag, path) in [("--report", report), ("--write-labels", labels)] {
+        let Some(path) = path else { continue };
+        if let Some(input) = read.iter().find(|input| same_file(input, path)) {
+            return Err(format!(
+                "{flag} {} is the input {}; name a new file",
+                repr_str(&path.to_string_lossy()),
+                repr_str(&input.to_string_lossy())
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Write the report where asked, print it, and exit on whether it is ok.
 pub fn finish(report: &ConversionReport, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     if let Some(path) = get_str(m, "report") {
+        // A report naming an output would replace the sample just written.
+        if let Some(output) = report.outputs.iter().find(|o| same_file(Path::new(o), Path::new(path))) {
+            return Ok(ctx.fail(format!(
+                "--report {} is the output {}; the report was not written",
+                repr_str(path),
+                repr_str(output)
+            )));
+        }
         std::fs::write(path, pretty(&report.to_json()) + "\n").map_err(|e| medh5::error::os_error(&e, path))?;
     }
     if flag(m, "json") {
@@ -92,6 +141,9 @@ pub fn finish(report: &ConversionReport, m: &ArgMatches, ctx: &mut Ctx) -> CmdRe
 pub fn migrate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let paths = get_paths(m, "paths");
     let sources: Vec<&Path> = paths.iter().map(Path::new).collect();
+    if let Err(message) = check_writes(m, &sources) {
+        return Ok(ctx.fail(message));
+    }
     let result = (|| -> medh5::Result<Option<ConversionReport>> {
         if let Some(target) = get_str(m, "write_labels") {
             let mut report = ConversionReport::new("migrate", "");

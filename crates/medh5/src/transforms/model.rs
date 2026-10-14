@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 
 use super::apply::{
     as_points, check_points, folding_fraction, inside_extent, jacobian_determinant, linear_sample, refuse_outside,
-    sample_field, to_world_vectors, EXACT_INTEGER, EXTRAPOLATIONS,
+    sample_field, to_world_vectors, CubicCache, CubicCoefficients, EXACT_INTEGER, EXTRAPOLATIONS,
 };
 use crate::array::{Index, NdArray, Slice};
 use crate::geometry::grid::{Grid, MAX_SPATIAL, MIN_SPATIAL};
@@ -245,6 +245,11 @@ pub struct Transform {
     grids: Arc<IndexMap<String, Grid>>,
     siblings: Arc<Siblings>,
     pub body: Body,
+    /// A cubic field's prefiltered coefficients, made at its first
+    /// evaluation and shared by every clone, within a process-wide budget: a
+    /// handle reads a file that cannot change under it (an amendment
+    /// replaces the inode).
+    cubic: Arc<CubicCache>,
 }
 
 fn points_of(points: &ArrayD<f64>, dim: usize) -> Result<Array2<f64>> {
@@ -264,7 +269,15 @@ impl Transform {
         siblings: Arc<Siblings>,
     ) -> Result<Transform> {
         let header = TransformHeader::read(&group)?;
-        Ok(Transform { transform_id: transform_id.to_string(), group, header, grids, siblings, body: Body::Stored })
+        Ok(Transform {
+            transform_id: transform_id.to_string(),
+            group,
+            header,
+            grids,
+            siblings,
+            body: Body::Stored,
+            cubic: Arc::default(),
+        })
     }
 
     /// `T⁻¹` of `inner`, which the caller has checked [`can_invert`].
@@ -289,10 +302,17 @@ impl Transform {
             grids: inner.grids.clone(),
             siblings: inner.siblings.clone(),
             body: Body::Inverse(Box::new(inner)),
+            cubic: Arc::default(),
         }
     }
 
-    /// An in-memory chain of steps, refusing steps in different units.
+    /// An in-memory chain of steps, refusing steps in different units or
+    /// whose frames do not meet (E501), as a stored composite's are
+    /// ([`Transform::check_chain`]).
+    ///
+    /// Steps given in the wrong order were chained anyway: the chain took
+    /// its frames from its first and last steps and mapped points through
+    /// a path that does not exist.
     pub fn chain(steps: Vec<Transform>) -> Result<Transform> {
         if steps.is_empty() {
             return Err(Error::invalid("a transform chain needs at least one step"));
@@ -310,6 +330,17 @@ impl Transform {
                         .map(|t| format!("{} in {}", repr_str(&t.transform_id), repr_str(t.units())))
                         .collect::<Vec<_>>()
                         .join(", ")
+                ),
+            ));
+        }
+        let breaks = frame_breaks(&steps);
+        if !breaks.is_empty() {
+            return Err(Error::coded(
+                "E501",
+                format!(
+                    "cannot chain transforms whose frames do not meet: {}; each step must start in the frame the \
+                     step before it ends in",
+                    breaks.join("; ")
                 ),
             ));
         }
@@ -334,6 +365,7 @@ impl Transform {
             grids: first.grids.clone(),
             siblings: first.siblings.clone(),
             body: Body::Chain(steps),
+            cubic: Arc::default(),
         })
     }
 
@@ -712,6 +744,9 @@ impl Transform {
     /// 512³ field rather than all of it --- or the whole field (cubic, whose
     /// spline coefficients are global, so a window would change the answer
     /// near its own edges).  The result equals sampling the whole field.
+    /// A cubic field is read and prefiltered once per handle, at its first
+    /// evaluation, while the process-wide budget for kept coefficients has
+    /// room for it; past the budget, at every evaluation.
     pub fn sample_indices(&self, indices: &Array2<f64>) -> Result<Array2<f64>> {
         let ds = self.field()?;
         let shape = ds.shape();
@@ -719,6 +754,12 @@ impl Transform {
         check_points(&spatial, indices)?;
         let interpolation = self.interpolation()?;
         let extrapolation = self.extrapolation()?;
+        if interpolation == "cubic" && indices.nrows() > 0 && EXTRAPOLATIONS.contains(&extrapolation.as_str()) {
+            if extrapolation == "error" {
+                refuse_outside(&inside_extent(&spatial, indices))?;
+            }
+            return self.cubic.sample(indices, || CubicCoefficients::new(&data::read(&ds)?.to_f64(), &extrapolation));
+        }
         if interpolation != "linear" || indices.nrows() == 0 {
             let field = data::read(&ds)?.to_f64();
             return sample_field(&field, indices, &interpolation, &extrapolation);
@@ -768,13 +809,28 @@ impl Transform {
     }
 
     /// `det(I + du/dx)` per voxel --- values `<= 0` mark folding.
+    ///
+    /// `roi` is resolved as [`Transform::read_field`] resolves it: one slice
+    /// per spatial axis of the field grid, whole axes after the last one
+    /// given, NumPy's negative and out-of-range bounds.  The determinant is
+    /// differenced on the region's own lattice, its edges one-sidedly as the
+    /// field's are, so a slice with a step other than 1 is refused --- the
+    /// step was ignored, and a strided region reported folding where there
+    /// is none --- and so is an axis of fewer than 2 voxels.
     pub fn jacobian_determinant(&self, roi: Option<&[Slice]>) -> Result<ArrayD<f64>> {
-        let mut grid = self.field_grid()?.clone();
-        let field = self.read_field(roi, None)?.to_f64();
-        if let Some(roi) = roi {
-            grid = cropped_grid(&grid, roi)?;
+        let grid = self.field_grid()?;
+        let owner = format!("transform {}", repr_str(&self.transform_id));
+        let bounds = roi_bounds(grid, roi.unwrap_or_default(), &owner)?;
+        if let Some((axis, _)) = bounds.iter().enumerate().find(|(_, (a, b))| b - a < 2) {
+            return Err(Error::Value(format!(
+                "{owner}: the {} spans 1 voxel on axis {axis}, and a Jacobian takes a difference along every axis, \
+                 which needs at least 2",
+                if roi.is_some() { "region" } else { "field" }
+            )));
         }
-        jacobian_determinant(&field, &grid, &self.vector_space()?)
+        let window: Vec<Slice> = bounds.iter().map(|(a, b)| Slice::new(*a as i64, *b as i64)).collect();
+        let field = self.read_field(Some(&window), None)?.to_f64();
+        jacobian_determinant(&field, &cropped_grid(grid, &window)?, &self.vector_space()?)
     }
 
     /// Fraction of voxels that fold.
@@ -1005,17 +1061,7 @@ impl Transform {
                 repr_str(self.to_frame())
             ));
         }
-        for pair in chain.windows(2) {
-            if pair[0].to_frame() != pair[1].from_frame() {
-                problems.push(format!(
-                    "{} ends in {} but {} starts in {}",
-                    repr_str(&pair[0].transform_id),
-                    repr_str(pair[0].to_frame()),
-                    repr_str(&pair[1].transform_id),
-                    repr_str(pair[1].from_frame())
-                ));
-            }
-        }
+        problems.extend(frame_breaks(&chain));
         let mismatched: Vec<String> = chain
             .iter()
             .filter(|t| t.units() != self.units())
@@ -1080,6 +1126,24 @@ impl Transform {
     }
 }
 
+/// `'a' ends in 'M' but 'b' starts in 'F'` for each step of `steps` that
+/// does not start in the frame the step before it ends in.
+fn frame_breaks(steps: &[Transform]) -> Vec<String> {
+    steps
+        .windows(2)
+        .filter(|pair| pair[0].to_frame() != pair[1].from_frame())
+        .map(|pair| {
+            format!(
+                "{} ends in {} but {} starts in {}",
+                repr_str(&pair[0].transform_id),
+                repr_str(pair[0].to_frame()),
+                repr_str(&pair[1].transform_id),
+                repr_str(pair[1].from_frame())
+            )
+        })
+        .collect()
+}
+
 /// B-spline basis weights at fractional position `t` in `[0, 1)`.
 pub fn basis(order: i64, t: f64) -> Result<Vec<f64>> {
     match order {
@@ -1104,16 +1168,55 @@ pub fn basis(order: i64, t: f64) -> Result<Vec<f64>> {
     }
 }
 
-/// The grid of an ROI: same lattice, origin moved to the ROI's first voxel.
-pub fn cropped_grid(grid: &Grid, roi: &[Slice]) -> Result<Grid> {
+/// The `(start, stop)` voxels `roi` selects on each spatial axis of `grid`,
+/// resolved as [`Transform::read_field`] resolves it: NumPy's negative and
+/// out-of-range bounds, and whole axes after the last slice given.  A region
+/// is a block of the grid's own lattice, so more slices than spatial axes, a
+/// step other than 1 and an axis left without a voxel are refused, the error
+/// naming `owner`.
+fn roi_bounds(grid: &Grid, roi: &[Slice], owner: &str) -> Result<Vec<(usize, usize)>> {
     let spatial = grid.spatial_shape();
-    let starts: Vec<i64> = roi.iter().map(|s| s.start.unwrap_or(0)).collect();
-    let shape: Vec<i64> =
-        roi.iter().zip(&spatial).zip(&starts).map(|((s, n), start)| s.stop.unwrap_or(*n as i64) - start).collect();
-    let origin = grid.index_to_world(&starts.iter().map(|v| *v as f64).collect::<Vec<_>>())?;
-    let lead = grid.shape.len() - grid.n_spatial();
-    let mut full_shape: Vec<i64> = grid.shape[..lead].to_vec();
-    full_shape.extend(shape);
+    if roi.len() > spatial.len() {
+        return Err(Error::Value(format!(
+            "{owner}: roi has {} axes; grid {} has {} spatial axes",
+            roi.len(),
+            repr_str(&grid.grid_id),
+            spatial.len()
+        )));
+    }
+    spatial
+        .iter()
+        .enumerate()
+        .map(|(axis, n)| {
+            let (a, b, step) = roi.get(axis).copied().unwrap_or_default().resolve(*n)?;
+            if step != 1 {
+                return Err(Error::Value(format!(
+                    "{owner}: a region of interest is a block of the grid's own lattice, so a slice with step \
+                     {step} is refused; take the region, then slice the result with the step"
+                )));
+            }
+            if a == b {
+                return Err(Error::Value(format!("{owner}: roi selects no voxel on axis {axis}, which has {n}")));
+            }
+            Ok((a, b))
+        })
+        .collect()
+}
+
+/// The grid of an ROI: same lattice, origin moved to the ROI's first voxel.
+///
+/// `roi` is resolved as [`Transform::read_field`] resolves it.  Its bounds
+/// were taken as written: a negative stop made a grid of negative shape
+/// (E109), a negative start put the origin off the grid, a short ROI lost
+/// axes and a step was dropped; a step is now refused.
+pub fn cropped_grid(grid: &Grid, roi: &[Slice]) -> Result<Grid> {
+    let bounds = roi_bounds(grid, roi, &format!("grid {}", repr_str(&grid.grid_id)))?;
+    let starts: Vec<f64> = bounds.iter().map(|(a, _)| *a as f64).collect();
+    let origin = grid.index_to_world(&starts)?;
+    let mut full_shape = grid.shape.clone();
+    for (axis, (a, b)) in grid.spatial_axes().into_iter().zip(&bounds) {
+        full_shape[axis] = (b - a) as i64;
+    }
     let mut out = Grid::new(
         grid.grid_id.clone(),
         full_shape,
@@ -1468,7 +1571,9 @@ mod tests {
             (0..n).map(|i| (format!("c{i}"), vec!["leg".to_string(), format!("c{}", i + 1)])).collect();
         let started = std::time::Instant::now();
         assert!(composite_cycles(&g).unwrap().is_empty());
-        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+        // Bounds for the walks this guards against, not for the machine: the
+        // whole test has taken 5.6 s unoptimised on a shared Windows runner.
+        assert!(started.elapsed() < std::time::Duration::from_secs(60), "{:?}", started.elapsed());
         // Closed into a ring, every one of them is on the cycle, and up to
         // `CYCLE_PATHS` of them each has its whole path.
         let ring = |n: usize, chord: bool| -> IndexMap<String, Vec<String>> {
@@ -1490,7 +1595,7 @@ mod tests {
         // `CYCLE_PATHS`, a path is where it starts, and how it closes.
         let started = std::time::Instant::now();
         let cycles = composite_cycles(&ring(n, false)).unwrap();
-        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+        assert!(started.elapsed() < std::time::Duration::from_secs(60), "{:?}", started.elapsed());
         assert_eq!(cycles.len(), n);
         assert!(cycles.values().all(|path| path.len() <= CYCLE_SHOWN + 2 && path[path.len() - 2] == "…"));
         assert_eq!(cycles["c7"][..3], ["c7", "c8", "c9"]);

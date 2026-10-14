@@ -5,6 +5,8 @@ from __future__ import annotations
 import errno
 import io
 import json
+import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -33,11 +35,33 @@ def run(capsys, *argv):
     return code, capsys.readouterr()
 
 
+def _file_state(path: Path) -> tuple[int, int, bytes]:
+    """What a rewrite changes even when it writes the same content: the
+    inode under every open handle, the modification time, and the bytes."""
+    stat = path.stat()
+    return stat.st_ino, stat.st_mtime_ns, path.read_bytes()
+
+
 class TestEntryPoint:
     def test_no_command_prints_help(self, capsys):
         code, out = run(capsys)
         assert code == EXIT_USAGE
-        assert "COMMAND" in out.out
+        assert "COMMAND" in out.err
+
+    @pytest.mark.parametrize(
+        "argv", [[], ["seg"], ["labels"], ["labels", "registry"], ["dataset"]]
+    )
+    def test_help_asked_for_is_output_and_help_for_a_usage_error_is_not(
+        self, capsys, argv
+    ):
+        """Bare `medh5` printed its help on stdout, and exited 2; a bare
+        command group printed its own on stderr, and exited 2 too."""
+        code, out = run(capsys, *argv)
+        assert (code, out.out) == (EXIT_USAGE, "")
+        assert "Usage: medh5" in out.err
+        code, out = run(capsys, *argv, "--help")
+        assert (code, out.err) == (EXIT_OK, "")
+        assert "Usage: medh5" in out.out
 
     def test_version_and_help_return_their_code(self, capsys):
         assert main(["--version"]) == EXIT_OK
@@ -191,6 +215,74 @@ class TestOutput:
         assert main(["validate", str(tmp_path / "missing.medh5")]) == EXIT_ERROR
         assert main(["conformance", "list"]) == EXIT_OK
 
+    def test_output_reaches_python_a_block_at_a_time(self, monkeypatch, sample_path):
+        """Each fragment the command wrote was a call into Python: two per
+        printed line, and one per fragment of a streamed `--json` document."""
+        calls = []
+
+        class Counting(io.StringIO):
+            def write(self, text: str) -> int:
+                calls.append(text)
+                return super().write(text)
+
+        stream = Counting()
+        monkeypatch.setattr(sys, "stdout", stream)
+        assert main(["verify", *[str(sample_path)] * 5]) == EXIT_OK
+        assert len(stream.getvalue().splitlines()) == 5
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize("like", ["terminal", "line_buffering", "write_through"])
+    def test_a_stream_python_writes_by_the_line_is_handed_each_line(
+        self, monkeypatch, sample_path, like
+    ):
+        """Held a block at a time, a batch would show nothing at a terminal
+        until it ended.  A line goes as it ends wherever Python's own stream
+        goes at least that often: a terminal, a line-buffered stream, and one
+        that writes through (`python -u`)."""
+        calls = []
+
+        class Recording(io.TextIOWrapper):
+            def isatty(self) -> bool:
+                return like == "terminal"
+
+            def write(self, text: str) -> int:
+                calls.append(text)
+                return super().write(text)
+
+        stream = Recording(
+            io.BytesIO(),
+            encoding="utf-8",
+            line_buffering=like == "line_buffering",
+            write_through=like == "write_through",
+        )
+        monkeypatch.setattr(sys, "stdout", stream)
+        assert main(["verify", *[str(sample_path)] * 5]) == EXIT_OK
+        assert len(calls) == 5
+        assert all(text.startswith(f"{sample_path}: OK") for text in calls)
+        assert all(text.endswith("\n") and text.count("\n") == 1 for text in calls)
+
+    def test_stdout_goes_out_before_what_stderr_says_after_it(
+        self, monkeypatch, tmp_path, sample_path
+    ):
+        """Buffered, stdout must still reach a log it shares with stderr
+        (`2>&1`) ahead of a failure the command reported after it."""
+        said: list[str] = []
+
+        class Shared(io.StringIO):
+            def write(self, text: str) -> int:
+                said.append(text)
+                return len(text)
+
+        monkeypatch.setattr(sys, "stdout", Shared())
+        monkeypatch.setattr(sys, "stderr", Shared())
+        missing = str(tmp_path / "missing.medh5")
+        argv = ["verify", str(sample_path), missing, str(sample_path)]
+        assert main(argv) == EXIT_ERROR
+        text = "".join(said)
+        first = text.index(f"{sample_path}: OK")
+        failure = text.index("medh5: ")
+        assert first < failure < text.index(f"{sample_path}: OK", failure)
+
     def test_what_the_stdout_encoding_cannot_spell_is_escaped_not_lost(
         self, monkeypatch, longitudinal_path
     ):
@@ -264,6 +356,57 @@ class TestUsageErrors:
         assert code == EXIT_USAGE and "--apply" in out.err
         code, out = run(capsys, "scrub", missing, "--pseudonymise-ids", "--apply")
         assert code == EXIT_USAGE and "needs --salt" in out.err
+
+    @pytest.mark.parametrize(
+        ("argv", "partner"),
+        [
+            (["fix", "{sample}", "--reason", "re-exported"], "--rewrite-digests"),
+            (["fix", "{sample}", "--by", "RAD-07"], "--rewrite-digests"),
+            (
+                ["fix", "{sample}", "--rebuild-index", "--by", "RAD-07"],
+                "--rewrite-digests",
+            ),
+            (
+                ["dataset", "split", "{manifest}", "-o", "{split}", "--k-folds", "2"]
+                + ["--fold", "0"],
+                "--write-claims",
+            ),
+            (
+                ["dataset", "split", "{manifest}", "-o", "{split}"]
+                + ["--assigned-by", "RAD-07"],
+                "--write-claims",
+            ),
+        ],
+    )
+    def test_an_option_another_acts_on_is_refused_without_it(
+        self, capsys, tmp_path, sample_path, argv, partner
+    ):
+        """`fix --reason` without `--rewrite-digests` diagnosed and exited 0,
+        and `split --fold` without `--write-claims` wrote the split: each
+        option was accepted and did nothing, so the run read as recorded."""
+        before = sample_path.read_bytes()
+        split = tmp_path / "split.json"
+        names = {"sample": sample_path, "manifest": tmp_path / "m.json", "split": split}
+        code, out = run(capsys, *(word.format(**names) for word in argv))
+        assert code == EXIT_USAGE
+        assert partner in out.err
+        assert sample_path.read_bytes() == before
+        assert not split.exists()
+
+    @pytest.mark.parametrize("threshold", ["nan", "-1", "0", "1.5", "inf"])
+    def test_an_iou_threshold_lies_in_0_to_1(self, capsys, sample_path, threshold):
+        """NaN matched no object, and 0 or less every pair, objects that do
+        not touch among them; both scored as agreement."""
+        code, out = run(
+            capsys,
+            "agree",
+            str(sample_path),
+            "organs_tp0",
+            "organs_tp0",
+            f"--threshold={threshold}",
+        )
+        assert code == EXIT_USAGE
+        assert "(0, 1]" in out.err
 
 
 class TestInfo:
@@ -464,6 +607,50 @@ class TestVerify:
         code, out = run(capsys, "verify", str(sample_path))
         assert code == EXIT_ERROR
         assert "MALFORMED images/CT_tp0" in out.out
+
+    def test_S13_the_text_names_every_path_the_document_reports(
+        self, capsys, longitudinal_path
+    ):
+        """The text left out a digest its dataset's type cannot have: neither
+        checked nor a failure, and `--partial` on one printed `OK 0 objects`
+        and nothing else, where `--json` listed it as `unverifiable`."""
+        path = str(longitudinal_path)
+        with h5py.File(path, "r+") as handle:
+            data = handle["annotations/organs_tp0/data"]
+            block = np.asarray(data[...])
+            block[tuple(np.argwhere(block != 0)[0])] = 0
+            data[...] = block
+            handle["images/CT_tp1"].attrs["digest"] = encode_attr("sha256:nothex")
+            handle["index/organs_tp1"].attrs["source_digest"] = encode_attr(
+                "sha256:" + "0" * 64
+            )
+            handle["annotations/organs_tp1"].create_dataset(
+                "instance_ids", data=np.arange(3, dtype=np.int64)
+            )
+            seq = handle.create_group("x_acme").create_dataset(
+                "seq", (1,), dtype=h5py.vlen_dtype(np.dtype("uint8"))
+            )
+            seq[0] = np.array([1, 2], dtype=np.uint8)
+            seq.attrs["digest"] = "sha256:" + "0" * 64
+        code, out = run(capsys, "verify", path, "--json")
+        reported = json.loads(out.out)[0]
+        text_code, text = run(capsys, "verify", path)
+        assert code == text_code == EXIT_ERROR
+        lines = [line.split()[:2] for line in text.out.splitlines()]
+        for field, tag in [
+            ("mismatched", "MISMATCH"),
+            ("malformed", "MALFORMED"),
+            ("unattested", "UNSIGNED"),
+            ("stale_index", "STALE"),
+            ("unverifiable", "UNCHECKED"),
+        ]:
+            assert reported[field], field
+            for name in reported[field]:
+                shown = f"index/{name}" if field == "stale_index" else name
+                assert [tag, shown] in lines, (field, name, text.out)
+        code, out = run(capsys, "verify", path, "--partial", "x_acme/seq")
+        assert code == EXIT_OK
+        assert "UNCHECKED x_acme/seq" in out.out
 
 
 class TestLongitudinal:
@@ -699,7 +886,8 @@ class TestSegAndIndex:
     def test_S7_6_a_probmap_is_converted_through_its_threshold(self, capsys, tmp_path):
         """§7.6 makes a probmap lossless only under its `threshold` (§7.5):
         another encoding keeps the voxels at or above it, and the help called
-        every conversion lossless."""
+        every conversion lossless --- and then that one alone, when instances
+        to a dense encoding lose their ids too."""
         path = tmp_path / "soft.medh5"
         votes = np.zeros(Numbered.SHAPE, np.float32)
         votes[1], votes[2], votes[3] = 0.29, 0.3, 0.9
@@ -715,9 +903,9 @@ class TestSegAndIndex:
             assert np.array_equal(soft.dense([1])[0], votes >= 0.3)
         code, out = run(capsys, "seg", "convert", "--help")
         assert code == EXIT_OK
-        assert "a probmap is thresholded at its threshold (§7.5) and loses its " in (
-            " ".join(out.out.split())
-        )
+        said = " ".join(out.out.split())
+        assert "losslessly but in two cases: a probmap keeps the voxels at or " in said
+        assert "instances to a dense encoding lose their ids (--drop-identity)" in said
 
     def test_index_build(self, capsys, sample_path):
         import medh5
@@ -735,7 +923,9 @@ class TestSegAndIndex:
         with medh5.open(sample_path) as sample:
             assert not sample.index["organs_tp0"].has_occupancy
 
-    def test_index_build_on_a_sample_without_annotations(self, capsys, tmp_path):
+    def test_S14_3_a_sample_with_nothing_to_index_is_done(self, capsys, tmp_path):
+        """It exited 1 with `built index for (nothing)` --- having rewritten
+        the file --- though an index is optional per annotation (§14.3)."""
         import medh5
         from tests.helpers import SHAPE
 
@@ -743,8 +933,98 @@ class TestSegAndIndex:
         with medh5.create(path, codec="portable") as w:
             w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
             w.add_image("CT", np.zeros(SHAPE), grid="g", modality="CT")
+        before = _file_state(path)
         code, out = run(capsys, "index", "build", str(path))
-        assert code == EXIT_ERROR
+        assert code == EXIT_OK
+        assert "nothing to index" in out.out
+        code, out = run(capsys, "index", "build", str(path), "--json")
+        assert (code, json.loads(out.out)) == (EXIT_OK, {str(path): []})
+        assert _file_state(path) == before
+
+    def test_S14_3_a_build_that_would_change_nothing_leaves_the_file(
+        self, capsys, longitudinal_path
+    ):
+        """`index build` rewrote the file --- a copy of every image, and a new
+        inode under every handle open on it --- when every entry was already
+        what it would write.  An entry is rebuilt when any part would change:
+        here the occupancy block, which is not stored, and which a block of 10
+        cuts into the same coarse shape as the 8 the entries were built with."""
+        path = longitudinal_path
+        built_with = ["--max-coords", "64"]  # as `write_sample` builds them
+        before = _file_state(path)
+        code, out = run(capsys, "index", "build", str(path), *built_with)
+        assert code == EXIT_OK
+        assert out.out == (
+            f"{path}: index current for organs_tp0, organs_tp1; the file is unchanged\n"
+        )
+        assert _file_state(path) == before
+        with medh5.open(path) as sample:
+            coarse = sample.index["organs_tp0"].occupancy_plane(0)
+        code, out = run(
+            capsys, "index", "build", str(path), *built_with, "--occupancy", "10"
+        )
+        assert code == EXIT_OK
+        assert out.out == f"{path}: built index for organs_tp0, organs_tp1\n"
+        with medh5.open(path) as sample:
+            recut = sample.index["organs_tp0"].occupancy_plane(0)
+        assert recut.shape == coarse.shape and not np.array_equal(recut, coarse)
+        before = _file_state(path)
+        code, out = run(
+            capsys, "index", "build", str(path), *built_with, "--occupancy", "10"
+        )
+        assert "the file is unchanged" in out.out
+        assert _file_state(path) == before
+
+    def test_S7_6_a_conversion_to_the_stored_encoding_leaves_the_file(
+        self, capsys, sample_path
+    ):
+        """It said `re-encoded organs_tp0: layers -> layers` and rewrote the
+        file, transcoding it twice on the way."""
+        with medh5.open(sample_path) as sample:
+            kind = sample.annotations["organs_tp0"].kind
+        before = _file_state(sample_path)
+        argv = ["seg", "convert", str(sample_path), "organs_tp0", "--to", kind]
+        code, out = run(capsys, *argv)
+        assert code == EXIT_OK
+        assert "nothing to re-encode" in out.out
+        code, out = run(capsys, *argv, "--json")
+        payload = json.loads(out.out)
+        assert payload["applied"] is False
+        assert payload["bytes_after"] == payload["bytes_before"]
+        assert _file_state(sample_path) == before
+
+    def test_S7_6_a_dry_run_reports_the_size_the_conversion_writes(
+        self, capsys, sample_path
+    ):
+        """The size is measured once: from the payload on a dry run, and from
+        what was written otherwise --- the two must agree."""
+        argv = ["seg", "convert", str(sample_path), "organs_tp0", "--to", "bitmask"]
+        code, out = run(capsys, *argv, "--dry-run", "--json")
+        dry = json.loads(out.out)
+        code, out = run(capsys, *argv, "--json")
+        done = json.loads(out.out)
+        assert (dry["applied"], done["applied"]) == (False, True)
+        assert dry["bytes_after"] == done["bytes_after"]
+        assert dry["bytes_before"] == done["bytes_before"]
+
+    def test_S7_4_a_conversion_its_kinds_refuse_leaves_the_file(self, capsys, tmp_path):
+        """What the kinds alone refuse --- object identity dropped unasked, or
+        minted from a dense encoding --- is refused before the file is
+        copied for the rewrite, and nothing is left behind."""
+        from medh5.conformance import build_corpus
+
+        build_corpus(tmp_path, names=["seg-instances", "seg-bitmask"])
+        for case, annotation, to in [
+            ("seg-instances", "lesions", "labelmap"),
+            ("seg-bitmask", "organs", "instances"),
+        ]:
+            path = tmp_path / f"{case}.medh5"
+            before = _file_state(path)
+            code, out = run(capsys, "seg", "convert", str(path), annotation, "--to", to)
+            assert code == EXIT_ERROR
+            assert out.err.startswith("medh5: [E404] "), out.err
+            assert _file_state(path) == before
+            assert not [p for p in tmp_path.iterdir() if ".tmp-" in p.name]
 
     def test_usage_errors(self, capsys):
         assert run(capsys, "seg")[0] == EXIT_USAGE
@@ -920,6 +1200,83 @@ class TestFixAndScrub:
         assert result["rebuilt_index"] == []
         assert longitudinal_path.stat().st_mtime_ns == before
 
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            [],
+            ["--rebuild-index"],
+            ["--rewrite-digests", "--reason", "re-exported"],
+            ["--rewrite-digests", "--reason", "re-exported", "--rebuild-index"],
+        ],
+    )
+    def test_S13_3_fix_succeeds_exactly_when_nothing_is_left_to_fix(
+        self, capsys, longitudinal_path, flags
+    ):
+        """`--rewrite-digests` restamped an annotation whose index entry pins
+        its digest, left the entry stale, said so in a note --- and exited 0,
+        where a diagnosis of the file it left exits 1."""
+        path = str(longitudinal_path)
+        with h5py.File(path, "r+") as handle:
+            data = handle["annotations/organs_tp0/data"]
+            block = np.asarray(data[...])
+            block[tuple(np.argwhere(block != 0)[0])] = 0
+            data[...] = block
+        code, out = run(capsys, "fix", path, *flags, "--json")
+        (entry,) = json.loads(out.out)
+        assert entry["ok"] is (code == EXIT_OK)
+        left, _ = run(capsys, "fix", path)
+        assert code == left, entry
+        assert code == (EXIT_OK if len(flags) == 4 else EXIT_ERROR)
+
+    def test_fix_says_what_it_left_and_why_whatever_it_did(
+        self, capsys, sample_path, longitudinal_path
+    ):
+        """The notes were printed only when the file changed, and a digest
+        that does not parse was only "needs attention"."""
+        code, out = run(capsys, "fix", str(sample_path), "--rebuild-index")
+        assert code == EXIT_OK
+        assert out.out.startswith(f"{sample_path}: nothing to fix\n  note: ")
+        assert "which `medh5 index build` writes" in out.out
+        with h5py.File(longitudinal_path, "r+") as handle:
+            handle["images/CT_tp0"].attrs["digest"] = encode_attr("sha256:nothex")
+        code, out = run(capsys, "fix", str(longitudinal_path))
+        assert code == EXIT_ERROR
+        assert "  malformed digest: images/CT_tp0 (" in out.out
+
+    def test_the_command_line_names_its_flags_not_keyword_arguments(
+        self, capsys, longitudinal_path
+    ):
+        """The engine words a refusal or a note for the Python API ("pass
+        rewrite_digests with a reason", "rebuild them with rebuild_index",
+        "`key` applies to collections"); the command line has a flag for each."""
+        path = str(longitudinal_path)
+        with h5py.File(path, "r+") as handle:
+            data = handle["annotations/organs_tp0/data"]
+            block = np.asarray(data[...])
+            block[tuple(np.argwhere(block != 0)[0])] = 0
+            data[...] = block
+        said = []
+        code, out = run(capsys, "fix", path, "--rebuild-index")
+        assert code == EXIT_ERROR
+        assert "pass --rewrite-digests with --reason" in out.err
+        said.append(out)
+        code, out = run(capsys, "fix", path, "--rewrite-digests", "--reason", "x")
+        assert "rebuild them with --rebuild-index" in out.out
+        said.append(out)
+        code, out = run(
+            capsys, "fix", path, "--rewrite-digests", "--reason", "x", "--json"
+        )
+        notes = json.loads(out.out)[0]["notes"]
+        assert any("rebuild them with --rebuild-index" in note for note in notes)
+        said.append(out)
+        code, out = run(capsys, "info", path, "--key", "k")
+        assert code == EXIT_ERROR
+        assert "--key applies to collections" in out.err
+        said.append(out)
+        for printed in said:
+            for api in ("rewrite_digests", "rebuild_index", "`key`", "open_collection"):
+                assert api not in printed.out + printed.err, (api, printed)
+
     def test_scrub_finds_and_exits_non_zero(self, capsys, tmp_path):
         path = tmp_path / "dirty.medh5"
         with medh5.create(path, sample_id="s", subject_id="subj-A") as w:
@@ -985,6 +1342,24 @@ class TestErrorsNameTheFile:
             assert code == EXIT_ERROR, command
             assert repr(str(target)) in out.err, command
 
+    def test_a_file_replaced_whole_is_named(self, capsys, tmp_path, sample_path):
+        """A manifest and a label set are replaced whole, through a temporary
+        beside them; a label set that could not be written said only "No such
+        file or directory (os error 2)"."""
+        target = tmp_path / "nodir" / "x.json"
+        code, out = run(
+            capsys, "dataset", "index", str(sample_path.parent), "-o", str(target)
+        )
+        assert code == EXIT_ERROR
+        assert repr(str(target)) in out.err
+        old = tmp_path / "old.medh5"
+        write_legacy_sample(old, images={"CT": np.zeros((4, 4, 4), np.int16)})
+        argv = ["migrate", str(old), "-o", str(tmp_path / "m")]
+        code, out = run(capsys, *argv, "--write-labels", str(target))
+        assert code == EXIT_ERROR
+        assert repr(str(target)) in out.err
+        assert not target.parent.exists()
+
     def test_a_report_that_cannot_be_written(self, capsys, tmp_path):
         old = tmp_path / "old.medh5"
         write_legacy_sample(old, images={"CT": np.zeros((4, 4, 4), np.int16)})
@@ -1009,6 +1384,17 @@ class TestErrorsNameTheFile:
             code, out = run(capsys, *argv)
             assert code == EXIT_ERROR, argv
             assert repr(str(sample_path)) in out.err, argv
+
+
+def _objects(value):
+    """Every object in a JSON document, outermost first."""
+    if isinstance(value, dict):
+        yield value
+        for item in value.values():
+            yield from _objects(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _objects(item)
 
 
 def _strings(value):
@@ -1064,6 +1450,40 @@ class TestBatches:
         named = set(_strings(payload))
         assert batch[1] in named and batch[2] in named, payload
         assert "medh5: " in out.err
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            ["verify"],
+            ["fix"],
+            ["recompress", "--profile", "portable"],
+            ["scrub"],
+            ["index", "build"],
+            ["labels", "check"],
+            ["splits"],
+        ],
+    )
+    def test_a_file_that_failed_has_one_shape_of_entry(self, capsys, batch, command):
+        """`fix` gave its reports no `ok`, `index build` a failed file `null`
+        and no reason, `labels check` only a map, and `splits` printed
+        `UNREADABLE  path: MEDH5FileError: ...` on stdout.  Every batch
+        command gives a file it could not process `{path, ok: false, error}`,
+        its `error` what stderr said, and every file it did process `ok`."""
+        code, out = run(capsys, *command, *batch, "--json")
+        assert code == EXIT_ERROR
+        entries = [
+            entry
+            for entry in _objects(json.loads(out.out))
+            if {"path", "ok"} <= set(entry)
+        ]
+        failed = [entry for entry in entries if entry["ok"] is False]
+        assert failed == [
+            {"path": batch[1], "ok": False, "error": failed[0]["error"]}
+        ], entries
+        assert f"medh5: {failed[0]['error']}" in out.err.splitlines()
+        assert not re.match(r"\w+Error: ", failed[0]["error"])
+        if command[0] not in ("index", "splits"):
+            assert [entry["path"] for entry in entries] == batch
 
     def test_a_refused_scrub_keeps_the_reports_of_files_already_changed(
         self, capsys, tmp_path, sample_path
@@ -1650,12 +2070,22 @@ class TestCuration:
         assert code == EXIT_ERROR
         assert "W906" in out.out
 
-    def test_splits_lists_unreadable_files(self, capsys, tmp_path):
+    def test_splits_names_an_unreadable_file_on_stderr(
+        self, capsys, tmp_path, sample_path
+    ):
+        """It printed `UNREADABLE  path: MEDH5FileError: ...` on stdout, the
+        Python API's exception name among the audit, and counted the file it
+        could not read among those without a split claim."""
         bad = tmp_path / "bad.medh5"
         bad.write_bytes(b"not hdf5")
-        code, out = run(capsys, "splits", str(bad))
+        code, out = run(capsys, "splits", str(sample_path), str(bad))
         assert code == EXIT_ERROR
-        assert "UNREADABLE" in out.out
+        assert out.out == (
+            "no split claims in 1 file(s)\n\n1 file(s) carry no split claim\n"
+        )
+        (said,) = out.err.splitlines()
+        assert said.startswith("medh5: ") and repr(str(bad)) in said
+        assert "Error:" not in said
 
 
 class TestRecompressAndBench:
@@ -1812,6 +2242,335 @@ class TestRecompressAndBench:
         else:
             assert verdict == "all targets met"
             assert code == EXIT_OK
+
+
+class TestConvertPathsNeverAlias:
+    """A ``--report`` or an output naming a file the command reads or writes
+    replaced it with exit status 0 --- ``from-dicom-seg --report case.medh5``
+    the only copy of the sample it had just amended.  Each is refused before
+    the converter runs, with every file as it was."""
+
+    DICOM = b"\0" * 128 + b"DICM" + b"original"
+
+    # Each command's arguments, and the files it reads or writes (relative to
+    # the directory the test builds) that no report may name.
+    COMMANDS = {
+        "from-nifti": (
+            [
+                "{d}/out.medh5",
+                "--image",
+                "CT={d}/ct.nii.gz",
+                "--mask",
+                "m={d}/m.nii.gz",
+            ],
+            ["ct.nii.gz", "m.nii.gz", "out.medh5"],
+        ),
+        "from-dicom": (["{d}/dcm", "{d}/out.medh5"], ["dcm/CT_000.dcm", "out.medh5"]),
+        "from-dicom-seg": (
+            ["{d}/seg.dcm", "{d}/case.medh5"],
+            ["seg.dcm", "case.medh5"],
+        ),
+        "to-dicom-seg": (
+            [
+                "{d}/case.medh5",
+                "organs",
+                "{d}/out.dcm",
+                "--source",
+                "{d}/dcm/CT_000.dcm",
+            ],
+            ["case.medh5", "dcm/CT_000.dcm", "out.dcm"],
+        ),
+        "from-rtstruct": (["{d}/rt.dcm", "{d}/case.medh5"], ["rt.dcm", "case.medh5"]),
+        "to-rtstruct": (
+            ["{d}/case.medh5", "rois", "{d}/out.dcm", "--source", "{d}/dcm/CT_000.dcm"],
+            ["case.medh5", "dcm/CT_000.dcm", "out.dcm"],
+        ),
+        "from-nnunet": (
+            ["{d}/nn/D1", "{d}/imp"],
+            ["nn/D1/dataset.json", "nn/D1/imagesTr/a_0000.nii.gz", "imp/a.medh5"],
+        ),
+        "to-nnunet": (
+            ["{d}/nn2", "{d}/case.medh5", "--dataset-name", "D2"],
+            ["case.medh5", "nn2/D2/dataset.json", "nn2/D2/imagesTr/case_0000.nii.gz"],
+        ),
+    }
+
+    @classmethod
+    def _tree(cls, root: Path) -> dict[str, bytes]:
+        """Every input the commands name, as placeholders: no converter runs."""
+        files = {
+            "ct.nii.gz": b"original",
+            "m.nii.gz": b"original",
+            "seg.dcm": cls.DICOM,
+            "rt.dcm": cls.DICOM,
+            "case.medh5": b"original",
+            "dcm/CT_000.dcm": cls.DICOM,
+            "nn/D1/imagesTr/a_0000.nii.gz": b"original",
+            "nn/D1/dataset.json": json.dumps(
+                {
+                    "channel_names": {"0": "CT"},
+                    "labels": {"background": 0, "liver": 1},
+                    "numTraining": 1,
+                    "file_ending": ".nii.gz",
+                }
+            ).encode(),
+        }
+        for name, data in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_bytes(data)
+        (root / "sub").mkdir()
+        return files
+
+    @staticmethod
+    def _snapshot(root: Path) -> dict[str, bytes]:
+        return {
+            str(p.relative_to(root)): p.read_bytes()
+            for p in sorted(root.rglob("*"))
+            if p.is_file() and not p.is_symlink()
+        }
+
+    def _refused(self, capsys, monkeypatch, root, command, argv) -> str:
+        from medh5 import cli
+
+        before = self._snapshot(root)
+        ran: list[str] = []
+        monkeypatch.setitem(cli._HANDLERS, command, lambda a: ran.append(command) or 0)
+        code, printed = run(capsys, "convert", command, *argv)
+        assert code == EXIT_ERROR, (command, argv, printed.err)
+        assert not ran, "refused before the converter runs"
+        assert self._snapshot(root) == before, "every file as it was"
+        return printed.err
+
+    @pytest.mark.parametrize(
+        ("command", "target"),
+        [(c, t) for c, (_, targets) in COMMANDS.items() for t in targets],
+    )
+    def test_no_report_names_a_file_the_command_reads_or_writes(
+        self, capsys, monkeypatch, tmp_path, command, target
+    ):
+        self._tree(tmp_path)
+        argv = [a.format(d=tmp_path) for a in self.COMMANDS[command][0]]
+        err = self._refused(
+            capsys,
+            monkeypatch,
+            tmp_path,
+            command,
+            [*argv, "--report", str(tmp_path / target)],
+        )
+        assert err.startswith(f"medh5: --report {tmp_path / target} is ")
+
+    @pytest.mark.parametrize("alias", ["relative", "symlink", "hardlink"])
+    def test_an_alias_of_an_input_is_the_input(
+        self, capsys, monkeypatch, tmp_path, alias
+    ):
+        """`sub/../ct.nii.gz`, a link to it, or a second name for its inode:
+        the report was written through each of them onto the source."""
+        self._tree(tmp_path)
+        source = tmp_path / "ct.nii.gz"
+        if alias == "relative":
+            report = tmp_path / "sub" / ".." / "ct.nii.gz"
+        else:
+            report = tmp_path / "sub" / "r.json"
+            try:
+                (report.symlink_to if alias == "symlink" else report.hardlink_to)(
+                    source
+                )
+            except OSError as exc:  # pragma: no cover - no links on this file system
+                pytest.skip(str(exc))
+        argv = [a.format(d=tmp_path) for a in self.COMMANDS["from-nifti"][0]]
+        self._refused(
+            capsys,
+            monkeypatch,
+            tmp_path,
+            "from-nifti",
+            [*argv, "--report", str(report)],
+        )
+        assert source.read_bytes() == b"original"
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["from-nifti", "{d}/ct.nii.gz", "--image", "CT={d}/ct.nii.gz"],
+            ["to-nifti", "{d}/m.nii.gz", "CT", "{d}/m.nii.gz"],
+            ["from-dicom", "{d}/dcm", "{d}/dcm/CT_000.dcm"],
+            [
+                "to-dicom-seg",
+                "{d}/case.medh5",
+                "o",
+                "{d}/case.medh5",
+                "--source",
+                "{d}/seg.dcm",
+            ],
+            [
+                "to-dicom-seg",
+                "{d}/case.medh5",
+                "o",
+                "{d}/seg.dcm",
+                "--source",
+                "{d}/seg.dcm",
+            ],
+            [
+                "to-rtstruct",
+                "{d}/case.medh5",
+                "o",
+                "{d}/case.medh5",
+                "--source",
+                "{d}/rt.dcm",
+            ],
+            ["to-nnunet", "{d}/case.medh5", "{d}/case.medh5"],
+        ],
+    )
+    def test_no_output_names_an_input(self, capsys, monkeypatch, tmp_path, argv):
+        self._tree(tmp_path)
+        command, *rest = (a.format(d=tmp_path) for a in argv)
+        err = self._refused(capsys, monkeypatch, tmp_path, command, rest)
+        assert err.startswith("medh5: the output ")
+
+    def test_paths_that_alias_nothing_reach_the_converter(
+        self, capsys, monkeypatch, tmp_path
+    ):
+        """The checks refuse aliases only: a report beside the output, a report
+        inside the output directory, and a sample written into the DICOM tree
+        over an earlier one --- no DICOM file --- all run."""
+        from medh5 import cli
+
+        self._tree(tmp_path)
+        (tmp_path / "dcm" / "old.medh5").write_bytes(b"\x89HDF\r\n\x1a\n")
+        ran: list[str] = []
+        for command in ("from-dicom", "from-nnunet"):
+            monkeypatch.setitem(
+                cli._HANDLERS, command, lambda a: ran.append(a.out) or 0
+            )
+        for argv in (
+            [
+                "from-dicom",
+                f"{tmp_path}/dcm",
+                f"{tmp_path}/out.medh5",
+                "--report",
+                f"{tmp_path}/r.json",
+            ],
+            ["from-dicom", f"{tmp_path}/dcm", f"{tmp_path}/dcm/old.medh5"],
+            [
+                "from-nnunet",
+                f"{tmp_path}/nn/D1",
+                f"{tmp_path}/imp",
+                "--report",
+                f"{tmp_path}/imp/r.json",
+            ],
+        ):
+            assert run(capsys, "convert", *argv)[0] == EXIT_OK, argv
+        assert len(ran) == 3
+
+    def test_S2_a_report_naming_an_output_known_only_after_is_not_written(
+        self, capsys, monkeypatch, tmp_path
+    ):
+        """A `from-dicom` directory's samples are named for their subjects,
+        which only the import learns: a report naming one is refused there,
+        and the sample stays."""
+        from medh5 import cli
+        from medh5.io.report import ConversionReport
+
+        sample = tmp_path / "out" / "PSEUDO-1.medh5"
+
+        def convert(args: Any) -> int:
+            sample.parent.mkdir()
+            sample.write_bytes(b"the sample")
+            report = ConversionReport(converter="from-dicom", outputs=[str(sample)])
+            return cli._finish(report, args)
+
+        monkeypatch.setitem(cli._HANDLERS, "from-dicom", convert)
+        (tmp_path / "dcm").mkdir()
+        code, printed = run(
+            capsys, "convert", "from-dicom", str(tmp_path / "dcm"),
+            f"{tmp_path / 'out'}{os.sep}", "--report", str(sample),
+        )  # fmt: skip
+        assert code == EXIT_ERROR
+        assert "the report was not written" in printed.err
+        assert sample.read_bytes() == b"the sample"
+
+    def test_a_report_replaces_a_link_rather_than_writing_through_it(
+        self, capsys, monkeypatch, tmp_path
+    ):
+        from medh5 import cli
+        from medh5.io.report import ConversionReport
+
+        other = tmp_path / "other.txt"
+        other.write_text("someone else's", encoding="utf-8")
+        link = tmp_path / "r.json"
+        try:
+            link.symlink_to(other)
+        except OSError as exc:  # pragma: no cover - no links on this file system
+            pytest.skip(str(exc))
+        monkeypatch.setitem(
+            cli._HANDLERS,
+            "from-nnunet",
+            lambda a: cli._finish(ConversionReport(converter="from-nnunet"), a),
+        )
+        argv = ["from-nnunet", str(tmp_path / "x"), str(tmp_path / "y")]
+        assert run(capsys, "convert", *argv, "--report", str(link))[0] == EXIT_OK
+        assert not link.is_symlink()
+        assert (
+            json.loads(link.read_text(encoding="utf-8"))["converter"] == "from-nnunet"
+        )
+        assert other.read_text(encoding="utf-8") == "someone else's"
+
+    def test_a_link_at_the_temporary_name_is_not_written_through(
+        self, capsys, monkeypatch, tmp_path
+    ):
+        """The temporary beside a report was ``.<pid>-<name>``: a link planted
+        there, by anyone who could write the directory, was followed, and the
+        file it named overwritten with the report.  The temporary is created
+        exclusively under a random name, and a name already taken is passed
+        over."""
+        import secrets
+
+        from medh5 import cli
+        from medh5.io.report import ConversionReport
+
+        other = tmp_path / "other.txt"
+        other.write_text("someone else's", encoding="utf-8")
+        planted = [
+            tmp_path / f".{os.getpid()}-r.json",
+            tmp_path / f".{os.getpid()}-00000000-r.json",
+        ]
+        try:
+            for link in planted:
+                link.symlink_to(other)
+        except OSError as exc:  # pragma: no cover - no links on this file system
+            pytest.skip(str(exc))
+        tokens = iter(["00000000", "11111111"])
+        monkeypatch.setattr(secrets, "token_hex", lambda _: next(tokens))
+        monkeypatch.setitem(
+            cli._HANDLERS,
+            "from-nnunet",
+            lambda a: cli._finish(ConversionReport(converter="from-nnunet"), a),
+        )
+        report = tmp_path / "r.json"
+        argv = ["from-nnunet", str(tmp_path / "x"), str(tmp_path / "y")]
+        assert run(capsys, "convert", *argv, "--report", str(report))[0] == EXIT_OK
+        assert (
+            json.loads(report.read_text(encoding="utf-8"))["converter"] == "from-nnunet"
+        )
+        assert other.read_text(encoding="utf-8") == "someone else's"
+        assert all(link.is_symlink() for link in planted)
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            ["other.txt", "r.json", *(link.name for link in planted)]
+        )
+
+    def test_a_report_naming_the_output_of_a_real_import_is_refused(
+        self, capsys, tmp_path
+    ):
+        nib = pytest.importorskip("nibabel")
+        source = tmp_path / "ct.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((4, 5, 6), np.int16), np.eye(4)), str(source))
+        out = tmp_path / "out.medh5"
+        code, printed = run(
+            capsys, "convert", "from-nifti", str(out), "--image", f"CT={source}",
+            "--report", str(out),
+        )  # fmt: skip
+        assert code == EXIT_ERROR
+        assert "is the output this command writes" in printed.err
+        assert not out.exists()
 
 
 class TestConvert:

@@ -2,7 +2,7 @@
 
 use ndarray::Array2;
 
-use super::{child, grid_shape, loc, str_attr, strs_attr, Context};
+use super::{children, grid_shape, loc, str_attr, strs_attr, Context};
 use crate::geometry::grid::read_grid;
 use crate::geometry::multiscale::{check_pyramid, GEOMETRY_RTOL};
 use crate::h5::attrs;
@@ -14,90 +14,131 @@ use crate::validate::Diagnostic;
 use crate::Result;
 
 /// Structural: every image against §4.1--§4.2 --- its attributes, its grid
-/// and shape, channel names (E101, E105, E201--E205) --- and float storage an
-/// `int16` would hold losslessly (W907).
+/// and shape, channel names (E101, E105, E201--E205), numeric samples (E001:
+/// no E2xx code covers an image's type) --- and float storage an `int16`
+/// would hold losslessly (W907).
+///
+/// A member that is no object is the container rule's finding (E001); a
+/// group of nothing else holds no image (E201).  An image that cannot be
+/// read is its own finding, and the others are still checked.
 pub fn check_images(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(node) = ops::child_group(&ctx.root, "images") else { return Ok(out) };
-    let names = ops::members(&node)?;
-    if names.is_empty() {
-        out.push(ctx.err("E201", "/images", "a sample must contain at least one image"));
+    let images = children(&node)?;
+    if images.is_empty() {
+        let message = if ops::members(&node)?.is_empty() {
+            "a sample must contain at least one image"
+        } else {
+            "a sample must contain at least one image, and no member of `images` is one"
+        };
+        out.push(ctx.err("E201", "/images", message));
         return Ok(out);
     }
     let grids = ops::child_group(&ctx.root, "grids");
-    for name in names {
-        let Some(image) = child(&node, &name) else { continue };
-        let a = loc(&image);
+    for (name, image) in images {
         let location = format!("/images/{name}");
-        for key in ["grid", "modality", "value_type"] {
-            if !attrs::has(a, key) {
-                out.push(ctx.err("E205", location.clone(), format!("missing required attribute {}", repr_str(key))));
-            }
+        match check_image(ctx, &image, grids.as_ref(), &location) {
+            Ok(found) => out.extend(found),
+            Err(e) => out.push(ctx.failed(location, &e)),
         }
-        if let Some(vt) = str_attr(a, "value_type")? {
-            if !VALUE_TYPES.contains(&vt.as_str()) {
-                out.push(ctx.unknown("E203", location.clone(), format!("unknown value_type {}", repr_str(&vt))));
-            }
-        }
-        let Some(grid_id) = str_attr(a, "grid")? else { continue };
-        let Some(grids) = grids.as_ref().filter(|g| ops::is_group(g, &grid_id)) else {
-            out.push(ctx.err("E101", location, format!("names grid {}, which does not exist", repr_str(&grid_id))));
-            continue;
+    }
+    Ok(out)
+}
+
+/// One image (§4.1--§4.2), single-scale or a pyramid.
+fn check_image(ctx: &Context, image: &Node, grids: Option<&hdf5::Group>, location: &str) -> Result<Vec<Diagnostic>> {
+    let mut out = Vec::new();
+    let a = loc(image);
+    // An image is numbers (§4.2, "any numeric"), every level of a pyramid: a
+    // string or compound dataset passed every level, and `read()` refused it.
+    let levels: Vec<(String, hdf5::Dataset)> = match image {
+        Node::Dataset(d) => vec![(location.to_string(), d.clone())],
+        Node::Group(g) => ops::members(g)?
+            .into_iter()
+            .filter(|n| n.parse::<usize>().is_ok())
+            .filter_map(|n| ops::child_dataset(g, &n).map(|d| (format!("{location}/{n}"), d)))
+            .collect(),
+    };
+    for (at, dataset) in &levels {
+        let stored = match data::kind(dataset)? {
+            Kind::Numeric(_) => continue,
+            Kind::Strings => "strings".to_string(),
+            Kind::Other(t) => t,
         };
-        let gshape = grid_shape(grids, &grid_id)?;
-        let dataset = match &image {
-            Node::Group(g) => match ops::child_dataset(g, "0") {
-                Some(d) => d,
-                None => {
-                    out.push(ctx.err("E105", location, "multiscale image has no level-0 dataset `0` (§4.3)"));
-                    continue;
-                }
-            },
-            Node::Dataset(d) => d.clone(),
-        };
-        let shape: Vec<i64> = dataset.shape().iter().map(|v| *v as i64).collect();
-        if shape != gshape {
-            out.push(ctx.err(
-                "E202",
-                location.clone(),
-                format!(
-                    "shape {} != grid {} shape {}",
-                    repr_int_tuple(&shape),
-                    repr_str(&grid_id),
-                    repr_int_tuple(&gshape)
-                ),
-            ));
+        out.push(ctx.err(
+            "E001",
+            at.as_str(),
+            format!("stores {stored}; an image's samples are numbers (§4.2), so no reader can read it"),
+        ));
+    }
+    for key in ["grid", "modality", "value_type"] {
+        if !attrs::has(a, key) {
+            out.push(ctx.err("E205", location, format!("missing required attribute {}", repr_str(key))));
         }
-        if attrs::has(a, "channel_names") {
-            let gg = grids.group(&grid_id)?;
-            let kinds = strs_attr(&gg, "axis_kinds")?;
-            match kinds.iter().position(|k| k == "channel") {
-                None => out.push(ctx.err("E204", location.clone(), "`channel_names` on a grid with no channel axis")),
-                Some(axis) => {
-                    let extent = gshape.get(axis).copied().unwrap_or(0);
-                    let n = strs_attr(a, "channel_names")?.len() as i64;
-                    if n != extent {
-                        out.push(ctx.err(
-                            "E204",
-                            location.clone(),
-                            format!("`channel_names` has {n} entries for a channel axis of extent {extent}"),
-                        ));
-                    }
-                }
+    }
+    if let Some(vt) = str_attr(a, "value_type")? {
+        if !VALUE_TYPES.contains(&vt.as_str()) {
+            out.push(ctx.unknown("E203", location, format!("unknown value_type {}", repr_str(&vt))));
+        }
+    }
+    let Some(grid_id) = str_attr(a, "grid")? else { return Ok(out) };
+    let Some(grids) = grids.filter(|g| ops::is_group(g, &grid_id)) else {
+        out.push(ctx.err("E101", location, format!("names grid {}, which does not exist", repr_str(&grid_id))));
+        return Ok(out);
+    };
+    let gshape = grid_shape(grids, &grid_id)?;
+    let dataset = match image {
+        Node::Group(g) => match ops::child_dataset(g, "0") {
+            Some(d) => d,
+            None => {
+                out.push(ctx.err("E105", location, "multiscale image has no level-0 dataset `0` (§4.3)"));
+                return Ok(out);
             }
-        }
-        if !ctx.errors_only {
-            if let Ok(Kind::Numeric(d)) = data::kind(&dataset) {
-                if d.is_float() && int16_lossless(&dataset)? {
+        },
+        Node::Dataset(d) => d.clone(),
+    };
+    let shape: Vec<i64> = dataset.shape().iter().map(|v| *v as i64).collect();
+    if shape != gshape {
+        out.push(ctx.err(
+            "E202",
+            location,
+            format!(
+                "shape {} != grid {} shape {}",
+                repr_int_tuple(&shape),
+                repr_str(&grid_id),
+                repr_int_tuple(&gshape)
+            ),
+        ));
+    }
+    if attrs::has(a, "channel_names") {
+        let gg = grids.group(&grid_id)?;
+        let kinds = strs_attr(&gg, "axis_kinds")?;
+        match kinds.iter().position(|k| k == "channel") {
+            None => out.push(ctx.err("E204", location, "`channel_names` on a grid with no channel axis")),
+            Some(axis) => {
+                let extent = gshape.get(axis).copied().unwrap_or(0);
+                let n = strs_attr(a, "channel_names")?.len() as i64;
+                if n != extent {
                     out.push(ctx.err(
-                        "W907",
+                        "E204",
                         location,
-                        format!(
-                            "stored as {} but every value is an integer within int16 range; int16 + rescale is lossless and ~3x smaller",
-                            d.name()
-                        ),
+                        format!("`channel_names` has {n} entries for a channel axis of extent {extent}"),
                     ));
                 }
+            }
+        }
+    }
+    if !ctx.errors_only {
+        if let Ok(Kind::Numeric(d)) = data::kind(&dataset) {
+            if d.is_float() && int16_lossless(&dataset)? {
+                out.push(ctx.err(
+                    "W907",
+                    location,
+                    format!(
+                        "stored as {} but every value is an integer within int16 range; int16 + rescale is lossless and ~3x smaller",
+                        d.name()
+                    ),
+                ));
             }
         }
     }

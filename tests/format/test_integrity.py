@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import h5py
@@ -25,6 +27,11 @@ from medh5.integrity import (
 from medh5.validate import validate_file
 from tests.helpers import SHAPE, encode_attr, write_sample
 from tests.kits import Flat, Framed, Organs
+
+
+def at_location(report, location: str) -> list[str]:
+    """The codes reported at *location*."""
+    return [d.code for d in report.diagnostics if d.location == location]
 
 
 class TestDigests:
@@ -76,6 +83,39 @@ class TestDigests:
     def test_unsupported_algorithm(self):
         with pytest.raises(MEDH5ValidationError):
             digest_bytes(b"x", "md5")
+
+    def test_a_digest_lets_other_threads_run(self):
+        """A digest is a pass over a whole payload, run with the GIL released
+        as every long engine call is: held, another Python thread stood still
+        for the whole of it.  The other thread stamps the time as it runs; a
+        gap as long as the call is the GIL held."""
+        payload = bytes(4 << 20)
+        start = time.perf_counter()
+        digest_bytes(payload, "sha512")
+        rate = len(payload) / max(time.perf_counter() - start, 1e-6)
+        # About 0.4 s of hashing, within 256 MiB (of untouched zero pages).
+        payload = bytes(min(int(rate * 0.4), 256 << 20))
+        stamps: list[float] = []
+        done = threading.Event()
+
+        def tick() -> None:
+            while not done.is_set():
+                stamps.append(time.perf_counter())
+                time.sleep(0.0005)
+
+        ticker = threading.Thread(target=tick)
+        ticker.start()
+        try:
+            time.sleep(0.01)
+            t0 = time.perf_counter()
+            digest_bytes(payload, "sha512")
+            t1 = time.perf_counter()
+        finally:
+            done.set()
+            ticker.join()
+        inside = [t for t in stamps if t0 < t < t1]
+        longest = float(np.diff([t0, *inside, t1]).max())
+        assert longest < (t1 - t0) / 2, f"no tick for {longest:.3f} of {t1 - t0:.3f} s"
 
     def test_streaming_matches_whole_array(self, sample_path):
         """A stored dataset digests as its in-memory array does.
@@ -199,6 +239,27 @@ class TestVerification:
         with h5py.File(a) as fa, h5py.File(b) as fb:
             assert fa.attrs["content_id"] != fb.attrs["content_id"]
 
+    def test_S13_2_meta_is_hashed_as_stored(self, tmp_path):
+        """Bytes that are not UTF-8 were hashed as the text they decode to with
+        replacement, so two different documents --- and one holding U+FFFD
+        itself --- shared one `content_id`."""
+        base = write_sample(tmp_path / "base.medh5")
+        computed = set()
+        for i, bad in enumerate((b"\xff", b"\xfe", "\ufffd".encode())):
+            path = tmp_path / f"m{i}.medh5"
+            path.write_bytes(base.read_bytes())
+            with h5py.File(path, "r+") as handle:
+                raw = handle["meta"][()]
+                del handle["meta"]
+                handle.create_dataset(
+                    "meta",
+                    data=np.array(raw.replace(b"subj-A", b"subj-" + bad), dtype=object),
+                    dtype=h5py.string_dtype("utf-8"),
+                )
+            with medh5.open(path) as sample:
+                computed.add(sample.verify().content_id_computed)
+        assert len(computed) == 3
+
     def test_content_id_changes_with_content(self, tmp_path, label_set, masks):
         a = write_sample(
             tmp_path / "a.medh5", label_set=label_set, masks=masks, sample_id="same"
@@ -259,6 +320,141 @@ class TestVerifyRoot:
         with medh5.open(sample_path) as sample:
             result = verify_root(sample.root, check_content_id=False)
         assert "images/CT_tp0" in result.malformed
+
+
+def _digested(handle: h5py.File) -> list[str]:
+    """Every dataset that carries a `digest`."""
+    found: list[str] = []
+
+    def visit(name: str, node: object) -> None:
+        if isinstance(node, h5py.Dataset) and "digest" in node.attrs:
+            found.append(name)
+
+    handle.visititems(visit)
+    return found
+
+
+def _plant(handle: h5py.File, case: str) -> None:
+    unaddressed = case.endswith(", no content_id")
+    case = case.removesuffix(", no content_id")
+    if case == "a digest removed":
+        del handle["images/CT_tp0"].attrs["digest"]
+    elif case == "a digest that does not parse":
+        handle["images/CT_tp0"].attrs["digest"] = encode_attr("garbage")
+    elif case.startswith("no digest parses"):
+        if case.endswith("data changed"):
+            image = handle["images/CT_tp0"]
+            image[0, 0, 0] = image[0, 0, 0] + 1
+        for name in _digested(handle):
+            handle[name].attrs["digest"] = encode_attr("md5:" + "0" * 32)
+    elif case == "data changed":
+        image = handle["images/CT_tp0"]
+        image[0, 0, 0] = image[0, 0, 0] + 1
+    elif case == "a wrong content_id":
+        handle.attrs["content_id"] = encode_attr("sha256:" + "1" * 64)
+    elif case == "every digest removed":
+        for name in _digested(handle):
+            del handle[name].attrs["digest"]
+    if unaddressed:
+        del handle.attrs["content_id"]
+
+
+class TestValidationAgreesWithVerify:
+    """§13, §15.1: an integrity or strict pass fails exactly the files `verify`
+    fails, and `diagnose` sees what both see.  A file in which no digest parsed
+    passed both levels --- its E703, its E702 and its stale index dropped ---
+    while `verify` failed it, and `fix` called it clean."""
+
+    @pytest.mark.parametrize(
+        ("case", "expected"),
+        [
+            ("untouched", set()),
+            ("a digest removed", {"E702"}),
+            ("a digest removed, no content_id", set()),
+            ("a digest that does not parse", {"E702", "E703"}),
+            ("a digest that does not parse, no content_id", {"E703"}),
+            ("no digest parses", {"E702", "E703"}),
+            ("no digest parses, no content_id", {"E703"}),
+            ("no digest parses, data changed", {"E702", "E703"}),
+            ("data changed", {"E701"}),
+            ("a wrong content_id", {"E702"}),
+            ("every digest removed", {"E702"}),
+        ],
+    )
+    def test_S13_1_validation_fails_what_verify_fails(
+        self, tmp_path, label_set, masks, case, expected
+    ):
+        from medh5.integrity import diagnose
+
+        path = write_sample(
+            tmp_path / "case.medh5", label_set=label_set, masks=masks, index=True
+        )
+        with h5py.File(path, "r+") as handle:
+            _plant(handle, case)
+        with medh5.open(path) as sample:
+            verified = sample.verify()
+        integrity = validate_file(path, level="integrity")
+        strict = validate_file(path, level="strict")
+
+        def attested(report) -> set[str]:
+            return {d.code for d in report.diagnostics if d.code.startswith("E7")}
+
+        assert attested(integrity) == attested(strict) == expected
+        assert integrity.ok is verified.ok
+        assert strict.ok is False or verified.ok
+        assert diagnose(path).needs_digests is not verified.ok
+
+    def test_S13_3_a_stale_index_is_reported_when_no_digest_parses(
+        self, tmp_path, label_set, masks
+    ):
+        path = write_sample(
+            tmp_path / "case.medh5", label_set=label_set, masks=masks, index=True
+        )
+        with h5py.File(path, "r+") as handle:
+            _plant(handle, "no digest parses, no content_id")
+        assert "W905" in validate_file(path, level="integrity").codes
+
+    def test_S15_1_the_command_line_fails_a_file_no_digest_of_which_parses(
+        self, tmp_path, label_set, masks, capsys
+    ):
+        from medh5.cli import main
+
+        path = write_sample(tmp_path / "case.medh5", label_set=label_set, masks=masks)
+        with h5py.File(path, "r+") as handle:
+            _plant(handle, "no digest parses, data changed")
+        for level in ("integrity", "strict"):
+            assert main(["validate", str(path), "--level", level]) == 1, level
+        assert main(["verify", str(path)]) == 1
+        capsys.readouterr()
+
+
+class TestUnreadableData:
+    """§13.1: one chunk that no longer decodes stopped the integrity pass, so
+    every other E701 and E702 went unreported, and so did its dataset."""
+
+    def test_S13_1_an_unreadable_dataset_is_named_and_the_others_checked(
+        self, tmp_path
+    ):
+        path = tmp_path / "two.medh5"
+        shape = (8, 64, 64)  # large enough to be chunked and compressed
+        rng = np.random.default_rng(0)
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            for name in ("CT", "MR"):
+                data = rng.integers(0, 100, shape).astype(np.int16)
+                w.add_image(name, data, grid="g", modality=name)
+        with h5py.File(path, "r+") as handle:
+            info = handle["images/CT"].id.get_chunk_info(0)
+            image = handle["images/MR"]
+            image[0, 0, 0] = image[0, 0, 0] + 1
+        with path.open("r+b") as raw:
+            raw.seek(info.byte_offset + info.size // 2)
+            raw.write(b"\xde\xad\xbe\xef" * 8)
+        report = validate_file(path, level="integrity")
+        assert at_location(report, "/images/CT") == ["E001"]
+        assert at_location(report, "/images/MR") == ["E701"]
+        with medh5.open(path) as sample, pytest.raises(OSError, match="images/CT"):
+            sample.verify()
 
 
 class TestIntegrity:

@@ -4,8 +4,8 @@
 //! dataset manifest decides.  Two findings matter and they are different:
 //! *conflicting claims* (W906: one `set_id` against two manifest hashes, so a
 //! file predates a re-split) and *subject leakage* (one unit of anatomy in two
-//! partitions of one split).  Both are invisible in any one file, so this is a
-//! cross-file operation.
+//! partitions, or two folds, of one split).  Both are invisible in any one
+//! file, so this is a cross-file operation.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -53,11 +53,14 @@ impl Membership {
 /// One unit of anatomy appearing in more than one partition of one split.
 ///
 /// The unit is a connected component of `subject_id` and grouping key: two
-/// files are one unit if they share either, transitively.
+/// files are one unit if they share either, transitively.  A fold is a
+/// partition of its own.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Leak {
     pub set_id: String,
     pub group_id: String,
+    /// Each place the unit's claims put it: the partition, as `train (fold 0)`
+    /// where the claim names a fold.
     pub partitions: Vec<String>,
     pub paths: Vec<String>,
     pub groups: Vec<String>,
@@ -287,18 +290,17 @@ pub fn anatomy_units<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) ->
             parent.insert(hi, lo);
         }
     }
-    let mut members: Vec<(Node, Vec<String>)> = Vec::new();
+    // Each root's unit, found by hashing: a linear search per key made 40,000
+    // singleton units take 2.5 s.
+    let mut members: HashMap<Node, Vec<String>> = HashMap::new();
     for node in order.clone() {
         if !node.0 {
             let root = find(&mut parent, &mut order, node.clone());
-            match members.iter_mut().find(|(r, _)| *r == root) {
-                Some((_, unit)) => unit.push(node.1.clone()),
-                None => members.push((root, vec![node.1.clone()])),
-            }
+            members.entry(root).or_default().push(node.1);
         }
     }
     let mut out = BTreeMap::new();
-    for (_, mut unit) in members {
+    for mut unit in members.into_values() {
         unit.sort();
         for group in &unit {
             out.insert(group.clone(), unit.clone());
@@ -316,9 +318,19 @@ fn leaks(memberships: &[Membership]) -> Vec<Leak> {
     }
     let mut out = Vec::new();
     for ((set_id, groups), members) in by_unit {
-        let partitions: Vec<String> =
-            members.iter().map(|m| m.claim.partition.clone()).collect::<BTreeSet<_>>().into_iter().collect();
-        if partitions.len() > 1 {
+        // A fold is a partition of its own: k-fold claims are `train` in
+        // every fold but the validation one, so a unit in folds 0 and 3 read
+        // `train` twice and was no leak (`Split::leaks` holds the same rule).
+        let placements: BTreeSet<(&str, Option<i64>)> =
+            members.iter().map(|m| (m.claim.partition.as_str(), m.claim.fold_int())).collect();
+        if placements.len() > 1 {
+            let partitions: Vec<String> = placements
+                .into_iter()
+                .map(|(partition, fold)| match fold {
+                    Some(fold) => format!("{partition} (fold {fold})"),
+                    None => partition.to_string(),
+                })
+                .collect();
             let mut paths: Vec<String> = members.iter().map(|m| m.path.clone()).collect();
             paths.sort();
             out.push(Leak {
@@ -344,5 +356,92 @@ mod tests {
         assert_eq!(units["g1"], vec!["g1", "g2"]);
         assert_eq!(units["g2"], vec!["g1", "g2"]);
         assert_eq!(units["g3"], vec!["g3"]);
+    }
+
+    #[test]
+    fn s12_3_units_are_the_connected_components_of_subjects_and_keys() {
+        // Pairs that chain, fan out and stand alone, against a flood fill.
+        let mut state = 7u64;
+        let pairs: Vec<(String, String)> = (0..800)
+            .map(|_| {
+                state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                (format!("s{}", (state >> 33) % 700), format!("g{}", (state >> 13) % 900))
+            })
+            .collect();
+        let units = anatomy_units(pairs.iter().map(|(s, g)| (s.as_str(), g.as_str())));
+        let mut by_subject: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut by_group: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (subject, group) in &pairs {
+            by_subject.entry(subject).or_default().push(group);
+            by_group.entry(group).or_default().push(subject);
+        }
+        assert_eq!(units.len(), by_group.len());
+        let mut sizes = BTreeSet::new();
+        for start in by_group.keys() {
+            let (mut groups, mut subjects, mut todo) = (BTreeSet::from([*start]), BTreeSet::new(), vec![*start]);
+            while let Some(group) = todo.pop() {
+                for subject in &by_group[group] {
+                    if subjects.insert(*subject) {
+                        todo.extend(by_subject[subject].iter().filter(|g| groups.insert(**g)));
+                    }
+                }
+            }
+            sizes.insert(groups.len());
+            assert_eq!(units[*start], groups.into_iter().collect::<Vec<_>>(), "{start}");
+        }
+        assert!(sizes.len() > 3, "{sizes:?}");
+    }
+
+    #[test]
+    fn s12_3_the_units_of_a_large_cohort_are_found_without_a_search_per_key() {
+        // Each key's unit was found by a linear search through the units so
+        // far: 40,000 singleton units took 2.5 s, and this many a minute.
+        let n = 200_000;
+        let pairs: Vec<(String, String)> = (0..n).map(|i| (format!("s{i}"), format!("g{i}"))).collect();
+        let started = std::time::Instant::now();
+        let units = anatomy_units(pairs.iter().map(|(s, g)| (s.as_str(), g.as_str())));
+        // Generous, for unoptimised builds on shared CI runners: still half
+        // what the search per key took at this size.
+        assert!(started.elapsed() < std::time::Duration::from_secs(30), "{:?}", started.elapsed());
+        assert_eq!(units.len(), n);
+        assert_eq!(units["g7"], ["g7"]);
+    }
+
+    fn claimed(path: &str, subject: &str, partition: &str, fold: Option<i64>) -> Membership {
+        Membership {
+            path: path.into(),
+            sample_id: path.into(),
+            subject_id: subject.into(),
+            group_id: subject.into(),
+            claim: SplitClaim {
+                set_id: "cv".into(),
+                partition: partition.into(),
+                fold: fold.map(serde_json::Number::from),
+                assigned_by: None,
+                assigned_at: None,
+                manifest_sha256: None,
+            },
+        }
+    }
+
+    #[test]
+    fn s12_3_a_unit_in_two_folds_is_a_leak() {
+        // Fold 2 validates: a subject in folds 0 and 3 is `train` in both
+        // claims, and trains the model that validates on it in either fold.
+        let found = leaks(&[claimed("a.medh5", "p1", "train", Some(0)), claimed("b.medh5", "p1", "train", Some(3))]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].partitions, ["train (fold 0)", "train (fold 3)"]);
+        assert_eq!(found[0].paths, ["a.medh5", "b.medh5"]);
+        assert_eq!(found[0].subjects, ["p1"]);
+        let found = leaks(&[claimed("a.medh5", "p1", "val", Some(2)), claimed("b.medh5", "p1", "train", Some(0))]);
+        assert_eq!(found[0].partitions, ["train (fold 0)", "val (fold 2)"]);
+        // One fold is one place.
+        assert!(
+            leaks(&[claimed("a.medh5", "p1", "train", Some(0)), claimed("b.medh5", "p1", "train", Some(0))]).is_empty()
+        );
+        // Without folds, partitions are named as they were.
+        let found = leaks(&[claimed("a.medh5", "p1", "train", None), claimed("b.medh5", "p1", "test", None)]);
+        assert_eq!(found[0].partitions, ["test", "train"]);
+        assert!(leaks(&[claimed("a.medh5", "p1", "train", None), claimed("b.medh5", "p1", "train", None)]).is_empty());
     }
 }

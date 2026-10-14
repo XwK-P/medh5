@@ -46,7 +46,8 @@ python reference_writer.py    # ~10 s, writes case_0001.medh5 to the current dir
 ```
 
 The benchmarks write their scratch `*.h5` files and JSON results beside
-themselves; those are ignored by git and by the documentation build.
+themselves; those are ignored by git and by the documentation build, as is the
+`case_0001.medh5` the reference writer leaves here.
 
 ## Recorded results
 

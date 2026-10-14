@@ -14,9 +14,10 @@ use serde_json::{json, Map, Value};
 
 use super::encode_geometric::{check_scope, check_slice_index, check_space, degenerate_axis, Polygon, CONTOUR_ROLES};
 use super::read::{Annotation, GridRef};
+use crate::array::{Index, Slice};
 use crate::geometry::affine::{box_corners, box_to_slices};
 use crate::geometry::grid::Grid;
-use crate::h5::attrs;
+use crate::h5::{attrs, data};
 use crate::json::{format_g, repr_list, repr_str};
 use crate::labels::{ClassKey, Skeleton};
 use crate::{Error, Result};
@@ -529,7 +530,7 @@ impl Annotation {
         }
     }
 
-    /// One polygon's `(V, S)` vertices.
+    /// One polygon's `(V, S)` vertices: only its rows of `vertices` are read.
     pub fn polygon(&self, index: usize) -> Result<ArrayD<f32>> {
         let offsets = self.contour_offsets()?;
         if index + 1 >= offsets.len() {
@@ -538,21 +539,30 @@ impl Annotation {
                 offsets.len().saturating_sub(1)
             )));
         }
-        let vertices = self.read_as::<f32>("vertices")?;
-        let (a, b) = (offsets[index].max(0) as usize, offsets[index + 1].max(0) as usize);
-        let n = vertices.shape()[0];
-        Ok(vertices.slice_axis(Axis(0), ndarray::Slice::from(a.min(n)..b.min(n).max(a.min(n)))).to_owned())
+        let ds = self.dataset("vertices")?;
+        let (a, b) = polygon_rows(&offsets, index, ds.shape().first().copied().unwrap_or(0));
+        Ok(data::read_region(&ds, &[Index::Slice(Slice::new(a as i64, b as i64))])?.cast::<f32>())
     }
 
-    /// Every polygon, decoded.
+    /// Every polygon, decoded from one read of `vertices`.
     pub fn polygons(&self) -> Result<Vec<Polygon>> {
         let classes = self.object_class_ids()?;
         let planes = self.contour_planes()?;
         let roles = self.contour_roles()?;
+        let offsets = self.contour_offsets()?;
+        let vertices = self.read_as::<f32>("vertices")?;
+        let n = vertices.shape().first().copied().unwrap_or(0);
         (0..self.n_items()?)
             .map(|i| {
+                if i + 1 >= offsets.len() {
+                    return Err(Error::Index(format!(
+                        "polygon {i} is out of range for {} polygons",
+                        offsets.len().saturating_sub(1)
+                    )));
+                }
+                let (a, b) = polygon_rows(&offsets, i, n);
                 Ok(Polygon {
-                    vertices: self.polygon(i)?.mapv(f64::from),
+                    vertices: vertices.slice_axis(Axis(0), ndarray::Slice::from(a..b)).mapv(f64::from),
                     class_id: i64::from(classes[i]),
                     plane: (i64::from(planes[[i, 0]]), i64::from(planes[[i, 1]])),
                     role: roles[i].clone(),
@@ -715,10 +725,16 @@ impl Annotation {
     }
 
     /// The asserted value, or `None` when the class was not asserted.
+    ///
+    /// Literal under every `closure`: the value stored for this class, never
+    /// one implied by another (see [`Annotation::state`]).
     pub fn value(&self, class: &ClassKey, scope_id: Option<i64>) -> Result<Option<f64>> {
-        let target = self.resolve_class(class)?;
+        self.value_of("value()", self.resolve_class(class)?, scope_id)
+    }
+
+    fn value_of(&self, what: &str, target: i64, scope_id: Option<i64>) -> Result<Option<f64>> {
         if scope_id.is_none() {
-            self.require_unambiguous("value()", Some(target))?;
+            self.require_unambiguous(what, Some(target))?;
         }
         let units = self.scope_ids()?;
         let classes = self.asserted_class_ids()?;
@@ -740,14 +756,51 @@ impl Annotation {
 
     /// `positive`, `negative` or `unknown` for one class (§9).
     ///
-    /// `unknown` whenever the class is outside `annotated_class_ids`: nobody
-    /// looked, so its absence carries no information.
+    /// `positive` when the class is asserted above 0 --- or, under `closure
+    /// = "implicit"`, when a class it is an `is_a` ancestor of is, in the
+    /// same scope unit: §9's hierarchical classification asserts only the
+    /// most specific class, and its ancestors hold (§5.4).  Under `explicit`
+    /// nothing is inferred.  Otherwise `negative` when the class is asserted,
+    /// or examined (in `annotated_class_ids`) and not asserted; `unknown`
+    /// when it is outside `annotated_class_ids`: nobody looked, so its
+    /// absence carries no information.  `value()`, `labels()` and
+    /// `asserted_class_ids` stay literal.
     pub fn state(&self, class: &ClassKey, scope_id: Option<i64>) -> Result<&'static str> {
         let target = self.resolve_class(class)?;
-        if let Some(value) = self.value(&ClassKey::Id(target), scope_id)? {
-            return Ok(if value > 0.0 { "positive" } else { "negative" });
+        let own = self.value_of("state()", target, scope_id)?;
+        if own.is_some_and(|v| v > 0.0) {
+            return Ok("positive");
         }
-        Ok(if self.is_annotated(&ClassKey::Id(target))? { "negative" } else { "unknown" })
+        for descendant in self.asserted_descendants(target)? {
+            if self.value_of("state()", descendant, scope_id)?.is_some_and(|v| v > 0.0) {
+                return Ok("positive");
+            }
+        }
+        Ok(match own {
+            Some(_) => "negative",
+            None if self.is_annotated(&ClassKey::Id(target))? => "negative",
+            None => "unknown",
+        })
+    }
+
+    /// The asserted classes `target` is an `is_a` ancestor of, under
+    /// `closure = "implicit"` and a label set to read the DAG from; none
+    /// otherwise.
+    fn asserted_descendants(&self, target: i64) -> Result<Vec<i64>> {
+        let Some(labels) = self.label_set().filter(|_| self.closure() == "implicit") else {
+            return Ok(Vec::new());
+        };
+        let mut out: Vec<i64> = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for class_id in self.asserted_class_ids()?.into_iter().map(i64::from) {
+            if !seen.insert(class_id) || !labels.contains_id(class_id) {
+                continue;
+            }
+            if labels.ancestors(&ClassKey::Id(class_id))?.contains(&target) {
+                out.push(class_id);
+            }
+        }
+        Ok(out)
     }
 
     /// The ordinal value recorded under a named scheme, e.g. `"BI-RADS"`.
@@ -813,6 +866,15 @@ impl Annotation {
         out.insert("prov".into(), json!(self.prov()));
         Ok(Value::Object(out))
     }
+}
+
+/// Polygon `index`'s rows of `vertices` --- `n` of them --- from its offsets,
+/// clipped to the rows there are: offsets the validator refuses (E408) read
+/// as fewer vertices, never past the end.
+fn polygon_rows(offsets: &[i64], index: usize, n: usize) -> (usize, usize) {
+    let (a, b) = (offsets[index].max(0) as usize, offsets[index + 1].max(0) as usize);
+    let a = a.min(n);
+    (a, b.min(n).max(a))
 }
 
 /// The `(2**S, S)` corners of a flat `(S, 2)` box, odometer order.

@@ -55,9 +55,10 @@ lying *between* two slices is refused rather than assigned to one.
 
 
 LATTICE_TOLERANCE = 1e-3
-"""How far, in millimetres, a plane may sit from the regular stack
-:func:`read_dicom_seg` returns: the plane positions it compares are rounded to
-1e-4 mm, and an affine that misplaces a plane by more is no description of it."""
+"""Unused, and kept so that importing it still works: the planes
+:func:`read_dicom_seg` stacks are held to the bound a DICOM series is held to
+(:data:`medh5.io.dicom.SPACING_TOLERANCE`, per plane), where each gap was held
+to this many millimetres."""
 
 
 def read_dicom_seg_frames(
@@ -133,6 +134,7 @@ def read_dicom_seg_frames(
         "source_series": placement["source_series"],
         "planes": placement["planes"],
         "regular": placement["regular"],
+        "spacing_source": placement["spacing_source"],
         "frames": len(frames),
         "scale": scale,
     }
@@ -355,19 +357,39 @@ def read_dicom_seg(
     no other information can honestly build --- on the regular stack they sit
     on, so a plane the file omits between two it carries is an empty plane
     and every plane is where ``geometry`` says (see :func:`_lattice`).  A file
-    whose planes no regular stack holds is refused.  An import into an
+    whose planes no regular stack holds is refused.  A file of one plane has
+    no step to measure: its ``SpacingBetweenSlices``, else its
+    ``SliceThickness``, is the through-plane spacing, and one stating neither
+    is refused --- 1 mm was assumed, without a note.  An import into an
     existing sample goes through :func:`read_dicom_seg_frames` and
     :func:`place_frames` instead, because the grid it is going onto is what
     knows how many slices the study has.
     """
     frames, geometry = read_dicom_seg_frames(path)
+    reconstruct = (
+        "; read its frames with read_dicom_seg_frames and place them on the grid "
+        "they were drawn on with place_frames"
+    )
     if not geometry["regular"]:
         planes = [float(p) for p in geometry["planes"]]
         raise MEDH5ValidationError(
             f"the SEG's planes lie at {planes} mm along their normal, and no "
-            "regular stack places them all; read its frames with "
-            "read_dicom_seg_frames and place them on the grid they were drawn "
-            "on with place_frames"
+            f"regular stack places them all{reconstruct}"
+        )
+    if not np.isfinite(geometry["spacing"][0]):
+        raise MEDH5ValidationError(
+            "the SEG carries one plane and states neither SpacingBetweenSlices "
+            "nor SliceThickness, so its volume has no through-plane extent, and "
+            f"none is invented{reconstruct}"
+        )
+    if report is not None and geometry["spacing_source"] == "SliceThickness":
+        report.decision(
+            "slice_spacing",
+            "the SEG carries one plane, with no neighbour to measure a step "
+            "against, so its declared SliceThickness "
+            f"({geometry['spacing'][0]:.4g} mm) was used as the through-plane "
+            "spacing",
+            {"spacing": geometry["spacing"][0], "planes": 1},
         )
     segments = geometry["segments"]
     depth, rows, columns = geometry["shape"]
@@ -450,17 +472,28 @@ def _frame_placement(dataset: Any, n_frames: int) -> dict[str, Any]:
     projected = [float(np.dot(p, normal)) for p in positions]
     planes = sorted(set(np.round(projected, 4)))
     first = per_frame[0] if per_frame else None
-    regular = _lattice(planes, _between(first, shared))
+    between = _between(first, shared)
+    regular = _lattice(planes, between)
     # An import places every frame by its own position (`place_frames`), so a
     # stack no regular lattice holds is still placeable; only a volume of the
     # file's own (`read_dicom_seg`) needs one.
     step, lattice = regular or (float("nan"), list(range(len(planes))))
+    source: str | None = "SpacingBetweenSlices" if between else "positions"
+    if regular is None:
+        source = None
+    elif len(planes) == 1 and not between:
+        # One plane has no neighbour to measure a step against: the slab it
+        # states is its only extent, as for a lone DICOM slice; stating none,
+        # it has none (`read_dicom_seg` refuses it), where 1 mm was assumed.
+        step = _thickness(first, shared)
+        source = "SliceThickness" if np.isfinite(step) else None
     indices = [lattice[planes.index(round(v, 4))] for v in projected]
     spacing = [step, float(pixels[0][0]), float(pixels[0][1])]
     origin_index = indices.index(0) if 0 in indices else 0
     return {
         "planes": planes,
         "regular": regular is not None,
+        "spacing_source": source,
         "indices": indices,
         "segments": segments,
         # Each frame's own `ImagePositionPatient`, kept rather than collapsed
@@ -531,6 +564,20 @@ def _between(group: Any, shared: Any) -> float | None:
     return None
 
 
+def _thickness(group: Any, shared: Any) -> float:
+    """The ``SliceThickness`` a frame's pixel measures state, NaN for none."""
+    for holder in (group, shared):
+        measures = _first_item(holder, "PixelMeasuresSequence")
+        value = getattr(measures, "SliceThickness", None) if measures else None
+        try:
+            thickness = abs(float(value)) if value is not None else 0.0
+        except (TypeError, ValueError):
+            thickness = 0.0
+        if np.isfinite(thickness) and thickness > 0:
+            return thickness
+    return float("nan")
+
+
 def _congruent(
     orientations: Sequence[npt.NDArray[np.float64]],
     pixels: Sequence[npt.NDArray[np.float64]],
@@ -583,17 +630,33 @@ def _lattice(
     whole number of times, the omitted planes empty.  The median gap stood
     for the step: planes at 10, 12.5 and 17.5 mm read as a stack 3.75 mm
     apart, the middle one 1.25 mm from where it was drawn.
+
+    Every plane must lie within the bound a DICOM series is held to --- a
+    tenth of a step, and at least 0.01 mm --- of where the stack puts it,
+    measured per plane, not per gap: gaps each within a fixed bound drift.
+    Where the smallest gap does not place every plane, the least-squares step
+    from the first plane does, or nothing does; a stated step is kept or
+    refused.  Each gap was held to 10⁻³ mm, which refused planes of a series
+    whose positions were written to two decimals.  One plane has no step to
+    measure: the stated one, or NaN.
     """
+    from medh5.io.dicom import _position_tolerance
+
     if len(planes) < 2:
-        return (abs(between) if between else 1.0), [0] * len(planes)
-    gaps = np.diff(np.asarray(planes, dtype=np.float64))
+        return (abs(between) if between else float("nan")), [0] * len(planes)
+    positions = np.asarray(planes, dtype=np.float64)
+    gaps = np.diff(positions)
+    along = positions - positions[0]
     step = abs(float(between)) if between else float(gaps.min())
     whole = np.round(gaps / step)
-    # Exactly, to the positions' own precision: a gap a quarter step off would
-    # put its plane a quarter step from where the stack says it is.
-    if np.any(whole < 1) or np.any(np.abs(gaps - whole * step) > LATTICE_TOLERANCE):
+    if np.any(whole < 1):
         return None
-    return step, [0, *np.cumsum(whole).astype(int).tolist()]
+    indices = np.concatenate([[0.0], np.cumsum(whole)])
+    fits = [step] if between else [step, float(indices @ along / (indices @ indices))]
+    for step in fits:
+        if np.max(np.abs(along - indices * step)) <= _position_tolerance(step):
+            return step, indices.astype(int).tolist()
+    return None
 
 
 def _first_item(holder: Any, name: str) -> Any:
@@ -635,9 +698,14 @@ def from_dicom_seg(
     frame, the placement rests on geometry and the report records a guess.
     *frame_salt* is the salt a ``medh5 scrub`` pseudonymised the sample's
     frames with (:func:`frames_agree`).
+
+    Segments that make one class --- matched by SegmentLabel to an existing
+    label set, or minted, by the key their labels make --- are combined into
+    it: their union, or for ``FRACTIONAL`` their maximum, recorded as a
+    decision.
     """
     import medh5
-    from medh5.labels import LabelClass, LabelSet, OntologyCode
+    from medh5.labels import LabelSet
 
     log = report or ConversionReport(converter="from-dicom-seg")
     log.source = os.fspath(path)
@@ -688,7 +756,6 @@ def from_dicom_seg(
         # by SegmentLabel, never by number.  Matching on the number would import
         # "lesion" as whatever class happens to hold id 2.
         mapping = _match_segments(segments, label_set)
-        volumes = {mapping[number]: volume for number, volume in volumes.items()}
         log.decision(
             "segment_mapping",
             "segments were matched to the sample's label set by SegmentLabel; "
@@ -696,27 +763,7 @@ def from_dicom_seg(
             {"mapping": {str(k): v for k, v in mapping.items()}},
         )
     if label_set is None:
-        classes = []
-        for number, info in sorted(segments.items()):
-            code = info["code"]
-            classes.append(
-                LabelClass(
-                    number,
-                    _key(info["label"]),
-                    info["label"],
-                    codes=(
-                        (
-                            OntologyCode(
-                                system=code["scheme"],
-                                code=code["code"],
-                                name=code["meaning"] or None,
-                            ),
-                        )
-                        if code and code["scheme"] and code["code"]
-                        else ()
-                    ),
-                )
-            )
+        classes, mapping = _mint(segments)
         label_set = LabelSet("dicom-seg", version="1.0.0", classes=classes)
         bound = sum(1 for c in classes if c.codes)
         log.decision(
@@ -732,6 +779,7 @@ def from_dicom_seg(
                 "given a guessed code: a wrong binding is undetectable (W912)",
                 {"unbound": [c.key for c in classes if not c.codes]},
             )
+    volumes = _by_class(volumes, mapping, segments, label_set, log, geometry)
 
     with medh5.amend(sample) as writer:
         if existing is None:
@@ -770,6 +818,102 @@ def from_dicom_seg(
         log.decision("encoding", f"segments were stored as {kind!r}", {"kind": kind})
     log.outputs.append(os.fspath(sample))
     return log
+
+
+def _mint(
+    segments: Mapping[int, dict[str, Any]],
+) -> tuple[list[Any], dict[int, int]]:
+    """Classes minted from SegmentLabel, and segment number → class id.
+
+    Segments whose labels make one key are one class, its id the first one's
+    number: one "Lesion" segment per lesion is common, and minted apart, two
+    classes keyed ``lesion`` were refused (E302).  Segments of one key that
+    code different concepts are refused: one class cannot be both.
+    """
+    from medh5.labels import LabelClass, OntologyCode
+
+    classes: dict[str, LabelClass] = {}
+    mapping: dict[int, int] = {}
+    for number, info in sorted(segments.items()):
+        key = _key(info["label"])
+        code = info["code"]
+        codes = (
+            (
+                OntologyCode(
+                    system=code["scheme"],
+                    code=code["code"],
+                    name=code["meaning"] or None,
+                ),
+            )
+            if code and code["scheme"] and code["code"]
+            else ()
+        )
+        found = classes.get(key)
+        if found is None:
+            classes[key] = LabelClass(number, key, info["label"], codes=codes)
+        elif codes and found.codes and _concept(codes[0]) != _concept(found.codes[0]):
+            raise MEDH5ValidationError(
+                f"segments {found.id} and {number} make one class {key!r} by "
+                f"SegmentLabel ({segments[found.id]['label']!r}, "
+                f"{info['label']!r}) but code different concepts "
+                f"({' '.join(_concept(found.codes[0]))}, "
+                f"{' '.join(_concept(codes[0]))}): one class cannot be both. "
+                "Import it into a sample whose label set holds both"
+            )
+        elif codes and not found.codes:
+            classes[key] = LabelClass(found.id, key, found.name, codes=codes)
+        mapping[number] = classes[key].id
+    return list(classes.values()), mapping
+
+
+def _concept(code: Any) -> tuple[str, str]:
+    return str(code.system), str(code.code)
+
+
+def _by_class(
+    volumes: Mapping[int, npt.NDArray[Any]],
+    mapping: Mapping[int, int],
+    segments: Mapping[int, dict[str, Any]],
+    label_set: Any,
+    log: ConversionReport,
+    geometry: Mapping[str, Any],
+) -> dict[int, npt.NDArray[Any]]:
+    """Segment volumes as class volumes: the segments of one class combined.
+
+    A class mask says where the class is, not which segment drew it, so the
+    segments of one class are their union --- their maximum, for fractional
+    ones.  Keyed by class, each segment replaced the one before: a SEG with
+    one "Lesion" segment per lesion kept only the last lesion's voxels.
+    """
+    combine = np.maximum if geometry["fractional"] else np.logical_or
+    out: dict[int, npt.NDArray[Any]] = {}
+    members: dict[int, list[int]] = {}
+    for number in sorted(volumes):
+        class_id = mapping[number]
+        members.setdefault(class_id, []).append(number)
+        volume = volumes[number]
+        out[class_id] = (
+            volume if class_id not in out else combine(out[class_id], volume)
+        )
+    groups = {c: numbers for c, numbers in members.items() if len(numbers) > 1}
+    if groups:
+        how = "maximum" if geometry["fractional"] else "union"
+        log.decision(
+            "segment_union",
+            f"{sum(len(g) for g in groups.values())} segments make "
+            f"{len(groups)} class(es) and were combined, each class as its "
+            f"segments' {how}: a class records where it is, not which segment "
+            "drew it",
+            {
+                "classes": {
+                    label_set[class_id].key: [
+                        {"segment": n, "label": segments[n]["label"]} for n in numbers
+                    ]
+                    for class_id, numbers in groups.items()
+                },
+            },
+        )
+    return out
 
 
 def _match_segments(
@@ -902,7 +1046,11 @@ def to_dicom_seg(
 
     The SEG is ``BINARY``, so an annotation with an ignore region (§7.7) is
     refused: a segment's 0 says a voxel was examined and found absent, and it
-    has no value for one nobody examined.
+    has no value for one nobody examined.  For the same reason a segment is
+    written only for a class the annotation examined (``annotated_class_ids``):
+    by default the others are left out, and *classes* naming one is refused.
+    Every class went out, and one nobody looked for became an empty segment ---
+    a verified negative to whoever read it back.
     """
     import medh5
 
@@ -921,7 +1069,7 @@ def to_dicom_seg(
         normal = _source_normal(datasets[0])
         datasets.sort(key=lambda d: float(np.dot(_ipp(d), normal)))
         slices = _source_slices(annotation.grid, datasets, log, frame_salt)
-        ids = annotation.resolve_classes(classes)
+        ids = _examined(annotation, ann_id, classes, log)
         ignored = int(np.count_nonzero(opened.ignore_region(ann_id)))
         if ignored:
             raise MEDH5ValidationError(
@@ -983,6 +1131,48 @@ def to_dicom_seg(
     )
     log.outputs.append(str(target))
     return target
+
+
+def _examined(
+    annotation: Any,
+    ann_id: str,
+    classes: Sequence[int | str] | None,
+    log: ConversionReport,
+) -> tuple[int, ...]:
+    """The classes a SEG export writes: *classes*, or every class examined.
+
+    A segment's 0 says "examined, absent" (§11.3), which a class outside
+    ``annotated_class_ids`` never was: by default it is left out, as a
+    decision, and named in *classes* it is refused.
+    """
+    looked = set(annotation.annotated_class_ids)
+    if classes is not None:
+        ids = tuple(annotation.resolve_classes(classes))
+        never = [annotation.class_key(c) for c in ids if c not in looked]
+        if never:
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r} never examined {never} (they are not in "
+                "its annotated_class_ids), and a segment's 0 would say they were "
+                "examined and found absent; export the classes it examined"
+            )
+        return ids
+    every = tuple(annotation.resolve_classes(None))
+    ids = tuple(c for c in every if c in looked)
+    left = [annotation.class_key(c) for c in every if c not in looked]
+    if not ids:
+        raise MEDH5ValidationError(
+            f"annotation {ann_id!r} examined none of its classes "
+            "(annotated_class_ids is empty), so a SEG of it would assert "
+            "absences nobody observed"
+        )
+    if left:
+        log.decision(
+            "unexamined",
+            f"{len(left)} class(es) the annotation never examined were left out "
+            f"({', '.join(left)}): a segment's 0 says examined and absent",
+            {"left_out": left},
+        )
+    return ids
 
 
 #: The kinds a SEG export writes: those with classes, one segment each.

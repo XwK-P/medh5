@@ -224,6 +224,30 @@ class TestUnpack:
             extract(shard, "ghost", tmp_path / "x.medh5")
         assert exc.value.code == "E003"
 
+    def test_S2_2_a_member_is_never_written_over_its_own_collection(
+        self, tmp_path, members, shard, capsys
+    ):
+        """`extract` onto the shard's own path, or an alias of it, and `unpack`
+        of a shard named for a member into its own directory, replaced the
+        shard with one member: every other member was lost, and it said so
+        nowhere."""
+        from medh5.cli import main
+
+        before = shard.read_bytes()
+        for alias in (shard, tmp_path / "new" / ".." / shard.name):
+            with pytest.raises(MEDH5ValidationError, match="is the collection"):
+                extract(shard, "case_1", alias)
+        named = tmp_path / "out" / "case_1.medh5"
+        named.parent.mkdir()
+        pack(members, named)
+        kept = named.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="member 'case_1'"):
+            unpack(named, named.parent)
+        assert main(["unpack", str(named), "-o", str(named.parent)]) == 1
+        assert "is the collection" in capsys.readouterr().err
+        assert (shard.read_bytes(), named.read_bytes()) == (before, kept)
+        assert [p.name for p in named.parent.iterdir()] == ["case_1.medh5"]
+
 
 class TestOpening:
     def test_open_any_dispatches_on_kind(self, tmp_path, members, shard):

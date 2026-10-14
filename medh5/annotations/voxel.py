@@ -289,6 +289,12 @@ def instances_from_masks(
     """One object per class mask, minting ids from *start_id*; an id past the
     largest ``uint64`` is refused (E404).
 
+    A class whose mask is empty has no object and gets none --- an empty
+    object is refused (E404) --- but keeps its place in the numbering: the
+    *i*-th class's object is ``start_id + i``.  To record such a class as
+    examined and absent, pass the classes to ``encode_instances`` as
+    ``class_ids``.
+
     A writer keeps the ids, and ids are sample-scoped (§7.4): an object whose
     id another annotation of the sample uses is that object.  Start above the
     sample's ids unless that is meant --- or give ``add_segmentation`` the

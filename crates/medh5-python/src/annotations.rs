@@ -847,10 +847,10 @@ impl CostModel {
 
 #[pyfunction]
 #[pyo3(signature = (masks, spatial_shape=None))]
-fn analyse(masks: &Bound<'_, PyAny>, spatial_shape: Option<&Bound<'_, PyAny>>) -> R<OverlapStats> {
+fn analyse(py: Python<'_>, masks: &Bound<'_, PyAny>, spatial_shape: Option<&Bound<'_, PyAny>>) -> R<OverlapStats> {
     let masks = masks_arg(masks)?;
     let shape = shape_arg(spatial_shape)?;
-    Ok(OverlapStats::wrap(select::analyse(&masks, shape.as_deref())?))
+    Ok(OverlapStats::wrap(py.detach(|| select::analyse(&masks, shape.as_deref()))?))
 }
 
 #[pyfunction]
@@ -904,11 +904,11 @@ fn select_encoding<'py>(
         (None, Some(m)) => {
             let masks = masks_arg(&m)?;
             let shape = shape_arg(spatial_shape)?;
-            select::analyse(&masks, shape.as_deref())?
+            py.detach(|| select::analyse(&masks, shape.as_deref()))?
         }
         (None, None) => return Err(medh5::Error::invalid("select_encoding needs masks= or stats=").into()),
     };
-    let kind = select::select_encoding(&stats, soft, prefer, ignore);
+    let kind = select::select_encoding_checked(&stats, soft, prefer, ignore)?;
     Ok(PyTuple::new(py, [PyString::new(py, &kind).into_any(), Bound::new(py, OverlapStats::wrap(stats))?.into_any()])?)
 }
 
@@ -921,6 +921,7 @@ fn select_encoding<'py>(
 #[pyfunction]
 #[pyo3(signature = (masks, spatial_shape=None, *, ignore=None, ignore_id=medh5::labels::IGNORE_ID))]
 fn encode_labelmap(
+    py: Python<'_>,
     masks: &Bound<'_, PyAny>,
     spatial_shape: Option<&Bound<'_, PyAny>>,
     ignore: Option<&Bound<'_, PyAny>>,
@@ -929,7 +930,8 @@ fn encode_labelmap(
     let masks = masks_arg(masks)?;
     let shape = shape_arg(spatial_shape)?;
     let ignore = given(ignore).map(|i| bool_array(&i)).transpose()?;
-    Ok(AnnotationPayload::wrap(enc::encode_labelmap(&masks, shape.as_deref(), ignore.as_ref(), ignore_id)?))
+    let payload = py.detach(|| enc::encode_labelmap(&masks, shape.as_deref(), ignore.as_ref(), ignore_id))?;
+    Ok(AnnotationPayload::wrap(payload))
 }
 
 /// Colour the overlap graph and pack each colour into one labelmap (§7.2);
@@ -938,6 +940,7 @@ fn encode_labelmap(
 #[pyfunction]
 #[pyo3(signature = (masks, spatial_shape=None, *, colouring=None, ignore=None, ignore_id=medh5::labels::IGNORE_ID))]
 fn encode_layers(
+    py: Python<'_>,
     masks: &Bound<'_, PyAny>,
     spatial_shape: Option<&Bound<'_, PyAny>>,
     colouring: Option<&Bound<'_, PyAny>>,
@@ -948,26 +951,27 @@ fn encode_layers(
     let shape = shape_arg(spatial_shape)?;
     let colouring = colouring_arg(colouring)?;
     let ignore = given(ignore).map(|i| bool_array(&i)).transpose()?;
-    Ok(AnnotationPayload::wrap(enc::encode_layers(
-        &masks,
-        shape.as_deref(),
-        colouring.as_ref(),
-        ignore.as_ref(),
-        ignore_id,
-    )?))
+    let payload =
+        py.detach(|| enc::encode_layers(&masks, shape.as_deref(), colouring.as_ref(), ignore.as_ref(), ignore_id))?;
+    Ok(AnnotationPayload::wrap(payload))
 }
 
 #[pyfunction]
 #[pyo3(signature = (masks, spatial_shape=None))]
-fn encode_bitmask(masks: &Bound<'_, PyAny>, spatial_shape: Option<&Bound<'_, PyAny>>) -> R<AnnotationPayload> {
+fn encode_bitmask(
+    py: Python<'_>,
+    masks: &Bound<'_, PyAny>,
+    spatial_shape: Option<&Bound<'_, PyAny>>,
+) -> R<AnnotationPayload> {
     let masks = masks_arg(masks)?;
     let shape = shape_arg(spatial_shape)?;
-    Ok(AnnotationPayload::wrap(enc::encode_bitmask(&masks, shape.as_deref())?))
+    Ok(AnnotationPayload::wrap(py.detach(|| enc::encode_bitmask(&masks, shape.as_deref()))?))
 }
 
 #[pyfunction]
-fn encode_mask(mask: &Bound<'_, PyAny>) -> R<AnnotationPayload> {
-    Ok(AnnotationPayload::wrap(enc::encode_mask(bool_array(mask)?)))
+fn encode_mask(py: Python<'_>, mask: &Bound<'_, PyAny>) -> R<AnnotationPayload> {
+    let mask = bool_array(mask)?;
+    Ok(AnnotationPayload::wrap(py.detach(move || enc::encode_mask(mask))))
 }
 
 fn planes_arg(obj: &Bound<'_, PyAny>) -> PyResult<BTreeMap<i64, ArrayD<f64>>> {
@@ -981,6 +985,7 @@ fn planes_arg(obj: &Bound<'_, PyAny>) -> PyResult<BTreeMap<i64, ArrayD<f64>>> {
 #[pyfunction]
 #[pyo3(signature = (probabilities, spatial_shape=None, *, dtype=None, normalized=false, threshold=None))]
 fn encode_probmap(
+    py: Python<'_>,
     probabilities: &Bound<'_, PyAny>,
     spatial_shape: Option<&Bound<'_, PyAny>>,
     dtype: Option<&Bound<'_, PyAny>>,
@@ -993,13 +998,15 @@ fn encode_probmap(
         Some(d) => dtype_arg(&d)?,
         None => DType::F16,
     };
-    Ok(AnnotationPayload::wrap(enc::encode_probmap(&planes, shape.as_deref(), dtype, normalized, threshold)?))
+    let payload = py.detach(|| enc::encode_probmap(&planes, shape.as_deref(), dtype, normalized, threshold))?;
+    Ok(AnnotationPayload::wrap(payload))
 }
 
 /// `values >= threshold`, decided in the stored precision (§7.5).
 #[pyfunction]
 fn contains_at<'py>(py: Python<'py>, values: &Bound<'py, PyAny>, threshold: f64) -> R<Bound<'py, PyAny>> {
-    Ok(array_to_py(py, enc::contains_at(&py_to_nd(values)?, threshold)))
+    let values = py_to_nd(values)?;
+    Ok(array_to_py(py, py.detach(|| enc::contains_at(&values, threshold))))
 }
 
 #[pyfunction]
@@ -1051,6 +1058,7 @@ pub fn instance_input(item: &Bound<'_, PyAny>) -> PyResult<enc::InstanceInput> {
 #[pyfunction]
 #[pyo3(signature = (objects, spatial_shape=None, *, store_masks=true, class_ids=None))]
 fn encode_instances(
+    py: Python<'_>,
     objects: &Bound<'_, PyAny>,
     spatial_shape: Option<&Bound<'_, PyAny>>,
     store_masks: bool,
@@ -1059,7 +1067,8 @@ fn encode_instances(
     let objects = objects.try_iter()?.map(|o| instance_input(&o?)).collect::<PyResult<Vec<_>>>()?;
     let shape = shape_arg(spatial_shape)?;
     let ids = given(class_ids).map(|c| ints_of(&c)).transpose()?;
-    Ok(AnnotationPayload::wrap(enc::encode_instances(&objects, shape.as_deref(), store_masks, ids.as_deref())?))
+    let payload = py.detach(|| enc::encode_instances(&objects, shape.as_deref(), store_masks, ids.as_deref()))?;
+    Ok(AnnotationPayload::wrap(payload))
 }
 
 /// One object per class mask, ids from `start_id`: the field values of
@@ -1069,8 +1078,9 @@ fn encode_instances(
 #[pyo3(signature = (masks, *, start_id=1))]
 fn instances_from_masks<'py>(py: Python<'py>, masks: &Bound<'py, PyAny>, start_id: u64) -> R<Bound<'py, PyList>> {
     let masks = masks_arg(masks)?;
+    let found = py.detach(|| enc::instances_from_masks(&masks, start_id))?;
     let out = PyList::empty(py);
-    for i in enc::instances_from_masks(&masks, start_id)? {
+    for i in found {
         let mask = match i.mask {
             Some(m) => array_to_py(py, m),
             None => py.None().into_bound(py),
@@ -1090,12 +1100,14 @@ fn payload_to_masks<'py>(
 ) -> R<Bound<'py, PyDict>> {
     let payload = payload_arg(payload)?;
     let shape = shape_arg(spatial_shape)?;
-    Ok(masks_to_py(py, enc::payload_to_masks(&payload, shape.as_deref(), threshold)?)?)
+    let masks = py.detach(|| enc::payload_to_masks(&payload, shape.as_deref(), threshold))?;
+    Ok(masks_to_py(py, masks)?)
 }
 
 #[pyfunction]
 #[pyo3(signature = (masks, kind, spatial_shape=None, **kwargs))]
 fn encode_masks(
+    py: Python<'_>,
     masks: &Bound<'_, PyAny>,
     kind: &str,
     spatial_shape: Option<&Bound<'_, PyAny>>,
@@ -1104,7 +1116,7 @@ fn encode_masks(
     let masks = masks_arg(masks)?;
     let shape = shape_arg(spatial_shape)?;
     let options = encode_options(kwargs)?;
-    Ok(AnnotationPayload::wrap(enc::encode_masks(&masks, kind, shape.as_deref(), &options)?))
+    Ok(AnnotationPayload::wrap(py.detach(|| enc::encode_masks(&masks, kind, shape.as_deref(), &options))?))
 }
 
 /// Encode class masks, choosing the encoding by measurement when asked to:
@@ -1125,9 +1137,9 @@ fn encode_voxels<'py>(
     let shape = shape_arg(spatial_shape)?;
     let shape = medh5::annotations::payload::normalize_masks(&masks, shape.as_deref())?;
     let ignore = given(ignore).map(|i| bool_array(&i)).transpose()?;
-    let stats = select::analyse(&masks, Some(&shape))?;
+    let stats = py.detach(|| select::analyse(&masks, Some(&shape)))?;
     let prefer = if encoding == "auto" { None } else { Some(encoding) };
-    let kind = select::select_encoding(&stats, false, prefer, ignore.is_some());
+    let kind = select::select_encoding_checked(&stats, false, prefer, ignore.is_some())?;
     let mut options = encode_options(kwargs)?;
     if let Some(region) = ignore {
         if !enc::IN_BAND_IGNORE_KINDS.contains(&kind.as_str()) {
@@ -1146,7 +1158,7 @@ fn encode_voxels<'py>(
             options.ignore = Some(region);
         }
     }
-    let payload = enc::encode_masks(&masks, &kind, Some(&shape), &options)?;
+    let payload = py.detach(|| enc::encode_masks(&masks, &kind, Some(&shape), &options))?;
     Ok(PyTuple::new(
         py,
         [
@@ -1176,7 +1188,8 @@ fn transcode_payload<'py>(
     }
     let shape = shape_arg(spatial_shape)?;
     let options = encode_options(kwargs)?;
-    let out = enc::transcode_payload(&source, to_kind, shape.as_deref(), threshold, drop_identity, &options)?;
+    let out =
+        py.detach(|| enc::transcode_payload(&source, to_kind, shape.as_deref(), threshold, drop_identity, &options))?;
     Ok(Bound::new(py, AnnotationPayload::wrap(out))?.into_any())
 }
 
@@ -1186,9 +1199,14 @@ fn transcode_payload<'py>(
 /// probabilities.
 #[pyfunction]
 #[pyo3(signature = (annotation, to_kind, *, drop_identity=false))]
-fn transcode(annotation: &Bound<'_, PyAny>, to_kind: &str, drop_identity: bool) -> R<AnnotationPayload> {
+fn transcode(
+    py: Python<'_>,
+    annotation: &Bound<'_, PyAny>,
+    to_kind: &str,
+    drop_identity: bool,
+) -> R<AnnotationPayload> {
     let handle = annotation_handle(annotation)?;
-    let payload = medh5::sample::writer_annotations::transcode(&handle, to_kind, drop_identity)?;
+    let payload = py.detach(|| medh5::sample::writer_annotations::transcode(&handle, to_kind, drop_identity))?;
     Ok(AnnotationPayload::wrap(payload))
 }
 
@@ -1202,7 +1220,8 @@ fn annotation_to_masks<'py>(
 ) -> R<Bound<'py, PyDict>> {
     let handle = annotation_handle(annotation)?;
     let keys = given(classes).map(|c| crate::convert::class_keys(&c)).transpose()?;
-    Ok(masks_to_py(py, medh5::sample::writer_annotations::annotation_to_masks(&handle, keys.as_deref())?)?)
+    let masks = py.detach(|| medh5::sample::writer_annotations::annotation_to_masks(&handle, keys.as_deref()))?;
+    Ok(masks_to_py(py, masks)?)
 }
 
 /// The engine annotation of an `AnnotationHandle` or a facade holding one.
@@ -1215,16 +1234,22 @@ pub fn annotation_handle(obj: &Bound<'_, PyAny>) -> PyResult<std::sync::Arc<medh
 }
 
 #[pyfunction]
-fn masks_equal(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> R<bool> {
-    Ok(enc::masks_equal(&masks_arg(a)?, &masks_arg(b)?))
+fn masks_equal(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> R<bool> {
+    let (a, b) = (masks_arg(a)?, masks_arg(b)?);
+    Ok(py.detach(|| enc::masks_equal(&a, &b)))
 }
 
 #[pyfunction]
 #[pyo3(signature = (payload, to_kind, *, spatial_shape=None))]
-fn check_roundtrip(payload: &Bound<'_, PyAny>, to_kind: &str, spatial_shape: Option<&Bound<'_, PyAny>>) -> R<bool> {
+fn check_roundtrip(
+    py: Python<'_>,
+    payload: &Bound<'_, PyAny>,
+    to_kind: &str,
+    spatial_shape: Option<&Bound<'_, PyAny>>,
+) -> R<bool> {
     let payload = payload_arg(payload)?;
     let shape = shape_arg(spatial_shape)?;
-    Ok(enc::check_roundtrip(&payload, to_kind, shape.as_deref())?)
+    Ok(py.detach(|| enc::check_roundtrip(&payload, to_kind, shape.as_deref()))?)
 }
 
 #[pyfunction]
@@ -1423,6 +1448,7 @@ fn check_contour_role(role: &str) -> R<String> {
 #[pyfunction]
 #[pyo3(signature = (vertices, faces, *, normals=None, vertex_class_ids=None, mesh_offsets=None, mesh_class_ids=None))]
 fn encode_mesh(
+    py: Python<'_>,
     vertices: &Bound<'_, PyAny>,
     faces: &Bound<'_, PyAny>,
     normals: Option<&Bound<'_, PyAny>>,
@@ -1434,14 +1460,18 @@ fn encode_mesh(
     let vertex_ids = given(vertex_class_ids).map(|v| ints_of(&v)).transpose()?;
     let offsets = given(mesh_offsets).map(|o| i64_vec(&o)).transpose()?;
     let mesh_ids = given(mesh_class_ids).map(|m| ints_of(&m)).transpose()?;
-    Ok(AnnotationPayload::wrap(geo::encode_mesh(
-        &f64_array(vertices)?,
-        &i64_array(faces)?,
-        normals.as_ref(),
-        vertex_ids.as_deref(),
-        offsets.as_deref(),
-        mesh_ids.as_deref(),
-    )?))
+    let (vertices, faces) = (f64_array(vertices)?, i64_array(faces)?);
+    let payload = py.detach(|| {
+        geo::encode_mesh(
+            &vertices,
+            &faces,
+            normals.as_ref(),
+            vertex_ids.as_deref(),
+            offsets.as_deref(),
+            mesh_ids.as_deref(),
+        )
+    })?;
+    Ok(AnnotationPayload::wrap(payload))
 }
 
 /// A `slice_index` argument as planes: an array of exactly one plane per box

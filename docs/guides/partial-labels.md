@@ -145,21 +145,28 @@ ANN = "organs"          # the annotation the loader is reading
 
 manifest = Manifest.load("cohort.json")
 coverage = {
-    e.path: set(e.annotations[ANN]["annotated_classes"])
+    e.path if e.key is None else f"{e.path}::{e.key}":
+        set(e.annotations[ANN]["annotated_classes"])
     for e in manifest
     if ANN in e.annotations
 }
 ```
 
+Each sample is keyed as `split.paths()` names it — its path, or `path::key`
+for a member of a collection — so the lookup matches the file list a loader is
+given. Keyed by `e.path` alone, the members of one collection share its path,
+and all but the last of them are lost.
+
 **Take the coverage from the annotation you are training on, not from the
 entry.** `Entry.annotated_class_ids` is the *union* across every annotation in
 the sample, which is the right answer for a cohort-level question and the wrong
-one for a loss mask. A sample whose `organs` examined liver and spleen and whose
-`vessels` examined vessel reports `(1, 2, 4)` at entry level:
+one for a loss mask. A sample whose `organs` examined liver, spleen and lesion,
+as written above, and whose `vessels` examined vessel reports `(1, 2, 3, 4)` at
+entry level:
 
 ```python
-e.annotated_class_ids                            # (1, 2, 4)
-e.annotations["organs"]["annotated_classes"]     # [1, 2]
+e.annotated_class_ids                            # (1, 2, 3, 4)
+e.annotations["organs"]["annotated_classes"]     # [1, 2, 3]
 e.annotations["vessels"]["annotated_classes"]    # [4]
 ```
 
@@ -176,9 +183,9 @@ Straight off a sample, when you are not working from a manifest:
 
 ```python
 ann = s.annotations["organs"]
-ann.annotated_class_ids           # (1, 2)
+ann.annotated_class_ids           # (1, 2, 3)
 ann.is_annotated("spleen")        # True  — examined, and absent
-ann.is_annotated("lesion")        # False — nobody looked
+ann.is_annotated("vessel")        # False — `organs` never looked for it
 ```
 
 The point of all of it: a per-sample loss mask that is *correct* rather than

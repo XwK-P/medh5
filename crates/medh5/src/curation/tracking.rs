@@ -3,7 +3,8 @@
 //! Tracking is a **join, not a structure**: grouping objects on
 //! `instance_id` recovers the lesion a radiologist followed across visits.
 //! Absence is not a measurement --- it is `resolved` only where the class was
-//! looked for (`annotated_class_ids`), and `unexamined` otherwise.  A track
+//! looked for (`annotated_class_ids`) by an annotation that declares no part
+//! of its grid unexamined (§7.7), and `unexamined` otherwise.  A track
 //! carrying several class ids is reported (W909), never resolved by a rule.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -243,7 +244,9 @@ fn comparable(before: &Observation, after: &Observation) -> Option<(f64, f64)> {
 pub struct Tracking {
     pub tracks: BTreeMap<u64, Track>,
     pub timepoints: Vec<String>,
-    /// `timepoint -> class ids the annotators committed to finding` (§11.3).
+    /// `timepoint -> class ids whose absence there is a finding` (§11.3): the
+    /// `annotated_class_ids` of each annotation at that visit that ignores
+    /// no voxel of its grid (§7.7).
     pub coverage: IndexMap<String, BTreeSet<i64>>,
     /// `annotation -> why` for each annotation that carries `instance_ids`
     /// and that no track could join.
@@ -266,7 +269,8 @@ impl Tracking {
         self.timepoints.iter().map(|tp| (tp.clone(), self.state_at(instance_id, tp).unwrap_or(UNEXAMINED))).collect()
     }
 
-    /// Absent-then-present: not seen at baseline, seen later.
+    /// Absent-then-present: not seen at a baseline that looked for it
+    /// (`resolved` there), seen later.
     pub fn is_new(&self, instance_id: u64) -> bool {
         let states = self.states(instance_id);
         match self.timepoints.first() {
@@ -293,7 +297,8 @@ impl Tracking {
         self.tracks.iter().filter(|(_, t)| t.has_class_conflict()).map(|(i, t)| (*i, t.class_ids.clone())).collect()
     }
 
-    /// `timepoint -> instance ids whose class nobody committed to finding`.
+    /// `timepoint -> instance ids` not seen there, whose class no annotation
+    /// there examined without ignoring part of its grid.
     pub fn unexamined(&self) -> IndexMap<String, Vec<u64>> {
         let mut out = IndexMap::new();
         for tp in &self.timepoints {
@@ -385,6 +390,17 @@ fn unjoinable(ann: &Annotation) -> Option<String> {
         return Some("its points carry no `class_ids`, so no track could say what they follow".into());
     }
     None
+}
+
+/// Whether `ann` declares part of its grid unexamined (§7.7, §11.3): an
+/// ignore region holding at least one voxel.  One that cannot be read counts
+/// as one, since nothing then shows where the annotator looked.
+fn ignores_part(ann: &Annotation) -> bool {
+    match ann.has_ignore_region() {
+        Ok(false) => false,
+        Ok(true) => !matches!(ann.ignore_region(), Ok(None)),
+        Err(_) => true,
+    }
 }
 
 /// The rows of a joinable annotation, each with the axis-aligned box a join
@@ -494,8 +510,13 @@ pub fn build_tracks(sample: &Sample, class_key: Option<&ClassKey>, do_measure: b
         };
         let own = ann.timepoints();
         let timepoints = if own.is_empty() { implicit.clone() } else { own };
+        // An annotation that ignores part of its grid examined its classes
+        // only outside that region, and nothing here shows that an object it
+        // did not find lay outside it, so its classes cover nothing: a
+        // follow-up ignored as a whole resolved every lesion of the baseline.
+        let examined: &[i64] = if ignores_part(ann) { &[] } else { ann.annotated_class_ids() };
         for tp in &timepoints {
-            coverage.entry(tp.clone()).or_default().extend(ann.annotated_class_ids().iter().copied());
+            coverage.entry(tp.clone()).or_default().extend(examined.iter().copied());
         }
         let grid = ann.grid_id().and_then(|g| sample.grids().ok().and_then(|gs| gs.get(g).cloned()));
         let oriented = if do_measure && ann.kind() == "obb" { Some(ann.obb_volumes()?) } else { None };

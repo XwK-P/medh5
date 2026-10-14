@@ -12,10 +12,10 @@ geometry itself defines.
 **Spacing along the normal.**  ``SliceThickness`` is the thickness of the *slab*,
 not the distance between slice origins; a series with 5 mm slices at 2.5 mm
 increments is common and using the thickness would halve the volume's extent.
-The z spacing is measured from consecutive positions, and a series whose gaps
-vary by more than a tolerance is refused rather than averaged --- an irregular
-stack is not a grid, and pretending otherwise puts every label at the wrong
-depth.
+The z spacing is measured from the slice positions, and a series with a slice
+farther than a tenth of a slice from where the regular stack puts it is refused
+rather than averaged --- an irregular stack is not a grid, and pretending
+otherwise puts every label at the wrong depth.
 
 **Values.**  ``RescaleSlope``/``RescaleIntercept`` are stored, never applied
 (§4.2), so ``read()`` returns what the file stored and ``read(physical=True)``
@@ -38,7 +38,7 @@ import numpy.typing as npt
 from medh5._optional import require
 from medh5.curation import ID_SOURCE
 from medh5.errors import MEDH5ValidationError
-from medh5.io._common import sanitize_stem
+from medh5.io._common import sanitize_ascii_stem
 from medh5.io.grouping import (
     FALLBACK_PREFIX,
     Occasion,
@@ -49,8 +49,29 @@ from medh5.io.grouping import (
 )
 from medh5.io.report import ConversionReport
 
-SPACING_TOLERANCE = 0.01
-"""Relative tolerance on gaps between consecutive slices before a stack is refused."""
+SPACING_TOLERANCE = 0.1
+"""How far a slice may sit from where the regular stack puts it, as a fraction
+of the slice spacing, and never less than 0.01 mm.
+
+Measured per slice against the whole stack, not per gap: position rounding is
+per slice and does not accumulate, where drift does.  Each gap was held to 1 %
+of the median gap, so 401 slices whose first 200 gaps were 0.9 % long and the
+rest as short drifted 4.5 mm --- 1.8 slices --- by the middle and passed,
+while positions only rounded to two decimals were refused.  A tenth of a
+slice keeps every voxel well inside the slab it was acquired in, and the
+0.01 mm floor is twice the rounding of a position written to two decimals.
+The DICOM SEG reader holds the planes it stacks to the same bound."""
+
+_POSITION_FLOOR_MM = 0.01
+"""The least slice-position tolerance, in millimetres
+(:data:`SPACING_TOLERANCE`)."""
+
+
+def _position_tolerance(spacing: float) -> float:
+    """How far, in millimetres, a slice may sit from where a regular stack of
+    *spacing* millimetres puts it: the one bound both DICOM readers apply."""
+    return max(SPACING_TOLERANCE * abs(float(spacing)), _POSITION_FLOOR_MM)
+
 
 STORED_TAGS = (
     "Modality",
@@ -161,12 +182,42 @@ MR export means an empty import and no word why.
 """
 
 
-def _enhanced_sop_classes(pydicom: Any) -> frozenset[str]:
+_NON_IMAGE_SOP_CLASSES = (
+    "RTDoseStorage",
+    "RTStructureSetStorage",
+    "RTPlanStorage",
+    "RTIonPlanStorage",
+    "SegmentationStorage",
+    "SpatialRegistrationStorage",
+    "DeformableSpatialRegistrationStorage",
+    "RawDataStorage",
+)
+"""Objects that are not images, whatever patient position they carry.
+
+An RT Dose grid carries `ImagePositionPatient` and sits beside the CT of every
+radiotherapy export.  It was collected as a series, stacked to four
+dimensions, and its refusal aborted the import of the whole tree.  Its values
+are dose (scaled by `DoseGridScaling`), not image values; the structure sets,
+segmentations and registrations have converters or no voxels of their own.
+"""
+
+
+def _sop_classes(pydicom: Any, names: Sequence[str]) -> frozenset[str]:
     return frozenset(
-        str(getattr(pydicom.uid, name))
-        for name in _ENHANCED_SOP_CLASSES
-        if hasattr(pydicom.uid, name)
+        str(getattr(pydicom.uid, name)) for name in names if hasattr(pydicom.uid, name)
     )
+
+
+def _enhanced_sop_classes(pydicom: Any) -> frozenset[str]:
+    return _sop_classes(pydicom, _ENHANCED_SOP_CLASSES)
+
+
+def _frames(header: Any) -> int:
+    """``NumberOfFrames``, 1 where it is absent or unreadable."""
+    try:
+        return int(getattr(header, "NumberOfFrames", 1) or 1)
+    except (TypeError, ValueError):
+        return 1
 
 
 def scan_dicom(
@@ -175,13 +226,19 @@ def scan_dicom(
     """Walk a directory tree and collect its image series.
 
     Objects this importer cannot read as a series are skipped, and the ones a
-    user would expect to be images --- enhanced multi-frame CT/MR/PET --- are
-    reported on *report*, so an import that found nothing says why.
+    user would expect to be images --- enhanced and other multi-frame objects
+    --- are reported on *report* as warnings, so an import that found nothing
+    says why.  Objects that are not images but carry a patient position (an
+    RT Dose grid) are skipped with a note: they are the ordinary company of
+    the images, not a failure to read them.
     """
     pydicom = require_pydicom()
     enhanced = _enhanced_sop_classes(pydicom)
+    non_image = _sop_classes(pydicom, _NON_IMAGE_SOP_CLASSES)
     found: dict[str, Series] = {}
     unsupported: dict[str, list[str]] = {}
+    multiframe: dict[str, list[str]] = {}
+    others: dict[str, list[str]] = {}
     for path in sorted(Path(os.fspath(root)).rglob("*")):
         if not path.is_file():
             continue
@@ -195,6 +252,14 @@ def scan_dicom(
             continue
         uid = getattr(header, "SeriesInstanceUID", None)
         if uid is None or not hasattr(header, "ImagePositionPatient"):
+            continue
+        if sop_class in non_image:
+            others.setdefault(sop_class, []).append(str(path))
+            continue
+        if _frames(header) > 1:
+            # Its frames are not slices of a classic series, each a file of
+            # its own: stacked as one, it became a 4-D grid nobody declared.
+            multiframe.setdefault(sop_class, []).append(str(path))
             continue
         series = found.get(uid)
         if series is None:
@@ -211,24 +276,56 @@ def scan_dicom(
             )
             found[uid] = series
         series.paths.append(str(path))
-    if unsupported and report is not None:
-        total = sum(len(v) for v in unsupported.values())
-        report.warn(
-            "unsupported",
-            f"{total} enhanced multi-frame instance(s) were skipped: this importer "
-            "reads classic single-frame series, and an enhanced CT/MR/PET object "
-            "carries its geometry in per-frame functional groups it does not read; "
-            "convert them to classic instances first",
-            {
-                "sop_classes": {
-                    sop: len(paths) for sop, paths in sorted(unsupported.items())
-                },
-                "files": sorted(p for paths in unsupported.values() for p in paths)[
-                    :20
-                ],
-            },
-        )
+    if report is not None:
+        if unsupported:
+            report.warn(
+                "unsupported",
+                f"{_count(unsupported)} enhanced multi-frame instance(s) were "
+                "skipped: this importer reads classic single-frame series, and an "
+                "enhanced CT/MR/PET object carries its geometry in per-frame "
+                "functional groups it does not read; convert them to classic "
+                "instances first",
+                _skipped(unsupported),
+            )
+        if multiframe:
+            report.warn(
+                "unsupported",
+                f"{_count(multiframe)} multi-frame instance(s) were skipped: this "
+                "importer reads classic single-frame series, a file per slice, "
+                "and a multi-frame object's frames are not such slices",
+                _skipped(multiframe),
+            )
+        if others:
+            report.add(
+                "non_image",
+                f"{_count(others)} object(s) that are not images were skipped "
+                f"({', '.join(_sop_name(sop) for sop in sorted(others))}): they "
+                "carry a patient position, but no image values to import --- an "
+                "RT Dose grid holds dose",
+                "info",
+                _skipped(others),
+            )
     return sorted(found.values(), key=lambda s: (s.study_uid, s.series_uid))
+
+
+def _count(skipped: dict[str, list[str]]) -> int:
+    return sum(len(paths) for paths in skipped.values())
+
+
+def _skipped(skipped: dict[str, list[str]]) -> dict[str, Any]:
+    """The detail of a note on skipped files: how many per SOP class, and the
+    first twenty files."""
+    return {
+        "sop_classes": {sop: len(paths) for sop, paths in sorted(skipped.items())},
+        "files": sorted(p for paths in skipped.values() for p in paths)[:20],
+    }
+
+
+def _sop_name(sop_class: str) -> str:
+    """A SOP class UID by its name, where pydicom knows it."""
+    from pydicom.uid import UID
+
+    return str(UID(sop_class).name)
 
 
 def _text(value: Any) -> str | None:
@@ -241,10 +338,37 @@ def _text(value: Any) -> str | None:
 def read_series(
     series: Series, *, report: ConversionReport | None = None
 ) -> tuple[npt.NDArray[Any], dict[str, Any]]:
-    """One series as ``(volume, geometry)``, ordered and measured (§3.3)."""
+    """One series as ``(volume, geometry)``, ordered and measured (§3.3).
+
+    Every check reads the headers alone, and the pixels are decoded last, one
+    slice at a time into the volume.  A transfer syntax no installed decoder
+    reads, or a slice that does not decode, is refused by name --- as a
+    ``MEDH5ValidationError``, not the decoder's own exception, which named no
+    file and reached the command line as a traceback.
+    """
+    planned = _plan_series(series, report)
+    volume = _decode(planned, series)
+    planned.geometry["shape"] = tuple(int(v) for v in volume.shape)
+    return volume, planned.geometry
+
+
+@dataclass(slots=True)
+class _Planned:
+    """A series checked header by header: its files and instances in
+    geometric order, and the geometry its volume will have."""
+
+    paths: list[str]
+    uids: list[str]
+    geometry: dict[str, Any]
+    samples: int
+
+
+def _plan_series(series: Series, report: ConversionReport | None) -> _Planned:
+    """Read and check one series' headers --- every refusal but a slice that
+    will not decode --- without decoding a pixel."""
     if not series.paths:
         raise MEDH5ValidationError(f"series {series.series_uid} has no files")
-    slices = [_dcmread(p) for p in series.paths]
+    slices = [_dcmread(p, stop_before_pixels=True) for p in series.paths]
     orientation = np.asarray(
         _agreed(
             slices,
@@ -262,9 +386,11 @@ def read_series(
     )
     # Geometry, not InstanceNumber: the projection onto the slice normal is the
     # only ordering the files themselves define.
-    order = np.argsort(positions @ normal)
+    order = np.argsort(positions @ normal, kind="stable")
     slices = [slices[i] for i in order]
+    paths = [series.paths[i] for i in order]
     positions = positions[order]
+    uids = [str(getattr(s, "SOPInstanceUID", "?")) for s in slices]
 
     z_spacing, gaps = _slice_spacing(
         positions,
@@ -272,6 +398,7 @@ def read_series(
         series,
         report,
         _scalar(getattr(slices[0], "SliceThickness", None)),
+        uids=uids,
     )
     pixel_spacing = _agreed(
         slices,
@@ -290,14 +417,20 @@ def read_series(
     _check_stacked(positions, normal, pixel_spacing, series, report)
     # One matrix, too: slices of different sizes are no volume, and reached
     # `np.stack` as a `ValueError` naming nothing.
-    _agreed(
+    rows, columns = _agreed(
         slices,
         lambda s: [int(s.Rows), int(s.Columns)],
         "Rows/Columns",
         series,
         expect=2,
     )
-    volume = np.stack([np.asarray(s.pixel_array) for s in slices])
+    samples = _agreed(
+        slices,
+        lambda s: int(getattr(s, "SamplesPerPixel", 1)),
+        "SamplesPerPixel",
+        series,
+    )
+    _require_decoder(slices, series)
     photometric = _text(getattr(slices[0], "PhotometricInterpretation", None))
     if photometric == "MONOCHROME1" and report is not None:
         # Stored as written (§4.2): inverting would make the file disagree
@@ -312,7 +445,7 @@ def read_series(
         )
     direction = np.stack([normal, column, row], axis=1)
     geometry = {
-        "shape": tuple(int(v) for v in volume.shape),
+        "shape": (len(slices), int(rows), int(columns)),
         "spacing": [z_spacing, pixel_spacing[0], pixel_spacing[1]],
         "origin": [float(v) for v in positions[0]],
         "direction": [[float(v) for v in r] for r in direction],
@@ -327,7 +460,70 @@ def read_series(
         },
         "gaps": gaps,
     }
-    return volume, geometry
+    return _Planned(paths=paths, uids=uids, geometry=geometry, samples=int(samples))
+
+
+def _require_decoder(slices: Sequence[Any], series: Series) -> None:
+    """Refuse a series stored in a transfer syntax no installed decoder reads,
+    before any of it is decoded."""
+    from pydicom.pixels import get_decoder
+    from pydicom.uid import UID
+
+    syntaxes = {
+        str(syntax)
+        for s in slices
+        if (syntax := getattr(getattr(s, "file_meta", None), "TransferSyntaxUID", None))
+    }
+    for syntax in sorted(syntaxes):
+        try:
+            available = bool(get_decoder(UID(syntax)).is_available)
+        except (NotImplementedError, ValueError):
+            available = False
+        if not available:
+            raise MEDH5ValidationError(
+                f"series {series.series_uid} is stored as {UID(syntax).name} "
+                f"({syntax}), which no installed pixel-data decoder reads; "
+                "install a pydicom decoder plugin for it, or decompress the "
+                "series first"
+            )
+
+
+def _decode(planned: _Planned, series: Series) -> npt.NDArray[Any]:
+    """The planned slices' pixels, decoded one at a time into one volume.
+
+    Reading every slice's pixel data and stacking the decoded arrays held the
+    series three times over before the first check ran.  A slice that does not
+    decode, or decodes to another shape than its header states, is refused by
+    name.
+    """
+    expected = tuple(planned.geometry["shape"][1:]) + (
+        (planned.samples,) if planned.samples != 1 else ()
+    )
+    volume: npt.NDArray[Any] | None = None
+    for k, (path, uid) in enumerate(zip(planned.paths, planned.uids, strict=True)):
+        dataset = _dcmread(path)
+        try:
+            plane = np.asarray(dataset.pixel_array)
+        except MemoryError:  # pragma: no cover - not a property of the file
+            raise
+        except Exception as exc:  # a decoder raises whatever it raises
+            raise MEDH5ValidationError(
+                f"series {series.series_uid}: instance {uid} ({path}) could not be "
+                f"decoded ({type(exc).__name__}: {exc})"
+            ) from exc
+        if plane.shape != expected:
+            raise MEDH5ValidationError(
+                f"series {series.series_uid}: instance {uid} ({path}) decodes to a "
+                f"{plane.shape} array, not the {expected} its header states"
+            )
+        if volume is None:
+            volume = np.empty((len(planned.paths), *plane.shape), dtype=plane.dtype)
+        elif plane.dtype != volume.dtype:
+            # What `np.stack` did: the type every slice fits in.
+            volume = volume.astype(np.result_type(volume.dtype, plane.dtype))
+        volume[k] = plane
+    assert volume is not None  # a plan has at least one file
+    return volume
 
 
 def _slice_spacing(
@@ -336,8 +532,27 @@ def _slice_spacing(
     series: Series,
     report: ConversionReport | None,
     thickness: Any = None,
+    *,
+    uids: Sequence[str] | None = None,
 ) -> tuple[float, list[float]]:
-    """Spacing measured between slice origins, refusing an irregular stack."""
+    """Spacing measured over the stack, refusing one that is not a grid.
+
+    *positions* are in geometric order.  Every slice is held to its place in
+    a regular stack, ``origin + k * spacing * normal``, within
+    :data:`SPACING_TOLERANCE` of a slice.  Each gap was held to 1 % of the
+    median gap instead, which bounded no slice: per-gap errors under 1 %
+    accumulate, and positions rounded to two decimals, which accumulate
+    nothing, were refused.
+
+    The spacing is the median gap where it places every slice --- a regular
+    stack's gaps agree on it, and it is what earlier versions wrote --- and
+    otherwise the least-squares step over every slice, from the first slice
+    origin, where the grid starts: the median of gaps rounded to 0.62 and
+    0.63 mm is one of them, and builds a millimetre of error over 200 slices
+    that a fit to every position does not.  A stack neither places is
+    refused, a gap of more than one and a half steps named as missing
+    slices.  *uids* name the slices, in the same order, in a refusal.
+    """
     if positions.shape[0] == 1:
         # No neighbour to measure an increment against.  SliceThickness is the
         # slab rather than the increment, which is why it is not trusted for a
@@ -363,29 +578,98 @@ def _slice_spacing(
                 {"spacing": declared, "thickness": declared, "slices": 1},
             )
         return declared, []
+    n = positions.shape[0]
+    names = list(uids) if uids is not None else [f"#{k}" for k in range(n)]
     projected = positions @ normal
     gaps = np.diff(projected)
-    spacing = float(np.median(np.abs(gaps)))
-    if spacing <= 0:
+    coincident = np.flatnonzero(np.abs(gaps) < _POSITION_FLOOR_MM)
+    if coincident.size:
+        k = int(coincident[0])
         raise MEDH5ValidationError(
-            f"series {series.series_uid} has coincident slice positions"
+            f"series {series.series_uid} has slices at coincident positions: "
+            f"instances {names[k]} and {names[k + 1]} both lie "
+            f"{projected[k]:.4g} mm along the slice normal ({coincident.size} "
+            "such pair(s)). A series is one volume with one slice per position; "
+            "remove the duplicate files, or split the series by phase or echo"
         )
-    spread = float(np.max(np.abs(np.abs(gaps) - spacing)))
-    if spread > SPACING_TOLERANCE * spacing:
-        raise MEDH5ValidationError(
-            f"series {series.series_uid} has irregular slice gaps "
-            f"(median {spacing:.4g} mm, worst deviation {spread:.4g} mm); an "
-            "irregular stack is not a grid --- resample it deliberately, or "
-            "convert the slices as separate images"
-        )
+    steps = np.arange(n, dtype=np.float64)
+    along = projected - projected[0]
+    fits = {
+        "median gap": float(np.median(gaps)),
+        "least squares": float(steps @ along / (steps @ steps)),
+    }
+    for estimate in fits:
+        spacing = fits[estimate]
+        tolerance = _position_tolerance(spacing)
+        residual = along - steps * spacing
+        worst = int(np.argmax(np.abs(residual)))
+        error = float(abs(residual[worst]))
+        if error <= tolerance:
+            break
+    else:
+        raise _irregular(series, projected, names, spacing, worst, error, tolerance)
     if report is not None:
+        how = (
+            "the median gap between slice origins"
+            if estimate == "median gap"
+            else "the least-squares step over every slice origin from the first"
+        )
         report.decision(
             "slice_spacing",
-            f"z spacing {spacing:.4g} mm was measured between slice origins, not "
-            "taken from SliceThickness (which is the slab, not the increment)",
-            {"spacing": spacing, "thickness": thickness, "slices": len(positions)},
+            f"z spacing {spacing:.4g} mm was measured as {how}, not taken from "
+            "SliceThickness (which is the slab, not the increment); every slice "
+            f"lies within {error:.3g} mm of where that regular stack puts it "
+            f"(tolerance {tolerance:.3g} mm: a tenth of a slice, and at least "
+            "0.01 mm)",
+            {
+                "spacing": spacing,
+                "thickness": thickness,
+                "slices": n,
+                "estimate": estimate,
+                "max_through_plane_error_mm": error,
+                "tolerance_mm": tolerance,
+            },
         )
     return spacing, [float(g) for g in gaps]
+
+
+def _irregular(
+    series: Series,
+    projected: npt.NDArray[np.float64],
+    names: Sequence[str],
+    spacing: float,
+    worst: int,
+    error: float,
+    tolerance: float,
+) -> MEDH5ValidationError:
+    """The refusal of a stack that is not a grid: missing slices where every
+    gap is a whole number of the usual step, an irregular stack otherwise."""
+    gaps = np.diff(projected)
+    step = float(np.median(gaps))
+    whole = np.round(gaps / step)
+    if (
+        np.all(whole >= 1)
+        and np.any(whole >= 2)
+        and np.all(np.abs(gaps - whole * step) <= _position_tolerance(step))
+    ):
+        k = int(np.flatnonzero(whole >= 2)[0])
+        return MEDH5ValidationError(
+            f"series {series.series_uid} is missing {int(whole.sum()) - len(gaps)} "
+            f"slice(s): the gap from instance {names[k]} to instance {names[k + 1]} "
+            f"is {gaps[k]:.4g} mm along the slice normal, {whole[k]:.0f} times the "
+            f"{step:.4g} mm between the others. A stack with a hole is not a grid; "
+            "import the complete series, or the parts either side of the gap as "
+            "separate series"
+        )
+    return MEDH5ValidationError(
+        f"series {series.series_uid} has irregular slice gaps: the regular stack "
+        f"that best fits its positions --- slices {spacing:.4g} mm apart from the "
+        f"first --- leaves the slice at index {worst} of {len(projected)} "
+        f"(instance {names[worst]}) {error:.3g} mm off, beyond the "
+        f"{tolerance:.3g} mm tolerance (a tenth of a slice, and at least 0.01 mm). "
+        "An irregular stack is not a grid --- resample it deliberately, or "
+        "convert the slices as separate images"
+    )
 
 
 def _check_stacked(
@@ -583,6 +867,13 @@ def from_dicom(
     when more than one sample results, when it is a directory already, or when
     it ends in a path separator (``out/``); otherwise it is the file the one
     sample is written to.
+
+    A series this importer refuses --- a localizer in three orientations, a
+    sheared or irregular stack, a transfer syntax no installed decoder reads
+    --- is left out with a warning naming it, and the series beside it are
+    imported: one such series aborted the whole tree.  A subject left with no
+    series gets no file; when no series at all can be imported, the refusal
+    is raised.
     """
     log = report or ConversionReport(converter="from-dicom")
     log.source = os.fspath(root)
@@ -621,13 +912,22 @@ def from_dicom(
     if directory:
         target.mkdir(parents=True, exist_ok=True)
     used: set[str] = set()
+    refused: list[MEDH5ValidationError] = []
+    written = 0
     for group in groups:
         path = (
             target / f"{output_name(group, used, safe=_safe)}.medh5"
             if directory
             else target
         )
-        _write_subject(group, path, codec=codec, log=log)
+        written += _write_subject(group, path, codec=codec, log=log, refused=refused)
+    if not written:
+        if len(refused) == 1:
+            raise refused[0]
+        raise MEDH5ValidationError(
+            f"none of the {len(refused)} series under {root} could be imported: "
+            + "; ".join(str(exc) for exc in refused)
+        )
     return log
 
 
@@ -663,7 +963,12 @@ def _demographics(entries: Sequence[Series]) -> dict[str, str]:
 
 
 def _safe(text: str) -> str:
-    return sanitize_stem(text, limit=200)
+    """*text* as a sample id or a file name stem: ASCII identifier characters.
+
+    A ``PatientID`` of ``Müller^Hans`` aborted the import (E003); see
+    :func:`~medh5.io._common.sanitize_ascii_stem`.
+    """
+    return sanitize_ascii_stem(text)
 
 
 def _series_names(entries: Sequence[Series], tp: str) -> list[tuple[Series, str, str]]:
@@ -689,21 +994,41 @@ def _series_names(entries: Sequence[Series], tp: str) -> list[tuple[Series, str,
     return out
 
 
+class _NothingWritten(Exception):
+    """Every planned series of a subject failed to decode: abandon its file."""
+
+
 def _write_subject(
     group: SubjectGroup,
     path: Path,
     *,
     codec: str,
     log: ConversionReport,
-) -> None:
+    refused: list[MEDH5ValidationError],
+) -> bool:
+    """Write one subject's sample to *path*; whether it was written.
+
+    Every series is planned --- its headers read and checked --- before the
+    file is created, and one that is refused is left out with a warning and
+    its refusal added to *refused*; a subject with no series left gets no
+    file.  Each timepoint is declared after its images, so its
+    ``series_uids`` names exactly the series written.
+    """
     import medh5
 
+    planned = [
+        [
+            (entry, plan)
+            for entry in occasion.payload
+            if (plan := _plan(entry, log, refused))
+        ]
+        for occasion in group.occasions
+    ]
+    if not any(planned):
+        _no_sample(group, path, log)
+        return False
     note_instance_ids(group, log)
     days = group.days_from_baseline()
-    named = [
-        _series_names(occasion.payload, f"tp{index}")
-        for index, occasion in enumerate(group.occasions)
-    ]
     # The ids are the PatientID --- usually the medical record number --- or,
     # where there was none, the StudyInstanceUID.  Either is an identifier, and
     # saying which is what lets `scrub` report it without guessing from shape.
@@ -712,104 +1037,188 @@ def _write_subject(
         if group.subject_id.startswith(f"{FALLBACK_PREFIX}:")
         else "dicom:PatientID"
     )
-    with medh5.create(
-        path,
-        sample_id=_safe(group.subject_id),
-        subject_id=group.subject_id,
-        codec=codec,
-    ) as writer:
-        writer.identity(**{ID_SOURCE: {"sample_id": source, "subject_id": source}})
-        tool = writer.software("medh5", medh5.__version__)
-        for index, occasion in enumerate(group.occasions):
-            tp = f"tp{index}"
-            writer.add_timepoint(
-                tp,
-                index=index,
-                date=_iso(occasion.date),
-                days_from_baseline=days[index],
-                study_uid=occasion.key,
-                # Keyed by image id, which is what §3.7 says the key is.  Keyed
-                # by modality, two series of one modality collapsed to one entry.
-                series_uids={
-                    image_id: entry.series_uid for entry, _, image_id in named[index]
-                },
+    try:
+        with medh5.create(
+            path,
+            sample_id=_safe(group.subject_id),
+            subject_id=group.subject_id,
+            codec=codec,
+        ) as writer:
+            writer.identity(**{ID_SOURCE: {"sample_id": source, "subject_id": source}})
+            tool = writer.software("medh5", medh5.__version__)
+            written = 0
+            for index, occasion in enumerate(group.occasions):
+                written += _write_occasion(
+                    writer,
+                    tool,
+                    group,
+                    occasion,
+                    index,
+                    days[index],
+                    planned[index],
+                    log,
+                    refused,
+                )
+            if not written:
+                raise _NothingWritten
+            log.decision(
+                "value_scale",
+                "RescaleSlope/Intercept were stored, not applied; "
+                "read(physical=True) returns HU and read() returns stored values "
+                "(§4.2)",
+                {"subject": group.subject_id},
             )
-            repeated = sorted(
-                modality
-                for modality, n in Counter(e.modality for e in occasion.payload).items()
-                if n > 1
+            # Information, not a warning: a warning fails the conversion, and
+            # this one was on every conversion, so `convert from-dicom` exited 1
+            # on every success.  The validator reports the file (W903).
+            log.add(
+                "deidentification",
+                "no de-identification record was written: this converter does not "
+                "de-identify, and a file without the record must be treated as "
+                "potentially identifying (§11.4, W903)",
+                "info",
+                {"subject": group.subject_id},
             )
-            if repeated:
-                log.decision(
-                    "image_ids",
-                    f"{group.subject_id} {tp}: more than one series of "
-                    f"{', '.join(repeated)} in one study; images are numbered in "
-                    "SeriesInstanceUID order",
-                    {
-                        "timepoint": tp,
-                        "images": {
-                            image_id: entry.series_uid
-                            for entry, _, image_id in named[index]
-                            if entry.modality in repeated
-                        },
-                    },
-                )
-        for index, series_names in enumerate(named):
-            tp = f"tp{index}"
-            for entry, grid_id, image_id in series_names:
-                volume, geometry = read_series(entry, report=log)
-                activity = writer.activity(
-                    "import",
-                    agent=tool,
-                    tool="medh5 convert from-dicom",
-                    inputs=[f"dicom:{entry.series_uid}"],
-                    params={"slices": entry.n_slices, "modality": entry.modality},
-                )
-                writer.add_grid(
-                    grid_id,
-                    shape=geometry["shape"],
-                    spacing=geometry["spacing"],
-                    origin=geometry["origin"],
-                    direction=geometry["direction"],
-                    coord_system=geometry["coord_system"],
-                    units=geometry["units"],
-                    timepoint=tp,
-                    frame_uid=geometry["frame_uid"],
-                )
-                rescale = geometry["rescale"]
-                writer.add_image(
-                    image_id,
-                    volume,
-                    grid=grid_id,
-                    modality=entry.modality,
-                    value_type="quantitative"
-                    if entry.modality == "CT"
-                    else "intensity",
-                    value_units="HU" if entry.modality == "CT" else None,
-                    rescale_slope=None if rescale is None else rescale[0],
-                    rescale_intercept=None if rescale is None else rescale[1],
-                    prov=activity,
-                )
-                if geometry["acquisition"]:
-                    writer.acquisition(image_id, **geometry["acquisition"])
-        log.decision(
-            "value_scale",
-            "RescaleSlope/Intercept were stored, not applied; read(physical=True) "
-            "returns HU and read() returns stored values (§4.2)",
-            {"subject": group.subject_id},
-        )
-        # Information, not a warning: a warning fails the conversion, and
-        # this one was on every conversion, so `convert from-dicom` exited 1
-        # on every success.  The validator reports the file (W903).
-        log.add(
-            "deidentification",
-            "no de-identification record was written: this converter does not "
-            "de-identify, and a file without the record must be treated as "
-            "potentially identifying (§11.4, W903)",
-            "info",
-            {"subject": group.subject_id},
-        )
+    except _NothingWritten:
+        _no_sample(group, path, log)
+        return False
     log.outputs.append(str(path))
+    return True
+
+
+def _plan(
+    entry: Series, log: ConversionReport, refused: list[MEDH5ValidationError]
+) -> _Planned | None:
+    """*entry* checked for import, or ``None`` when it is refused --- with the
+    refusal recorded as a warning and kept in *refused*."""
+    try:
+        planned = _plan_series(entry, log)
+        if planned.samples != 1:
+            raise MEDH5ValidationError(
+                f"series {entry.series_uid} has {planned.samples} samples per pixel; "
+                "this importer reads greyscale series, one value per voxel"
+            )
+    except MEDH5ValidationError as exc:
+        _refuse(entry, exc, log, refused)
+        return None
+    return planned
+
+
+def _refuse(
+    entry: Series,
+    exc: MEDH5ValidationError,
+    log: ConversionReport,
+    refused: list[MEDH5ValidationError],
+) -> None:
+    refused.append(exc)
+    log.warn(
+        "series",
+        f"{entry.modality} series {entry.series_uid} "
+        f"({entry.description or 'no description'}, {entry.n_slices} file(s)) "
+        f"was left out: {exc}",
+        {
+            "series_uid": entry.series_uid,
+            "modality": entry.modality,
+            "files": entry.n_slices,
+        },
+    )
+
+
+def _no_sample(group: SubjectGroup, path: Path, log: ConversionReport) -> None:
+    log.warn(
+        "subject",
+        f"no series of subject {group.subject_id!r} could be imported, so no "
+        f"sample was written to {path}",
+        {"subject": group.subject_id, "output": str(path)},
+    )
+
+
+def _write_occasion(
+    writer: Any,
+    tool: Any,
+    group: SubjectGroup,
+    occasion: Occasion,
+    index: int,
+    days: Any,
+    planned: Sequence[tuple[Series, _Planned]],
+    log: ConversionReport,
+    refused: list[MEDH5ValidationError],
+) -> int:
+    """Write one visit's series and then its timepoint; how many were written."""
+    tp = f"tp{index}"
+    plans = {entry.series_uid: plan for entry, plan in planned}
+    written: dict[str, Series] = {}
+    for entry, grid_id, image_id in _series_names([e for e, _ in planned], tp):
+        geometry = plans[entry.series_uid].geometry
+        try:
+            volume = _decode(plans[entry.series_uid], entry)
+        except MEDH5ValidationError as exc:
+            _refuse(entry, exc, log, refused)
+            continue
+        activity = writer.activity(
+            "import",
+            agent=tool,
+            tool="medh5 convert from-dicom",
+            inputs=[f"dicom:{entry.series_uid}"],
+            params={"slices": entry.n_slices, "modality": entry.modality},
+        )
+        writer.add_grid(
+            grid_id,
+            shape=geometry["shape"],
+            spacing=geometry["spacing"],
+            origin=geometry["origin"],
+            direction=geometry["direction"],
+            coord_system=geometry["coord_system"],
+            units=geometry["units"],
+            timepoint=tp,
+            frame_uid=geometry["frame_uid"],
+        )
+        rescale = geometry["rescale"]
+        writer.add_image(
+            image_id,
+            volume,
+            grid=grid_id,
+            modality=entry.modality,
+            value_type="quantitative" if entry.modality == "CT" else "intensity",
+            value_units="HU" if entry.modality == "CT" else None,
+            rescale_slope=None if rescale is None else rescale[0],
+            rescale_intercept=None if rescale is None else rescale[1],
+            prov=activity,
+        )
+        if geometry["acquisition"]:
+            writer.acquisition(image_id, **geometry["acquisition"])
+        written[image_id] = entry
+    writer.add_timepoint(
+        tp,
+        index=index,
+        date=_iso(occasion.date),
+        days_from_baseline=days,
+        study_uid=occasion.key,
+        # Keyed by image id, which is what §3.7 says the key is.  Keyed by
+        # modality, two series of one modality collapsed to one entry.
+        series_uids={image_id: entry.series_uid for image_id, entry in written.items()},
+    )
+    repeated = sorted(
+        modality
+        for modality, n in Counter(e.modality for e, _ in planned).items()
+        if n > 1
+    )
+    if repeated:
+        log.decision(
+            "image_ids",
+            f"{group.subject_id} {tp}: more than one series of "
+            f"{', '.join(repeated)} in one study; images are numbered in "
+            "SeriesInstanceUID order",
+            {
+                "timepoint": tp,
+                "images": {
+                    image_id: entry.series_uid
+                    for image_id, entry in written.items()
+                    if entry.modality in repeated
+                },
+            },
+        )
+    return len(written)
 
 
 def _iso(value: str | None) -> str | None:

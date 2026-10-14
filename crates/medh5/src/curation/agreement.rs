@@ -4,21 +4,30 @@
 //! scored**: a class one rater never looked at (§11.3) contributes no
 //! measurement and comes back under `skipped`.  **Empty-on-both is not a
 //! disagreement**: Dice is undefined there, reported as `None` and excluded
-//! from the mean.  **Instances match by id first**: where both sides carry
-//! `instance_id` (§7.4) the correspondence is stated; greedy IoU matching is
-//! the fallback, and the result says which was used.
+//! from the mean.  **Instances match by id first** within one sample: where
+//! both sides carry `instance_id` (§7.4) the correspondence is stated; greedy
+//! IoU matching is the fallback, and the result says which was used.  An id
+//! names an object within its own sample, so two files' objects always match
+//! by IoU.
+//!
+//! Compared across two files, a class id is a number within its own label
+//! set: an id the two label sets give different meanings is refused (C102)
+//! rather than scored.
 //!
 //! A record is keyed the way §11.2 keys it, `per_class` by class **id**.
 
+use std::collections::BTreeSet;
+
 use indexmap::IndexMap;
-use ndarray::{Array2, ArrayD, Axis};
+use ndarray::{Array2, ArrayD, Axis, Zip};
 use serde_json::{json, Map, Value};
 
 use crate::annotations::{Annotation, Instance};
+use crate::array::Slice;
 use crate::curation::quality::Agreement;
 use crate::curation::tracking::carries_instance_ids;
-use crate::json::{num, repr, repr_int_tuple, repr_str};
-use crate::labels::ClassKey;
+use crate::json::{num, py_float, repr, repr_int_list, repr_int_tuple, repr_str};
+use crate::labels::{ClassKey, LabelSet};
 use crate::numeric::mean;
 use crate::{Error, Result};
 
@@ -37,18 +46,28 @@ pub fn dice(a: &ndarray::ArrayD<bool>, b: &ndarray::ArrayD<bool>) -> Option<f64>
     if total == 0 {
         return None;
     }
-    let both = a.iter().zip(b.iter()).filter(|(x, y)| **x && **y).count();
-    Some(2.0 * both as f64 / total as f64)
+    let both = a.iter().zip(b.iter()).filter(|(x, y)| **x && **y).count() as u64;
+    dice_of(both, total)
 }
 
 /// Intersection over union, or `None` when both masks are empty.
 pub fn iou(a: &ndarray::ArrayD<bool>, b: &ndarray::ArrayD<bool>) -> Option<f64> {
-    let union = a.iter().zip(b.iter()).filter(|(x, y)| **x || **y).count();
+    let union = a.iter().zip(b.iter()).filter(|(x, y)| **x || **y).count() as u64;
     if union == 0 {
         return None;
     }
-    let both = a.iter().zip(b.iter()).filter(|(x, y)| **x && **y).count();
-    Some(both as f64 / union as f64)
+    let both = a.iter().zip(b.iter()).filter(|(x, y)| **x && **y).count() as u64;
+    iou_of(both, union)
+}
+
+/// Dice from voxel counts: `2 |A ∩ B| / (|A| + |B|)`.
+fn dice_of(both: u64, total: u64) -> Option<f64> {
+    (total > 0).then(|| 2.0 * both as f64 / total as f64)
+}
+
+/// IoU from voxel counts: `|A ∩ B| / |A ∪ B|`.
+fn iou_of(both: u64, union: u64) -> Option<f64> {
+    (union > 0).then(|| both as f64 / union as f64)
 }
 
 /// `np.prod` of a float64 run: the identity times each element in turn.
@@ -56,16 +75,47 @@ fn product(values: impl Iterator<Item = f64>) -> f64 {
     values.fold(1.0, |acc, v| acc * v)
 }
 
-/// IoU of two `(S, 2)` boxes in the same space.
+/// IoU of two `(S, 2)` boxes in the same space; NaN where there is none
+/// (see [`box_iou_f64`]).
 pub fn box_iou(a: &Array2<f32>, b: &Array2<f32>) -> f64 {
-    box_iou_f64(&a.mapv(f64::from), &b.mapv(f64::from))
+    box_iou_checked(a, b).unwrap_or(f64::NAN)
 }
 
 /// [`box_iou`] of float64 boxes, as a caller gives them rather than a file
 /// stores them.
+///
+/// NaN where the two are not boxes of one space, rather than a score: boxes
+/// of different numbers of axes --- a 2-D box against a 3-D one scored about
+/// 10, its area over a volume --- or of none, which scored 1, and a bound that
+/// is not finite or a `lo` above its `hi`, whose extent no product measures.
+/// Agreement and the frontends refuse those instead.
 pub fn box_iou_f64(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    let rows = a.nrows().min(b.nrows());
-    let overlap = product((0..rows).map(|i| {
+    box_iou_f64_checked(a, b).unwrap_or(f64::NAN)
+}
+
+/// [`box_iou`], refusing what it answers with NaN.
+pub(crate) fn box_iou_checked(a: &Array2<f32>, b: &Array2<f32>) -> Result<f64> {
+    box_iou_f64_checked(&a.mapv(f64::from), &b.mapv(f64::from))
+}
+
+/// [`box_iou_f64`], refusing what it answers with NaN: boxes of different
+/// numbers of axes or of none (`ValueError`), and a bound that is not finite
+/// or a `lo` above its `hi` (E406).
+///
+/// Public for the workspace's frontends, not as API: 2.0.x keeps the 2.0.1
+/// signatures above.
+#[doc(hidden)]
+pub fn box_iou_f64_checked(a: &Array2<f64>, b: &Array2<f64>) -> Result<f64> {
+    check_box(a)?;
+    check_box(b)?;
+    if a.nrows() != b.nrows() {
+        return Err(Error::Value(format!(
+            "boxes of {} and {} axes have no IoU: they are not in one space",
+            a.nrows(),
+            b.nrows()
+        )));
+    }
+    let overlap = product((0..a.nrows()).map(|i| {
         let lo = a[[i, 0]].max(b[[i, 0]]);
         let hi = a[[i, 1]].min(b[[i, 1]]);
         let d = hi - lo;
@@ -76,15 +126,36 @@ pub fn box_iou_f64(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
         }
     }));
     if overlap == 0.0 {
-        return 0.0;
+        return Ok(0.0);
     }
     let volume = |m: &Array2<f64>| product(m.outer_iter().map(|r| r[1] - r[0]));
     let union = volume(a) + volume(b) - overlap;
-    if union > 0.0 {
-        overlap / union
-    } else {
-        0.0
+    Ok(if union > 0.0 { overlap / union } else { 0.0 })
+}
+
+/// Refuse what is not a box: no axis, or an axis that is not a finite
+/// `[lo, hi]` with `lo <= hi` (E406).
+fn check_box(m: &Array2<f64>) -> Result<()> {
+    if m.ncols() != 2 || m.nrows() == 0 {
+        return Err(Error::Value(format!(
+            "a box is an (S, 2) array with at least one axis, not shape {}",
+            repr_int_tuple(m.shape())
+        )));
     }
+    for (axis, row) in m.outer_iter().enumerate() {
+        let (lo, hi) = (row[0], row[1]);
+        if !(lo.is_finite() && hi.is_finite() && lo <= hi) {
+            return Err(Error::coded(
+                "E406",
+                format!(
+                    "a box's axis {axis} spans [{}, {}]; each axis is a finite [lo, hi] with lo <= hi",
+                    py_float(lo),
+                    py_float(hi)
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Per-class agreement between two voxel annotations.
@@ -156,6 +227,9 @@ pub struct InstanceAgreement {
     pub only_in_a: Vec<usize>,
     pub only_in_b: Vec<usize>,
     pub matched_by: String,
+    /// The IoU at or above which IoU matching pairs two objects.  Objects
+    /// matched by `instance_id` are paired whatever their IoU, so the report
+    /// of such a match gives no threshold (`null`).
     pub threshold: f64,
     pub against: Option<String>,
     /// `(instance_id, class in a, class in b)` --- matched but classed apart.
@@ -203,7 +277,7 @@ impl InstanceAgreement {
             "only_in_a": self.only_in_a,
             "only_in_b": self.only_in_b,
             "matched_by": self.matched_by,
-            "threshold": num(self.threshold),
+            "threshold": if self.matched_by == "instance_id" { Value::Null } else { num(self.threshold) },
             "class_mismatches": self.class_mismatches.iter().map(|(i, a, b)| json!([i, a, b])).collect::<Vec<_>>(),
             "skipped": self.skipped,
             "against": self.against,
@@ -257,14 +331,20 @@ fn repr_opt(value: Option<&str>) -> String {
 }
 
 struct Pair {
+    /// The ids `classes` named, as both sides resolve them; `None` for all.
+    asked: Option<Vec<i64>>,
     classes: Vec<i64>,
     skipped: Vec<String>,
 }
 
 /// Classes both sides committed to finding, in a stable order (§11.3).
 fn classes_to_compare(a: &Annotation, b: &Annotation, classes: Option<&[ClassKey]>) -> Result<Pair> {
-    let wanted: Vec<i64> = match classes {
-        Some(keys) => keys.iter().map(|k| a.resolve_class(k)).collect::<Result<_>>()?,
+    let asked: Option<Vec<i64>> = match classes {
+        Some(keys) => Some(keys.iter().map(|k| resolve_on_both(a, b, k)).collect::<Result<_>>()?),
+        None => None,
+    };
+    let wanted: Vec<i64> = match &asked {
+        Some(ids) => ids.clone(),
         None => {
             let mut all: Vec<i64> = a.class_ids().iter().chain(b.class_ids()).copied().collect();
             all.sort_unstable();
@@ -272,16 +352,110 @@ fn classes_to_compare(a: &Annotation, b: &Annotation, classes: Option<&[ClassKey
             all
         }
     };
-    let mut out = Pair { classes: Vec::new(), skipped: Vec::new() };
+    let mut out = Pair { asked, classes: Vec::new(), skipped: Vec::new() };
     for class_id in wanted {
         let key = ClassKey::Id(class_id);
         if a.is_annotated(&key)? && b.is_annotated(&key)? {
             out.classes.push(class_id);
         } else {
-            out.skipped.push(format!("{} (not examined by both)", a.class_key(class_id)));
+            out.skipped.push(format!("{} (not examined by both)", key_of(a, b, class_id)));
         }
     }
     Ok(out)
+}
+
+/// A class id's key in the label set of a side that uses it: an id only `b`
+/// uses was named by `a`'s label set, which across two files may give it
+/// another meaning.
+fn key_of(a: &Annotation, b: &Annotation, class_id: i64) -> String {
+    let uses = |ann: &Annotation| ann.class_ids().contains(&class_id) || ann.annotated_class_ids().contains(&class_id);
+    if uses(a) || !uses(b) {
+        a.class_key(class_id)
+    } else {
+        b.class_key(class_id)
+    }
+}
+
+/// A class key as the one id both annotations give it.  A name resolves
+/// through `a`'s label set, and through `b`'s as well where that holds it,
+/// and is refused (C102) where the two give it two ids: "liver" is a number
+/// only within its own label set.  A name `b`'s label set lacks leaves its
+/// id to [`check_meanings`].
+fn resolve_on_both(a: &Annotation, b: &Annotation, key: &ClassKey) -> Result<i64> {
+    let id = a.resolve_class(key)?;
+    if let (ClassKey::Key(name), Some(set)) = (key, b.label_set()) {
+        let Some(other) = set.by_key(name).map(|c| c.id) else { return Ok(id) };
+        if other != id {
+            return Err(Error::coded(
+                "C102",
+                format!(
+                    "class {} is id {id} in {} and id {other} in {}; agreement compares one class id on both \
+                     sides, and these are two",
+                    repr_str(name),
+                    vocabulary_of(a),
+                    vocabulary_of(b)
+                ),
+            ));
+        }
+    }
+    Ok(id)
+}
+
+/// Refuse class ids, of those both sides use, that the two annotations'
+/// label sets give different meanings (C102, the rule `dataset check`
+/// applies to a cohort).
+///
+/// A class id is a number within its own label set: compared across two
+/// files, "liver" in one was scored against "spleen" in the other, at Dice 1.
+/// One label set --- one sample's, or one vocabulary in two files --- means
+/// the same throughout, and two versions of a vocabulary that agree on a
+/// class compare it.  Where either side has no label set, an id is only a
+/// number, and is compared as one.
+fn check_meanings(a: &Annotation, b: &Annotation, ids: &BTreeSet<i64>) -> Result<()> {
+    let (Some(left), Some(right)) = (a.label_set(), b.label_set()) else { return Ok(()) };
+    if std::ptr::eq(left, right) || left.sha256() == right.sha256() {
+        return Ok(());
+    }
+    let key = |set: &LabelSet, id: i64| set.by_id(id).map(|c| repr_str(&c.key));
+    let clashing: Vec<(i64, Option<String>, Option<String>)> =
+        ids.iter().map(|id| (*id, key(left, *id), key(right, *id))).filter(|(_, x, y)| x.is_none() || x != y).collect();
+    if clashing.is_empty() {
+        return Ok(());
+    }
+    let undefined = || "undefined".to_string();
+    let what: Vec<String> = clashing
+        .iter()
+        .map(|(id, x, y)| {
+            format!(
+                "{id} is {} in the first and {} in the second",
+                x.clone().unwrap_or_else(undefined),
+                y.clone().unwrap_or_else(undefined)
+            )
+        })
+        .collect();
+    let ids: Vec<i64> = clashing.iter().map(|c| c.0).collect();
+    Err(Error::coded(
+        "C102",
+        format!(
+            "class id(s) {} mean different things in {} and {}: {}; scored across the two, one class is measured \
+             against another",
+            repr_int_list(&ids),
+            vocabulary_of(a),
+            vocabulary_of(b),
+            what.join("; ")
+        ),
+    ))
+}
+
+/// `annotation 'seg' of 'a.medh5' (label set 'v' 1.0.0)`: what gives the
+/// annotation's class ids their meaning, and where.  Two raters' files
+/// often call their annotations alike.
+fn vocabulary_of(ann: &Annotation) -> String {
+    let set = match ann.label_set() {
+        Some(set) => format!("label set {} {}", repr_str(&set.id), set.version),
+        None => "no label set".into(),
+    };
+    format!("annotation {} of {} ({set})", repr_str(&ann.ann_id), repr_str(&ann.group.filename()))
 }
 
 /// Per-class Dice or IoU between two voxel annotations on the same grid.
@@ -308,6 +482,7 @@ pub fn compare_voxel(
         ));
     }
     let pair = classes_to_compare(a, b, classes)?;
+    check_meanings(a, b, &shared_ids(a, &[], b, &[], pair.asked.as_deref()))?;
     // A voxel either annotation ignores (§7.7) is evidence neither for nor
     // against agreement, so it is left out of both: counted, it scored a rater
     // against voxels the other declared unexamined.
@@ -319,20 +494,12 @@ pub fn compare_voxel(
         }
         (left, right) => left.or(right),
     };
+    let counts = class_counts(a, b, &pair.classes, ignored.as_ref())?;
     let mut per_class = IndexMap::new();
     let mut ids = IndexMap::new();
     let mut skipped = pair.skipped;
-    for class_id in pair.classes {
-        let wanted = [ClassKey::Id(class_id)];
-        let mut left = a.dense(Some(&wanted), None)?.index_axis_move(Axis(0), 0);
-        let mut right = b.dense(Some(&wanted), None)?.index_axis_move(Axis(0), 0);
-        same_shape(&left, &right, a, b)?;
-        if let Some(ignored) = &ignored {
-            same_shape(&left, ignored, a, b)?;
-            left.zip_mut_with(ignored, |v, i| *v &= !*i);
-            right.zip_mut_with(ignored, |v, i| *v &= !*i);
-        }
-        let score = if metric == "dice" { dice(&left, &right) } else { iou(&left, &right) };
+    for (class_id, (both, left, right)) in pair.classes.into_iter().zip(counts) {
+        let score = if metric == "dice" { dice_of(both, left + right) } else { iou_of(both, left + right - both) };
         let key = a.class_key(class_id);
         match score {
             None if ignored.is_some() => skipped.push(format!("{key} (empty in both outside the ignore region)")),
@@ -395,6 +562,119 @@ fn same_shape(x: &ArrayD<bool>, y: &ArrayD<bool>, a: &Annotation, b: &Annotation
             repr_int_tuple(y.shape())
         ),
     ))
+}
+
+/// Class-plane voxels [`class_counts`] holds in memory at once, per side.
+const SLAB_VOXELS: usize = 1 << 26;
+
+/// `(|A ∩ B|, |A|, |B|)` for each of `classes`, over the voxels neither side
+/// ignores.
+///
+/// Classes are read together, through the reader contract (`dense`), in
+/// slabs of whole stored chunks: read one class at a time, every label map or
+/// layer was decoded once for each class it holds, and a 100-class
+/// comparison read each volume 100 times.  The planes held at once stay
+/// under [`SLAB_VOXELS`] a side; where a slab of every class would not, the
+/// classes are read in groups.
+fn class_counts(
+    a: &Annotation,
+    b: &Annotation,
+    classes: &[i64],
+    ignored: Option<&ArrayD<bool>>,
+) -> Result<Vec<(u64, u64, u64)>> {
+    counts_in_slabs(a, b, classes, ignored, SLAB_VOXELS)
+}
+
+/// [`class_counts`] holding at most `budget` class-plane voxels a side, or
+/// one class's plane of one chunk where that is more.
+fn counts_in_slabs(
+    a: &Annotation,
+    b: &Annotation,
+    classes: &[i64],
+    ignored: Option<&ArrayD<bool>>,
+    budget: usize,
+) -> Result<Vec<(u64, u64, u64)>> {
+    let mut counts = vec![(0, 0, 0); classes.len()];
+    let shape = a.spatial_shape()?;
+    let other = b.spatial_shape()?;
+    if shape != other {
+        return Err(Error::coded(
+            "E405",
+            format!(
+                "annotations {} and {} cover voxels of shapes {} and {}; voxel agreement compares one grid's voxels",
+                repr_str(&a.ann_id),
+                repr_str(&b.ann_id),
+                repr_int_tuple(&shape),
+                repr_int_tuple(&other)
+            ),
+        ));
+    }
+    if let Some(region) = ignored {
+        if region.shape() != shape.as_slice() {
+            return Err(Error::coded(
+                "E405",
+                format!(
+                    "annotations {} and {}: an ignore region of shape {} on a grid of shape {}; voxel agreement \
+                     compares one grid's voxels",
+                    repr_str(&a.ann_id),
+                    repr_str(&b.ann_id),
+                    repr_int_tuple(region.shape()),
+                    repr_int_tuple(&shape)
+                ),
+            ));
+        }
+    }
+    let Some((&depth, rest)) = shape.split_first() else { return Ok(counts) };
+    if classes.is_empty() || depth == 0 {
+        return Ok(counts);
+    }
+    let plane = rest.iter().product::<usize>().max(1);
+    let chunk = match chunk_rows(a).max(chunk_rows(b)) {
+        0 => depth,
+        rows => rows.min(depth),
+    };
+    let slab = chunk.saturating_mul(plane);
+    let (rows, group) = match classes.len().saturating_mul(slab) {
+        all if all <= budget => (chunk.saturating_mul(budget / all), classes.len()),
+        _ => (chunk, (budget / slab).max(1)),
+    };
+    for start in (0..depth).step_by(rows) {
+        let stop = (start + rows).min(depth);
+        let mut roi = vec![Slice::new(start as i64, stop as i64)];
+        roi.extend(rest.iter().map(|_| Slice::full()));
+        let kept = ignored.map(|region| region.slice_axis(Axis(0), ndarray::Slice::from(start..stop)));
+        for (ids, tallies) in classes.chunks(group).zip(counts.chunks_mut(group)) {
+            let keys: Vec<ClassKey> = ids.iter().map(|c| ClassKey::Id(*c)).collect();
+            let left = a.dense(Some(&keys), Some(&roi))?;
+            let right = b.dense(Some(&keys), Some(&roi))?;
+            same_shape(&left, &right, a, b)?;
+            for (i, tally) in tallies.iter_mut().enumerate() {
+                let (x, y) = (left.index_axis(Axis(0), i), right.index_axis(Axis(0), i));
+                let mut add = |p: bool, q: bool| {
+                    tally.0 += u64::from(p && q);
+                    tally.1 += u64::from(p);
+                    tally.2 += u64::from(q);
+                };
+                match &kept {
+                    Some(skip) => Zip::from(&x).and(&y).and(skip).for_each(|p, q, s| {
+                        if !*s {
+                            add(*p, *q);
+                        }
+                    }),
+                    None => Zip::from(&x).and(&y).for_each(|p, q| add(*p, *q)),
+                }
+            }
+        }
+    }
+    Ok(counts)
+}
+
+/// The extent of `ann`'s stored chunks along the first spatial axis, or 0
+/// where it stores none to read (an `instances` annotation, contiguous data).
+fn chunk_rows(ann: &Annotation) -> usize {
+    let Ok(Some(data)) = ann.optional_dataset("data") else { return 0 };
+    let stacked = usize::from(matches!(ann.kind(), "layers" | "bitmask" | "probmap"));
+    data.chunk().and_then(|c| c.get(stacked).copied()).unwrap_or(0)
 }
 
 fn space_of(ann: &Annotation) -> String {
@@ -463,13 +743,23 @@ fn check_same_space(a: &Annotation, b: &Annotation) -> Result<()> {
 ///
 /// **A miss counts only where the other side looked** (§11.3): an unmatched
 /// object whose class the other annotation never examined is dropped and its
-/// class listed under `skipped`.
+/// class listed under `skipped`.  Two objects match at an IoU of at least
+/// `threshold`, which lies in (0, 1].
 pub fn compare_instances(
     a: &Annotation,
     b: &Annotation,
     threshold: f64,
     classes: Option<&[ClassKey]>,
 ) -> Result<InstanceAgreement> {
+    // As `medh5 agree --threshold` holds it: NaN matched no object, and 0 or
+    // less every pair, objects that do not touch among them.
+    let in_range = threshold > 0.0 && threshold <= 1.0;
+    if !in_range {
+        return Err(Error::invalid(format!(
+            "threshold {} is no IoU threshold: two objects match at an IoU in (0, 1]",
+            py_float(threshold)
+        )));
+    }
     for ann in [a, b] {
         if !OBJECT_KINDS.contains(&ann.kind()) {
             return Err(Error::invalid(format!(
@@ -482,22 +772,29 @@ pub fn compare_instances(
         }
     }
     check_same_space(a, b)?;
+    check_axes(a, b)?;
     let pair = classes_to_compare(a, b, classes)?;
     let mut left = a.instances()?;
     let mut right = b.instances()?;
     in_the_world_of(a, b, &mut right)?;
-    if let Some(keys) = classes {
-        let asked: Vec<i64> = keys.iter().map(|k| a.resolve_class(k)).collect::<Result<_>>()?;
+    if let Some(asked) = &pair.asked {
         left.retain(|o| asked.contains(&o.class_id));
         right.retain(|o| asked.contains(&o.class_id));
     }
+    check_meanings(a, b, &shared_ids(a, &left, b, &right, pair.asked.as_deref()))?;
+    check_boxes(a, &left)?;
+    check_boxes(b, &right)?;
+    // `instance_id` names an object within its own sample (§7.4), so only
+    // there does a shared id state a correspondence: two raters' files that
+    // each number from 1 paired disjoint lesions as matches, at an F1 of 1.
     let ids_b: std::collections::HashSet<u64> = right.iter().map(|o| o.instance_id).collect();
     let shared: std::collections::HashSet<u64> =
         left.iter().map(|o| o.instance_id).filter(|i| ids_b.contains(i)).collect();
-    let mut result = if !shared.is_empty() && carries_instance_ids(a)? && carries_instance_ids(b)? {
-        match_by_id(&left, &right, &shared, threshold, &b.ann_id)
+    let by_id = one_sample(a, b) && !shared.is_empty() && carries_instance_ids(a)? && carries_instance_ids(b)?;
+    let mut result = if by_id {
+        match_by_id(&left, &right, &shared, threshold, &b.ann_id)?
     } else {
-        match_by_iou(&left, &right, threshold, &b.ann_id)
+        match_by_iou(&left, &right, threshold, &b.ann_id)?
     };
     let class_a: std::collections::HashMap<usize, i64> = left.iter().map(|o| (o.index, o.class_id)).collect();
     let class_b: std::collections::HashMap<usize, i64> = right.iter().map(|o| (o.index, o.class_id)).collect();
@@ -507,6 +804,68 @@ pub fn compare_instances(
     result.only_in_b.retain(|j| looked_a.contains(&class_b[j]));
     result.skipped = pair.skipped;
     Ok(result)
+}
+
+/// Refuse boxes of different numbers of spatial axes (E414).  A grid's
+/// `direction` is S×S (§3.2), so a 2-D grid's world is a plane of its own,
+/// not a slice of a volume's: scored as one, a 2-D box against a 3-D one
+/// came out at an IoU of about 10, and as a match.
+fn check_axes(a: &Annotation, b: &Annotation) -> Result<()> {
+    let (left, right) = (axes_of(a)?, axes_of(b)?);
+    if left == right {
+        return Ok(());
+    }
+    Err(Error::coded(
+        "E414",
+        format!(
+            "annotations {} and {} hold boxes of {left} and {right} spatial axes, which are not in one space",
+            repr_str(&a.ann_id),
+            repr_str(&b.ann_id)
+        ),
+    ))
+}
+
+/// The spatial axes of an object annotation's `(N, S, 2)` boxes.
+fn axes_of(ann: &Annotation) -> Result<usize> {
+    Ok(ann.dataset_shape("boxes")?.get(1).copied().unwrap_or(0))
+}
+
+/// Refuse an object whose box IoU cannot measure (E406), naming it: a bound
+/// that is not finite or a `lo` above its `hi`, which scored as an empty box
+/// or as a box with the volume of its inversion.
+fn check_boxes(ann: &Annotation, objects: &[Instance]) -> Result<()> {
+    for object in objects {
+        check_box(&object.bbox.mapv(f64::from)).map_err(|e| {
+            Error::coded(
+                "E406",
+                format!("annotation {}: object {}: {}", repr_str(&ann.ann_id), object.index, e.message()),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// The class ids both sides use, of those asked for: what a comparison may
+/// read on both, so what must mean one thing on both.  A side uses the ids
+/// it can express (`class_ids`), those it examined, and those its objects
+/// carry.
+fn shared_ids(
+    a: &Annotation,
+    left: &[Instance],
+    b: &Annotation,
+    right: &[Instance],
+    asked: Option<&[i64]>,
+) -> BTreeSet<i64> {
+    let used = |ann: &Annotation, objects: &[Instance]| -> BTreeSet<i64> {
+        ann.class_ids()
+            .iter()
+            .chain(ann.annotated_class_ids())
+            .copied()
+            .chain(objects.iter().map(|o| o.class_id))
+            .filter(|c| asked.is_none_or(|ids| ids.contains(c)))
+            .collect()
+    };
+    used(a, left).intersection(&used(b, right)).copied().collect()
 }
 
 /// `b`'s world boxes, in `a`'s units.
@@ -542,18 +901,18 @@ fn match_by_id(
     shared: &std::collections::HashSet<u64>,
     threshold: f64,
     against: &str,
-) -> InstanceAgreement {
+) -> Result<InstanceAgreement> {
     let by_id_b: std::collections::HashMap<u64, &Instance> = right.iter().map(|o| (o.instance_id, o)).collect();
     let mut matched = Vec::new();
     let mut mismatches = Vec::new();
     for obj in left.iter().filter(|o| shared.contains(&o.instance_id)) {
         let other = by_id_b[&obj.instance_id];
-        matched.push((obj.index, other.index, box_iou(&obj.bbox, &other.bbox)));
+        matched.push((obj.index, other.index, box_iou_checked(&obj.bbox, &other.bbox)?));
         if obj.class_id != other.class_id {
             mismatches.push((obj.instance_id, obj.class_id, other.class_id));
         }
     }
-    InstanceAgreement {
+    Ok(InstanceAgreement {
         matched,
         only_in_a: left.iter().filter(|o| !shared.contains(&o.instance_id)).map(|o| o.index).collect(),
         only_in_b: right.iter().filter(|o| !shared.contains(&o.instance_id)).map(|o| o.index).collect(),
@@ -562,18 +921,18 @@ fn match_by_id(
         against: Some(format!("annotations/{against}")),
         class_mismatches: mismatches,
         skipped: Vec::new(),
-    }
+    })
 }
 
 /// Greedy highest-IoU-first matching, one object to at most one object.
-fn match_by_iou(left: &[Instance], right: &[Instance], threshold: f64, against: &str) -> InstanceAgreement {
+fn match_by_iou(left: &[Instance], right: &[Instance], threshold: f64, against: &str) -> Result<InstanceAgreement> {
     let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
     for (i, obj) in left.iter().enumerate() {
         for (j, other) in right.iter().enumerate() {
             if obj.class_id != other.class_id {
                 continue;
             }
-            let overlap = box_iou(&obj.bbox, &other.bbox);
+            let overlap = box_iou_checked(&obj.bbox, &other.bbox)?;
             if overlap >= threshold {
                 candidates.push((overlap, i, j));
             }
@@ -592,7 +951,7 @@ fn match_by_iou(left: &[Instance], right: &[Instance], threshold: f64, against: 
         matched.push((left[i].index, right[j].index, overlap));
     }
     matched.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.cmp(&y.1)).then(x.2.total_cmp(&y.2)));
-    InstanceAgreement {
+    Ok(InstanceAgreement {
         matched,
         only_in_a: left.iter().enumerate().filter(|(i, _)| !used_a.contains(i)).map(|(_, o)| o.index).collect(),
         only_in_b: right.iter().enumerate().filter(|(j, _)| !used_b.contains(j)).map(|(_, o)| o.index).collect(),
@@ -601,7 +960,7 @@ fn match_by_iou(left: &[Instance], right: &[Instance], threshold: f64, against: 
         against: Some(format!("annotations/{against}")),
         class_mismatches: Vec::new(),
         skipped: Vec::new(),
-    }
+    })
 }
 
 /// Compare two annotations, choosing the comparison their kinds support.
@@ -657,5 +1016,118 @@ mod tests {
         assert_eq!(box_iou(&a, &a), 1.0);
         let c: Array2<f32> = array![[1.0, 3.0], [0.0, 2.0]];
         assert_eq!(box_iou(&a, &c), 2.0 / 6.0);
+    }
+
+    #[test]
+    fn s8_1_box_iou_refuses_what_is_not_two_boxes_of_one_space() {
+        let plane: Array2<f64> = array![[0.0, 1.0], [0.0, 1.0]];
+        let volume: Array2<f64> = array![[0.0, 1.0], [0.0, 1.0], [0.0, 0.1]];
+        // The public form keeps its 2.0.1 signature and answers NaN for
+        // exactly what the checked form refuses.
+        let both = |a: &Array2<f64>, b: &Array2<f64>| {
+            let checked = box_iou_f64_checked(a, b);
+            let public = box_iou_f64(a, b);
+            match &checked {
+                Ok(v) => assert_eq!(public, *v),
+                Err(_) => assert!(public.is_nan()),
+            }
+            checked
+        };
+        // An area over a volume scored about 10, in both orders.
+        assert!(both(&plane, &volume).is_err());
+        assert!(both(&volume, &plane).is_err());
+        // No axis at all scored 1.
+        let none = Array2::<f64>::zeros((0, 2));
+        assert!(both(&none, &none).is_err());
+        for bad in [[f64::NAN, 1.0], [0.0, f64::INFINITY], [f64::NEG_INFINITY, 0.0], [1.0, 0.0]] {
+            let broken = array![[bad[0], bad[1]], [0.0, 1.0]];
+            assert_eq!(both(&broken, &plane).unwrap_err().code(), Some("E406"), "{bad:?}");
+            assert_eq!(both(&plane, &broken).unwrap_err().code(), Some("E406"), "{bad:?}");
+        }
+        // Boxes of one space still score, a flat one as no overlap.
+        let flat: Array2<f64> = array![[0.0, 0.0], [0.0, 1.0]];
+        assert_eq!(both(&flat, &flat).unwrap(), 0.0);
+        assert_eq!(both(&volume, &volume).unwrap(), 1.0);
+    }
+
+    /// Counted in slabs of chunks and in groups of classes, however small the
+    /// budget, two annotations agree voxel for voxel with their classes read
+    /// one at a time over the whole grid.
+    #[test]
+    fn s11_2_counts_in_slabs_are_the_counts_of_whole_planes() {
+        use crate::array::NdArray;
+        use crate::labels::LabelClass;
+        use crate::rng::Rng;
+        use crate::sample::open_sample;
+        use crate::sample::writer::{create, GridOptions, ImageOptions};
+        use crate::sample::writer_annotations::{SegmentationOptions, SegmentationSource};
+        use ndarray::IxDyn;
+
+        // Above the size a dataset is stored whole in (64 KiB), chunked in
+        // three rows as the grid asks.
+        let (shape, classes) = ([16_usize, 72, 64], 5_i64);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("raters.medh5");
+        let mut rng = Rng::new(11);
+        let mut labelling = || ArrayD::from_shape_simple_fn(IxDyn(&shape), || rng.integer(0, classes + 1).unwrap());
+        let (first, second) = (labelling(), labelling());
+        let masks = |labels: &ArrayD<i64>| -> Vec<(ClassKey, ArrayD<bool>)> {
+            (1..=classes).map(|c| (ClassKey::Id(c), labels.mapv(|v| v == c))).collect()
+        };
+        let mut w = create(&path, Some("raters"), None, "portable", &[]).unwrap();
+        let named = (1..=classes).map(|c| LabelClass::new(c, format!("c{c}"), format!("C{c}")).unwrap()).collect();
+        w.label_set(LabelSet::new("v", named, "1.0.0", vec![], vec![], "inline", None, None).unwrap());
+        let grid = GridOptions { chunk_hint: Some(vec![3, 72, 64]), ..Default::default() };
+        w.add_grid("g", &[16, 72, 64], &[1.0, 1.0, 1.0], grid).unwrap();
+        let image = NdArray::from_vec(&shape, vec![0_i16; shape.iter().product()]).unwrap();
+        w.add_image("CT", &image, "g", "CT", ImageOptions::default()).unwrap();
+        let plane_at = |axis: usize, at: usize| ArrayD::from_shape_fn(IxDyn(&shape), move |i| i[axis] == at);
+        for (name, labels, encoding, ignore) in [
+            ("a", &first, "labelmap", Some(&plane_at(0, 4) | &plane_at(2, 0))),
+            ("b", &second, "layers", None),
+            ("c", &second, "bitmask", Some(plane_at(1, 3))),
+            ("d", &second, "labelmap", None),
+        ] {
+            let options = SegmentationOptions { encoding: Some(encoding.into()), ignore, ..Default::default() };
+            w.add_segmentation(name, "g", SegmentationSource::Masks(masks(labels)), options).unwrap();
+        }
+        w.commit(true).unwrap();
+        let sample = open_sample(&path).unwrap();
+        assert_eq!(chunk_rows(sample.annotation("a").unwrap()), 3, "a label map is read a chunk of rows at a time");
+        let slab = 3 * 72 * 64;
+        let ids: Vec<i64> = (1..=classes).collect();
+        for (x, y) in [("a", "d"), ("a", "b"), ("a", "c"), ("c", "b"), ("d", "c")] {
+            let (a, b) = (sample.annotation(x).unwrap(), sample.annotation(y).unwrap());
+            let ignored = match (a.ignore_region().unwrap(), b.ignore_region().unwrap()) {
+                (Some(l), Some(r)) => Some(&l | &r),
+                (l, r) => l.or(r),
+            };
+            let skip: Vec<bool> = match &ignored {
+                Some(region) => region.iter().copied().collect(),
+                None => vec![false; shape.iter().product()],
+            };
+            let whole: Vec<(u64, u64, u64)> = ids
+                .iter()
+                .map(|c| {
+                    let plane = |ann: &Annotation| ann.dense(Some(&[ClassKey::Id(*c)]), None).unwrap();
+                    let (l, r) = (plane(a), plane(b));
+                    let (mut both, mut left, mut right) = (0, 0, 0);
+                    for ((p, q), _) in l.iter().zip(r.iter()).zip(&skip).filter(|(_, s)| !**s) {
+                        both += u64::from(*p && *q);
+                        left += u64::from(*p);
+                        right += u64::from(*q);
+                    }
+                    (both, left, right)
+                })
+                .collect();
+            assert!(whole.iter().all(|(both, _, _)| *both > 0), "{x} and {y} overlap in every class");
+            // Less than a chunk's rows of one class: a chunk at a time, one
+            // class at a time.  Then two classes, four, all of them, and
+            // slabs of several chunks, to the whole grid at once.
+            for budget in [1, slab - 1, slab, 2 * slab, 4 * slab, 5 * slab, 10 * slab, SLAB_VOXELS] {
+                let counted = counts_in_slabs(a, b, &ids, ignored.as_ref(), budget).unwrap();
+                assert_eq!(counted, whole, "{x} vs {y} in a budget of {budget}");
+            }
+        }
     }
 }

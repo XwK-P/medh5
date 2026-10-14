@@ -16,7 +16,7 @@ default-members = [
 # The one source of the package version for every frontend: the Rust crates,
 # the CLI and the Python wheel (pyproject.toml reads it through maturin).  It is
 # stamped into every file's `generator` attribute and every manifest.
-version = "2.0.1"
+version = "2.0.2"
 edition = "2021"
 rust-version = "1.85.1"
 license = "MIT"
@@ -25,9 +25,9 @@ repository = "https://github.com/XwK-P/medh5"
 homepage = "https://medh5.readthedocs.io/"
 
 [workspace.dependencies]
-medh5-sys = { path = "crates/medh5-sys", version = "=2.0.1" }
-medh5 = { path = "crates/medh5", version = "=2.0.1" }
-medh5-cli = { path = "crates/medh5-cli", version = "=2.0.1" }
+medh5-sys = { path = "crates/medh5-sys", version = "=2.0.2" }
+medh5 = { path = "crates/medh5", version = "=2.0.2" }
+medh5-cli = { path = "crates/medh5-cli", version = "=2.0.2" }
 hdf5 = { package = "hdf5-metno", version = "0.15.0", features = ["static", "zlib", "f16"] }
 ndarray = "0.17"
 half = "2.4"
@@ -42,6 +42,7 @@ regex = "1"
 thiserror = "2"
 jsonschema = { version = "0.58", default-features = false }
 libc = "0.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 clap = { version = "4.5", features = ["string", "wrap_help"] }
 pyo3 = { version = "0.29.3", features = ["abi3-py310"] }
 numpy = { version = "0.29.0", features = ["half"] }
@@ -49,3 +50,7 @@ numpy = { version = "0.29.0", features = ["half"] }
 [profile.release]
 lto = "thin"
 codegen-units = 4
+# The symbol table, which nothing that ships reads: 5.4 MB of the 30 MB
+# extension.  Python finds the module by its dynamic symbols, which stay, and a
+# panic keeps its message and location; a Rust backtrace loses frame names.
+strip = "symbols"

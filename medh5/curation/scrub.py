@@ -15,9 +15,14 @@ somebody's record number.  Each of those has a rule here, each finding names
 the rule and the location, and ``--apply`` acts only on the ones that can be
 acted on without guessing.
 
-**Where it looks: everywhere a string can be.**  Every string in ``/meta``,
-every object name, every attribute and every string dataset in the file ---
-including the unknown ones ``amend`` carries through.  Fields are exempted by
+**Where it looks: everywhere a string can be.**  Every string in ``/meta``;
+every link's name --- a second hard link's, a soft link's and the path it
+holds included; every attribute, a committed datatype's included; and every
+string dataset in the file, including the unknown ones ``amend`` carries
+through.  A dataset whose type holds strings the sweep does not decode (inside
+a compound, array or variable-length type) is reported for a person, as is a
+byte buffer or an undecodable type outside the imaging groups, and the report's
+``not_checked`` names every non-string dataset there.  Fields are exempted by
 name, in the engine's sweep, with the reason, rather than examined by being
 remembered: each earlier version kept a list of places to look, and each audit
 found string-bearing places the list had missed.  The scan and ``--apply`` are
@@ -42,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from medh5 import _core
+from medh5.errors import MEDH5Error, MEDH5ValidationError
 
 PROFILES: tuple[str, ...] = _core.SCRUB_PROFILES
 
@@ -289,11 +295,13 @@ def apply(
     """Act on the actionable findings and write the §11.4 attestation.
 
     ``date_shift_days`` shifts every date this acts on --- a timepoint's
-    ``date`` and every date attribute, date-times keeping their time --- rather
-    than deleting it, which preserves the intervals a longitudinal study is
-    about.  Without it, dates are removed --- an interval that cannot be trusted
-    is worse than no interval.  A date inside free text is reported for review
-    and left as written.
+    ``date``, every date attribute and every value that is wholly a date,
+    date-times keeping their time --- rather than deleting it, which preserves
+    the intervals a longitudinal study is about.  Without it, dates are removed
+    --- an interval that cannot be trusted is worse than no interval.  A date
+    inside free text is reported for review and left as written.  A shift of
+    0 is refused, since it moves nothing, and so is a shift other than the one
+    the file already records: its dates were moved once, by that.
 
     ``pseudonymise_ids`` replaces ``sample_id`` and ``subject_id`` --- and a
     ``cohort.group_id`` equal to either --- with salted stable pseudonyms, so
@@ -317,19 +325,64 @@ def scrub_paths(
     paths: Sequence[str | os.PathLike[str]],
     *,
     apply_changes: bool = False,
-    **options: Any,
+    profile: str = "basic",
+    salt: str = "",
+    date_shift_days: int | None = None,
+    performed_by: str | None = None,
+    pseudonymise_ids: bool = False,
 ) -> list[ScrubReport]:
-    """:func:`scan` each of *paths*, or :func:`apply` with *options* to each.
+    """:func:`scan` each of *paths*, or, with *apply_changes*, :func:`apply`
+    the other options to each.
 
-    One report per path, in order; the first file refused raises, and the
-    files before it have been scrubbed.
+    One report per path, in order.  Every path is processed, as ``medh5 scrub``
+    processes them: a refused file --- a clinical sample is refused by design
+    --- neither stops the files after it nor loses the reports of the files
+    before it, whose ``uid_map`` is the only key to the pseudonyms they now
+    hold.  When any path was refused, the first refusal is raised once all
+    have been processed, with ``reports`` set on it: the report of each path,
+    in order, and ``None`` for a refused one.
+
+    The options :func:`apply` alone acts on are refused without
+    *apply_changes* rather than ignored: a scan that was meant as a salted,
+    shifted scrub writes nothing.
     """
-    return [
-        apply(path, **options)
-        if apply_changes
-        else scan(path, profile=options.get("profile", "basic"))
-        for path in paths
-    ]
+    given = {
+        "salt": salt != "",
+        "date_shift_days": date_shift_days is not None,
+        "performed_by": performed_by is not None,
+        "pseudonymise_ids": pseudonymise_ids,
+    }
+    named = [name for name, set_ in given.items() if set_]
+    if named and not apply_changes:
+        raise MEDH5ValidationError(
+            f"nothing is written without apply_changes=True, so {' and '.join(named)} "
+            f"would do nothing: pass apply_changes=True, or leave "
+            f"{'it' if len(named) == 1 else 'them'} out"
+        )
+    reports: list[ScrubReport | None] = []
+    refusals: list[MEDH5Error] = []
+    for path in paths:
+        try:
+            if apply_changes:
+                report = apply(
+                    path,
+                    profile=profile,
+                    salt=salt,
+                    date_shift_days=date_shift_days,
+                    performed_by=performed_by,
+                    pseudonymise_ids=pseudonymise_ids,
+                )
+            else:
+                report = scan(path, profile=profile)
+        except MEDH5Error as refusal:
+            refusals.append(refusal)
+            reports.append(None)
+            continue
+        reports.append(report)
+    if refusals:
+        refusals[0].reports = reports  # type: ignore[attr-defined]
+        raise refusals[0]
+    return [r for r in reports if r is not None]
 
 
 __all__ = [

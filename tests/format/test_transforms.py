@@ -136,6 +136,45 @@ def plant(path: Path, transform_id: str, name: str, data: Any) -> None:
         group.create_dataset(name, data=data)
 
 
+def linear_field(
+    path: Path,
+    matrix: np.ndarray,
+    *,
+    shape: tuple[int, int, int],
+    spacing: tuple[float, float, float],
+    direction: np.ndarray,
+    vector_space: str,
+) -> Path:
+    """A displacement ``u(x) = matrix @ x`` on a grid whose origin is zero,
+    stored as world or index vectors: its Jacobian is ``I + matrix``
+    everywhere, which finite differences reproduce exactly."""
+    linear = direction @ np.diag(spacing)
+    indices = np.stack(np.meshgrid(*map(np.arange, shape), indexing="ij"))
+    displacement = matrix @ linear @ indices.reshape(3, -1)
+    if vector_space == "index":
+        displacement = np.linalg.solve(linear, displacement)
+    with medh5.create(path, codec="portable") as w:
+        w.add_grid(
+            "g",
+            shape=shape,
+            spacing=spacing,
+            origin=(0.0, 0.0, 0.0),
+            direction=direction,
+            frame_uid="F0",
+        )
+        w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+        w.add_transform(
+            "warp",
+            kind="displacement",
+            from_frame="F0",
+            to_frame="F1",
+            field=displacement.reshape(3, *shape),
+            field_grid="g",
+            vector_space=vector_space,
+        )
+    return path
+
+
 class TestDirectionConvention:
     def test_S10_2_maps_from_frame_points_to_to_frame(self, tmp_path):
         """§10.2: x_M = T(x_F). The one convention, with no flag to reverse it."""
@@ -193,6 +232,34 @@ class TestAffine:
         singular[0, 0] = 0.0
         with pytest.raises(MEDH5ValidationError):
             encode_affine(singular)
+
+    @pytest.mark.parametrize(
+        ("row", "column", "value"),
+        [(0, 0, np.nan), (1, 3, np.inf), (2, 1, -np.inf), (3, 0, np.nan)],
+    )
+    def test_S10_3_a_matrix_entry_that_is_not_finite_is_E504(
+        self, tmp_path, row, column, value
+    ):
+        """The last row's comparison and the singularity test both passed a
+        NaN, and nothing looked at the translation: the writer stored a matrix
+        mapping every point to NaN or infinity.  It refuses what the validator
+        reports."""
+        matrix = np.eye(4)
+        matrix[row, column] = value
+        with pytest.raises(MEDH5ValidationError, match="not a finite") as exc:
+            encode_affine(matrix)
+        assert exc.value.code == "E504"
+        path = registered(tmp_path / "reg.medh5")
+        with medh5.create(tmp_path / "x.medh5", codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0), frame_uid="F0")
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            with pytest.raises(MEDH5ValidationError) as exc:
+                w.add_transform(
+                    "t", kind="affine", matrix=matrix, from_frame="F0", to_frame="F1"
+                )
+            assert exc.value.code == "E504"
+        plant(path, "tp0_to_tp1", "matrix", matrix)
+        assert "E504" in validate_file(path).codes
 
     @pytest.mark.parametrize("shape", [(5, 2), (4, 3), (0, 0), (1, 1), (16,)])
     def test_S10_3_a_malformed_matrix_is_E504_not_a_panic(self, tmp_path, shape):
@@ -342,6 +409,102 @@ class TestDisplacement:
             )
         with medh5.open(path) as sample:
             assert sample.transforms["warp"].folding_fraction() > 0.5
+
+    @pytest.mark.parametrize("vector_space", ["world", "index"])
+    @pytest.mark.parametrize("oblique", [False, True])
+    def test_S10_4_a_jacobian_roi_resolves_like_read_field(
+        self, tmp_path, vector_space, oblique
+    ):
+        """On a linear field ``u = A x`` the determinant is ``det(I + A)``
+        everywhere, so every region ``read_field`` reads must report it, over
+        that region's shape.  A negative stop was E109, a short ROI a points
+        error, and a negative start moved the region's origin off the field."""
+        if oblique:
+            shape, spacing, angle = (12, 10, 8), (1.5, 0.8, 2.0), 0.4
+            matrix = np.array([[-0.6, 0.1, 0.0], [0.05, 0.3, -0.1], [0.0, 0.2, -0.2]])
+        else:
+            shape, spacing, angle = (8, 8, 8), (1.0, 1.0, 1.0), 0.0
+            matrix = np.diag([-0.75, 0.0, 0.0])
+        cos, sin = np.cos(angle), np.sin(angle)
+        direction = np.array([[cos, -sin, 0.0], [sin, cos, 0.0], [0.0, 0.0, 1.0]])
+        path = linear_field(
+            tmp_path / "lin.medh5",
+            matrix,
+            shape=shape,
+            spacing=spacing,
+            direction=direction,
+            vector_space=vector_space,
+        )
+        analytic = np.linalg.det(np.eye(3) + matrix)
+        rois = [None, np.s_[2:6], np.s_[2:6, :, 1:], np.s_[-6:], np.s_[:-1]]
+        rois += [np.s_[0:100, -3:, :], (), np.s_[1:3, 1:3, 1:3]]
+        with medh5.open(path) as sample:
+            warp = sample.transforms["warp"]
+            for roi in rois:
+                determinants = warp.jacobian_determinant(roi)
+                assert determinants.shape == warp.read_field(roi=roi).shape[1:], roi
+                assert np.allclose(determinants, analytic, atol=1e-4), roi
+                assert warp.folding_fraction(roi) == 0.0
+
+    def test_S10_4_a_jacobian_roi_is_the_same_region_of_the_field(self, tmp_path):
+        """On a curved field the determinant varies, so a region resolved to
+        the wrong voxels shows: away from its own edges, which are differenced
+        one-sidedly, the region's determinant is the field's."""
+        grid_shape = (10, 9, 8)
+        x = np.arange(grid_shape[0], dtype=np.float64)[:, None, None]
+        y = np.arange(grid_shape[1], dtype=np.float64)[None, :, None]
+        field = np.zeros((3, *grid_shape), dtype=np.float32)
+        field[0] = 0.02 * x**2
+        field[1] = 0.03 * y**2
+        path = tmp_path / "curved.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=grid_shape, spacing=(1.0, 1.0, 1.0), frame_uid="F0")
+            w.add_image("CT", np.zeros(grid_shape, np.int16), grid="g", modality="CT")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="F0",
+                to_frame="F1",
+                field=field,
+                field_grid="g",
+            )
+        with medh5.open(path) as sample:
+            warp = sample.transforms["warp"]
+            whole = warp.jacobian_determinant()
+            for roi, same in [
+                (np.s_[2:8, 1:-2], np.s_[2:8, 1:7, :]),
+                (np.s_[-7:, -6:, 0:100], np.s_[3:10, 3:9, 0:8]),
+            ]:
+                region = warp.jacobian_determinant(roi)
+                assert np.allclose(
+                    region[1:-1, 1:-1, 1:-1], whole[same][1:-1, 1:-1, 1:-1]
+                )
+
+    @pytest.mark.parametrize(
+        ("roi", "match"),
+        [
+            (np.s_[::2], "step 2"),
+            (np.s_[::2, ::2, ::2], "step 2"),
+            (np.s_[1::3, ::2, :], "step 3"),
+            (np.s_[4:5], "1 voxel on axis 0"),
+            (np.s_[:, 3:4, :], "1 voxel on axis 1"),
+            (np.s_[10:4], "no voxel on axis 0"),
+            (np.s_[:, :, 99:], "no voxel on axis 2"),
+            (np.s_[:, :, :, :], "4 axes"),
+        ],
+    )
+    def test_S10_4_a_jacobian_roi_it_cannot_difference_is_refused(
+        self, tmp_path, roi, match
+    ):
+        """A strided region was differenced as if contiguous: ``::2`` on a
+        field folding nowhere reported 100% folding."""
+        path = registered(tmp_path / "reg.medh5", displacement=True)
+        with medh5.open(path) as sample:
+            warp = sample.transforms["refine"]
+            for call in (warp.jacobian_determinant, warp.folding_fraction):
+                with pytest.raises(ValueError, match=match) as exc:
+                    call(roi)
+                assert "'refine'" in str(exc.value)
 
     def test_S10_4_one_component_reads_without_the_others(self, tmp_path):
         path = registered(tmp_path / "reg.medh5", displacement=True)
@@ -546,6 +709,55 @@ class TestDisplacement:
                     sample_field(field, lone, extrapolation=extrapolation),
                 )
 
+    @pytest.mark.parametrize("extrapolation", ["zero", "nearest", "error"])
+    def test_S10_4_a_cubic_field_is_prefiltered_once_and_answers_alike(
+        self, tmp_path: Path, extrapolation: str
+    ):
+        """A cubic field was read whole and prefiltered at every evaluation ---
+        once per training item.  Its coefficients are made once per handle,
+        and every evaluation after the first answers exactly as sampling the
+        whole field does; a closed file still refuses."""
+        from medh5.errors import MEDH5FileError
+        from medh5.transforms import cubic_sample
+
+        rng = np.random.default_rng(11)
+        field = rng.normal(0.0, 2.0, (3, 12, 14, 16)).astype(np.float32)
+        path = tmp_path / "cubic.medh5"
+        with medh5.create(path, sample_id="c") as w:
+            w.add_grid("g", shape=(12, 14, 16), spacing=(1.0, 1.0, 1.0), frame_uid="f0")
+            w.add_image("CT", np.zeros((12, 14, 16), np.int16), grid="g", modality="CT")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="f0",
+                to_frame="f1",
+                field=field,
+                field_grid="g",
+                interpolation="cubic",
+                extrapolation=extrapolation,
+            )
+        inside = rng.uniform([-0.5, -0.5, -0.5], [11.5, 13.5, 15.5], size=(40, 3))
+        outside = np.array([[-3.0, 2.0, 2.0], [14.0, 2.0, 2.0], [2.0, 2.0, 40.0]])
+        stored = field.astype(np.float64)
+        with medh5.open(path) as sample:
+            transform: Any = sample.transforms["warp"]
+            assert transform.interpolation == "cubic"
+            for points in (inside, inside[:5], inside[::-1], inside):
+                expected = cubic_sample(stored, points, extrapolation=extrapolation)
+                assert np.array_equal(transform.sample_indices(points), expected)
+            if extrapolation == "error":
+                with pytest.raises(MEDH5ValidationError, match="outside"):
+                    transform.sample_indices(outside)
+            else:
+                mixed = np.vstack([inside[:3], outside])
+                expected = cubic_sample(stored, mixed, extrapolation=extrapolation)
+                assert np.array_equal(transform.sample_indices(mixed), expected)
+            world = transform.field_grid.index_to_world(inside)
+            moved = transform.transform_points(world)
+            assert np.array_equal(moved, transform.transform_points(world))
+        with pytest.raises(MEDH5FileError):
+            transform.sample_indices(inside)
+
 
 class TestBSpline:
     def test_S10_5_basis_is_a_partition_of_unity(self):
@@ -662,6 +874,37 @@ class TestComposite:
             with pytest.raises(MEDH5ValidationError) as exc:
                 chain.transform_points(np.zeros((1, 3)))
             assert exc.value.code == "E501"
+
+    def test_S10_5_an_in_memory_chain_is_held_to_the_composites_rule(self, tmp_path):
+        """``ChainTransform`` checked units only: steps in the wrong order were
+        chained, took the frames of their first and last step, and mapped
+        points through a path that does not exist."""
+        path = registered(tmp_path / "reg.medh5", composite=True)
+        points = np.array([[3.0, 4.0, 5.0]])
+        with medh5.open(path) as sample:
+            first, second = sample.transforms["tp0_to_tp1"], sample.transforms["refine"]
+            chain = ChainTransform([first, second])
+            assert (chain.from_frame, chain.to_frame) == ("F0", "F2")
+            assert np.allclose(
+                chain.transform_points(points),
+                sample.transforms["chain"].transform_points(points),
+            )
+            for steps in ([second, first], [first, first], [first, second, second]):
+                with pytest.raises(MEDH5ValidationError, match="ends in") as exc:
+                    ChainTransform(steps)
+                assert exc.value.code == "E501"
+        # The same break, stored as a composite, is the one `check_chain` names.
+        with h5py.File(path, "r+") as handle:
+            handle["transforms/chain"].attrs["components"] = encode_attr(
+                ["refine", "tp0_to_tp1"]
+            )
+        with medh5.open(path) as sample:
+            first, second = sample.transforms["tp0_to_tp1"], sample.transforms["refine"]
+            with pytest.raises(MEDH5ValidationError) as exc:
+                ChainTransform([second, first])
+            gap = "'refine' ends in 'F2' but 'tp0_to_tp1' starts in 'F0'"
+            assert gap in sample.transforms["chain"].check_chain()
+            assert gap in str(exc.value)
 
     def test_composite_needs_at_least_two_declared_components(self, tmp_path):
         with pytest.raises(MEDH5ValidationError) as exc:

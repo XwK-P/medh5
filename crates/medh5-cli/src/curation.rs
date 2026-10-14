@@ -11,8 +11,9 @@ use serde_json::{json, Map, Value};
 
 use medh5::collection::{open_collection, pack, unpack};
 use medh5::curation::agreement::{compare, Comparison};
-use medh5::curation::splits::audit_splits;
+use medh5::curation::splits::{audit_splits, memberships_of};
 use medh5::error::os_error;
+use medh5::h5::file::same_file;
 use medh5::json::{py_str, repr_str};
 use medh5::Error;
 
@@ -40,20 +41,6 @@ fn medh5_fail(result: CmdResult, ctx: &mut Ctx) -> CmdResult {
 
 fn file_size(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
-}
-
-/// Whether two paths name one existing file: the same path, or one reached
-/// through `./`, a symbolic link or, where the system says so, a hard link.
-fn same_file(a: &Path, b: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if (x.dev(), x.ino()) == (y.dev(), y.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
-    }
 }
 
 fn pack_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
@@ -316,13 +303,31 @@ fn agree(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 fn splits(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let paths = get_paths(m, "paths");
     let audit = audit_splits(&paths);
+    // Each file the audit could not read is named on stderr, in the command
+    // line's words and with the entry every batch command gives one: the
+    // audit keeps the Python API's line for it (`MEDH5FileError: ...`), so
+    // the reason is asked of the file again.
+    let unreadable: Vec<Value> = audit
+        .unreadable
+        .iter()
+        .map(|(path, line)| match memberships_of(Path::new(path)) {
+            Err(e) => ctx.file_failed(path, &e),
+            Ok(_) => {
+                // Read the second time: the first failure stands, as it was said.
+                ctx.eprint(format!("medh5: {path}: {line}"));
+                json!({"path": path, "ok": false, "error": line})
+            }
+        })
+        .collect();
     if flag(m, "json") {
-        ctx.emit(&audit.to_json(), true);
+        let mut payload = audit.to_json();
+        payload["unreadable"] = Value::Array(unreadable);
+        ctx.emit(&payload, true);
         return Ok(if audit.ok() { EXIT_OK } else { EXIT_ERROR });
     }
     let set_ids = audit.set_ids();
     if set_ids.is_empty() {
-        ctx.print(format!("no split claims in {} file(s)", paths.len()));
+        ctx.print(format!("no split claims in {} file(s)", paths.len() - audit.unreadable.len()));
     }
     let counts = audit.counts();
     for set_id in &set_ids {
@@ -346,9 +351,6 @@ fn splits(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     }
     if !audit.unclaimed.is_empty() {
         ctx.print(format!("\n{} file(s) carry no split claim", audit.unclaimed.len()));
-    }
-    for (path, error) in &audit.unreadable {
-        ctx.print(format!("UNREADABLE  {path}: {error}"));
     }
     if !audit.leaks.is_empty() {
         ctx.print("\na grouping key in two partitions is train/test leakage (§12.2); re-split rather than re-stamp.");

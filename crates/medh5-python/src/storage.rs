@@ -327,6 +327,7 @@ impl IndexPayload {
 #[pyo3(signature = (annotation, *, classes=None, max_coords=index::DEFAULT_MAX_COORDS,
     occupancy=Some(index::DEFAULT_OCCUPANCY_FACTOR), seed=0, source_digest=None))]
 fn build_index(
+    py: Python<'_>,
     annotation: &Bound<'_, PyAny>,
     classes: Option<&Bound<'_, PyAny>>,
     max_coords: usize,
@@ -339,7 +340,10 @@ fn build_index(
         Err(_) => annotation.getattr("_handle")?.cast_into::<crate::reader::AnnotationHandle>().map_err(PyErr::from)?,
     };
     let keys = classes.filter(|c| !c.is_none()).map(class_keys).transpose()?;
-    let payload = index::build_index(&handle.get().inner, keys.as_deref(), max_coords, occupancy, seed, source_digest)?;
+    let ann = handle.get().inner.clone();
+    // A pass over every voxel, and the draws from it: no Python object.
+    let payload =
+        py.detach(move || index::build_index(&ann, keys.as_deref(), max_coords, occupancy, seed, source_digest))?;
     Ok(IndexPayload { inner: payload })
 }
 
@@ -359,7 +363,8 @@ fn read_indices<'py>(py: Python<'py>, root: &Bound<'py, PyAny>) -> R<Bound<'py, 
 /// (`factor` at least 1).
 #[pyfunction]
 fn occupancy<'py>(py: Python<'py>, mask: &Bound<'py, PyAny>, factor: usize) -> R<Bound<'py, PyAny>> {
-    Ok(array_to_py(py, index::occupancy(&bool_array(mask)?, factor)?))
+    let mask = bool_array(mask)?;
+    Ok(array_to_py(py, py.detach(move || index::occupancy(&mask, factor))?))
 }
 
 // -- recompression -------------------------------------------------------------------------

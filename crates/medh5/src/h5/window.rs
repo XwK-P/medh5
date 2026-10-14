@@ -94,7 +94,17 @@ fn frame_ceiling(chunk_bytes: u64, file_bytes: u64) -> u64 {
 /// The size is the file's to state, up to 0xFFFFFFFF, so it is checked
 /// before anything is reserved: a buffer sized by it alone took a crafted
 /// 140 KB file to 4 GB of memory, or aborted the process.
-fn stored_chunk(ds: &hdf5::Dataset, origin: &[u64], chunk_bytes: u64, frame: &mut Vec<u8>) -> Option<usize> {
+///
+/// `file_bytes` is the file's size as last measured, kept across the chunks
+/// of one window: asking HDF5 for it opened a file identifier, under the
+/// lock, for every chunk.
+fn stored_chunk(
+    ds: &hdf5::Dataset,
+    origin: &[u64],
+    chunk_bytes: u64,
+    file_bytes: &mut Option<u64>,
+    frame: &mut Vec<u8>,
+) -> Option<usize> {
     super::locked(|| unsafe {
         let (mut mask, mut addr, mut size) = (0u32, 0u64, 0u64);
         if h5d::H5Dget_chunk_info_by_coord(ds.id(), origin.as_ptr(), &mut mask, &mut addr, &mut size) < 0
@@ -104,8 +114,13 @@ fn stored_chunk(ds: &hdf5::Dataset, origin: &[u64], chunk_bytes: u64, frame: &mu
             return None;
         }
         // The file's size once the chunk is in it: asking for the chunk
-        // writes it out of HDF5's cache, in a file still being written.
-        if size > frame_ceiling(chunk_bytes, ds.file().ok()?.size()) {
+        // writes it out of HDF5's cache, in a file still being written.  So
+        // a chunk stated past the size last measured has it measured again,
+        // and is turned away only if it is past that too.
+        if file_bytes.is_none_or(|bytes| size > frame_ceiling(chunk_bytes, bytes)) {
+            *file_bytes = Some(ds.file().ok()?.size());
+        }
+        if size > frame_ceiling(chunk_bytes, (*file_bytes)?) {
             return None;
         }
         let size = usize::try_from(size).ok()?;
@@ -187,6 +202,7 @@ fn fill(
     let last: Vec<usize> = (0..rank).map(|a| (start[a] + count[a] - 1) / chunk[a]).collect();
     let mut at = first.clone();
     let (mut frame, mut part) = (Vec::new(), Vec::new());
+    let mut file_bytes = None;
     loop {
         let origin: Vec<usize> = (0..rank).map(|a| at[a] * chunk[a]).collect();
         let lo: Vec<i64> = (0..rank).map(|a| (start[a].max(origin[a]) - origin[a]) as i64).collect();
@@ -195,7 +211,7 @@ fn fill(
         let shape: Vec<usize> = lo.iter().zip(&hi).map(|(l, h)| (h - l) as usize).collect();
         let n = shape.iter().product::<usize>() * itemsize;
         let offset: Vec<u64> = origin.iter().map(|o| *o as u64).collect();
-        let Some(len) = stored_chunk(ds, &offset, chunk_bytes, &mut frame) else {
+        let Some(len) = stored_chunk(ds, &offset, chunk_bytes, &mut file_bytes, &mut frame) else {
             return false;
         };
         if part.len() < n {

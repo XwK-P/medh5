@@ -549,6 +549,11 @@ def to_nnunetv2(
     * every case is **labeled**: a case without the annotation is refused, or
       with ``unlabeled="test"`` written to ``imagesTs`` and not counted in
       ``numTraining``;
+    * the dataset directory holds **no NIfTI file the export would not
+      write** in ``imagesTr``, ``labelsTr`` or ``imagesTs`` --- an earlier
+      export's dropped case, channel, partition or file ending, which nnU-Net
+      would train on --- so an identical re-export rewrites its own files and
+      any other is refused (:func:`_require_no_strays`);
     * every channel and the labels are **one lattice in one physical space** ---
       shape, spacing, origin and direction, coordinate system, units, and no two
       known frames of reference --- because nnU-Net pairs their voxels by index;
@@ -584,6 +589,7 @@ def to_nnunetv2(
     root = _dataset_root(out, dataset_name)
     plan = _plan(paths, annotation, classes, log, unlabeled)
     _require_under(root, plan, file_ending)
+    _require_no_strays(root, plan, file_ending)
     labels = dict(plan.labels)
     # nnU-Net's ignore label is the highest value (§7.7): ignored voxels
     # written as 0 were verified negatives for every class.
@@ -749,6 +755,52 @@ def _require_under(root: Path, plan: _Plan, file_ending: str) -> None:
                     f"{case.path}: case {case.name!r} would write {target}, "
                     f"outside the dataset {root}"
                 )
+
+
+def _require_no_strays(root: Path, plan: _Plan, file_ending: str) -> None:
+    """Refuse a dataset directory holding NIfTI files this export would not
+    write, before anything is written.
+
+    nnU-Net trains on every case file it finds in ``imagesTr``, whatever
+    ``numTraining`` says.  An export into a directory an earlier one wrote
+    left whatever the new plan dropped --- a removed case, a dropped
+    channel, a case moved to ``imagesTs`` still in ``imagesTr`` (train and
+    test at once), files of the other ending --- under a ``dataset.json``
+    describing none of them, and :func:`from_nnunetv2` read the removed
+    cases back.  An identical export rewrites its own files, and a file that
+    is not NIfTI is not the export's to judge.
+    """
+    from medh5.io.nifti import NIFTI_SUFFIXES
+
+    planned: set[Path] = set()
+    for case in plan.cases:
+        folder = "imagesTr" if case.labeled else "imagesTs"
+        planned.update(
+            root / folder / f"{case.name}_{index:04d}{file_ending}"
+            for index in range(len(plan.channels))
+        )
+        if case.labeled:
+            planned.add(root / "labelsTr" / f"{case.name}{file_ending}")
+    stray = sorted(
+        f"{folder}/{path.name}"
+        for folder in ("imagesTr", "labelsTr", "imagesTs")
+        if (root / folder).is_dir()
+        for path in (root / folder).iterdir()
+        if path.name.endswith(NIFTI_SUFFIXES)
+        and not path.is_dir()
+        and path not in planned
+    )
+    if stray:
+        shown = ", ".join(stray[:5]) + (
+            f" and {len(stray) - 5} more" if len(stray) > 5 else ""
+        )
+        raise MEDH5ValidationError(
+            f"{root} holds {len(stray)} NIfTI file(s) this export would not "
+            f"write ({shown}): nnU-Net trains on every case file it finds, "
+            "whatever dataset.json says, so they would join the new dataset; "
+            "export to a new directory, or remove them first --- nothing was "
+            "written"
+        )
 
 
 class _Case:

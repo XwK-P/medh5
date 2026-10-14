@@ -221,9 +221,9 @@ impl SampleWriter {
     }
 
     /// Write changed records over the copied group, at commit --- once what
-    /// the amended file held is found unchanged ([`Self::check_held`]).
+    /// the amended file held is found unchanged ([`Self::check_held`], which
+    /// the commit runs before it changes anything).
     pub(crate) fn write_clinical(&mut self) -> Result<()> {
-        self.check_held()?;
         let Some(records) = &self.clinical else { return Ok(()) };
         let root = self.root()?;
         ops::unlink(&root, GROUP)?;
@@ -247,7 +247,7 @@ impl SampleWriter {
     /// compared with the one it replaced, by its datasets' digests.  A
     /// version the amendment dropped (`drop_clinical`) and did not add again
     /// is gone, not changed; one added again is held to what it was.
-    fn check_held(&self) -> Result<()> {
+    pub(crate) fn check_held(&self) -> Result<()> {
         let inherited = self.clinical_source == ClinicalSource::Inherited;
         if !inherited && (self.inherited_events.is_empty() || self.clinical.is_none()) {
             return Ok(());

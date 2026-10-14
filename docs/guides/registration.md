@@ -104,8 +104,13 @@ if t is None:
 ```
 
 For timepoints rather than grids, `frames_of_timepoint` gives the frames a visit
-spans; a timepoint whose grids share a frame with the other visit's needs no
-transform either.
+spans, and a visit with several grids may span several.
+`transform_between("tp0", "tp1")` tries their pairs in grid-id order and
+answers for the first pair that is one frame (`None`) or that a path relates
+(that transform), so between visits of several frames its answer depends on
+how the grids are named, not on the images you will read. Resolve between the
+frames of those images instead, as the
+[longitudinal preflight](longitudinal.md#train-on-the-pairs) does.
 
 What decides whether a path resolves depends on the direction.
 

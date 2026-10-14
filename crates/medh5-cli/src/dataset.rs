@@ -240,19 +240,23 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 .map(|s| {
                     vec![
                         s.class_id.to_string(),
+                        s.key.clone().unwrap_or_else(|| "-".into()),
                         thousands(i128::from(s.voxels)),
                         format!("{}/{}", s.present_in, s.examined_in),
                         percent(s.prevalence(), 0, false),
                     ]
                 })
                 .collect();
-            ctx.print(table(&rows, &["class", "voxels", "present/examined", "prevalence"]));
-        }
-        for failure in &result.failures {
-            ctx.print(format!("  unreadable: {failure}"));
+            ctx.print(table(&rows, &["class", "key", "voxels", "present/examined", "prevalence"]));
         }
     }
-    Ok(if result.samples > 0 { EXIT_OK } else { EXIT_ERROR })
+    // Statistics over part of the cohort are not the cohort's: the files that
+    // would not open are named on stderr, and the command fails --- it said
+    // so on stdout, among the numbers, and exited 0.
+    for failure in &result.failures {
+        ctx.eprint(format!("medh5: unreadable: {failure}"));
+    }
+    Ok(if result.samples > 0 && result.failures.is_empty() { EXIT_OK } else { EXIT_ERROR })
 }
 
 fn check_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {

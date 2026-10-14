@@ -11,9 +11,12 @@ frontends and the documentation that describes them from drifting apart.
 
 ## Setting up
 
-You need a Rust toolchain (stable; the minimum is `rust-version` in
-`Cargo.toml`), a C compiler and CMake — the engine builds HDF5 and C-Blosc2
-from source and links them statically — and Python 3.10 or later.
+You need Rust, a C compiler and CMake — the engine builds HDF5 and C-Blosc2
+from source and links them statically — and Python 3.10 or later. With rustup,
+a build in the checkout uses the Rust that `rust-toolchain.toml` pins, and
+installs it the first time: the version CI and the release build with, bumped
+on purpose in a pull request of its own. The crates themselves build with any
+Rust from `rust-version` in `Cargo.toml` on, which CI checks too.
 
 ```bash
 git clone https://github.com/XwK-P/medh5.git
@@ -22,7 +25,7 @@ cd medh5
 # profile). Re-run after changing Rust.
 pip install -e ".[dev,torch,nifti,dicom,dicomseg]"
 pip install -r docs/requirements.txt        # to build the documentation site
-pip install pre-commit && pre-commit install   # optional: ruff on every commit
+pip install pre-commit && pre-commit install   # optional: the hooks CI runs, on every commit
 ```
 
 MONAI is left out of that line on purpose: it is heavy and only a handful of
@@ -35,11 +38,12 @@ pytest tests/ -k "Monai or monai"
 
 ## The checks
 
-Every change has to pass all of these; CI runs the same gates.
+Every change has to pass all of these. CI runs each of them, and more (below).
 
 ```bash
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings \
   && cargo test --workspace \
+  && python .github/scripts/third_party_notices.py --check \
   && ruff check . && ruff format --check . && mypy medh5 \
   && pytest tests/ --cov=medh5 --cov-fail-under=90 \
   && medh5 conformance run /tmp/corpus \
@@ -50,8 +54,12 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
 - **Rust** — `rustfmt` (`rustfmt.toml`), `clippy` with `-D warnings`, and the
   engine's tests: unit tests beside the code, the conformance corpus in
   `crates/medh5/tests/`, and the crate README's example as a doctest.
+- **Notices** — `THIRD_PARTY_NOTICES` is generated from `Cargo.lock`, and
+  `--check` fails while it is stale (see [below](#changelog-and-releases)).
 - **Lint and format** — `ruff`, pinned in the `dev` extra and in
-  `.pre-commit-config.yaml`; bump the two together.
+  `.pre-commit-config.yaml`; bump the two together. CI also runs the commit
+  hooks over every file (`pre-commit run --all-files`), which add trailing
+  whitespace, final newlines and YAML syntax to what `ruff` checks.
 - **Types** — `mypy --strict` over `medh5/`. The engine's Python types are
   `medh5/_core.pyi`; `tests/project/test_typing.py` runs `stubtest` against the
   built module, so a binding change without its stub fails.
@@ -66,14 +74,18 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
 CI also builds the wheel and the native binary for every platform the project
 ships — Linux x86_64 and aarch64 (manylinux_2_28), macOS arm64 and x86_64,
 Windows x64 — and runs the conformance corpus through each, and each binary's
-hand-over of the converters to Python. It runs the suite against every wheel:
-on Python 3.10–3.14 on Linux x86_64, on macOS arm64 (for the `spawn` start
-method), on Windows (for the atomic-replace paths, `medh5.torch`'s handle cache
-among them), on Linux aarch64 and macOS x86_64, and at the NumPy floor. It runs
-the engine's Rust tests on Windows and macOS as well as Linux; checks the
-minimum Rust version; packages the crates as crates.io will receive them;
-builds the sdist from source; and runs the reference writer in
-`docs/examples/`, then validates what it writes with the built wheel and
+hand-over of the converters to Python. It runs the suite against every wheel: on
+Python 3.10–3.14 on Linux x86_64, on macOS arm64 (for the `spawn` start method),
+on Windows (for the atomic-replace paths, `medh5.torch`'s handle cache among
+them), on Linux aarch64 and macOS x86_64, and at every floor `pyproject.toml`
+declares (NumPy's, each extra's, and the test suite's HDF5 tools'); and on the
+next Python (3.15) for information, not as a gate, until what the suite needs
+publishes for it. It reads every valid corpus case, and its samples under each
+Blosc2 profile, with HDF5 1.10, 1.12 and 1.14, since the specification promises
+files HDF5 1.10 reads. It runs the engine's Rust tests on Windows and macOS as
+well as Linux; checks the minimum Rust version; packages the crates as crates.io
+will receive them; builds the sdist from source; and runs the reference writer
+in `docs/examples/`, then validates what it writes with the built wheel and
 binary, to keep the specification's Appendix C.2 honest.
 
 ## Writing tests
@@ -149,13 +161,14 @@ Documentation here is checked against the code, not proofread:
   stated run on a stated machine; re-measure rather than carry one forward, and
   read a new window for every patch — the same window twice is HDF5's chunk
   cache, not a read.
-- **Some tables are generated.** The diagnostic codes, the cohort check codes,
-  the task-and-cache finding codes and the sample-document schema are rendered
-  at build time from `crates/medh5/data/codes.json`, the `CHECK_CODES` table in
-  `crates/medh5/src/dataset/check.rs`, the `CODES` table in
-  `crates/medh5/src/companion/mod.rs` and the JSON Schema by
+- **Some tables are generated.** The diagnostic codes, the cohort check codes
+  and the sample-document schema are rendered at build time from
+  `crates/medh5/data/codes.json`, the `CHECK_CODES` table in
+  `crates/medh5/src/dataset/check.rs` and the JSON Schema by
   `hooks/mkdocs_hooks.py`. Edit the source, not the page; the page carries only
-  a marker comment.
+  a marker comment. The task-and-cache finding codes are written out in
+  task-cache-1 §9, so the raw text shows them, and a test holds that table to
+  the `CODES` table in `crates/medh5/src/companion/mod.rs`: edit both.
 - **The Rust example is tested twice.** The engine crate's README is its crate
   documentation, so its example is a doctest; `docs/reference/rust.md` shows
   the same block, and a test compares the two.
@@ -186,7 +199,9 @@ push a `vX.Y.Z` tag on a commit whose CI passed.
 `.github/workflows/release.yml` then:
 
 1. runs the full CI on the tagged commit, which builds every wheel, the sdist
-   and every binary;
+   and every binary, and the advisory checks (`advisories.yml`: `cargo audit`
+   over `Cargo.lock`, `pip-audit` over the extras), which fail on an advisory
+   that `SECURITY.md` has not dispositioned;
 2. checks the tag against the workspace version, every platform's wheel and
    binary against the tag (each carrying `LICENSE` and `THIRD_PARTY_NOTICES`),
    and extracts the version's section of `CHANGELOG.md` — a tag with no
@@ -200,12 +215,14 @@ push a `vX.Y.Z` tag on a commit whose CI passed.
 4. creates the GitHub Release, with the changelog section as its notes (each
    paragraph on one line, since a release page breaks a line wherever its
    source does) and the distributions, the binaries and their `SHA256SUMS`
-   attached;
+   attached. A backport, a version below the newest final release already
+   tagged (a 2.0.x patch after 2.1.0), is not marked "Latest";
 5. pushes the Homebrew formula for the binaries to the tap
    (`<owner>/homebrew-medh5`, or the `HOMEBREW_TAP` variable) with the
-   `HOMEBREW_TAP_TOKEN` secret. Pre-releases skip this step;
-6. checks that PyPI, crates.io, the release page and the tap all have the
-   version.
+   `HOMEBREW_TAP_TOKEN` secret. Pre-releases and backports skip this step, so
+   the tap stays on the newest release;
+6. checks that PyPI, crates.io and the release page have the version, and the
+   tap too when it took it.
 
 Unlike what the registries hold, a release's notes can be corrected after it:
 fix the version's section, then `python .github/scripts/release_notes.py vX.Y.Z`
@@ -224,6 +241,14 @@ A library under a licence the others do not already name goes into
 `pyproject.toml`'s `license` expression too, and the Homebrew formula's
 (`.github/scripts/homebrew_formula.py`); neither can be corrected for a
 version once it is published.
+
+`SECURITY.md` inventories the C libraries the wheel and the binary link
+statically, which no advisory database maps to a crate, and keeps a
+disposition for each advisory against them. A `-sys` crate bump or a vendored
+update changes a row (a test compares the inventory with `Cargo.lock` and the
+vendored sources); read every advisory against the new version. A finding of
+`advisories.yml` that does not apply is passed over there by its id, with the
+reason in `SECURITY.md`.
 
 ### Before the first release to a registry
 
@@ -263,6 +288,9 @@ else (`.github/scripts/release.py`).
      digest.
    - crates.io skips a crate whose version exists only if its contents equal
      `cargo package` of the tagged commit, then publishes the rest in order.
+     A yanked version stops the job, since crates.io never takes a version
+     twice: undo the yank (`cargo yank --undo`) if it holds this release, or
+     bump the version.
    - The GitHub Release is created if missing; otherwise the missing files are
      attached, and a file of the same name with other content stops the job.
    - The tap is committed to only if its formula changed.

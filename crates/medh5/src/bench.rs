@@ -111,11 +111,30 @@ fn as_map(value: Value) -> Map<String, Value> {
     }
 }
 
+/// Refuse a run that measures nothing.  No run has no median: it was NaN,
+/// which JSON cannot carry, so the report failed after the work was done.
+fn check_repeats(repeats: usize) -> Result<()> {
+    if repeats == 0 {
+        return Err(Error::invalid("repeats must be at least 1: the median of no runs is no measurement"));
+    }
+    Ok(())
+}
+
+/// [`check_repeats`], and a patch with a voxel in it: one of side 0 reads
+/// nothing, and was timed doing it.
+fn check_run(patch: usize, repeats: usize) -> Result<()> {
+    if patch == 0 {
+        return Err(Error::invalid("patch must be at least 1: a patch of side 0 reads nothing"));
+    }
+    check_repeats(repeats)
+}
+
 /// Median milliseconds per call.
 ///
 /// The median, not the mean: one page fault in twenty runs moves a mean and
 /// not a median, and the question is what a dataloader gets typically.
 pub fn timed(mut f: impl FnMut() -> Result<()>, repeats: usize, warmup: usize) -> Result<f64> {
+    check_repeats(repeats)?;
     for _ in 0..warmup {
         f()?;
     }
@@ -127,9 +146,6 @@ pub fn timed(mut f: impl FnMut() -> Result<()>, repeats: usize, warmup: usize) -
     }
     samples.sort_by(f64::total_cmp);
     let n = samples.len();
-    if n == 0 {
-        return Ok(f64::NAN);
-    }
     Ok(if n % 2 == 1 { samples[n / 2] } else { (samples[n / 2 - 1] + samples[n / 2]) / 2.0 })
 }
 
@@ -156,6 +172,7 @@ fn windows(shape: &[usize], patch: usize, n: usize) -> Result<Vec<Vec<Slice>>> {
 
 /// Run the §14 metrics against one existing sample.
 pub fn benchmark_file(path: &Path, annotation: Option<&str>, patch: usize, repeats: usize) -> Result<Vec<Measurement>> {
+    check_run(patch, repeats)?;
     let mut out = Vec::new();
     let sample = open_sample(path)?;
     let ann_id = match annotation {
@@ -397,6 +414,7 @@ pub fn synthetic_many_class_sample(directory: &Path, classes: usize) -> Result<P
 
 /// Foreground centre sampling on a many-class, indexed annotation.
 pub fn many_class_measurement(path: &Path, patch: usize, repeats: usize) -> Result<Measurement> {
+    check_run(patch, repeats)?;
     let sample = open_sample(path)?;
     let ann_id = sample
         .annotations()?
@@ -476,6 +494,32 @@ mod tests {
         let slow = Measurement::targeted("meta_read_ms", 3.0, json!({}));
         assert!(!slow.ok());
         assert!(report(&[m, slow]).ends_with("1 metric(s) below target: meta_read_ms"));
+    }
+
+    /// No run has no median, and a patch of side 0 reads nothing: each was
+    /// measured as NaN or as an empty read, and reported after the work.
+    #[test]
+    fn s14_a_run_that_measures_nothing_is_refused() {
+        let mut calls = 0;
+        let refused = timed(
+            || {
+                calls += 1;
+                Ok(())
+            },
+            0,
+            3,
+        );
+        assert!(matches!(refused, Err(Error::Validation { .. })), "{refused:?}");
+        assert_eq!(calls, 0, "refused before any warm-up");
+        let missing = Path::new("/nonexistent/x.medh5");
+        for (patch, repeats, said) in [(0, 20, "patch"), (64, 0, "repeats")] {
+            for refusal in [
+                benchmark_file(missing, None, patch, repeats).unwrap_err(),
+                many_class_measurement(missing, patch, repeats).unwrap_err(),
+            ] {
+                assert!(refusal.message().starts_with(said), "{refusal}");
+            }
+        }
     }
 
     #[test]

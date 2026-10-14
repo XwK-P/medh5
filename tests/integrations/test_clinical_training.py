@@ -614,6 +614,215 @@ class TestTimeInBatches:
         )
 
 
+SLOT_SHAPE = (4, 4, 4)
+
+
+def slot_sample(
+    path: Path,
+    *,
+    ignore: Any = None,
+    organ: tuple[Any, Any] | None = None,
+    mr_channels: int | None = None,
+) -> Path:
+    """One visit on a 4^3 grid: a CT an `imaging` event describes, a lesion
+    annotation (class 1, eight positives) whose ignore region is *ignore*, an
+    organ annotation (class 2) given as ``(mask, ignore)``, and an MR of
+    *mr_channels* channels."""
+    from medh5.clinical import Clock, Event, Link
+    from medh5.labels import LabelClass, LabelSet
+
+    def imaging(event_id: str, image_id: str) -> None:
+        w.add_event(
+            Event(
+                event_id,
+                event_id,
+                "imaging",
+                "point",
+                "final",
+                effective_start_us=0,
+                available_us=HOUR,
+            )
+        )
+        w.add_link(Link.between(("event", event_id), "describes", ("image", image_id)))
+
+    with medh5.create(path, sample_id=path.stem, subject_id=path.stem) as w:
+        w.label_set(
+            LabelSet(
+                "slots-v1",
+                version="1.0.0",
+                classes=[
+                    LabelClass(1, "lesion", "Lesion"),
+                    LabelClass(2, "organ", "Organ"),
+                ],
+            )
+        )
+        w.add_timepoint("tp0", days_from_baseline=0)
+        w.add_grid("g", shape=SLOT_SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0")
+        w.add_image("CT", np.ones(SLOT_SHAPE, np.float32), grid="g", modality="CT")
+        lesion = np.zeros(SLOT_SHAPE, bool)
+        lesion[1:3, 1:3, 1:3] = True
+        w.add_segmentation(
+            "lesion", grid="g", masks={1: lesion}, annotated_classes=[1], ignore=ignore
+        )
+        if organ is not None:
+            w.add_segmentation(
+                "organ",
+                grid="g",
+                masks={2: organ[0]},
+                annotated_classes=[2],
+                ignore=organ[1],
+            )
+        w.set_clock(Clock.relative("clock", "ct"))
+        imaging("ct0", "CT")
+        if mr_channels is not None:
+            w.add_grid(
+                "gmr",
+                shape=(mr_channels, *SLOT_SHAPE),
+                spacing=(1.0, 1.0, 1.0),
+                axis_kinds=["channel", "spatial", "spatial", "spatial"],
+                timepoint="tp0",
+            )
+            w.add_image(
+                "MR",
+                np.ones((mr_channels, *SLOT_SHAPE), np.float32),
+                grid="gmr",
+                modality="MR",
+                channel_names=[f"e{c}" for c in range(mr_channels)],
+            )
+            imaging("mr0", "MR")
+    return path
+
+
+def slot_task(base: Path, paths: dict[str, Path], *slots: Any) -> TaskManifest:
+    """One row per subject at 2 h, each pinning its one sample."""
+    from medh5.task import SourceRef
+
+    task = TaskManifest.new(
+        "slots", "1", identity_namespace="site", slots=list(slots), base=base
+    )
+    for subject, path in paths.items():
+        task.add_subject(subject, [SourceRef.pin(path, uri=path.name)])
+        task.add_row(subject, subject, 2 * HOUR)
+    return task
+
+
+class TestSlotSupervision:
+    """A slot took the ignore region of every voxel annotation on its grid:
+    an organ annotation ignoring the whole grid erased all eight lesion
+    positives from the loss mask, while the label, `annotated` and the
+    preflight looked right.  An annotation's ignore region (§7.7) reaches a
+    slot only through a class the slot asks for, labelled or examined."""
+
+    @staticmethod
+    def _item(
+        tmp_path: Path,
+        name: str,
+        classes: tuple[int, ...],
+        patch: tuple[int, ...] = SLOT_SHAPE,
+        **sample: Any,
+    ) -> dict[str, Any]:
+        from medh5.task import Slot
+
+        path = slot_sample(tmp_path / f"{name}.medh5", **sample)
+        slot = Slot("ct", "CT", required=True, patch=patch, classes=classes)
+        return ClinicalTaskDataset(slot_task(tmp_path, {name: path}, slot))[0]
+
+    def test_S7_7_an_unrelated_ignore_region_leaves_the_supervision(
+        self, tmp_path: Path
+    ):
+        organ = np.zeros(SLOT_SHAPE, bool)
+        organ[0] = True
+        alone = self._item(tmp_path, "alone", (1,))
+        beside = self._item(
+            tmp_path, "beside", (1,), organ=(organ, np.ones(SLOT_SHAPE, bool))
+        )
+        for key in ("label", "annotated", "ignore"):
+            assert torch.equal(beside[key]["ct"], alone[key]["ct"]), key
+        assert int(beside["label"]["ct"].sum()) == 8
+        assert not beside["ignore"]["ct"].any()
+
+    def test_S7_7_a_contributing_annotation_s_ignore_region_still_applies(
+        self, tmp_path: Path
+    ):
+        organ = np.zeros(SLOT_SHAPE, bool)
+        organ[0] = True
+        own = np.zeros(SLOT_SHAPE, bool)
+        own[3] = True  # beside the lesion's positives
+        item = self._item(tmp_path, "own", (1,), ignore=own)
+        assert torch.equal(item["ignore"]["ct"], torch.from_numpy(own))
+        # Asked for both classes, the organ's region is the slot's as well:
+        # one mask over the contributors, conservative across classes.
+        band = np.zeros(SLOT_SHAPE, bool)
+        band[:, 2, :] = True
+        both = self._item(tmp_path, "both", (1, 2), organ=(organ, band))
+        assert torch.equal(both["ignore"]["ct"], torch.from_numpy(band))
+        # Padding is never scored, whatever an unrelated annotation says.
+        padded = self._item(
+            tmp_path,
+            "padded",
+            (1,),
+            patch=(6, 4, 4),
+            organ=(organ, np.ones(SLOT_SHAPE, bool)),
+        )["ignore"]["ct"]
+        assert padded[0].all() and padded[-1].all() and not padded[1:-1].any()
+
+
+class TestOptionalSlots:
+    """An empty slot's placeholder had one channel whatever the slot held, so
+    a missing multichannel MR could not be batched beside a present one, even
+    with fixed patches.  Its extent comes from the task's fills."""
+
+    @staticmethod
+    def _dataset(
+        root: Path, patch: tuple[int, ...] | None, **channels: int | None
+    ) -> ClinicalTaskDataset:
+        from medh5.task import Slot
+
+        root.mkdir(exist_ok=True)
+        paths = {
+            name: slot_sample(root / f"{name}.medh5", mr_channels=n)
+            for name, n in channels.items()
+        }
+        ct = Slot("ct", "CT", required=True, patch=SLOT_SHAPE)
+        return ClinicalTaskDataset(
+            slot_task(root, paths, ct, Slot("mr", "MR", patch=patch))
+        )
+
+    @staticmethod
+    def _row(dataset: ClinicalTaskDataset, row_id: str) -> dict[str, Any]:
+        return dataset[[r.row_id for r in dataset.rows].index(row_id)]
+
+    def test_S6_an_empty_multichannel_slot_batches_beside_a_filled_one(
+        self, tmp_path: Path
+    ):
+        dataset = self._dataset(tmp_path / "mixed", SLOT_SHAPE, A=2, B=None)
+        filled, empty = self._row(dataset, "A"), self._row(dataset, "B")
+        assert not empty["present"]["mr"] and not empty["images"]["mr"].any()
+        assert empty["images"]["mr"].shape == filled["images"]["mr"].shape
+        for batch in ([filled, empty], [empty, filled]):
+            images = collate_clinical(batch)["images"]["mr"]
+            assert tuple(images.shape) == (2, 2, *SLOT_SHAPE)
+        # Where no row fills the slot, one channel, as before.
+        alone = self._dataset(tmp_path / "alone", SLOT_SHAPE, B=None)[0]
+        assert tuple(alone["images"]["mr"].shape) == (1, *SLOT_SHAPE)
+
+    def test_S6_fills_of_different_channel_counts_are_refused(self, tmp_path: Path):
+        with pytest.raises(
+            MEDH5ValidationError, match="slot 'mr' .* different channel counts"
+        ) as caught:
+            self._dataset(tmp_path, SLOT_SHAPE, A=2, C=3, B=None)
+        assert caught.value.code == "T102"
+        assert "'MR' of" in str(caught.value)
+
+    def test_S6_a_whole_volume_slot_says_how_to_batch_it(self, tmp_path: Path):
+        """The advice was "sample fixed-size patches", which a task cannot."""
+        dataset = self._dataset(tmp_path, None, A=2, B=None)
+        filled, empty = self._row(dataset, "A"), self._row(dataset, "B")
+        with pytest.raises(MEDH5ValidationError, match="give the slot a `patch`"):
+            collate_clinical([filled, empty])
+        assert tuple(collate_clinical([empty])["images"]["mr"].shape) == (1, 2)
+
+
 class TestHandles:
     def test_S2_members_are_cached_by_path_and_key(self, tmp_path: Path):
         from medh5.collection import pack
@@ -713,6 +922,47 @@ class TestHandles:
         with CACHE.lease(path, content_id=new) as again:
             assert again is held
         CACHE.close_all()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows cannot replace an open file"
+    )
+    def test_S6_a_warm_lease_and_a_cold_one_agree_after_a_replace(self, tmp_path: Path):
+        """A cached handle of the pinned version kept serving a replaced
+        file's old bytes while a cold cache refused the same row (T302): in
+        one epoch, one worker served the old snapshot and another refused it."""
+        import shutil
+
+        from medh5.clinical import Event
+        from medh5.torch import HandleCache
+        from tests.kits import History
+
+        path = tmp_path / "a.medh5"
+        old = History.write(path)
+        warm, cold = HandleCache(), HandleCache()
+        with warm.lease(path, content_id=old) as held:
+            assert held.content_id == old
+        with medh5.amend(path) as w:
+            w.add_event(Event("x", "x", "other", "static", "final", available_us=0))
+        for cache in (warm, cold):
+            with (
+                pytest.raises(MEDH5ValidationError) as found,
+                cache.lease(path, content_id=old),
+            ):
+                pass  # pragma: no cover - refused before the block
+            assert found.value.code == "T302"
+        # A replacement holding the pinned version --- a copy, a repack --- is
+        # read through a handle of its own, not the replaced file's.
+        with medh5.open(path) as s:
+            new = s.content_id
+        with warm.lease(path, content_id=new) as first:
+            assert first.content_id == new
+        shutil.copy(path, tmp_path / "copy.medh5")
+        os.replace(tmp_path / "copy.medh5", path)
+        with warm.lease(path, content_id=new) as again:
+            assert again is not first and again.content_id == new
+        assert not first.is_open
+        for cache in (warm, cold):
+            cache.close_all()
 
     @pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX")
     def test_S2_a_forked_worker_abandons_its_parents_cache(self, tmp_path: Path):
@@ -1240,7 +1490,7 @@ class TestFeatureShapes:
         full = dataset[0]
         other = dict(full, documents=dict(full["documents"]))
         other["documents"]["features"] = torch.ones((1, 4))
-        with pytest.raises(ValueError, match="cannot collate 'features'"):
+        with pytest.raises(MEDH5ValidationError, match="cannot collate 'features'"):
             collate_clinical([full, other])
 
 

@@ -552,7 +552,9 @@ impl Sample {
         let window = annotation.window(roi)?;
         let shape: Vec<usize> = window.iter().map(|(a, b)| b.saturating_sub(*a)).collect();
         let mut region = ArrayD::from_elem(IxDyn(&shape), false);
-        if matches!(annotation.kind(), "labelmap" | "layers") {
+        // In band only where the data can hold the ignore id: a training
+        // item reads this per patch, and most label volumes hold none.
+        if matches!(annotation.kind(), "labelmap" | "layers") && annotation.may_encode_ignore()? {
             let slices = window_slices(&window);
             region.zip_mut_with(&annotation.ignore_mask(Some(&slices))?, |r, v| *r |= *v);
         }
@@ -998,8 +1000,9 @@ pub fn require_major(root: &hdf5::Location, path: &Path) -> Result<String> {
         AttrValue::Str(s) => s,
         other => attrs::stringify_value(&other),
     };
-    let major = text.split('.').next().unwrap_or("");
-    if major != FORMAT_VERSION.split('.').next().unwrap_or("") {
+    // `support` decides: the major is the text before the first `.`, so a
+    // version it calls unsupported is the one every reader refuses.
+    if crate::version::support(&text) == crate::version::Support::Unsupported {
         return Err(Error::Version(format!("{shown} is MEDH5 {text}; this reader implements {FORMAT_VERSION}")));
     }
     Ok(text)

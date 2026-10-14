@@ -1,8 +1,17 @@
+# CI runs these over every file (`pre-commit run --all-files`, in the `lint`
+# job), so a commit made without them installed is held to them anyway.
+
+# Vendored C stays as upstream wrote it: its local changes are the ones its
+# PATCHES.md lists, and a whitespace fix would be one more.
+exclude: ^crates/medh5-sys/vendor/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
+        # A patch's context lines carry the whitespace of the file it patches.
+        exclude: \.(patch|diff)$
       - id: end-of-file-fixer
       - id: check-yaml
         # `mkdocs.yml` carries a `!!python/object/apply:` tag to give MkDocs

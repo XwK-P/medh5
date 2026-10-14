@@ -377,12 +377,13 @@ impl Grid {
 }
 
 /// Run a flat `S`-per-point function over an array of points of shape
-/// `(S,)` or `(N, S)` (or any `(..., S)`), keeping that shape.
+/// `(S,)` or `(N, S)` (or any `(..., S)`), keeping that shape.  It runs with
+/// the GIL released: a point set can be a whole volume's voxel centres.
 fn points_through<'py>(
     py: Python<'py>,
     points: &Bound<'py, PyAny>,
     s: usize,
-    f: impl FnOnce(&[f64]) -> medh5::Result<Vec<f64>>,
+    f: impl FnOnce(&[f64]) -> medh5::Result<Vec<f64>> + Send,
 ) -> R<Bound<'py, PyAny>> {
     let array = f64_array(points)?;
     let shape = array.shape().to_vec();
@@ -393,8 +394,10 @@ fn points_through<'py>(
         ))
         .into());
     }
-    let flat: Vec<f64> = array.iter().copied().collect();
-    let out = f(&flat)?;
+    let out = py.detach(move || {
+        let flat: Vec<f64> = array.iter().copied().collect();
+        f(&flat)
+    })?;
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&shape), out)?))
 }
 
@@ -553,9 +556,12 @@ fn world_to_index<'py>(
     points_through(py, points, s, |flat| affine::world_to_index(&a, flat))
 }
 
-#[pyfunction]
-#[pyo3(signature = (r#box, shape=None))]
-fn box_to_slices<'py>(py: Python<'py>, r#box: &Bound<'py, PyAny>, shape: Option<Vec<usize>>) -> R<Bound<'py, PyTuple>> {
+/// A box argument, `(S, 2)`, flattened to `[lo0, hi0, lo1, hi1, ...]`.
+///
+/// Only `box_to_slices` checked the shape: `box_corners` and
+/// `apply_affine_to_box` flattened whatever they were given, and read a
+/// `(2, 3)` min/max-corner box as three axes of made-up bounds.
+fn box_arg(r#box: &Bound<'_, PyAny>) -> R<Vec<f64>> {
     let b = f64_array(r#box)?;
     if b.ndim() != 2 || b.shape()[1] != 2 {
         return Err(medh5::Error::invalid(format!(
@@ -564,8 +570,13 @@ fn box_to_slices<'py>(py: Python<'py>, r#box: &Bound<'py, PyAny>, shape: Option<
         ))
         .into());
     }
-    let flat: Vec<f64> = b.iter().copied().collect();
-    let found = affine::box_to_slices(&flat, shape.as_deref())?;
+    Ok(b.iter().copied().collect())
+}
+
+#[pyfunction]
+#[pyo3(signature = (r#box, shape=None))]
+fn box_to_slices<'py>(py: Python<'py>, r#box: &Bound<'py, PyAny>, shape: Option<Vec<usize>>) -> R<Bound<'py, PyTuple>> {
+    let found = affine::box_to_slices(&box_arg(r#box)?, shape.as_deref())?;
     let slices = found
         .into_iter()
         .map(|(start, stop)| pyo3::types::PySlice::new(py, start as isize, stop as isize, 1))
@@ -582,11 +593,25 @@ fn box_to_slices<'py>(py: Python<'py>, r#box: &Bound<'py, PyAny>, shape: Option<
 #[pyfunction]
 fn slices_to_box<'py>(py: Python<'py>, slices: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     let mut pairs = Vec::new();
-    for item in slices.try_iter()? {
+    for (axis, item) in slices.try_iter()?.enumerate() {
         let item = item?;
-        let start: i64 = item.getattr("start")?.extract::<Option<i64>>()?.unwrap_or(0);
-        let stop: i64 = item.getattr("stop")?.extract()?;
-        pairs.push((start, stop));
+        let start = item.getattr("start")?.extract::<Option<i64>>()?.unwrap_or(0);
+        let stop = item.getattr("stop")?.extract::<Option<i64>>()?;
+        let step = item.getattr("step")?.extract::<Option<i64>>()?;
+        // A box is the voxel edges a slice starts and stops at.  An open
+        // stop and a negative bound are counted from an end only the array
+        // knows, and a step selects no block: an open stop raised a bare
+        // `TypeError`, and the others made a box of other voxels.
+        match stop {
+            Some(stop) if 0 <= start && start <= stop && step.unwrap_or(1) == 1 => pairs.push((start, stop)),
+            _ => {
+                return Err(medh5::Error::Value(format!(
+                    "a box is made from slice(start, stop) with 0 <= start <= stop and no step; axis {axis} is {}",
+                    item.repr()?
+                ))
+                .into())
+            }
+        }
     }
     let flat = affine::slices_to_box(&pairs);
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[pairs.len(), 2]), flat)?))
@@ -594,7 +619,7 @@ fn slices_to_box<'py>(py: Python<'py>, slices: &Bound<'py, PyAny>) -> R<Bound<'p
 
 #[pyfunction]
 fn box_corners<'py>(py: Python<'py>, r#box: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    let flat: Vec<f64> = f64_array(r#box)?.iter().copied().collect();
+    let flat = box_arg(r#box)?;
     let s = flat.len() / 2;
     let corners: Vec<f64> = affine::box_corners(&flat)?.into_iter().flatten().collect();
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[1 << s, s]), corners)?))
@@ -606,8 +631,7 @@ fn apply_affine_to_box<'py>(
     affine: &Bound<'py, PyAny>,
     r#box: &Bound<'py, PyAny>,
 ) -> R<Bound<'py, PyAny>> {
-    let flat: Vec<f64> = f64_array(r#box)?.iter().copied().collect();
-    let out = affine::apply_affine_to_box(&to_matrix(affine)?, &flat)?;
+    let out = affine::apply_affine_to_box(&to_matrix(affine)?, &box_arg(r#box)?)?;
     let s = out.len() / 2;
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[s, 2]), out)?))
 }

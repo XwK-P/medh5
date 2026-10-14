@@ -50,10 +50,10 @@ pub fn link_kind(group: &hdf5::Group, name: &str) -> Option<LinkKind> {
         if h5l::H5Lget_info2(group.id(), cname.as_ptr(), &mut info, h5p::H5P_DEFAULT) < 0 {
             return None;
         }
-        Some(match info.type_ {
-            h5l::H5L_type_t::H5L_TYPE_HARD => LinkKind::Hard,
-            h5l::H5L_type_t::H5L_TYPE_SOFT => LinkKind::Soft,
-            h5l::H5L_type_t::H5L_TYPE_EXTERNAL => LinkKind::External,
+        Some(match raw_link_type(&info) {
+            LINK_HARD => LinkKind::Hard,
+            LINK_SOFT => LinkKind::Soft,
+            LINK_EXTERNAL => LinkKind::External,
             _ => LinkKind::Other,
         })
     })
@@ -319,54 +319,100 @@ pub fn hdf5_error_text() -> String {
 
 // -- self-containment ---------------------------------------------------------
 
-struct VisitState {
-    found: Vec<(String, String)>,
+/// A link's type as HDF5 stores it: `H5L_type_t` names the built-in types
+/// only, and a file may carry a user-defined one (65 to 255), which is no
+/// value of that enum.
+type RawLinkType = std::os::raw::c_int;
+
+const LINK_HARD: RawLinkType = h5l::H5L_type_t::H5L_TYPE_HARD as RawLinkType;
+const LINK_SOFT: RawLinkType = h5l::H5L_type_t::H5L_TYPE_SOFT as RawLinkType;
+const LINK_EXTERNAL: RawLinkType = h5l::H5L_type_t::H5L_TYPE_EXTERNAL as RawLinkType;
+
+/// The type of the link `info` describes.
+///
+/// # Safety
+///
+/// `info` points at a link description HDF5 filled in.
+unsafe fn raw_link_type(info: *const h5l::H5L_info2_t) -> RawLinkType {
+    // SAFETY: read as the C `int` it is, never as the Rust enum.
+    unsafe { std::ptr::addr_of!((*info).type_).cast::<RawLinkType>().read() }
 }
 
-unsafe extern "C" fn visit_link(
-    group: h5i::hid_t,
+/// Every link of one group, by name, with its type: what
+/// [`outside_references`] lists of each group it walks.
+unsafe extern "C" fn collect_link(
+    _group: h5i::hid_t,
     name: *const c_char,
     info: *const h5l::H5L_info2_t,
     data: *mut c_void,
 ) -> h5::herr_t {
-    // SAFETY: HDF5 passes valid pointers for the duration of the callback.
+    // SAFETY: HDF5 passes valid pointers for the duration of the callback,
+    // and `data` is the list `links_of` handed it.
     unsafe {
-        let state = &mut *(data as *mut VisitState);
-        let text = CStr::from_ptr(name).to_string_lossy().into_owned();
-        match (*info).type_ {
-            h5l::H5L_type_t::H5L_TYPE_EXTERNAL => {
-                state.found.push((text, "an external link".into()));
-                return 0;
-            }
-            h5l::H5L_type_t::H5L_TYPE_HARD => {}
-            _ => return 0,
-        }
-        let mut oinfo: h5o::H5O_info2_t = std::mem::zeroed();
-        if h5o::H5Oget_info_by_name3(group, name, &mut oinfo, h5o::H5O_INFO_BASIC, h5p::H5P_DEFAULT) < 0 {
-            return 0;
-        }
-        if oinfo.type_ != h5o::H5O_type_t::H5O_TYPE_DATASET {
-            return 0;
-        }
-        let ds = h5d::H5Dopen2(group, name, h5p::H5P_DEFAULT);
+        let links = &mut *(data as *mut Vec<(CString, RawLinkType)>);
+        links.push((CStr::from_ptr(name).to_owned(), raw_link_type(info)));
+    }
+    0
+}
+
+/// The links of the open group `group`, in name order; `None` when HDF5
+/// cannot list them.  The caller holds the HDF5 lock.
+fn links_of(group: h5i::hid_t) -> Option<Vec<(CString, RawLinkType)>> {
+    let mut links: Vec<(CString, RawLinkType)> = Vec::new();
+    // SAFETY: a live group id, and a callback that only appends to `links`.
+    let status = unsafe {
+        h5l::H5Literate2(
+            group,
+            crate::h5sys::h5::H5_index_t::H5_INDEX_NAME,
+            crate::h5sys::h5::H5_iter_order_t::H5_ITER_INC,
+            std::ptr::null_mut(),
+            Some(collect_link),
+            (&mut links as *mut Vec<(CString, RawLinkType)>).cast(),
+        )
+    };
+    (status >= 0).then_some(links)
+}
+
+/// What reads a dataset's bytes from outside the file, if anything does.  The
+/// caller holds the HDF5 lock.
+fn reads_outside(parent: h5i::hid_t, name: &CStr) -> Option<&'static str> {
+    // SAFETY: a live group id and a NUL-terminated name; every id opened is
+    // closed.
+    unsafe {
+        let ds = h5d::H5Dopen2(parent, name.as_ptr(), h5p::H5P_DEFAULT);
         if ds < 0 {
             // An object whose header cannot be read cannot have its data
             // read either, so it cannot leak anything.
-            return 0;
+            return None;
         }
+        let mut found = None;
         let plist = h5d::H5Dget_create_plist(ds);
         if plist >= 0 {
-            let layout = h5p::H5Pget_layout(plist);
-            let external = h5p::H5Pget_external_count(plist);
-            if layout == h5d::H5D_layout_t::H5D_VIRTUAL {
-                state.found.push((text, "a virtual dataset".into()));
-            } else if external > 0 {
-                state.found.push((text, "external raw-data storage".into()));
+            if h5p::H5Pget_layout(plist) == h5d::H5D_layout_t::H5D_VIRTUAL {
+                found = Some("a virtual dataset");
+            } else if h5p::H5Pget_external_count(plist) > 0 {
+                found = Some("external raw-data storage");
             }
             h5p::H5Pclose(plist);
         }
         h5d::H5Dclose(ds);
-        0
+        found
+    }
+}
+
+/// One group of [`outside_references`]' walk: open, with its links listed and
+/// the next one to look at.  Dropping it closes the group.
+struct Frame {
+    group: h5i::hid_t,
+    path: String,
+    links: Vec<(CString, RawLinkType)>,
+    next: usize,
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        // SAFETY: the frame owns the group id it was opened with.
+        super::locked(|| unsafe { crate::h5sys::h5g::H5Gclose(self.group) });
     }
 }
 
@@ -532,27 +578,98 @@ pub fn refuse_references(root: &hdf5::Group, action: &str) -> Result<()> {
 }
 
 /// Objects that read bytes from outside the file: `(path, what)` pairs.
+///
+/// The file's own walk, not HDF5's `H5Lvisit`, which recurses without limit
+/// and resolved each link from the root: a file of 30,000 nested groups
+/// overflowed the stack on open (SIGSEGV), and 10,000 took a minute and
+/// 326 MB.  This one keeps its own stack, lists each group's links once
+/// (`H5Literate2`) and looks each object up by name in its own group.  It goes
+/// as [`visit`] goes --- hard links, depth first in name order, each object
+/// once --- and refuses a group past [`MAX_DEPTH`] as `visit` does, so a file
+/// this check passes is one `visit` can walk.
 pub fn outside_references(handle: &hdf5::File) -> Result<Vec<(String, String)>> {
-    let mut state = VisitState { found: Vec::new() };
-    let root = cstring("/")?;
-    let status = super::locked(|| unsafe {
-        h5l::H5Lvisit_by_name2(
-            handle.id(),
-            root.as_ptr(),
-            crate::h5sys::h5::H5_index_t::H5_INDEX_NAME,
-            crate::h5sys::h5::H5_iter_order_t::H5_ITER_INC,
-            Some(visit_link),
-            (&mut state as *mut VisitState).cast(),
-            h5p::H5P_DEFAULT,
-        )
-    });
-    if status < 0 {
-        return Err(Error::File(format!(
-            "{} could not be walked to check that it is self-contained",
-            repr_str(&handle.filename())
-        )));
-    }
-    Ok(state.found)
+    let unwalkable = || {
+        Error::File(format!("{} could not be walked to check that it is self-contained", repr_str(&handle.filename())))
+    };
+    super::locked(|| {
+        let root = cstring("/")?;
+        // SAFETY: a live file id; the group id is owned by its frame.
+        let group = unsafe { crate::h5sys::h5g::H5Gopen2(handle.id(), root.as_ptr(), h5p::H5P_DEFAULT) };
+        if group < 0 {
+            return Err(unwalkable());
+        }
+        let mut frame = Frame { group, path: String::new(), links: Vec::new(), next: 0 };
+        frame.links = links_of(group).ok_or_else(unwalkable)?;
+        // The root itself: a link back to it is a cycle too.
+        let mut seen: HashSet<ObjectId> = HashSet::new();
+        let mut info: h5o::H5O_info2_t = unsafe { std::mem::zeroed() };
+        // SAFETY: a live group id and a zeroed struct HDF5 fills in.
+        if unsafe { h5o::H5Oget_info3(group, &mut info, h5o::H5O_INFO_BASIC) } >= 0 {
+            seen.insert(object_id(&info));
+        }
+        let mut stack = vec![frame];
+        let mut found = Vec::new();
+        while let Some(top) = stack.last_mut() {
+            let Some(link) = top.links.get_mut(top.next) else {
+                stack.pop();
+                continue;
+            };
+            let (name, kind) = std::mem::take(link);
+            top.next += 1;
+            let parent = top.group;
+            let shown = name.to_string_lossy();
+            let path = if top.path.is_empty() { shown.into_owned() } else { format!("{}/{shown}", top.path) };
+            if kind == LINK_EXTERNAL {
+                found.push((path, "an external link".to_string()));
+                continue;
+            }
+            if kind != LINK_HARD {
+                continue;
+            }
+            // SAFETY: a live group id, a NUL-terminated name, and a struct
+            // HDF5 fills in.
+            if unsafe {
+                h5o::H5Oget_info_by_name3(parent, name.as_ptr(), &mut info, h5o::H5O_INFO_BASIC, h5p::H5P_DEFAULT)
+            } < 0
+            {
+                // As `H5Lvisit` did: an object that cannot be looked up
+                // stops the walk.
+                return Err(unwalkable());
+            }
+            if !seen.insert(object_id(&info)) {
+                continue;
+            }
+            match info.type_ {
+                h5o::H5O_type_t::H5O_TYPE_DATASET => {
+                    if let Some(what) = reads_outside(parent, &name) {
+                        found.push((path, what.to_string()));
+                    }
+                }
+                h5o::H5O_type_t::H5O_TYPE_GROUP => {
+                    // The root's frame is at depth 0, so this group is at the
+                    // depth the stack is long.
+                    if stack.len() > MAX_DEPTH {
+                        return Err(Error::File(format!(
+                            "{} in {} is nested more than {MAX_DEPTH} groups deep; it is refused rather than \
+                             followed",
+                            repr_str(&format!("/{path}")),
+                            repr_str(&handle.filename())
+                        )));
+                    }
+                    // SAFETY: as above; the id is owned by its frame.
+                    let group = unsafe { crate::h5sys::h5g::H5Gopen2(parent, name.as_ptr(), h5p::H5P_DEFAULT) };
+                    if group < 0 {
+                        return Err(unwalkable());
+                    }
+                    let mut frame = Frame { group, path, links: Vec::new(), next: 0 };
+                    frame.links = links_of(group).ok_or_else(unwalkable)?;
+                    stack.push(frame);
+                }
+                _ => {}
+            }
+        }
+        Ok(found)
+    })
 }
 
 /// The identity of a file a handle had open:
@@ -800,6 +917,78 @@ mod tests {
         let err = crate::h5::file::open_read(&target).unwrap_err();
         assert!(err.to_string().contains("not self-contained"), "{err}");
         assert!(err.to_string().contains("external link"), "{err}");
+    }
+
+    /// A file whose groups are nested `depth` deep below the root:
+    /// `x_deep/a/a/...`.
+    fn nested(path: &Path, depth: usize) {
+        let file = crate::h5::file::create_truncate(path).unwrap();
+        let mut group = file.create_group("x_deep").unwrap();
+        for _ in 1..depth {
+            group = group.create_group("a").unwrap();
+        }
+    }
+
+    /// The check on open is a walk of medh5's own, refused past
+    /// [`MAX_DEPTH`] as [`visit`] refuses it: HDF5's `H5Lvisit` recursed
+    /// without limit and resolved every link from the root, so 30,000 nested
+    /// groups overflowed the stack (SIGSEGV) and 10,000 took a minute.
+    #[test]
+    fn s2_a_chain_of_groups_past_the_depth_limit_is_refused_quickly() {
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("deep.medh5");
+        nested(&deep, 20_000);
+        let started = std::time::Instant::now();
+        let err = crate::h5::file::open_read(&deep).unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(matches!(err, Error::File(_)), "{err:?}");
+        assert!(err.message().contains("nested more than 64 groups deep"), "{err}");
+        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?} to refuse it");
+    }
+
+    /// Where the check refuses a file is where [`visit`] refuses to walk
+    /// it, so a file that opens is one every walk of it can finish.
+    #[test]
+    fn s2_the_check_and_the_walk_refuse_the_same_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        for (depth, opens) in [(MAX_DEPTH, true), (MAX_DEPTH + 1, false)] {
+            let path = dir.path().join(format!("d{depth}.medh5"));
+            nested(&path, depth);
+            let raw = hdf5::File::open(&path).unwrap();
+            let walked = visit(&raw.as_group().unwrap(), &mut |_, _| Ok(true));
+            assert_eq!(walked.is_ok(), opens, "{depth}: {walked:?}");
+            drop(raw);
+            let opened = crate::h5::file::open_read(&path);
+            assert_eq!(opened.is_ok(), opens, "{depth}: {:?}", opened.err());
+        }
+    }
+
+    /// Each group is walked once, so a hard link back to an ancestor ends
+    /// the walk rather than looping, and what the file reads from outside is
+    /// found however deep and however often it is linked.
+    #[test]
+    fn s2_the_walk_ends_on_a_cycle_and_finds_what_reads_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = dir.path().join("other.medh5");
+        plain(&other);
+        let path = dir.path().join("cycle.medh5");
+        plain(&path);
+        {
+            let file = hdf5::File::open_rw(&path).unwrap();
+            let inner = file.create_group("x_a").unwrap().create_group("b").unwrap();
+            inner.link_hard("/", "up").unwrap();
+            inner.link_external(&other.to_string_lossy(), "/data", "out").unwrap();
+            file.link_hard("x_a", "x_again").unwrap();
+        }
+        let found = outside_references(&hdf5::File::open(&path).unwrap()).unwrap();
+        assert_eq!(found, vec![("x_a/b/out".to_string(), "an external link".to_string())]);
+        let clean = dir.path().join("clean.medh5");
+        plain(&clean);
+        {
+            let file = hdf5::File::open_rw(&clean).unwrap();
+            file.create_group("x_a").unwrap().link_hard("/", "up").unwrap();
+        }
+        crate::h5::file::open_read(&clean).unwrap();
     }
 
     /// HDF5 reads one coordinate per axis from the offset, so an offset

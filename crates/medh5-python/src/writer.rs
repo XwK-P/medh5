@@ -170,6 +170,31 @@ fn items_of<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<(Bound<'py, PyAny>, Bo
     Ok(out)
 }
 
+/// A boolean volume: a bool or integer array as NumPy reads it, non-zero
+/// set; a floating-point one only when every value is 0 or 1.  Read as NumPy
+/// reads it, a soft value --- 0.2 --- was set: a threshold nobody chose,
+/// stored as which voxels are in the mask (E411, checked before the cast as
+/// keypoint visibility is).
+fn mask_arg(obj: &Bound<'_, PyAny>, what: &str) -> R<ndarray::ArrayD<bool>> {
+    let array = crate::convert::asarray(obj, None)?;
+    let kind: String = array.getattr("dtype")?.getattr("kind")?.extract()?;
+    if kind == "f" {
+        if let Some(bad) = f64_array(array.as_any())?.iter().find(|v| **v != 0.0 && **v != 1.0) {
+            return Err(medh5::Error::coded(
+                "E411",
+                format!(
+                    "{what} is floating point and holds {}, which is neither 0 nor 1: a mask is boolean, and reading \
+                     every non-zero value as set is a threshold nobody chose --- threshold it first (`mask >= 0.5`), \
+                     or pass a bool array",
+                    medh5::json::py_float(*bad)
+                ),
+            )
+            .into());
+        }
+    }
+    Ok(bool_array(array.as_any())?)
+}
+
 fn instance_inputs(writer: &EngineWriter, obj: &Bound<'_, PyAny>) -> R<Vec<InstanceInput>> {
     let mut out = Vec::new();
     for item in obj.try_iter()? {
@@ -185,9 +210,9 @@ fn instance_inputs(writer: &EngineWriter, obj: &Bound<'_, PyAny>) -> R<Vec<Insta
         out.push(InstanceInput {
             class_id: writer.class_id(&class_key(&class)?)?,
             instance_id: instance_id.extract::<u64>()?,
-            mask: get("mask")?.map(|m| bool_array(&m)).transpose()?,
+            mask: get("mask")?.map(|m| mask_arg(&m, "an instance's mask")).transpose()?,
             bbox: get("box")?.map(|b| f64_vec(&b)).transpose()?,
-            crop: get("crop")?.map(|c| bool_array(&c)).transpose()?,
+            crop: get("crop")?.map(|c| mask_arg(&c, "an instance's crop")).transpose()?,
             score: get("score")?.map(|s| s.extract::<f64>()).transpose()?,
         });
     }
@@ -410,9 +435,14 @@ impl SampleWriter {
             return Ok(false);
         }
         if !self.inner.is_closed() {
-            // A refused commit aborts itself: the temporary sibling goes.
             let inner = &mut self.inner;
-            py.detach(|| inner.commit(true))?;
+            if let Err(e) = py.detach(|| inner.commit(true)) {
+                // The block is over, so no one is left to mend and commit
+                // again: a refused commit aborts, and the temporary sibling
+                // goes.
+                self.inner.abort();
+                return Err(e.into());
+            }
         }
         Ok(false)
     }
@@ -434,7 +464,8 @@ impl SampleWriter {
         self.inner.codec.clone()
     }
 
-    /// Whether `commit` or `abort` has run.
+    /// Whether the writer has committed or been aborted.  A commit refused
+    /// before it changed anything leaves it open.
     #[getter]
     fn closed(&self) -> bool {
         self.inner.is_closed()
@@ -741,8 +772,10 @@ impl SampleWriter {
     /// Write a voxel annotation, choosing the encoding by measurement.
     ///
     /// Returns the chosen `kind` and the overlap statistics behind the choice.
-    /// Masks stored as `instances` are one object per class, each minted an
-    /// id above every id the sample holds (§7.4).
+    /// `encoding` is `"auto"` or one of `TRANSCODABLE`: a `mask` has no
+    /// classes, so it is refused (E404), as a transcode to it is.  Masks
+    /// stored as `instances` are one object per class, each minted an id
+    /// above every id the sample holds (§7.4).
     #[pyo3(signature = (ann_id, *, grid, masks=None, probabilities=None, instances=None, encoding="auto",
         threshold=None, annotated_classes=None, closure="explicit", ignore=None, ignore_mask=None, timepoints=None,
         prov=None, quality=None, derived_from=None, task="segmentation", codec=None))]
@@ -789,7 +822,8 @@ impl SampleWriter {
         let source = if let Some(m) = is_given(masks) {
             let mut out = Vec::new();
             for (k, v) in items_of(&m)? {
-                out.push((class_key(&k)?, bool_array(&v)?));
+                let what = format!("annotation {}: the mask of class {}", medh5::json::repr_str(ann_id), k.repr()?);
+                out.push((class_key(&k)?, mask_arg(&v, &what)?));
             }
             SegmentationSource::Masks(out)
         } else if let Some(p) = is_given(probabilities) {
@@ -808,7 +842,9 @@ impl SampleWriter {
         let options = SegmentationOptions {
             encoding: Some(encoding.to_string()),
             threshold,
-            ignore: is_given(ignore).map(|i| bool_array(&i)).transpose()?,
+            ignore: is_given(ignore)
+                .map(|i| mask_arg(&i, &format!("annotation {}: ignore", medh5::json::repr_str(ann_id))))
+                .transpose()?,
             ignore_mask,
             common: common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?,
         };
@@ -821,10 +857,14 @@ impl SampleWriter {
         Ok(PyTuple::new(py, [PyString::new(py, &kind).into_any(), stats])?)
     }
 
-    /// Write a boolean `mask` annotation (FOV, ignore region).
+    /// Write a boolean `mask` annotation (FOV, ignore region).  A
+    /// floating-point mask holding a value other than 0 and 1 is refused
+    /// (E411) rather than read as set wherever it is non-zero.
     #[pyo3(signature = (ann_id, mask, *, grid, task="other", prov=None, codec=None))]
+    #[allow(clippy::too_many_arguments)]
     fn add_mask(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         mask: &Bound<'_, PyAny>,
         grid: &str,
@@ -832,9 +872,10 @@ impl SampleWriter {
         prov: Option<&Bound<'_, PyAny>>,
         codec: Option<&str>,
     ) -> R<()> {
-        let mask = bool_array(mask)?;
+        let mask = mask_arg(mask, &format!("mask {}", medh5::json::repr_str(ann_id)))?;
         let prov = prov_arg(prov)?;
-        Ok(self.writer()?.add_mask(ann_id, mask, grid, task, prov.as_deref(), codec)?)
+        let writer = self.writer()?;
+        Ok(py.detach(move || writer.add_mask(ann_id, mask, grid, task, prov.as_deref(), codec))?)
     }
 
     /// Drop an annotation, and any index entry derived from it.
@@ -1056,6 +1097,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_contours(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         polygons: &Bound<'_, PyAny>,
         grid: Option<&str>,
@@ -1072,7 +1114,9 @@ impl SampleWriter {
     ) -> R<Group> {
         let found = polygons_of(&self.inner, polygons)?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_contours(ann_id, &found, placement(grid, Some(space), frame_uid), options)?;
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = py.detach(move || writer.add_contours(ann_id, &found, at, options))?;
         Ok(Group::wrap(group))
     }
 
@@ -1083,6 +1127,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_mesh(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         vertices: &Bound<'_, PyAny>,
         faces: &Bound<'_, PyAny>,
@@ -1109,17 +1154,21 @@ impl SampleWriter {
         let offsets = is_given(mesh_offsets).map(|o| i64_vec(&o)).transpose()?;
         let mesh_ids = opt_keys(mesh_class_ids)?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_mesh(
-            ann_id,
-            &vertices,
-            &faces,
-            normals.as_ref(),
-            vertex_ids.as_deref(),
-            offsets.as_deref(),
-            mesh_ids.as_deref(),
-            placement(grid, Some(space), frame_uid),
-            options,
-        )?;
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = py.detach(move || {
+            writer.add_mesh(
+                ann_id,
+                &vertices,
+                &faces,
+                normals.as_ref(),
+                vertex_ids.as_deref(),
+                offsets.as_deref(),
+                mesh_ids.as_deref(),
+                at,
+                options,
+            )
+        })?;
         Ok(Group::wrap(group))
     }
 
@@ -1248,8 +1297,13 @@ impl SampleWriter {
     ///
     /// `digests=True` recomputes every digest, and refuses (E701) to restamp
     /// one whose bytes the amended file already failed; `digests=False`
-    /// stamps only datasets that carry none.  Returns the `content_id`, or
-    /// `None` when already committed.
+    /// stamps only datasets that carry none (or one in another algorithm than
+    /// the file's).  An amended file keeps its `digest_algo`.  A commit
+    /// refused before it changes anything --- no image (E201), a reference
+    /// that does not resolve, a schema error (E005) --- leaves the writer
+    /// open, to mend and commit again; one that fails after it began writing
+    /// aborts it.  Returns the `content_id`, or `None` when already
+    /// committed; committing an aborted writer raises.
     #[pyo3(signature = (*, digests=true))]
     fn commit(&mut self, py: Python<'_>, digests: bool) -> R<Option<String>> {
         let writer = &mut self.inner;
@@ -1308,9 +1362,10 @@ impl SampleWriter {
     }
 
     /// Add a logical-record bundle: `clinical`, `events`, `documents`, `links`.
-    fn add_records(&mut self, records: &Bound<'_, PyAny>) -> R<()> {
+    fn add_records(&mut self, py: Python<'_>, records: &Bound<'_, PyAny>) -> R<()> {
         let records = medh5::clinical::ClinicalRecords::from_json(&crate::clinical::record(records)?)?;
-        Ok(self.writer()?.add_records(records)?)
+        let writer = self.writer()?;
+        Ok(py.detach(move || writer.add_records(records))?)
     }
 
     /// The clinical records so far (an amended file's once loaded), or `None`.
@@ -1324,7 +1379,9 @@ impl SampleWriter {
         self.inner.has_clinical()
     }
 
-    /// Remove the clinical profile: the imaging projection (1.1 §10).
+    /// Remove the clinical profile: the imaging projection (1.1 §10), written
+    /// at the lowest version what remains needs.  A sample with no clinical
+    /// profile to remove keeps the version it declared (1.1 §2.1).
     fn drop_clinical(&mut self) -> R<()> {
         Ok(self.writer()?.drop_clinical()?)
     }
@@ -1359,7 +1416,9 @@ fn create(
 
 /// Copy-on-write amend: build a new file from the old and replace it.
 ///
-/// Anything holding the old file open keeps reading the old inode.
+/// On POSIX, anything holding the old file open keeps reading the old inode.
+/// Windows cannot replace an open file: close every reader of it before the
+/// commit, whose rename otherwise fails and leaves the file as it was.
 #[pyfunction]
 #[pyo3(signature = (path, *, codec=None))]
 fn amend(py: Python<'_>, path: PathBuf, codec: Option<String>) -> R<SampleWriter> {
@@ -1369,7 +1428,9 @@ fn amend(py: Python<'_>, path: PathBuf, codec: Option<String>) -> R<SampleWriter
 
 /// The `medh5_version` a commit writes: the lowest version `profiles` need
 /// (`1.0`, or `1.1` with `clinical`), and never below `source`, the version
-/// an amended file already declared (1.1 §2.3).
+/// an amended file already declared (1.1 §2.3).  An amendment that removes
+/// the clinical profile (`drop_clinical`) passes no `source`: the imaging
+/// projection is written at the lowest version what remains needs (1.1 §2.1).
 #[pyfunction]
 #[pyo3(signature = (source, profiles = Vec::new()))]
 fn written_version(source: Option<&str>, profiles: Vec<String>) -> String {

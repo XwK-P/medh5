@@ -27,7 +27,7 @@ pub const CHECK_CODES: [(&str, &str); 12] = [
     ("C102", "a class id means different things in different label sets"),
     ("C103", "a sample declares no label set"),
     ("C201", "a split claim's manifest digest is not this manifest's"),
-    ("C202", "one subject's or grouping key's samples claim different partitions of one split"),
+    ("C202", "one subject's or grouping key's samples claim different partitions, or folds, of one split"),
     ("C203", "a sample carries no split claim"),
     ("C204", "a group holds part of a subject, so the split is not subject-safe (raised by dataset split)"),
     ("C301", "a class is examined in only part of the cohort"),
@@ -350,15 +350,28 @@ fn splits(manifest: &Manifest, report: &mut CohortReport, set_id: Option<&str>) 
             continue;
         }
         let unit = units.get(&entry.group_id).cloned().unwrap_or_else(|| vec![entry.group_id.clone()]);
+        // A sample is stale once, however many of its claims are: counted per
+        // claim, two stale sets made one sample two.
+        let mut is_stale = false;
         for claim in claims {
             if let Some(recorded) = claim.get("manifest_sha256").filter(|v| !v.is_null()) {
-                if recorded.as_str() != Some(digest.as_str()) {
-                    stale.push(locator(entry));
-                }
+                is_stale |= recorded.as_str() != Some(digest.as_str());
             }
             let text = |k: &str| claim.get(k).map(crate::json::py_str).unwrap_or_else(|| "None".into());
-            by_unit.entry(unit.clone()).or_default().entry(text("set_id")).or_default().insert(text("partition"));
+            // A fold is a place of its own: k-fold claims are `train` in every
+            // fold but the validation one, so a unit in folds 0 and 3 read
+            // `train` twice and was no leak (`medh5 splits` and
+            // `Split::leaks` hold the same rule).
+            let fold = claim.get("fold").and_then(|f| f.as_i64().or_else(|| f.as_f64().map(|f| f as i64)));
+            let placed = match fold {
+                Some(fold) => format!("{} (fold {fold})", text("partition")),
+                None => text("partition"),
+            };
+            by_unit.entry(unit.clone()).or_default().entry(text("set_id")).or_default().insert(placed);
             subjects.entry(unit.clone()).or_default().insert(entry.subject_id.clone());
+        }
+        if is_stale {
+            stale.push(locator(entry));
         }
     }
     if !stale.is_empty() {
@@ -400,8 +413,8 @@ fn splits(manifest: &Manifest, report: &mut CohortReport, set_id: Option<&str>) 
             "C202",
             "error",
             format!(
-                "{} grouping key(s), or keys sharing a subject, appear in more than one partition of the same split \
-                 --- this leaks anatomy between train and test. Subjects involved: {}",
+                "{} grouping key(s), or keys sharing a subject, appear in more than one partition, or fold, of the \
+                 same split --- this leaks anatomy between train and test. Subjects involved: {}",
                 leaking.len(),
                 involved.join("; ")
             ),
@@ -468,7 +481,8 @@ fn freshness(manifest: &Manifest, report: &mut CohortReport, deep: bool) {
     if !missing.is_empty() {
         report.add("C402", "error", format!("{} manifest file(s) no longer exist", missing.len()), missing.clone());
     }
-    let mut changed: Vec<String> = manifest.stale().into_iter().filter(|p| !missing.contains(p)).collect();
+    let gone: HashSet<&str> = missing.iter().map(String::as_str).collect();
+    let mut changed: Vec<String> = manifest.stale().into_iter().filter(|p| !gone.contains(p.as_str())).collect();
     if deep {
         let mut all: BTreeSet<String> = changed.into_iter().collect();
         all.extend(changed_content(manifest));

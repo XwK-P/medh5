@@ -13,7 +13,7 @@
 use ndarray::{ArrayD, Axis};
 
 use crate::geometry::affine::box_to_slices;
-use crate::json::repr_int_tuple;
+use crate::json::{repr_int_list, repr_int_tuple};
 
 /// One disagreement between an annotation's datasets.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,6 +259,95 @@ pub fn column_problems(
         if let Some(problem) = check_one(kind, name, &shape, pattern, &mut bound) {
             out.push(problem);
         }
+    }
+    out
+}
+
+/// The class table of a `layers` or `bitmask` annotation against its data
+/// and its classes (§7.2, §7.3).
+///
+/// Its shape first (E405): `layer_class_ids` is `(L, K)`, one row per stored
+/// layer --- a lone row `(K,)` is one layer --- and `bit_class_ids` is `(C,)`.
+/// A `bitmask` stores `ceil(C / 64)` planes (E404, as the validator words
+/// it).  `planes` is how many `data` stores, when known.
+///
+/// Then, given the table's `rows` --- one per layer; `bit_class_ids` is one
+/// row --- what it maps (E404): no class twice, and given `declared` (the
+/// `class_ids`, when known) every declared class and no other.  `0` pads a
+/// layer row and is no class.
+pub(crate) fn table_problems(
+    kind: &str,
+    shape_of: &dyn Fn(&str) -> Option<Vec<usize>>,
+    planes: Option<usize>,
+    rows: Option<&[Vec<i64>]>,
+    declared: Option<&[i64]>,
+) -> Vec<Problem> {
+    let name = match kind {
+        "layers" => "layer_class_ids",
+        "bitmask" => "bit_class_ids",
+        _ => return Vec::new(),
+    };
+    let Some(shape) = shape_of(name) else { return Vec::new() };
+    let got = repr_int_tuple(&shape);
+    if kind == "layers" {
+        if shape.len() > 2 {
+            let message = format!("`{name}` has shape {got}; a `layers` annotation stores it as (L, K)");
+            return vec![Problem::new("E405", name, message)];
+        }
+        let n_rows = if shape.len() == 2 { shape[0] } else { 1 };
+        if let Some(planes) = planes.filter(|p| *p != n_rows) {
+            let message = format!(
+                "`{name}` has {n_rows} row(s) for the {planes} layer(s) `data` stores; the table has one row of class \
+                 ids per layer (§7.2)"
+            );
+            return vec![Problem::new("E405", name, message)];
+        }
+    } else {
+        if shape.len() != 1 {
+            let message = format!("`{name}` has shape {got}; a `bitmask` annotation stores it as (C,)");
+            return vec![Problem::new("E405", name, message)];
+        }
+        let expected = shape[0].div_ceil(64).max(1);
+        if let Some(planes) = planes.filter(|p| *p != expected) {
+            let message = format!("{planes} bitplanes for {} classes; expected {expected}", shape[0]);
+            return vec![Problem::new("E404", "data", message)];
+        }
+    }
+    let Some(rows) = rows else { return Vec::new() };
+    let mut seen: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+    let flat = rows.iter().enumerate().flat_map(|(r, row)| row.iter().enumerate().map(move |(k, c)| (r, k, *c)));
+    for (row, column, class_id) in flat {
+        if kind == "layers" && class_id == 0 {
+            continue;
+        }
+        let place = if kind == "layers" { row } else { column };
+        if let Some(first) = seen.insert(class_id, place) {
+            let message = if kind == "layers" {
+                format!("class {class_id} appears in layers {first} and {place}")
+            } else {
+                format!("class {class_id} has bits {first} and {place}; a class has one bit (§7.3)")
+            };
+            return vec![Problem::new("E404", name, message)];
+        }
+    }
+    let mut out = Vec::new();
+    let Some(declared) = declared else { return out };
+    let mut missing: Vec<i64> = declared.iter().copied().filter(|c| !seen.contains_key(c)).collect();
+    missing.sort_unstable();
+    missing.dedup();
+    if !missing.is_empty() {
+        let where_ = if kind == "layers" { "are in no layer of" } else { "have no bit in" };
+        let message = format!("class_ids {} {where_} `{name}`; every class is stored once", repr_int_list(&missing));
+        out.push(Problem::new("E404", name, message));
+    }
+    let undeclared: Vec<i64> = seen.keys().copied().filter(|c| !declared.contains(c)).collect();
+    if !undeclared.is_empty() {
+        let message = format!(
+            "`{name}` holds class id(s) {}, which `class_ids` does not declare; it declares every class the \
+             annotation can express (§6.2)",
+            repr_int_list(&undeclared)
+        );
+        out.push(Problem::new("E404", name, message));
     }
     out
 }

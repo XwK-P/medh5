@@ -10,7 +10,17 @@ about what a row may see is the engine's, made once at preflight.
 The cohort is the one [`docs/examples/clinical_longitudinal.py`](../examples/clinical_longitudinal.py)
 writes: six subjects, each with a baseline and a three-month CT, an MR at follow-up for some, a
 laboratory value, a report revised two days after the scan, and RECIST responses at day 90 and,
-for some, day 200.
+for some, day 200. Write it once, from a checkout of the repository, with PyTorch installed
+(`pip install "medh5[torch]"`):
+
+```bash
+python docs/examples/clinical_longitudinal.py cohort
+```
+
+It also saves the task this page loads from its second example on, `cohort/progression.task.json`:
+the slots, target and split of the task below, over all six subjects, with the default policy.
+Each source is pinned to its file's `content_id`, so a
+file amended since fails preflight (T302); [Clinical history](clinical.md) amends only copies.
 
 ## Describe the task
 
@@ -20,12 +30,13 @@ Slots are stable names for modalities, never filenames; the target is an event c
 the cutoff.
 
 ```python
-from medh5.clinical import DAY, HOUR
+from medh5.clinical import DAY, HOUR, SelectionPolicy
 from medh5.task import Slot, SourceRef, Target, TaskManifest
 
 task = TaskManifest.new(
     "progression-180d", "1",
     identity_namespace="example-site",
+    policy=SelectionPolicy(context_us=365 * DAY, plans=True),
     slots=[
         Slot("ct", "CT", required=True, patch=(8, 16, 16), roi="eligible_instances",
              classes=(3,)),
@@ -47,6 +58,10 @@ task.save("cohort/my.task.json")
 assert task.validate() == []
 assert task.task_fingerprint != task.manifest_fingerprint
 ```
+
+`policy` is what every row may read (1.1 §9, [task-cache-1](../spec/task-cache-1.md) §3.4): here
+the year before each cutoff, with plans admitted and marked as plans. Without one, a row reads the
+whole history known at its cutoff, plans left out.
 
 The **task fingerprint** identifies the definition — policy, slots, target — and not the rows, so
 two spellings of one task share it. The **row fingerprint** adds the subject, the pinned source
@@ -174,8 +189,34 @@ item["meta"]["document_events"]        # ['report0_v1'] at 24 h
 ```
 
 `HashingTextEncoder` is a deterministic, dependency-free fixture, not a language model. A real encoder
-goes in the same place — anything with `encode(text) -> array` and a `dim` — or, better, into a
-cache.
+goes in the same place, or — better — into a cache, and has three members:
+
+| Member | Read by | |
+|---|---|---|
+| `encode(text)` | both | One document's feature: an array of the same shape for every text, cast to `float32` |
+| `dim` | the dataset | The feature's shape, an `int` for a vector: what a row with no documents gets |
+| `header()` | `build_document_cache` | A mapping of `encoder` (its `name` and an immutable `revision`), `preprocessing` and `output` (`dtype` and `shape`, which every feature must match, T402), recorded in the cache |
+
+```python
+import numpy as np
+from medh5.cache import build_document_cache
+from medh5.task import TaskManifest
+
+class LengthEncoder:
+    """The contract, not a model: a document's length in characters and words."""
+    dim = 2
+
+    def encode(self, text):
+        return np.array([len(text), len(text.split())], dtype=np.float32)
+
+    def header(self):
+        return {"encoder": {"name": "org.example.length", "revision": "1"},
+                "preprocessing": {"words": "whitespace"},
+                "output": {"dtype": "float32", "shape": [self.dim]}}
+
+task = TaskManifest.load("cohort/progression.task.json")
+assert build_document_cache(task, "cohort/lengths.medh5cache", LengthEncoder()).ok
+```
 
 ## Cache features
 
@@ -282,3 +323,14 @@ and the cache's path — NumPy arrays, which a forked worker shares rather than 
 re-read nothing that preflight decided, and read each source as the version its row pins: a handle
 cached from before the file was replaced (`amend` writes a new file) is reopened, and a source that
 changed after the preflight is refused (T302).
+
+## Related
+
+- **[Clinical history beside the images](clinical.md)** — writing the records a task reads, and
+  selecting at a cutoff.
+- **[Python API](../reference/python-api.md#tasks-and-caches)** — the task and cache names and
+  signatures.
+- **[PyTorch and MONAI](../reference/torch.md#clinical-tasks-format-11)** — `ClinicalTaskDataset`
+  and `collate_clinical` in full.
+- **[Task and cache codes](../spec/task-cache-1.md#9-finding-codes)** — the T codes preflight and
+  cache validation report.

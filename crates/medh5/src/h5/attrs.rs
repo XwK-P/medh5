@@ -569,8 +569,14 @@ pub fn numeric_dtype(td: &TD) -> Option<DType> {
 }
 
 /// Whether an attribute exists.
+///
+/// Asked of HDF5 by name: listing every name to find one made each attribute
+/// read cost as many reads as the object has attributes.
 pub fn has(obj: &hdf5::Location, name: &str) -> bool {
-    obj.attr_names().map(|names| names.iter().any(|n| n == name)).unwrap_or(false)
+    let Ok(cname) = std::ffi::CString::new(name) else { return false };
+    // SAFETY: a NUL-terminated name and HDF5's own id, under its lock; a
+    // closed object is an error, which reads as absent, as it did.
+    super::locked(|| unsafe { crate::h5sys::h5a::H5Aexists(obj.id(), cname.as_ptr()) > 0 })
 }
 
 /// Every attribute name, sorted (HDF5's name order).
@@ -851,6 +857,22 @@ mod tests {
         let fixed: hdf5::types::FixedAscii<4> = hdf5::types::FixedAscii::from_ascii(b"x").unwrap();
         file.new_attr::<hdf5::types::FixedAscii<4>>().shape(()).create("fixed").unwrap().write_scalar(&fixed).unwrap();
         assert_eq!(read(&file, "fixed").unwrap(), Some(AttrValue::Str("x".into())));
+    }
+
+    /// An attribute is found by name, and a closed object or a name HDF5
+    /// cannot hold has none.
+    #[test]
+    fn s2_5_an_attribute_is_found_by_name() {
+        let (_dir, file) = scratch();
+        write(&file, "here", &AttrValue::Int(1)).unwrap();
+        assert!(has(&file, "here"));
+        assert!(!has(&file, "absent"));
+        assert!(!has(&file, "he\0re"));
+        let group = file.create_group("g").unwrap();
+        write(&group, "inner", &AttrValue::Int(2)).unwrap();
+        assert!(has(&group, "inner") && !has(&file, "inner"));
+        crate::h5::file::close_everything(file, false).unwrap();
+        assert!(!has(&group, "inner"));
     }
 
     /// Matrices stay two-dimensional: a flat array is not a matrix.

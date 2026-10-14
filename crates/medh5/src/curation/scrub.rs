@@ -6,8 +6,12 @@
 //! record it writes says exactly what was and was not checked (§11.4).
 //!
 //! **Where it looks: everywhere a string can be** --- every string in
-//! `/meta`, every object name, every attribute and every string dataset,
-//! including unknown ones.  The scan and `--apply` are one traversal, so a
+//! `/meta`; every link's name, a second hard link's and a soft link's (and the
+//! path it holds) included; every attribute, a committed datatype's included;
+//! and every string dataset, including unknown ones.  A dataset whose type
+//! holds strings it does not decode (inside a compound, array or
+//! variable-length type) is reported, as is one outside the imaging groups it
+//! does not read at all.  The scan and `--apply` are one traversal, so a
 //! finding the scan calls actionable is, by construction, one the clean acts
 //! on.  UIDs are **pseudonymised**, not deleted: a UID is how two files agree
 //! on a frame of reference, so it becomes a stable hash of itself.
@@ -20,21 +24,25 @@ use indexmap::IndexMap;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
-use crate::array::NdArray;
+use crate::array::{DType, NdArray};
 use crate::curation::identity::{ID_SOURCE, PSEUDONYM_SOURCE};
-use crate::document::SampleDocument;
+use crate::document::{SampleDocument, META_DATASET};
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::{data, ops};
 use crate::json::{py_float, py_str, repr_list, repr_str};
 use crate::sample::writer::amend;
-use crate::sample::{frame_references, open_sample, repack, Sample, FRAME_ATTRS};
+use crate::sample::{frame_references, open_sample, Sample, FRAME_ATTRS};
 use crate::{Error, Result};
 
 pub const PROFILES: [&str; 2] = ["basic", "strict"];
 
 /// Attributes to remove, from the DICOM PS3.15 E.1 basic profile, matched
 /// case-, space- and underscore-insensitively.
-pub const IDENTIFYING_KEYS: [&str; 78] = [
+///
+/// Every table of keys is stored as [`normalise`] leaves a key, which is what
+/// a lookup compares: an entry written `nhs_number` could never be matched,
+/// so an NHS number, a date of birth and three UID spellings passed every scan.
+pub const IDENTIFYING_KEYS: [&str; 76] = [
     "patientname",
     "patientid",
     "patientbirthdate",
@@ -57,10 +65,8 @@ pub const IDENTIFYING_KEYS: [&str; 78] = [
     "occupation",
     "medicalrecordlocator",
     "issuerofpatientid",
-    "patient_name",
-    "patient_id",
     "mrn",
-    "nhs_number",
+    "nhsnumber",
     "ssn",
     "patientcomments",
     "additionalpatienthistory",
@@ -133,7 +139,9 @@ pub const QUASI_IDENTIFYING_KEYS: [&str; 12] = [
     "lastmenstrualdate",
 ];
 
-pub const DATE_KEYS: [&str; 16] = [
+/// Keys that hold a date.  A value that is wholly a date is shifted under any
+/// key; these are shifted (or removed) whatever their value looks like.
+pub const DATE_KEYS: [&str; 14] = [
     "studydate",
     "seriesdate",
     "acquisitiondate",
@@ -146,10 +154,8 @@ pub const DATE_KEYS: [&str; 16] = [
     "scheduledprocedurestepstartdate",
     "performedprocedurestepstartdate",
     "lastmenstrualdate",
-    "study_date",
-    "acquisition_date",
-    "birth_date",
-    "date_of_birth",
+    "birthdate",
+    "dateofbirth",
 ];
 
 /// Keys that hold a UID: one whose value is not UID-shaped is reported for a
@@ -164,9 +170,9 @@ pub const UID_KEYS: [&str; 12] = [
     "irradiationeventuid",
     "concatenationuid",
     "storagemediafilesetuid",
-    "study_uid",
-    "series_uid",
-    "frame_uid",
+    "studyuid",
+    "seriesuid",
+    "frameuid",
 ];
 
 /// How deep the walk goes before it reports rather than descends.
@@ -195,10 +201,34 @@ const NAME_REVIEW: &str = "an identifier other records refer to, so --apply leav
 const VOCABULARY_REVIEW: &str =
     "part of a label vocabulary shared across the cohort and pinned by its digest, so --apply leaves it for a person";
 const UID_DETAIL: &str = "a real DICOM UID; SHOULD be a pseudonym (§11.4)";
+const WHOLE_DATE_DETAIL: &str = "a value that is wholly a date: a date of the subject's, whatever key holds it";
+const COPY_DETAIL: &str = "a copy of the sample document outside /meta, holding its identity: --apply pseudonymises \
+                           /meta, and a copy keeps what that replaces --- --apply removes it";
+const ALIAS_DETAIL: &str = "another name for /meta, the sample document: a tool that rewrites /meta can leave the old \
+                            document here, with every identifier it replaced --- --apply removes the name";
 
 /// Root attributes `commit` rewrites from the amended state.
 const ROOT_MANAGED_ATTRS: [&str; 7] =
     ["medh5_version", "medh5_kind", "medh5_profiles", "created", "generator", "digest_algo", "content_id"];
+
+/// Groups whose non-string datasets are what the format puts there --- pixel
+/// data, geometry, transforms, the derived index --- or that a finding of
+/// their own covers (the clinical profile).  Elsewhere a byte buffer or a
+/// type this tool cannot decode may hold text, so it is reported, not passed.
+const DEFINED_GROUPS: [&str; 6] = ["images", "annotations", "grids", "transforms", "index", "clinical"];
+
+/// How many of the non-string datasets outside [`DEFINED_GROUPS`] the
+/// `not_checked` note names; the rest are counted.
+const UNEXAMINED_NAMED: usize = 10;
+
+/// A replaced id shorter than this is not looked for elsewhere: `1` or `CT`
+/// would be found in every number and every modality.
+const MIN_SWEPT_ID: usize = 4;
+
+/// How far apart, in days, the baselines two timepoints' dates imply may be
+/// and still agree: a date without its time of day is up to a day off the
+/// interval `days_from_baseline` states, which may itself be rounded.
+const BASELINE_TOLERANCE: f64 = 1.5;
 
 /// Attributes whose value is the id of another object, timepoint, activity
 /// or record: reviewed like the ids they name and never rewritten.
@@ -292,6 +322,58 @@ fn dicom_date(text: &str) -> Option<Dated> {
 
 fn is_dicom_date(text: &str) -> bool {
     dicom_date(text).is_some()
+}
+
+/// A whole value that is one ISO 8601 date or date-time: `2020-01-31`,
+/// `2020-01-31T10:22:00.5+01:00`, or a space for the `T` as Python's `str()`
+/// of a `datetime` writes it.  ASCII digits, and a real day.
+fn is_iso_date(text: &str) -> bool {
+    static CELL: OnceLock<Regex> = OnceLock::new();
+    let pattern = regex(
+        &CELL,
+        r"^([0-9]{4})-([0-9]{2})-([0-9]{2})(?:[Tt ][0-9]{2}(?::[0-9]{2}(?::[0-9]{2}(?:[.,][0-9]+)?)?)?(?:[Zz]|[+-][0-9]{2}(?::?[0-9]{2})?)?)?$",
+    );
+    let Some(c) = pattern.captures(text.strip_suffix('\n').unwrap_or(text)) else { return false };
+    ymd(&c[1], &c[2], &c[3]).is_some_and(|(y, m, d)| valid_date(y, m, d))
+}
+
+/// A value that is wholly a date or a date-time, in a form [`shift`] moves:
+/// whatever key holds it, it is a date of the subject's, not text about one.
+fn is_whole_date(text: &str) -> bool {
+    let text = text.trim();
+    is_dicom_date(text) || is_iso_date(text)
+}
+
+/// The day a whole date or date-time names, as days since 1970-01-01.
+fn day_number(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let date = match dicom_date(text) {
+        Some(date) => date,
+        None if is_iso_date(text) => *iso_dates(text).first()?,
+        None => return None,
+    };
+    Some(days_from_civil(date.year, date.month, date.day))
+}
+
+/// What a string holding a copy of a sample document names the sample: its
+/// `identity`'s subject or sample id, when the string decodes to a JSON
+/// object with an `identity` that has one.
+fn document_copy(text: &str) -> Option<String> {
+    let Value::Object(doc) = embedded_json(text)? else { return None };
+    let identity = doc.get("identity")?.as_object()?;
+    ["subject_id", "sample_id"].iter().find_map(|key| identity.get(*key)).map(py_str)
+}
+
+/// Where `id` occurs in `text` as a token of its own --- not continuing a run
+/// of letters or digits on either side --- so `MRN-42` is found in
+/// `case MRN-42.nii` and not in `MRN-421`.
+fn id_tokens(text: &str, id: &str) -> Vec<(usize, usize)> {
+    let alnum_before = |at: usize| text[..at].chars().next_back().is_some_and(char::is_alphanumeric);
+    let alnum_after = |at: usize| text[at..].chars().next().is_some_and(char::is_alphanumeric);
+    text.match_indices(id)
+        .map(|(at, _)| (at, at + id.len()))
+        .filter(|(start, end)| !alnum_before(*start) && !alnum_after(*end))
+        .collect()
 }
 
 /// A dotted-numeric OID.  `pseudo:...` and UUIDs do not match, by design.
@@ -560,6 +642,15 @@ enum Kept {
     Drop,
 }
 
+/// One sample id `--pseudonymise-ids` replaces: the old value, its pseudonym,
+/// and which id it was.
+#[derive(Debug, Clone)]
+struct Replaced {
+    old: String,
+    pseudonym: String,
+    name: String,
+}
+
 /// One walk over every string in a sample, for scanning and for cleaning.
 struct Sweep<'r> {
     report: &'r mut ScrubReport,
@@ -567,7 +658,16 @@ struct Sweep<'r> {
     strict: bool,
     salt: String,
     date_shift_days: Option<i64>,
+    /// The shift the sample's record states, when it states one that moved
+    /// anything: a recorded 0 shifted nothing, so it silences nothing.
+    recorded_shift: Option<i64>,
     dates_shifted: bool,
+    /// Timepoint dates, by position, that disagree with the recorded shift.
+    disagreeing: BTreeMap<usize, String>,
+    /// The ids this run replaces, looked for in every other string.
+    replaced: Vec<Replaced>,
+    /// Non-string datasets outside [`DEFINED_GROUPS`], none of them read.
+    unexamined: Vec<String>,
     uid_map: IndexMap<String, String>,
     actions: Vec<String>,
 }
@@ -580,7 +680,11 @@ impl<'r> Sweep<'r> {
             strict: false,
             salt: String::new(),
             date_shift_days: None,
+            recorded_shift: None,
             dates_shifted: false,
+            disagreeing: BTreeMap::new(),
+            replaced: Vec::new(),
+            unexamined: Vec::new(),
             uid_map: IndexMap::new(),
             actions: Vec::new(),
         }
@@ -658,6 +762,29 @@ impl<'r> Sweep<'r> {
 
     /// One mapping entry: the rules keyed on its name, then its value.
     fn entry(&mut self, key: &str, value: Slot, path: &str, depth: usize, review: Option<&str>) -> Kept {
+        if let Some(kept) = self.keyed(key, &value, path, review) {
+            return kept;
+        }
+        match value {
+            Slot::Json(v) => self.walked(v, path, depth + 1, review),
+            Slot::Opaque(_) => Kept::Same,
+        }
+    }
+
+    /// `value`, walked, as what an entry keeps.
+    fn walked(&mut self, value: &Value, path: &str, depth: usize, review: Option<&str>) -> Kept {
+        let walked = self.json(value, path, depth, review);
+        if &walked == value {
+            Kept::Same
+        } else {
+            Kept::Value(walked)
+        }
+    }
+
+    /// The rules an entry's *name* decides --- an identifying keyword, a UID
+    /// or quasi-identifying key, a date key --- and a value that is wholly a
+    /// date; `None` when none applies and the value is the walk's.
+    fn keyed(&mut self, key: &str, value: &Slot, path: &str, review: Option<&str>) -> Option<Kept> {
         let normal = normalise(key);
         let text = value.text();
         if IDENTIFYING_KEYS.contains(&normal.as_str()) {
@@ -671,11 +798,13 @@ impl<'r> Sweep<'r> {
             );
             if self.acts(review) {
                 self.actions.push(format!("{path} removed"));
-                return Kept::Drop;
+                return Some(Kept::Drop);
             }
-            return Kept::Same;
+            return Some(Kept::Same);
         }
-        if UID_KEYS.contains(&normal.as_str()) && !is_dicom_uid(&text) {
+        // A pseudonym is what this rule asks for --- and the tool's own
+        // output, which reported here kept every scrubbed file's gate red.
+        if UID_KEYS.contains(&normal.as_str()) && !is_dicom_uid(&text) && !text.starts_with(PSEUDONYM_PREFIX) {
             self.find(
                 "uid",
                 path,
@@ -684,7 +813,7 @@ impl<'r> Sweep<'r> {
                 false,
                 review,
             );
-            return Kept::Same;
+            return Some(Kept::Same);
         }
         if QUASI_IDENTIFYING_KEYS.contains(&normal.as_str()) {
             self.find(
@@ -698,39 +827,16 @@ impl<'r> Sweep<'r> {
             );
             if self.strict && self.acts(review) {
                 self.actions.push(format!("{path} removed (quasi-identifier, strict)"));
-                return Kept::Drop;
+                return Some(Kept::Drop);
             }
-            return Kept::Same;
+            return Some(Kept::Same);
         }
-        if DATE_KEYS.contains(&normal.as_str()) {
-            // A file that already records a shift has had its dates handled.
-            let actionable = !self.dates_shifted;
-            self.find("date", path, "a date attribute copied from the source", Some(&text), actionable, review);
-            if self.dates_shifted || !self.acts(review) {
-                return Kept::Same;
-            }
-            return match shift(&text, self.date_shift_days) {
-                None => {
-                    self.actions.push(format!("{path} removed"));
-                    Kept::Drop
-                }
-                Some(moved) => {
-                    self.actions.push(format!("{path} shifted"));
-                    Kept::Value(Value::String(moved))
-                }
-            };
+        let keyed = DATE_KEYS.contains(&normal.as_str());
+        if keyed || matches!(value, Slot::Json(Value::String(s)) if is_whole_date(s)) {
+            let detail = if keyed { "a date attribute copied from the source" } else { WHOLE_DATE_DETAIL };
+            return Some(self.date(&text, path, detail, review));
         }
-        match value {
-            Slot::Json(v) => {
-                let walked = self.json(v, path, depth + 1, review);
-                if &walked == v {
-                    Kept::Same
-                } else {
-                    Kept::Value(walked)
-                }
-            }
-            Slot::Opaque(_) => Kept::Same,
-        }
+        None
     }
 
     /// A mapping *key* that is itself a name or a UID; `None` drops the entry.
@@ -758,7 +864,70 @@ impl<'r> Sweep<'r> {
         if has_date(key) {
             self.find("date", path, "a key that looks like a date", Some(key), false, review);
         }
-        Some(key.to_string())
+        Some(self.replaced_ids(key, path, review))
+    }
+
+    /// A date a rule acts on: reported, then shifted --- or removed, with no
+    /// shift to make or none it can make.  A file that records a shift has
+    /// had its dates handled, so there it is reported for a person and left.
+    fn date(&mut self, text: &str, path: &str, detail: &str, review: Option<&str>) -> Kept {
+        self.find("date", path, detail, Some(text), !self.dates_shifted, review);
+        if self.dates_shifted || !self.acts(review) {
+            return Kept::Same;
+        }
+        match shift(text, self.date_shift_days) {
+            None => {
+                self.actions.push(format!("{path} removed"));
+                Kept::Drop
+            }
+            Some(moved) => {
+                self.actions.push(format!("{path} shifted"));
+                Kept::Value(Value::String(moved))
+            }
+        }
+    }
+
+    /// `text` with every UID inside it replaced by its pseudonym.
+    fn swap_uids(&mut self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut last = 0;
+        for (start, end) in uid_tokens(text) {
+            out.push_str(&text[last..start]);
+            out.push_str(&self.pseudonym(&text[start..end]));
+            last = end;
+        }
+        out.push_str(&text[last..]);
+        out
+    }
+
+    /// The ids this run replaces, wherever else a string holds one: a record
+    /// number in a label or a description outlives the pseudonym that
+    /// replaced it in `identity` (§11.4), and a later scan cannot tell it is
+    /// one.  In an id, which nothing rewrites, it is reported for a person.
+    fn replaced_ids(&mut self, value: &str, r#where: &str, review: Option<&str>) -> String {
+        let mut out = value.to_string();
+        for Replaced { old, pseudonym, name } in self.replaced.clone() {
+            let found = id_tokens(&out, &old);
+            if found.is_empty() {
+                continue;
+            }
+            self.find(
+                "identity",
+                r#where,
+                &format!("holds the {name} --pseudonymise-ids replaces, which would outlive its pseudonym here"),
+                Some(value),
+                true,
+                review,
+            );
+            if self.acts(review) {
+                for (start, end) in found.into_iter().rev() {
+                    out.replace_range(start..end, &pseudonym);
+                }
+                self.uid_map.insert(old, pseudonym);
+                self.actions.push(format!("{}: the {name} pseudonymised", r#where));
+            }
+        }
+        out
     }
 
     /// The value rules, for one string.  `removed` is what a removal leaves.
@@ -790,9 +959,33 @@ impl<'r> Sweep<'r> {
             }
             return value.to_string();
         }
-        if has_date(value) {
-            self.find("date", r#where, "contains what looks like a date", Some(value), false, review);
-            return value.to_string();
+        if is_whole_date(value) {
+            return match self.date(value, r#where, WHOLE_DATE_DETAIL, review) {
+                Kept::Value(Value::String(moved)) => moved,
+                Kept::Drop => removed.to_string(),
+                _ => value.to_string(),
+            };
+        }
+        let mut value = value.to_string();
+        if has_uid_token(&value) {
+            self.find(
+                "uid",
+                r#where,
+                "contains a real DICOM UID; SHOULD be a pseudonym (§11.4), and left in text it maps the pseudonym \
+                 straight back",
+                Some(&value),
+                true,
+                review,
+            );
+            if self.acts(review) {
+                value = self.swap_uids(&value);
+                self.actions.push(format!("{}: UID pseudonymised", r#where));
+            }
+        }
+        let value = self.replaced_ids(&value, r#where, review);
+        if has_date(&value) {
+            self.find("date", r#where, "contains what looks like a date", Some(&value), false, review);
+            return value;
         }
         let length = value.chars().count();
         if length > FREE_TEXT {
@@ -809,7 +1002,7 @@ impl<'r> Sweep<'r> {
                 return removed.to_string();
             }
         }
-        value.to_string()
+        value
     }
 
     /// An id something else refers to: every rule, and never a rewrite.
@@ -824,6 +1017,9 @@ impl<'r> Sweep<'r> {
         let (_, rest) = split_reference(value);
         let mut cleaned = value.to_string();
         let has_uid = has_uid_token(value);
+        // The rules after this one read the reference with its UIDs already
+        // pseudonyms, so a UID is reported here and only here.
+        let swapped = if has_uid { self.swap_uids(value) } else { value.to_string() };
         if has_uid {
             self.find(
                 "uid",
@@ -835,16 +1031,7 @@ impl<'r> Sweep<'r> {
                 None,
             );
             if self.writing {
-                let mut out = String::new();
-                let mut last = 0;
-                for (start, end) in uid_tokens(&cleaned) {
-                    out.push_str(&cleaned[last..start]);
-                    let token = cleaned[start..end].to_string();
-                    out.push_str(&self.pseudonym(&token));
-                    last = end;
-                }
-                out.push_str(&cleaned[last..]);
-                cleaned = out;
+                cleaned = swapped.clone();
                 self.actions.push(format!("{}: UID pseudonymised", r#where));
             }
         }
@@ -858,15 +1045,15 @@ impl<'r> Sweep<'r> {
                 true,
                 None,
             );
-            let (scheme, rest) = split_reference(&cleaned);
+            let (scheme, rest) = split_reference(&swapped);
             // A name in the file name is still a name.
             let base = self.text(&basename(&rest), r#where, 0, None, "");
             if self.writing {
                 cleaned = format!("{scheme}{}", if self.strict { PATH_REMOVED.to_string() } else { base });
                 self.actions.push(format!("{}: path {}", r#where, if self.strict { "removed" } else { "reduced" }));
             }
-        } else if !has_uid && !rest.is_empty() {
-            let (scheme, rest) = split_reference(value);
+        } else if !rest.is_empty() {
+            let (scheme, rest) = split_reference(&swapped);
             cleaned = format!("{scheme}{}", self.text(&rest, r#where, 0, None, ""));
         }
         cleaned
@@ -877,7 +1064,9 @@ impl<'r> Sweep<'r> {
     /// Every string in `/meta`; the cleaned document when writing.
     fn document(&mut self, doc: &Map<String, Value>) -> Map<String, Value> {
         let record = doc.get("deidentification").and_then(Value::as_object);
-        self.dates_shifted = record.and_then(|r| r.get("date_shift_days")).is_some_and(|v| !v.is_null());
+        self.recorded_shift = recorded_shift(record.and_then(|r| r.get("date_shift_days")));
+        self.dates_shifted = self.recorded_shift.is_some();
+        self.disagreeing = self.recorded_shift.map(|days| disagreeing(doc, days)).unwrap_or_default();
         let mut out = doc.clone();
         let identity = doc.get("identity").and_then(Value::as_object).cloned().unwrap_or_default();
         out.insert("identity".into(), Value::Object(self.identity(&identity, doc)));
@@ -895,8 +1084,30 @@ impl<'r> Sweep<'r> {
                 let mut cleaned = Map::new();
                 for (key, value) in entries {
                     let path = format!("{section}.{key}");
-                    self.name(&Value::String(key.clone()), &path);
-                    cleaned.insert(key.clone(), self.json(value, &path, 0, None));
+                    // A top-level key is a key like any other: `extra` holding
+                    // `PatientID` scanned clean while one level down it did not.
+                    let kept = match self.keyed(key, &Slot::Json(value), &path, None) {
+                        Some(kept) => kept,
+                        None => self.walked(value, &path, 0, None),
+                    };
+                    let name = match (section, &kept) {
+                        (_, Kept::Drop) => None,
+                        // Keyed by image id: an id, reviewed and never renamed.
+                        ("acquisition", _) => {
+                            self.name(&Value::String(key.clone()), &path);
+                            Some(key.clone())
+                        }
+                        _ => self.key(key, &path, None),
+                    };
+                    match (kept, name) {
+                        (Kept::Drop, _) | (_, None) => {}
+                        (Kept::Value(v), Some(name)) => {
+                            cleaned.insert(name, v);
+                        }
+                        (Kept::Same, Some(name)) => {
+                            cleaned.insert(name, value.clone());
+                        }
+                    }
                 }
                 out.insert(section.into(), Value::Object(cleaned));
             }
@@ -920,9 +1131,28 @@ impl<'r> Sweep<'r> {
         if let Some(label_set) = doc.get("label_set") {
             self.json(label_set, "label_set", 0, Some(VOCABULARY_REVIEW));
         }
-        // `deidentification` is not scanned: it is the attestation, and
-        // `--apply` replaces it whole.
+        // The attestation is scanned, not cleaned: `--apply` replaces it
+        // whole.  A gate reads the scan, and a name in a record is a name.
+        if let (Some(record), false) = (record, self.writing) {
+            self.record(record);
+        }
         out
+    }
+
+    /// The de-identification record's strings.  `date` says when the record
+    /// was made, not when the subject was seen, and the rest are its own
+    /// scalars; `performed_by` names an agent.
+    fn record(&mut self, record: &Map<String, Value>) {
+        for (key, value) in record {
+            let path = format!("deidentification.{key}");
+            match key.as_str() {
+                "date" | "date_shift_days" | "id_mapping" | "burned_in_annotation_checked" => {}
+                "performed_by" => self.name(value, &path),
+                _ => {
+                    self.json(value, &path, 0, None);
+                }
+            }
+        }
     }
 
     fn identity(&mut self, identity: &Map<String, Value>, doc: &Map<String, Value>) -> Map<String, Value> {
@@ -1041,7 +1271,15 @@ impl<'r> Sweep<'r> {
                     out.insert(key.clone(), Value::Object(cleaned));
                 }
                 "date" => {
-                    if !crate::json::py_truthy(value) || self.dates_shifted {
+                    if !crate::json::py_truthy(value) {
+                        continue;
+                    }
+                    if self.dates_shifted {
+                        // Shifted once already; but a date added since was
+                        // not, and only its interval can tell.
+                        if let Some(detail) = self.disagreeing.get(&index).cloned() {
+                            self.find("date", &path, &detail, Some(&py_str(value)), false, None);
+                        }
                         continue;
                     }
                     let text = py_str(value);
@@ -1159,7 +1397,9 @@ impl<'r> Sweep<'r> {
                 );
             }
             if self.writing && self.strict {
-                out.insert("name".into(), Value::String(pseudonymise(&name, &self.salt)));
+                // Salted and recorded like every other pseudonym: an unsalted
+                // hash of a name is reversed by hashing candidate names.
+                out.insert("name".into(), Value::String(self.pseudonym(&name)));
                 self.actions.push(format!("{}.name pseudonymised", r#where));
             }
         } else if !name.is_empty() {
@@ -1167,13 +1407,29 @@ impl<'r> Sweep<'r> {
             // becomes a pseudonym rather than blank.
             let removed = pseudonymise(&name, &self.salt);
             let cleaned = self.text(&name, &format!("{}.name", r#where), 0, None, &removed);
+            if self.writing && cleaned == removed {
+                self.uid_map.insert(name.clone(), removed);
+            }
             out.insert("name".into(), Value::String(cleaned));
         }
         for (key, value) in agent {
-            if ["id", "type", "name", "organization"].contains(&key.as_str()) {
-                continue;
+            match key.as_str() {
+                "id" | "type" | "name" => {}
+                // The id of an organization agent (§11.1): reviewed as an id.
+                "organization" => self.name(value, &format!("{}.organization", r#where)),
+                // A build's date, not the subject's: reported, and kept.
+                "version" if value.as_str().is_some_and(is_whole_date) => self.find(
+                    "date",
+                    &format!("{}.version", r#where),
+                    "a software version that reads as a date: a build's, not the subject's, so --apply leaves it",
+                    value.as_str(),
+                    false,
+                    None,
+                ),
+                _ => {
+                    out.insert(key.clone(), self.json(value, &format!("{}.{key}", r#where), 0, None));
+                }
             }
-            out.insert(key.clone(), self.json(value, &format!("{}.{key}", r#where), 0, None));
         }
         self.name(&id, &format!("{}.id", r#where));
         Value::Object(out)
@@ -1227,38 +1483,80 @@ impl<'r> Sweep<'r> {
 
     // -- the HDF5 file ---------------------------------------------------------
 
-    /// Every object name, attribute and string dataset outside `/meta`.
+    /// Every link name, attribute and string dataset outside `/meta`.
+    ///
+    /// One walk ([`links`]) reaches every link, so a name is read wherever a
+    /// link holds one --- a later hard link, a soft link, a committed type ---
+    /// and reaches every object once, at its first path, for what it holds.
     fn hdf5(&mut self, root: &hdf5::Group) -> Result<()> {
         self.attributes(root, "root", &ROOT_MANAGED_ATTRS)?;
-        let mut names: Vec<(String, ops::Node)> = Vec::new();
-        ops::visit(root, &mut |name, node| {
-            let owned = match node {
-                ops::Node::Group(g) => ops::Node::Group(g.clone()),
-                ops::Node::Dataset(d) => ops::Node::Dataset(d.clone()),
-            };
-            names.push((name.to_string(), owned));
-            Ok(true)
-        })?;
-        for (name, node) in names {
-            let r#where = name.replace('/', ".");
-            let leaf = name.rsplit('/').next().unwrap_or(&name).to_string();
-            self.name(&Value::String(leaf), &r#where);
-            let parts: Vec<&str> = name.split('/').collect();
+        let meta = ops::object_id_by_name(root, META_DATASET);
+        let links = links(root)?;
+        let mut copies = Vec::new();
+        let mut aliases = Vec::new();
+        for link in &links {
+            let r#where = link.path.replace('/', ".");
+            let leaf = link.path.rsplit('/').next().unwrap_or(&link.path).to_string();
+            self.name(&Value::String(leaf.clone()), &r#where);
+            if let Some(target) = &link.target {
+                // What a soft link points at is a string in the file too.
+                for part in target.split('/').filter(|p| !p.is_empty()) {
+                    self.name(&Value::String(part.to_string()), &format!("{} (link target)", r#where));
+                }
+            }
+            // `/meta` under a second name: what a rewrite of `/meta` leaves
+            // behind --- an amendment once copied the old document there, and
+            // a scrub that pseudonymised the ids left them in it.
+            if link.path != META_DATASET && meta.is_some() && link.id == meta {
+                let named = link
+                    .parent
+                    .dataset(&leaf)
+                    .ok()
+                    .and_then(|d| data::read_strings(&d).ok())
+                    .and_then(|values| values.iter().find_map(|v| document_copy(v)));
+                self.find("identity", &r#where, ALIAS_DETAIL, named.as_deref(), true, None);
+                if self.writing {
+                    self.actions.push(format!("{} removed (another name for /meta)", r#where));
+                    aliases.push(link);
+                }
+            }
+            let Some(object) = &link.object else { continue };
+            let parts: Vec<&str> = link.path.split('/').collect();
             // The frame graph is pseudonymised as one mapping (`scan_frames`).
             let skip: Vec<&str> = if parts.len() == 2 {
                 FRAME_ATTRS.iter().find(|(g, _)| *g == parts[0]).map(|(_, a)| a.to_vec()).unwrap_or_default()
             } else {
                 Vec::new()
             };
-            match &node {
-                ops::Node::Group(g) => self.attributes(g, &r#where, &skip)?,
-                ops::Node::Dataset(d) => {
+            match object {
+                Object::Group(g) => self.attributes(g, &r#where, &skip)?,
+                Object::Datatype(t) => self.attributes(t, &r#where, &[])?,
+                Object::Dataset(d) => {
                     self.attributes(d, &r#where, &skip)?;
-                    if name != "meta" {
-                        self.dataset(d, &r#where)?;
+                    // `/meta` under any name is the document `document` read.
+                    let document = link.path == META_DATASET || (meta.is_some() && link.id == meta);
+                    if !document && self.dataset(d, &r#where, &link.path)? {
+                        copies.extend(link.id);
                     }
                 }
             }
+        }
+        if self.writing {
+            // Every name a copy has goes, or its bytes stay reachable; an
+            // alias goes alone, since the object it names is `/meta`.
+            let named = links.iter().filter(|l| l.id.is_some_and(|id| copies.contains(&id)));
+            for link in named.chain(aliases) {
+                link.parent.unlink(link.path.rsplit('/').next().unwrap_or(&link.path))?;
+            }
+        }
+        if !self.unexamined.is_empty() {
+            let named: Vec<&str> = self.unexamined.iter().take(UNEXAMINED_NAMED).map(String::as_str).collect();
+            let more = self.unexamined.len().saturating_sub(UNEXAMINED_NAMED);
+            self.report.not_checked.push(format!(
+                "non-string datasets outside the imaging groups, whose numbers and bytes are not decoded: {}{}",
+                named.join(", "),
+                if more > 0 { format!(", and {more} more") } else { String::new() }
+            ));
         }
         Ok(())
     }
@@ -1303,6 +1601,14 @@ impl<'r> Sweep<'r> {
                     continue;
                 }
             };
+            if let Some(named) = raw.as_str_list().unwrap_or_default().iter().find_map(|s| document_copy(s)) {
+                self.find("identity", &path, COPY_DETAIL, Some(&named), true, None);
+                if self.writing {
+                    attrs::delete(node, &key)?;
+                    self.actions.push(format!("{path} removed (a copy of the sample document)"));
+                }
+                continue;
+            }
             if REFERENCE_ATTRS.contains(&key.as_str()) {
                 match &value {
                     Value::Array(items) => {
@@ -1342,22 +1648,13 @@ impl<'r> Sweep<'r> {
         Ok(())
     }
 
-    fn dataset(&mut self, ds: &hdf5::Dataset, r#where: &str) -> Result<()> {
-        match data::kind(ds)? {
-            data::Kind::Strings => {}
-            data::Kind::Other(_) if compound_with_strings(ds) => {
-                self.find(
-                    "unreadable",
-                    r#where,
-                    "a compound dataset with string fields; this tool does not decode compound types, so a person \
-                     must look at it",
-                    None,
-                    false,
-                    None,
-                );
-                return Ok(());
-            }
-            _ => return Ok(()),
+    /// A dataset's strings, or why they were not read.  `true` when it holds
+    /// a copy of a sample document, which a writing sweep removes.
+    fn dataset(&mut self, ds: &hdf5::Dataset, r#where: &str, path: &str) -> Result<bool> {
+        let kind = data::kind(ds)?;
+        if kind != data::Kind::Strings {
+            self.unread(ds, &kind, r#where, path);
+            return Ok(false);
         }
         let values = match data::read_strings(ds) {
             Ok(v) => v,
@@ -1370,26 +1667,181 @@ impl<'r> Sweep<'r> {
                     false,
                     None,
                 );
-                return Ok(());
+                return Ok(false);
             }
         };
+        if let Some(named) = values.iter().find_map(|v| document_copy(v)) {
+            self.find("identity", r#where, COPY_DETAIL, Some(&named), true, None);
+            if self.writing {
+                self.actions.push(format!("{} removed (a copy of the sample document)", r#where));
+            }
+            return Ok(true);
+        }
         let kept: Vec<String> =
             values.iter().enumerate().map(|(i, v)| self.text(v, &format!("{}[{i}]", r#where), 0, None, "")).collect();
         if self.writing && kept != values {
             rewrite_strings(ds, &kept)?;
         }
-        Ok(())
+        Ok(false)
+    }
+
+    /// A dataset whose values this tool does not read.  Strings inside its
+    /// type are reported wherever it is; outside [`DEFINED_GROUPS`] so is a
+    /// byte buffer or a type it cannot decode, either of which can carry text,
+    /// and every one there is named in `not_checked`.
+    fn unread(&mut self, ds: &hdf5::Dataset, kind: &data::Kind, r#where: &str, path: &str) {
+        let defined = path.split('/').next().is_some_and(|top| DEFINED_GROUPS.contains(&top));
+        let detail = match strings_inside(ds) {
+            Inside::Strings => Some(
+                "strings inside a compound, array or variable-length type; this tool does not decode those, so a \
+                 person must look at it"
+                    .to_string(),
+            ),
+            Inside::TooDeep => Some(format!(
+                "a type nested more than {MAX_DEPTH} levels deep; this tool did not look inside it, and a person must"
+            )),
+            _ if defined => None,
+            Inside::Unknown => Some(
+                "a type this tool cannot decode, outside the imaging groups; it may hold text, so a person must look \
+                 at it"
+                    .to_string(),
+            ),
+            Inside::Nothing => match kind {
+                data::Kind::Numeric(DType::U8 | DType::I8) if ds.ndim() <= 1 => Some(
+                    "a byte buffer outside the imaging groups; it may hold text this tool does not decode, so a person \
+                     must look at it"
+                        .to_string(),
+                ),
+                data::Kind::Other(t) => Some(format!(
+                    "a dataset of type {t}, outside the imaging groups; this tool does not decode it, so a person \
+                     must look at it"
+                )),
+                _ => None,
+            },
+        };
+        if !defined {
+            self.unexamined.push(path.to_string());
+        }
+        if let Some(detail) = detail {
+            self.find("unreadable", r#where, &detail, None, false, None);
+        }
     }
 }
 
-fn compound_with_strings(ds: &hdf5::Dataset) -> bool {
-    use hdf5::types::TypeDescriptor as TD;
+/// One link [`links`] reached.
+struct Link {
+    /// `/`-separated, from the walk's root.
+    path: String,
+    /// The group that holds the link.
+    parent: hdf5::Group,
+    /// The object a hard link names; `None` for any other link.
+    id: Option<ops::ObjectId>,
+    /// The path a soft link holds.
+    target: Option<String>,
+    /// The object, the first time the walk reaches it.
+    object: Option<Object>,
+}
+
+/// An object [`links`] reached.
+enum Object {
+    Group(hdf5::Group),
+    Dataset(hdf5::Dataset),
+    Datatype(hdf5::CommittedDatatype),
+}
+
+/// Every link under `root`, depth first in name order.
+///
+/// [`ops::visit`] reaches each object once, which is right for a digest and
+/// wrong for names: a second hard link, a soft link and a committed type each
+/// hold a name it never yields.  This walk yields every link, and expands each
+/// group once, so a hard link back to an ancestor ends rather than loops.
+/// The objects it reaches first are the ones `ops::visit` reaches, at the
+/// same paths.
+fn links(root: &hdf5::Group) -> Result<Vec<Link>> {
+    fn walk(
+        group: &hdf5::Group,
+        prefix: &str,
+        depth: usize,
+        seen: &mut std::collections::HashSet<ops::ObjectId>,
+        out: &mut Vec<Link>,
+    ) -> Result<()> {
+        if depth > ops::MAX_DEPTH {
+            return Err(Error::File(format!(
+                "{} is nested more than {} groups deep; it is refused rather than followed",
+                repr_str(&group.name()),
+                ops::MAX_DEPTH
+            )));
+        }
+        for name in ops::members(group)? {
+            let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+            let kind = ops::link_kind(group, &name);
+            let hard = kind == Some(ops::LinkKind::Hard);
+            let id = if hard { ops::object_id_by_name(group, &name) } else { None };
+            let target =
+                if kind == Some(ops::LinkKind::Soft) { ops::soft_link_target(group, &name).ok() } else { None };
+            let first = hard && id.is_none_or(|id| seen.insert(id));
+            let object = if first {
+                match ops::node_kind(group, &name) {
+                    Some(ops::NodeKind::Group) => Some(Object::Group(group.group(&name)?)),
+                    Some(ops::NodeKind::Dataset) => Some(Object::Dataset(group.dataset(&name)?)),
+                    Some(ops::NodeKind::Other) => group.committed_datatype(&name).ok().map(Object::Datatype),
+                    None => None,
+                }
+            } else {
+                None
+            };
+            let child = match &object {
+                Some(Object::Group(g)) => Some(g.clone()),
+                _ => None,
+            };
+            out.push(Link { path: path.clone(), parent: group.clone(), id, target, object });
+            if let Some(child) = child {
+                walk(&child, &path, depth + 1, seen, out)?;
+            }
+        }
+        Ok(())
+    }
+    // The root itself: a link back to it is a cycle too.
+    let mut seen = ops::object_id_of(root).into_iter().collect();
+    let mut out = Vec::new();
+    walk(root, "", 0, &mut seen, &mut out)?;
+    Ok(out)
+}
+
+/// Whether a type holds strings, and where a walk of it stopped.
+enum Inside {
+    Nothing,
+    Strings,
+    TooDeep,
+    /// The type could not be described at all.
+    Unknown,
+}
+
+/// Strings anywhere in a dataset's type: a compound's fields, an array's or
+/// a variable-length sequence's elements, nested --- a flat compound was all
+/// the check saw, and a nested one passed as clean.
+fn strings_inside(ds: &hdf5::Dataset) -> Inside {
     match ds.dtype().and_then(|t| t.to_descriptor()) {
-        Ok(TD::Compound(c)) => c
+        Ok(td) => holds_strings(&td, 0),
+        Err(_) => Inside::Unknown,
+    }
+}
+
+fn holds_strings(td: &hdf5::types::TypeDescriptor, depth: usize) -> Inside {
+    use hdf5::types::TypeDescriptor as TD;
+    if depth > MAX_DEPTH {
+        return Inside::TooDeep;
+    }
+    match td {
+        TD::VarLenUnicode | TD::VarLenAscii | TD::FixedAscii(_) | TD::FixedUnicode(_) => Inside::Strings,
+        TD::Compound(c) => c
             .fields
             .iter()
-            .any(|f| matches!(f.ty, TD::VarLenUnicode | TD::VarLenAscii | TD::FixedAscii(_) | TD::FixedUnicode(_))),
-        _ => false,
+            .map(|f| holds_strings(&f.ty, depth + 1))
+            .find(|inside| !matches!(inside, Inside::Nothing))
+            .unwrap_or(Inside::Nothing),
+        TD::FixedArray(inner, _) | TD::VarLenArray(inner) => holds_strings(inner, depth + 1),
+        _ => Inside::Nothing,
     }
 }
 
@@ -1580,6 +2032,12 @@ fn check_profile(profile: &str) -> Result<()> {
 
 /// Find identifiers in one file.  Changes nothing.
 pub fn scan(path: &Path, profile: &str) -> Result<ScrubReport> {
+    scan_with(path, profile, &[])
+}
+
+/// [`scan`], looking for the `replaced` ids as well: only the run that
+/// replaced them knows what to look for.
+fn scan_with(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<ScrubReport> {
     check_profile(profile)?;
     let mut report = ScrubReport::new(&path.to_string_lossy(), profile);
     let sample = open_sample(path)?;
@@ -1592,6 +2050,7 @@ pub fn scan(path: &Path, profile: &str) -> Result<ScrubReport> {
         // One sweep: what `document` learns (a recorded date shift) governs
         // the attributes too.
         let mut sweep = Sweep::new(&mut report);
+        sweep.replaced = replaced.to_vec();
         sweep.document(&doc);
         scan_frames(&frame_references(&sample.root)?, sweep.report);
         sweep.hdf5(&sample.root)?;
@@ -1658,33 +2117,53 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
              of one is reversed by hashing every record number; pass --salt and keep it apart from the data",
         ));
     }
+    if options.date_shift_days == Some(0) {
+        // Recorded, a shift of nothing silenced every later date scan.
+        return Err(Error::invalid(
+            "date_shift_days=0 shifts nothing, and a file that records a shift has its dates passed over by every \
+             later scan; pass a shift of at least one day, or none to remove the dates",
+        ));
+    }
     let mut report = scan(path, profile)?;
-    if let Some(extent) = clinical_extent(&open_sample(path)?)? {
-        // Refused before anything is written: the attestation would claim a
-        // de-identification this tool did not do (`clinical_extent`).
-        return Err(Error::invalid(format!(
-            "{} carries the clinical profile ({extent}), which this tool does not de-identify: its text and clock \
-             would keep what a scrub removes elsewhere, under an attestation that says otherwise. Share the imaging \
-             projection (`medh5 clinical strip`), or de-identify the clinical records with a tool that covers them \
-             and record it",
-            repr_str(&path.to_string_lossy())
-        )));
+    let shown = repr_str(&path.to_string_lossy());
+    // Refused before anything is written.
+    let (recorded, replaced) = {
+        let sample = open_sample(path)?;
+        if let Some(extent) = clinical_extent(&sample)? {
+            // The attestation would claim a de-identification this tool did
+            // not do (`clinical_extent`).
+            return Err(Error::invalid(format!(
+                "{shown} carries the clinical profile ({extent}), which this tool does not de-identify: its text and \
+                 clock would keep what a scrub removes elsewhere, under an attestation that says otherwise. Share the \
+                 imaging projection (`medh5 clinical strip`), or de-identify the clinical records with a tool that \
+                 covers them and record it"
+            )));
+        }
+        let document = sample.document()?;
+        let days = document.deidentification.as_ref().and_then(|r| r.date_shift_days.clone()).map(Value::Number);
+        let replaced = if options.pseudonymise_ids { ids_replaced(document, &options.salt) } else { Vec::new() };
+        (recorded_shift(days.as_ref()), replaced)
+    };
+    if let (Some(asked), Some(recorded)) = (options.date_shift_days, recorded) {
+        if asked != recorded {
+            // Its dates moved by one amount; a second would leave the record
+            // true of some dates and false of the rest.
+            return Err(Error::invalid(format!(
+                "{shown} records a date shift of {recorded} days, which its dates were moved by; shifting by {asked} \
+                 would make the record false --- pass the recorded shift, or none"
+            )));
+        }
     }
     let strict = profile == "strict";
-    let mut replaced: Vec<(String, String)> = Vec::new();
+    let mut renamed: Vec<(String, String)> = Vec::new();
     let mut writer = amend(path, None)?;
     let result = (|| -> Result<()> {
         let mut date_shift_days = options.date_shift_days;
         let mut notes = Vec::new();
-        if let Some(already) = writer.document().deidentification.clone() {
-            if let Some(days) = &already.date_shift_days {
-                // Shifting twice makes the recorded offset a lie.
-                date_shift_days = days.as_i64().or_else(|| days.as_f64().map(|f| f as i64));
-                notes.push(format!(
-                    "dates were left alone: already shifted by {} days",
-                    py_str(&Value::Number(days.clone()))
-                ));
-            }
+        if let Some(days) = recorded {
+            // Shifting twice makes the recorded offset a lie.
+            date_shift_days = Some(days);
+            notes.push(format!("dates were left alone: already shifted by {days} days"));
         }
         // The performer is declared before the sweep, so the name this run
         // adds gets the same treatment as the names it found.
@@ -1703,9 +2182,10 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
         sweep.salt = options.salt.clone();
         sweep.date_shift_days = date_shift_days;
         sweep.uid_map = report.uid_map.clone();
+        sweep.replaced = replaced.clone();
         let mut cleaned = sweep.document(&doc);
         if options.pseudonymise_ids {
-            replaced = pseudonymise_ids(&mut cleaned, &options.salt, &mut sweep.uid_map, &mut sweep.actions);
+            renamed = pseudonymise_ids(&mut cleaned, &options.salt, &mut sweep.uid_map, &mut sweep.actions);
         }
         writer.set_document(SampleDocument::from_json(&Value::Object(cleaned))?);
         let root = writer.root()?;
@@ -1750,7 +2230,7 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
         writer.deidentification(record)?;
         // Re-scan the cleaned state after the record exists, and put the
         // result in the activity, where an auditor of the attestation looks.
-        let left = rescan(&writer, profile)?;
+        let left = rescan(&writer, profile, &replaced)?;
         let mut fields = Map::new();
         fields.insert("tool".into(), json!(format!("medh5 scrub --profile {profile}")));
         fields.insert(
@@ -1765,6 +2245,10 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
         writer.activity("deidentify", Some(&agent.id), None, fields)?;
         report.actions = removed;
         report.applied = true;
+        // HDF5 does not reclaim superseded storage, so every value this run
+        // removed or replaced would survive in the file's freed space: the
+        // commit rewrites the file from its root before it replaces anything.
+        writer.compact = true;
         writer.commit(true)?;
         Ok(())
     })();
@@ -1772,14 +2256,12 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
         writer.abort();
         return Err(e);
     }
-    // HDF5 does not reclaim superseded storage, so the original values would
-    // survive in freed space; compacting is part of de-identifying.
-    repack(path)?;
-    // The claim is checked against the file, not against the intention.
-    report.remaining = scan(path, profile)?.findings;
+    // The claim is checked against the file, not against the intention ---
+    // and for the ids it replaced, which a later scan cannot know to look for.
+    report.remaining = scan_with(path, profile, &replaced)?.findings;
     let stems = stems(path);
     let name_of_file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    for (name, old) in &replaced {
+    for (name, old) in &renamed {
         if stems.contains(old) {
             report.remaining.push(Finding {
                 rule: "file_name".into(),
@@ -1841,9 +2323,25 @@ fn pseudonymise_ids(
     replaced
 }
 
+/// The ids `--pseudonymise-ids` replaces in a document, each value once;
+/// one too short to tell from a word or a number is replaced, not sought.
+fn ids_replaced(document: &SampleDocument, salt: &str) -> Vec<Replaced> {
+    let mut out: Vec<Replaced> = Vec::new();
+    for (name, value) in [("sample_id", &document.identity.sample_id), ("subject_id", &document.identity.subject_id)] {
+        if value.starts_with(PSEUDONYM_PREFIX) || value.chars().count() < MIN_SWEPT_ID {
+            continue;
+        }
+        match out.iter_mut().find(|r| &r.old == value) {
+            Some(both) => both.name = format!("{} and {name}", both.name),
+            None => out.push(Replaced { old: value.clone(), pseudonym: pseudonymise(value, salt), name: name.into() }),
+        }
+    }
+    out
+}
+
 /// Every rule over a writer's state, without going back to disk, so the count
 /// recorded in the attestation describes the file it ships in.
-fn rescan(writer: &crate::sample::writer::SampleWriter, profile: &str) -> Result<ScrubReport> {
+fn rescan(writer: &crate::sample::writer::SampleWriter, profile: &str, replaced: &[Replaced]) -> Result<ScrubReport> {
     let mut report = ScrubReport::new("<amend>", profile);
     let doc = match writer.document().to_json() {
         Value::Object(m) => m,
@@ -1851,12 +2349,59 @@ fn rescan(writer: &crate::sample::writer::SampleWriter, profile: &str) -> Result
     };
     {
         let mut sweep = Sweep::new(&mut report);
+        sweep.replaced = replaced.to_vec();
         sweep.document(&doc);
         scan_frames(&writer.frame_uids()?, sweep.report);
         sweep.hdf5(&writer.root()?)?;
     }
     escalate(&mut report);
     Ok(report)
+}
+
+/// The shift a de-identification record states, if it moved anything: a
+/// recorded 0 shifted nothing, so it is read as no shift --- left standing,
+/// it silenced every later date scan.
+fn recorded_shift(days: Option<&Value>) -> Option<i64> {
+    days.and_then(|d| d.as_i64().or_else(|| d.as_f64().map(|f| f as i64))).filter(|d| *d != 0)
+}
+
+/// Timepoints, by position, whose date disagrees with the recorded shift,
+/// with the detail that says so.
+///
+/// A shift moves every date by one amount and keeps `days_from_baseline`
+/// (§3.7), so each shifted date less its interval names one baseline day; a
+/// date added after the shift names another.  The baseline is the one the
+/// earliest dated timepoint names (its interval is 0 when it states none),
+/// and a date with no interval to check it by is not reported.
+fn disagreeing(doc: &Map<String, Value>, shift: i64) -> BTreeMap<usize, String> {
+    let timepoints = doc.get("timepoints").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let mut implied: Vec<(usize, u64, f64)> = Vec::new();
+    for (position, tp) in timepoints.iter().enumerate() {
+        let Some(day) = tp.get("date").and_then(Value::as_str).and_then(day_number) else { continue };
+        let index = tp.get("index").and_then(Value::as_u64).unwrap_or(position as u64);
+        let interval = match tp.get("days_from_baseline").and_then(Value::as_f64) {
+            Some(days) => days,
+            None if index == 0 => 0.0,
+            None => continue,
+        };
+        implied.push((position, index, day as f64 - interval));
+    }
+    let Some(&(reference, _, baseline)) = implied.iter().min_by_key(|(_, index, _)| *index) else {
+        return BTreeMap::new();
+    };
+    implied
+        .iter()
+        .filter(|(_, _, day)| (day - baseline).abs() > BASELINE_TOLERANCE)
+        .map(|(position, _, day)| {
+            let apart = (day - baseline).round() as i64;
+            let detail = format!(
+                "a date {apart} day(s) off what timepoints[{reference}].date and both days_from_baseline imply, in a \
+                 sample whose record states a shift of {shift} days: a date added after the shift was not shifted --- \
+                 a person must check it (§11.4)"
+            );
+            (*position, detail)
+        })
+        .collect()
 }
 
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
@@ -1989,6 +2534,143 @@ mod tests {
         assert_eq!(shift("20200131102200.5+0100", Some(1)).as_deref(), Some("20200201102200.5+0100"));
         assert_eq!(shift("2020-01-31 and 2020-02-03", Some(-31)).as_deref(), Some("2019-12-31 and 2020-01-03"));
         assert_eq!(shift("9999-12-31", Some(1)), None);
+    }
+
+    /// A lookup compares `normalise(key)`, so an entry it would change could
+    /// never match: `nhs_number`, `date_of_birth` and three UID keys did not.
+    #[test]
+    fn s11_4_every_key_table_entry_is_stored_normalised() {
+        for table in [&IDENTIFYING_KEYS[..], &QUASI_IDENTIFYING_KEYS, &DATE_KEYS, &UID_KEYS] {
+            for entry in table {
+                assert_eq!(*entry, normalise(entry), "{entry} can never match a key");
+            }
+            let distinct: std::collections::HashSet<&&str> = table.iter().collect();
+            assert_eq!(distinct.len(), table.len(), "a table lists an entry twice");
+        }
+        for (key, table) in [
+            ("nhs_number", &IDENTIFYING_KEYS[..]),
+            ("Patient_Name", &IDENTIFYING_KEYS),
+            ("date_of_birth", &DATE_KEYS),
+            ("birth_date", &DATE_KEYS),
+            ("Study_UID", &UID_KEYS),
+            ("series uid", &UID_KEYS),
+            ("frame_uid", &UID_KEYS),
+        ] {
+            assert!(table.contains(&normalise(key).as_str()), "{key}");
+        }
+    }
+
+    #[test]
+    fn s11_4_a_value_that_is_wholly_a_date_is_told_from_text_holding_one() {
+        for whole in [
+            "2020-01-31",
+            "2020-01-31T10:22:00",
+            "2020-01-31 10:22:00.123456",
+            "2020-01-31T10:22Z",
+            "2020-01-31T10:22:00+01:00",
+            "20200131",
+            "20200131102200",
+            "20200131102200.5+0100",
+            " 20200131 ",
+            "2020-01-31\n",
+        ] {
+            assert!(is_whole_date(whole), "{whole:?}");
+        }
+        for text in [
+            "scanned 2020-01-31",
+            "2020-01-31 and 2020-02-03",
+            "CT_2020-01-31.nii",
+            "52988006",
+            "2020-13-31",
+            "2020-02-30",
+            "2020-01-31T",
+            "२०२०-०१-३१",
+        ] {
+            assert!(!is_whole_date(text), "{text:?}");
+        }
+        assert_eq!(day_number("2020-01-31T10:22:00"), day_number("20200131"));
+        assert_eq!(day_number("1970-01-02"), Some(1));
+        assert_eq!(day_number("scanned 2020-01-31"), None);
+    }
+
+    #[test]
+    fn s11_4_a_replaced_id_is_found_as_a_token_of_its_own() {
+        assert_eq!(id_tokens("case MRN-42.nii", "MRN-42"), vec![(5, 11)]);
+        assert_eq!(id_tokens("MRN-42", "MRN-42"), vec![(0, 6)]);
+        assert_eq!(id_tokens("MRN-42_CT and MRN-42", "MRN-42"), vec![(0, 6), (14, 20)]);
+        assert!(id_tokens("MRN-421", "MRN-42").is_empty());
+        assert!(id_tokens("xMRN-42", "MRN-42").is_empty());
+        assert!(id_tokens("Müller-MRN-42ä", "MRN-42").is_empty());
+    }
+
+    #[test]
+    fn s11_4_a_recorded_shift_of_nothing_is_no_shift() {
+        assert_eq!(recorded_shift(Some(&json!(0))), None);
+        assert_eq!(recorded_shift(Some(&json!(0.0))), None);
+        assert_eq!(recorded_shift(Some(&json!(-117))), Some(-117));
+        assert_eq!(recorded_shift(Some(&Value::Null)), None);
+        assert_eq!(recorded_shift(None), None);
+    }
+
+    /// Shifted dates less their intervals name one baseline; a date added
+    /// after the shift names another.  Within a day is agreement: a date
+    /// without its time is up to a day off its interval.
+    #[test]
+    fn s11_4_a_date_added_after_a_shift_disagrees_with_the_shifted_ones() {
+        let doc = json!({"timepoints": [
+            {"id": "tp0", "index": 0, "date": "2020-01-01"},
+            {"id": "tp1", "index": 1, "date": "2020-01-11", "days_from_baseline": 10},
+            {"id": "tp2", "index": 2, "date": "2020-04-30", "days_from_baseline": 2},
+            {"id": "tp3", "index": 3, "date": "2020-01-21T23:59:00", "days_from_baseline": 20.9},
+            {"id": "tp4", "index": 4, "date": "2021-06-01"},
+        ]});
+        let found = disagreeing(doc.as_object().unwrap(), -117);
+        assert_eq!(found.keys().copied().collect::<Vec<_>>(), vec![2]);
+        assert!(found[&2].contains("118 day(s) off what timepoints[0].date"), "{}", found[&2]);
+        assert!(found[&2].contains("a shift of -117 days"), "{}", found[&2]);
+    }
+
+    #[test]
+    fn s11_4_strings_are_found_however_deep_a_type_holds_them() {
+        use hdf5::types::{CompoundField, CompoundType, IntSize, TypeDescriptor as TD};
+        let field = |name: &str, ty: TD| CompoundField { name: name.into(), ty, offset: 0, index: 0 };
+        let compound = |fields: Vec<CompoundField>| TD::Compound(CompoundType { fields, size: 0 });
+        let nested = compound(vec![field("outer", compound(vec![field("name", TD::VarLenUnicode)]))]);
+        assert!(matches!(holds_strings(&nested, 0), Inside::Strings));
+        let names = compound(vec![field("names", TD::FixedArray(Box::new(TD::VarLenUnicode), 2))]);
+        assert!(matches!(holds_strings(&names, 0), Inside::Strings));
+        assert!(matches!(holds_strings(&TD::VarLenArray(Box::new(TD::FixedAscii(8))), 0), Inside::Strings));
+        let numbers = compound(vec![field("n", TD::Integer(IntSize::U4)), field("v", TD::Unsigned(IntSize::U1))]);
+        assert!(matches!(holds_strings(&numbers, 0), Inside::Nothing));
+        let mut deep = TD::Integer(IntSize::U4);
+        for _ in 0..=MAX_DEPTH {
+            deep = TD::VarLenArray(Box::new(deep));
+        }
+        assert!(matches!(holds_strings(&deep, 0), Inside::TooDeep), "past the cap, reported rather than passed");
+    }
+
+    /// Every link is reached and each group expanded once: a later hard
+    /// link, a soft link and a committed type each hold a name `ops::visit`
+    /// never yields, and a hard link back to an ancestor ends the walk.
+    #[test]
+    fn s11_4_the_name_walk_reaches_every_link_and_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("links.h5")).unwrap();
+        let a = file.create_group("x_a").unwrap();
+        a.new_dataset::<u8>().shape([2]).create("table").unwrap();
+        file.create_group("x_b").unwrap().link_hard("/x_a/table", "Doe^Jane").unwrap();
+        a.link_soft("/x_a/table", "Roe^Rick").unwrap();
+        a.link_hard("/x_a", "loop").unwrap();
+        a.commit_datatype("rowtype", &hdf5::Datatype::from_type::<i32>().unwrap()).unwrap();
+        let reached = links(&file).unwrap();
+        let paths: Vec<&str> = reached.iter().map(|l| l.path.as_str()).collect();
+        assert_eq!(paths, ["x_a", "x_a/Roe^Rick", "x_a/loop", "x_a/rowtype", "x_a/table", "x_b", "x_b/Doe^Jane"]);
+        let first: Vec<&str> = reached.iter().filter(|l| l.object.is_some()).map(|l| l.path.as_str()).collect();
+        assert_eq!(first, ["x_a", "x_a/rowtype", "x_a/table", "x_b"], "each object once, as ops::visit");
+        assert!(matches!(reached[3].object, Some(Object::Datatype(_))));
+        assert_eq!(reached[1].target.as_deref(), Some("/x_a/table"));
+        assert_eq!(reached[6].id, reached[4].id, "the later name is the same object");
+        assert_eq!(reached[2].id, reached[0].id, "the loop is the group it is in");
     }
 
     #[test]

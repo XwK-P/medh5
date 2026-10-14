@@ -106,8 +106,10 @@ pub fn parse_date(value: Option<&str>) -> Option<i64> {
     if text.is_empty() {
         return None;
     }
+    // Sliced by byte below, so only an ASCII head is a candidate: a short
+    // head holding a multibyte character used to split it, and panic.
     let head: String = text.chars().take(8).collect();
-    if head.len() == 8 {
+    if head.len() == 8 && head.is_ascii() {
         if let (Some(y), Some(m), Some(d)) = (digits(&head[..4]), digits(&head[4..6]), digits(&head[6..8])) {
             if let Some(days) = days_from_civil(y, m as u32, d as u32) {
                 return Some(days);
@@ -115,7 +117,7 @@ pub fn parse_date(value: Option<&str>) -> Option<i64> {
         }
     }
     let iso: String = text.chars().take(10).collect();
-    if iso.len() == 10 && &iso[4..5] == "-" && &iso[7..8] == "-" {
+    if iso.len() == 10 && iso.is_ascii() && &iso[4..5] == "-" && &iso[7..8] == "-" {
         if let (Some(y), Some(m), Some(d)) = (digits(&iso[..4]), digits(&iso[5..7]), digits(&iso[8..10])) {
             return days_from_civil(y, m as u32, d as u32);
         }
@@ -307,10 +309,23 @@ pub fn key_stem(key: &str) -> String {
     }
 }
 
+/// Whether `group` is a study [`group_by_subject`] gave no subject: its
+/// subject id is the fallback `study:<key>` rather than one the source named.
+pub(crate) fn is_fallback(group: &SubjectGroup) -> bool {
+    match group.occasions.as_slice() {
+        [only] => group.subject_id == format!("{FALLBACK_PREFIX}:{}", only.key),
+        _ => false,
+    }
+}
+
 /// A unique filename stem for one group.
+///
+/// A study with no subject is named for its source; a subject is named for
+/// itself, `Study-7` included, which a test of the stem's first letters took
+/// for the fallback.
 pub fn output_name(group: &SubjectGroup, used: &mut BTreeSet<String>, safe: &dyn Fn(&str) -> String) -> String {
     let mut base = safe(&group.subject_id);
-    if base.starts_with("study") {
+    if is_fallback(group) {
         if let Some(first) = group.occasions.first() {
             let stem = safe(&key_stem(&first.key));
             if !stem.is_empty() {
@@ -366,9 +381,56 @@ pub fn sanitize_key(name: &str, fallback: &str) -> String {
     cleaned.chars().take(128).collect()
 }
 
-/// A filename stem from free text: identifier characters only, truncated.
+/// `U+00C0..=U+017F` once NFKD has dropped their combining marks: the base
+/// letter, or `_` where NFKD keeps the letter whole (`Æ`, `ß`, `Ø`, `Ł`).
+/// The five that decompose to two characters are matched before the table.
+const LATIN: &[u8; 192] = b"AAAAAA_CEEEEIIII_NOOOOO__UUUUY__aaaaaa_ceeeeiiii_nooooo__uuuuy_y\
+AaAaAaCcCcCcCcDd__EeEeEeEeEeGgGgGgGgHh__IiIiIiIiI___JjKk_LlLlLl____NnNnNn___OoOoOo__RrRrRrSsSsSsSsTtTt__UuUuUuUuUuUuWwYyYZzZzZzs";
+
+/// Text folded to ASCII, as `medh5.io._common.sanitize_ascii_stem` folds it
+/// with NFKD: Latin letters lose their accents (`Müller` is `Muller`, written
+/// precomposed or not), the fullwidth and superscript forms of ASCII are
+/// ASCII, and any other character outside ASCII is `_`.
+fn ascii_fold(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            _ if c.is_ascii() => out.push(c),
+            // Combining marks, as NFKD leaves them and the fold drops them.
+            '\u{300}'..='\u{36f}'
+            | '\u{1ab0}'..='\u{1aff}'
+            | '\u{1dc0}'..='\u{1dff}'
+            | '\u{20d0}'..='\u{20ff}'
+            | '\u{fe20}'..='\u{fe2f}' => {}
+            '\u{ff01}'..='\u{ff5e}' => out.push(char::from_u32(c as u32 - 0xfee0).unwrap_or('_')),
+            'ª' => out.push('a'),
+            'º' => out.push('o'),
+            '¹' => out.push('1'),
+            '²' => out.push('2'),
+            '³' => out.push('3'),
+            'Ĳ' => out.push_str("IJ"),
+            'ĳ' => out.push_str("ij"),
+            'Ŀ' => out.push_str("L_"),
+            'ŀ' => out.push_str("l_"),
+            'ŉ' => out.push_str("_n"),
+            '\u{c0}'..='\u{17f}' => out.push(char::from(LATIN[c as usize - 0xc0])),
+            _ => out.push('_'),
+        }
+    }
+    out
+}
+
+/// A filename stem from free text: ASCII identifier characters, truncated.
+///
+/// A sample id is `[A-Za-z0-9_.-]` (§2.2, E003), and the letters this kept
+/// outside ASCII made an id the writer refused: a subject key `Müller`
+/// failed its whole group.
 pub fn sanitize_stem(text: &str, limit: usize) -> String {
-    text.chars().map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '_' }).take(limit).collect()
+    ascii_fold(text)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' })
+        .take(limit)
+        .collect()
 }
 
 #[cfg(test)]
@@ -385,5 +447,48 @@ mod tests {
         assert_eq!(sanitize_key("__", "class"), "class");
         assert_eq!(key_stem("1.2.840.113"), "1.2.840.113");
         assert_eq!(key_stem("/data/case_01.medh5"), "case_01");
+    }
+
+    #[test]
+    fn s2_2_a_stem_is_an_ascii_identifier() {
+        assert_eq!(sanitize_stem("Müller Hans", 128), "Muller_Hans");
+        // Decomposed, as a macOS file name is.
+        assert_eq!(sanitize_stem("Mu\u{308}ller", 128), "Muller");
+        assert_eq!(sanitize_stem("Łódź ß Ĳssel", 128), "_odz___IJssel");
+        assert_eq!(sanitize_stem("ＡＢＣ１２", 128), "ABC12");
+        assert_eq!(sanitize_stem("患者 7", 128), "___7");
+        assert_eq!(sanitize_stem("a b/c", 4), "a_b_");
+        assert!(LATIN.iter().all(|b| b.is_ascii_alphabetic() || *b == b'_'));
+        assert_eq!(sanitize_stem("Ÿ", 128), "Y");
+    }
+
+    #[test]
+    fn s3_7_only_a_fallback_is_named_for_its_source() {
+        let group = |subject: &str, key: &str| SubjectGroup {
+            subject_id: subject.into(),
+            occasions: vec![Occasion { key: key.into(), ..Default::default() }],
+            ordered_by: "given".into(),
+        };
+        let safe = |s: &str| sanitize_stem(s, 128).to_lowercase();
+        let mut used = BTreeSet::new();
+        assert_eq!(output_name(&group("Study-7", "/x/s0.medh5"), &mut used, &safe), "study-7");
+        assert_eq!(output_name(&group("STUDY001", "/x/s1.medh5"), &mut used, &safe), "study001");
+        assert_eq!(output_name(&group("study:/x/s2.medh5", "/x/s2.medh5"), &mut used, &safe), "s2");
+    }
+
+    #[test]
+    fn s3_7_a_non_ascii_date_is_unparseable_not_a_panic() {
+        // Eight or ten bytes, fewer characters: the byte slices split one.
+        for text in ["202é001", "202é-01-0", "２０２０-01-05"] {
+            assert_eq!(parse_date(Some(text)), None, "{text}");
+        }
+        let o = |key: &str, date: &str| Occasion {
+            key: key.into(),
+            subject_id: Some("P".into()),
+            date: Some(date.into()),
+            ..Default::default()
+        };
+        let groups = group_by_subject(vec![o("a", "202é001"), o("b", "20200105")], "subject", None).unwrap();
+        assert_eq!(groups[0].occasions.len(), 2);
     }
 }

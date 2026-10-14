@@ -149,9 +149,12 @@ class Members(dict[str, Any]):
         if self._document is None:
             super().update(other, **kwargs)
             return
-        for key, value in dict(other, **kwargs).items():
-            self._document._set_member(self._field, key, value)
-        self._sync()
+        try:
+            for key, value in dict(other, **kwargs).items():
+                self._document._set_member(self._field, key, value)
+        finally:
+            # A value refused partway leaves those before it written.
+            self._sync()
 
     def setdefault(self, key: str, default: Any = None) -> Any:
         if self._document is not None:
@@ -293,6 +296,8 @@ class _NestedList(list[Any]):
             self._anchor.rewrite()
 
     def __setitem__(self, index: Any, value: Any) -> None:
+        # Refused before anything changes, even an empty slice's values.
+        self._check()
         if isinstance(index, slice):
             value = [self._adopt(v) for v in value]
         else:
@@ -345,7 +350,10 @@ class _NestedList(list[Any]):
 
     def sort(self, *, key: Any = None, reverse: bool = False) -> None:
         self._check()
-        super().sort(key=key, reverse=reverse)
+        # A sort that fails partway leaves a list part-sorted, which the next
+        # edit would write through: sort a copy, and keep it only if it ends.
+        ordered = sorted(self, key=key, reverse=reverse)
+        super().__setitem__(slice(None), ordered)
         self._changed()
 
     def reverse(self) -> None:

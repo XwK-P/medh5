@@ -17,11 +17,25 @@ use serde_json::Value;
 use crate::convert::{json_to_py, py_to_json};
 
 /// `sys.stdout` or `sys.stderr`, as a byte sink.
+///
+/// Buffered: each `write` was a call into Python, and a document written in
+/// fragments --- `writeln!`, a streamed `--json` --- made one per fragment.
+/// A line goes when it ends where someone is watching the stream, as Python's
+/// own buffering does; a block at a time elsewhere.  What is left when it is
+/// dropped unflushed is dropped with it: the command line flushes what it
+/// means to show ([`Write::flush`]), and leaves unflushed only what a stream
+/// that failed could not take.
 struct PyStream {
     name: &'static str,
-    /// Bytes of a UTF-8 sequence split across two writes.
+    /// Written and not yet handed to Python, a UTF-8 sequence split across
+    /// two writes among it.
     pending: Vec<u8>,
+    /// Hand Python each line as it ends, rather than a block at a time.
+    lines: bool,
 }
+
+/// The most a block-buffered stream holds before handing it to Python.
+const BLOCK: usize = 64 * 1024;
 
 /// A stream's exception as the I/O error the CLI judges: a reader that went
 /// away is a broken pipe, anything else output that was lost.
@@ -35,8 +49,35 @@ fn io_error(py: Python<'_>, e: PyErr) -> std::io::Error {
 }
 
 impl PyStream {
-    fn new(name: &'static str) -> Self {
-        PyStream { name, pending: Vec::new() }
+    /// `sys.<name>`, a line at a time where Python's own stream goes at least
+    /// that often: stderr always, and a stream that is line-buffered (stdout
+    /// at a terminal), writes through (`python -u`, `PYTHONUNBUFFERED`) or is
+    /// a terminal.  Each is asked on its own, and one a stream cannot answer
+    /// (`io.StringIO` has no `write_through`) is a no.
+    fn new(py: Python<'_>, name: &'static str) -> Self {
+        let lines = name == "stderr"
+            || py.import("sys").and_then(|sys| sys.getattr(name)).is_ok_and(|stream| {
+                let says = |answer: PyResult<Bound<'_, PyAny>>| answer.and_then(|a| a.is_truthy()).unwrap_or(false);
+                says(stream.getattr("line_buffering"))
+                    || says(stream.getattr("write_through"))
+                    || says(stream.call_method0("isatty"))
+            });
+        PyStream { name, pending: Vec::new(), lines }
+    }
+
+    /// Hand Python what of the first `due` pending bytes is whole UTF-8; the
+    /// rest of a sequence split across two writes waits for its end.
+    fn send_pending(&mut self, due: usize) -> std::io::Result<()> {
+        let valid = match std::str::from_utf8(&self.pending[..due]) {
+            Ok(_) => due,
+            Err(e) => e.valid_up_to(),
+        };
+        if valid == 0 {
+            return Ok(());
+        }
+        let text = String::from_utf8_lossy(&self.pending[..valid]).into_owned();
+        self.pending.drain(..valid);
+        self.send(&text)
     }
 
     fn send(&self, text: &str) -> std::io::Result<()> {
@@ -66,20 +107,22 @@ impl PyStream {
 impl Write for PyStream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.pending.extend_from_slice(buf);
-        let valid = match std::str::from_utf8(&self.pending) {
-            Ok(_) => self.pending.len(),
-            Err(e) => e.valid_up_to(),
+        let due = if self.lines {
+            self.pending.iter().rposition(|b| *b == b'\n').map_or(0, |end| end + 1)
+        } else if self.pending.len() >= BLOCK {
+            self.pending.len()
+        } else {
+            0
         };
-        if valid > 0 {
-            let text = String::from_utf8_lossy(&self.pending[..valid]).into_owned();
-            self.pending.drain(..valid);
-            self.send(&text)?;
+        if due > 0 {
+            self.send_pending(due)?;
         }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         if !self.pending.is_empty() {
+            // Whatever is left, a sequence cut short replaced.
             let text = String::from_utf8_lossy(&self.pending).into_owned();
             self.pending.clear();
             self.send(&text)?;
@@ -148,8 +191,8 @@ impl medh5_cli::Host for PyHost {
 #[pyfunction]
 fn cli_main(py: Python<'_>, argv: Vec<OsString>, host: Py<PyAny>) -> i32 {
     let host = PyHost { host };
-    let mut out = PyStream::new("stdout");
-    let mut err = PyStream::new("stderr");
+    let mut out = PyStream::new(py, "stdout");
+    let mut err = PyStream::new(py, "stderr");
     // `sys.argv` carries an argument that is not UTF-8 as surrogate escapes,
     // which no conversion to text accepts: taken as the operating system's
     // bytes, it is refused as the standalone binary refuses it.

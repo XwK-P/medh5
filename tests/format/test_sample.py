@@ -43,6 +43,27 @@ def minimal(writer, *, grid: str = "g") -> None:
     writer.add_image("CT", np.zeros(SHAPE, dtype=np.int16), grid=grid, modality="CT")
 
 
+def restamped_in(path: Path, algo: str) -> str:
+    """Every digest of *path*, and its ``content_id``, restamped in *algo* as
+    a writer digesting in it writes them; returns the ``content_id``."""
+    from medh5.integrity import collect_digests, dataset_digest
+
+    with medh5.open(path) as sample:
+        fresh = {
+            name: dataset_digest(sample.root[name], name, algo)
+            for name in collect_digests(sample.root)
+        }
+    with h5py.File(path, "r+") as handle:
+        handle.attrs["digest_algo"] = algo
+        for name, digest in fresh.items():
+            handle[name].attrs["digest"] = digest
+    with medh5.open(path) as sample:
+        content_id = sample.compute_content_id()
+    with h5py.File(path, "r+") as handle:
+        handle.attrs["content_id"] = content_id
+    return content_id
+
+
 class TestWriteRead:
     def test_round_trip(self, sample_path, masks):
         with medh5.open(sample_path) as sample:
@@ -71,12 +92,67 @@ class TestWriteRead:
         assert list(tmp_path.iterdir()) == []
 
     def test_commit_requires_an_image(self, tmp_path):
+        """Refused at the end of a ``with`` block, a commit has no one left to
+        mend it: the writer is aborted, and nothing is left behind."""
         with (
             pytest.raises(MEDH5ValidationError) as exc,
             medh5.create(tmp_path / "empty.medh5") as w,
         ):
             w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
         assert exc.value.code == "E201"
+        assert w.closed
+        assert list(tmp_path.iterdir()) == []
+
+    def test_S14_4_a_commit_refused_before_writing_leaves_the_writer_open(
+        self, tmp_path
+    ):
+        """A refused commit aborted the writer, and the next ``commit()``
+        returned ``None`` --- *already committed* --- for a file it never
+        wrote.  Refused before it changed anything, the writer stays open, to
+        mend and commit again."""
+        path = tmp_path / "mended.medh5"
+        writer = medh5.create(path, sample_id="mended")
+        writer.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+        with pytest.raises(MEDH5ValidationError) as exc:
+            writer.commit()
+        assert exc.value.code == "E201"
+        assert not writer.closed
+        assert not path.exists()
+
+        writer.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+        content_id = writer.commit()
+        assert writer.closed
+        assert content_id is not None
+        assert writer.commit() is None, "committed: there is nothing more to do"
+        with medh5.open(path) as sample:
+            assert sample.content_id == content_id
+        assert validate_file(path).ok
+
+    def test_S14_4_an_aborted_writer_refuses_to_commit(self, sample_path):
+        """Aborted by its caller, or by a commit refused once it had begun
+        writing (E701 is met while stamping), a writer has nothing to commit
+        and says so, and the target is as it was, with no temporary file."""
+        writer = medh5.create(sample_path.parent / "aborted.medh5")
+        minimal(writer)
+        writer.abort()
+        with pytest.raises(MEDH5ValidationError, match="aborted"):
+            writer.commit()
+
+        with h5py.File(sample_path, "r+") as handle:
+            node = handle["images/CT_tp0"]
+            data = node[...]
+            data[0, 0, 0] += 7
+            node[...] = data
+        before = sample_path.read_bytes()
+        writer = medh5.amend(sample_path)
+        with pytest.raises(MEDH5ValidationError) as exc:
+            writer.commit()
+        assert exc.value.code == "E701"
+        assert writer.closed
+        with pytest.raises(MEDH5ValidationError, match="aborted"):
+            writer.commit()
+        assert sample_path.read_bytes() == before
+        assert [p.name for p in sample_path.parent.iterdir()] == [sample_path.name]
 
     def test_commit_stamps_a_content_id(self, sample_path):
         with medh5.open(sample_path) as sample:
@@ -169,6 +245,52 @@ class TestWriteRead:
             assert image.read()[0, 0, 0] == 10
             assert image.read(physical=True)[0, 0, 0] == 15.0
             assert image.is_rescaled
+
+    def test_S4_2_an_image_without_a_rescale_is_read_as_stored(self, tmp_path):
+        """``physical=True`` rescales into ``float32`` an image that declares a
+        rescale; one that declares none already holds physical values, and is
+        read in its own dtype --- the docstring promised ``float32``.  A
+        ``dtype`` reads either as asked."""
+        path = tmp_path / "plain.medh5"
+        with medh5.create(path, codec="portable") as w:
+            minimal(w)
+            w.add_image(
+                "PT",
+                np.full(SHAPE, 10, np.int16),
+                grid="g",
+                modality="PT",
+                rescale_slope=0.5,
+            )
+        with medh5.open(path) as sample:
+            ct, pt = sample.images["CT"], sample.images["PT"]
+            assert not ct.is_rescaled and pt.is_rescaled
+            assert ct.read(physical=True).dtype == np.int16
+            assert pt.read(physical=True).dtype == np.float32
+            for image in (ct, pt):
+                found = image.read(physical=True, dtype=np.float32)
+                assert found.dtype == np.float32
+            np.testing.assert_array_equal(
+                ct.read(physical=True), ct.read(), strict=True
+            )
+
+    @pytest.mark.parametrize("odd", [None, np.nan, np.inf, 0.5])
+    def test_S4_2_W907_advises_int16_only_where_it_holds_every_value(
+        self, tmp_path, odd
+    ):
+        """``int16`` holds no NaN and no infinity.  Every *finite* value was
+        tested, so a float image with NaN outside its field of view was
+        advised into a type that cannot store it."""
+        from medh5.image import lossless_as_int16
+
+        values = np.full(SHAPE, -1000.0, np.float32)
+        if odd is not None:
+            values[0, 0, 0] = odd
+        path = tmp_path / "float.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", values, grid="g", modality="CT")
+        advised = "W907" in validate_file(path).codes
+        assert advised == lossless_as_int16(values) == (odd is None)
 
     def test_roi_accepts_spatial_or_full_rank(self, sample_path):
         with medh5.open(sample_path) as sample:
@@ -629,6 +751,89 @@ class TestAmend:
             assert "organs_tp0" not in sample.annotations
             assert sample.verify().ok
 
+    @pytest.mark.parametrize(
+        ("alias", "link"),
+        [("x_acme/meta", "hard"), ("a_first/meta", "hard"), ("x_acme/meta", "soft")],
+    )
+    def test_S2_4_an_alias_of_meta_names_the_document_the_amendment_wrote(
+        self, tmp_path, alias, link
+    ):
+        """`/meta` was copied by path and written anew, so a hard link to it
+        under another name kept the old document as an object of its own: an
+        identifier the amendment replaced --- the record number a scrub
+        pseudonymised --- stayed under the alias, and in the file's bytes.
+        A soft link names `/meta` by path, and always followed it."""
+        record = "MRN-0042-7731"
+        path = tmp_path / "alias.medh5"
+        with medh5.create(path, subject_id=record, codec="portable") as w:
+            minimal(w)
+        with h5py.File(path, "r+") as handle:
+            handle.create_group(alias.split("/")[0])
+            handle[alias] = handle["meta"] if link == "hard" else h5py.SoftLink("/meta")
+        with medh5.amend(path) as w:
+            w.identity(subject_id="pseudo-1")
+        with h5py.File(path, "r") as handle:
+            assert handle[alias] == handle["meta"]
+            document = json.loads(handle[alias][()])
+        assert document["identity"]["subject_id"] == "pseudo-1"
+        assert record.encode() not in path.read_bytes()
+        with medh5.open(path) as sample:
+            assert sample.identity.subject_id == "pseudo-1"
+            assert sample.verify().ok
+
+    def test_S3_4_a_remapped_frame_uid_leaves_no_bytes(self, tmp_path):
+        """HDF5 keeps an overwritten attribute's old value in the file's free
+        space, so every frame UID `remap_frame_uids` replaced --- what a scrub
+        pseudonymises them for --- stayed in the committed bytes."""
+        uid = "1.2.826.0.1.3680043.8.498.4242"
+        path = tmp_path / "frames.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0), frame_uid=uid)
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+        assert uid.encode() in path.read_bytes(), "the control"
+        with medh5.amend(path) as w:
+            assert w.remap_frame_uids({uid: "pseudo-frame-1"})
+        assert uid.encode() not in path.read_bytes()
+        with medh5.open(path) as sample:
+            assert sample.grids["g"].frame_uid == "pseudo-frame-1"
+            assert sample.verify().ok
+
+    @pytest.mark.parametrize("algo", ["sha512", "blake2b"])
+    def test_S13_1_an_amendment_keeps_the_files_digest_algorithm(self, tmp_path, algo):
+        """An amendment restamped every digest in sha256 under a root it
+        relabelled --- a new `content_id` for an unchanged sample --- and with
+        ``digests=False`` kept the old digests under a root declaring sha256:
+        two algorithms in one file, which validated.  `fix --rewrite-digests`
+        restamps an edited file in its own algorithm too, rather than in one
+        its commit then finds changed from what the file failed (E701)."""
+        from medh5.integrity import collect_digests, fix
+
+        path = tmp_path / "algo.medh5"
+        with medh5.create(path, codec="portable") as w:
+            minimal(w)
+        address = restamped_in(path, algo)
+
+        def algorithms() -> set[str]:
+            with medh5.open(path) as sample:
+                assert sample.verify().ok
+                found = {d.split(":")[0] for d in collect_digests(sample.root).values()}
+            with h5py.File(path, "r") as handle:
+                return found | {handle.attrs["digest_algo"]}
+
+        for digests in (True, False):
+            with medh5.amend(path) as w:
+                w.commit(digests=digests)
+            assert algorithms() == {algo}
+            with medh5.open(path) as sample:
+                assert sample.content_id == address, "an unchanged sample moved"
+        with h5py.File(path, "r+") as handle:
+            handle["images/CT"][0, 0, 0] = 7
+        with medh5.open(path) as sample:
+            assert sample.verify().mismatched == ("images/CT",)
+        assert fix(path, rewrite_digests=True, reason="edited").rewrote_digests
+        assert algorithms() == {algo}
+        assert validate_file(path, level="integrity").ok
+
     def test_removing_a_missing_annotation_is_an_error(self, sample_path):
         with pytest.raises(MEDH5ValidationError), medh5.amend(sample_path) as w:
             w.remove_annotation("nope")
@@ -1026,6 +1231,16 @@ class TestClose:
         assert problems == [], "\n".join(problems)
         assert sum(map(len, after)) > 300
 
+    def test_S14_4_a_closed_sample_or_image_says_so(self, sample_path):
+        """`repr()` of a closed sample or image raised, as a closed dataset's
+        does not: debuggers, loggers and test reports ask for one after the
+        ``with`` block."""
+        with medh5.open(sample_path) as sample:
+            image = sample.images["CT_tp0"]
+            while_open = repr(sample), repr(image)
+        closed = f"Sample({str(sample_path)!r}, closed)", "Image('CT_tp0', closed)"
+        assert (repr(sample), repr(image)) == closed != while_open
+
     def test_S14_4_commit_closes_what_the_writer_handed_out(self, tmp_path):
         path = tmp_path / "w.medh5"
         with medh5.create(path, sample_id="w") as w:
@@ -1108,6 +1323,48 @@ class TestOpen:
             with pytest.raises(MEDH5ValidationError) as exc:
                 _ = sample.reference_grid
             assert exc.value.code == "E111"
+
+    @staticmethod
+    def _found(path: Path, location: str) -> list[str]:
+        return [
+            d.code for d in validate_file(path).diagnostics if d.location == location
+        ]
+
+    def test_S2_3_an_image_that_leads_nowhere_is_refused_as_E001(self, sample_path):
+        """Listing the images raised a bare `KeyError` for a member that is a
+        link to nothing: a defect of the file, read as a name the caller got
+        wrong.  The reader now refuses it under the validator's code."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle["images"]["PET"] = h5py.SoftLink("/nowhere")
+        with medh5.open(sample_path) as sample:
+            with pytest.raises(MEDH5ValidationError, match="'PET'") as exc:
+                list(sample.images)
+            assert exc.value.code == "E001"
+            with pytest.raises(MEDH5ValidationError):
+                sample.summary()
+        assert self._found(sample_path, "/images/PET") == [exc.value.code]
+
+    def test_S4_2_an_image_of_strings_is_refused_as_E001(self, tmp_path: Path):
+        """An image is numbers; one of strings raised a bare `TypeError` from
+        `summary()`, `dtype` and `read()`, as for an argument of the wrong
+        type, where the validator reports the file (E001)."""
+        path = tmp_path / "text.medh5"
+        with Organs.writer(path):
+            pass
+        with h5py.File(path, "r+") as handle:
+            old = handle["images/CT"]
+            text = handle["images"].create_dataset("CT.text", old.shape, dtype="S4")
+            for key, value in old.attrs.items():
+                text.attrs[key] = value
+            del handle["images/CT"]
+            handle["images"].move("CT.text", "CT")
+        with medh5.open(path) as sample:
+            image = sample.images["CT"]
+            for call in (image.summary, image.read, lambda: image.dtype):
+                with pytest.raises(MEDH5ValidationError, match="'CT'") as exc:
+                    call()
+                assert exc.value.code == "E001"
+        assert self._found(path, "/images/CT") == ["E001"]
 
 
 class TestDocument:

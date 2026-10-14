@@ -77,8 +77,11 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// `print(text, file=sys.stderr)`.
+    /// `print(text, file=sys.stderr)`.  What stdout holds goes out first, so
+    /// the two read in the order they were written where they meet (a
+    /// terminal, `2>&1`) however stdout is buffered.
     pub fn eprint(&mut self, text: impl AsRef<str>) {
+        self.flush_out();
         let _ = writeln!(self.err, "{}", text.as_ref());
         let _ = self.err.flush();
     }
@@ -94,9 +97,10 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// `medh5: message` on stderr, and the handled-error exit code.
+    /// `medh5: message` on stderr, and the handled-error exit code.  Every
+    /// failure is said here, so here it is put in the command line's terms.
     pub fn fail(&mut self, message: impl AsRef<str>) -> i32 {
-        self.eprint(format!("medh5: {}", message.as_ref()));
+        self.eprint(format!("medh5: {}", in_cli_terms(message.as_ref())));
         EXIT_ERROR
     }
 
@@ -112,16 +116,21 @@ impl<'a> Ctx<'a> {
     /// batch goes on, so the files before it keep their reports and the files
     /// after it are still processed; the command fails at the end.
     pub fn file_failed(&mut self, path: &str, error: &Error) -> Value {
-        let message = top_level_message(error);
+        let message = in_cli_terms(&top_level_message(error));
         self.eprint(format!("medh5: {message}"));
         json!({"path": path, "ok": false, "error": message})
     }
 
-    pub fn flush(&mut self) {
+    /// Hand stdout what it holds, unless it has already failed.
+    fn flush_out(&mut self) {
         if !self.broken_pipe && self.write_error.is_none() {
             let result = self.out.flush();
             self.record(result);
         }
+    }
+
+    pub fn flush(&mut self) {
+        self.flush_out();
         let _ = self.err.flush();
     }
 
@@ -132,8 +141,10 @@ impl<'a> Ctx<'a> {
     /// stands.
     pub fn finish(mut self, code: i32) -> i32 {
         self.flush();
-        match self.write_error.take() {
-            Some(e) => self.fail(format!("cannot write output: {}", os_reason(&e))),
+        // Kept, not taken: stdout has failed, and the failure said on stderr
+        // does not try it again.
+        match self.write_error.as_ref().map(os_reason) {
+            Some(reason) => self.fail(format!("cannot write output: {reason}")),
             None => code,
         }
     }
@@ -194,6 +205,22 @@ pub fn top_level_message(error: &Error) -> String {
         return format!("no such entry: {}", repr_str(text));
     }
     error.to_string()
+}
+
+/// What the engine says in the Python API's terms --- an option by its
+/// keyword argument, a collection by the function that opens one --- and
+/// what the command line says instead.
+const CLI_TERMS: [(&str, &str); 4] = [
+    ("pass rewrite_digests with a reason", "pass --rewrite-digests with --reason"),
+    ("rebuild them with rebuild_index", "rebuild them with --rebuild-index"),
+    ("`key` applies to collections", "--key applies to collections"),
+    ("open it with open_collection()", "extract its samples with `medh5 unpack`"),
+];
+
+/// `text` in the command line's terms: `--rebuild-index` where the engine,
+/// speaking to the Python API, says `rebuild_index`.
+pub fn in_cli_terms(text: &str) -> String {
+    CLI_TERMS.iter().fold(text.to_string(), |text, (api, cli)| text.replace(api, cli))
 }
 
 // -- a sample file, or a collection ------------------------------------------

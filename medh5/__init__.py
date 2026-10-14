@@ -16,8 +16,8 @@ contract of ``docs/spec/task-cache-1.md`` (``medh5.task``, ``medh5.cache``).
         s.at("tp1").images["CT_tp1"].read(physical=True)
         s.annotations["organs"].dense(["liver", "spleen"])
 
-0.x files are read by ``medh5 migrate`` and nothing else: 1.0 ships a reader for
-the old layout, not an implementation of it.
+0.x files are read by ``medh5 migrate`` and nothing else: the package carries a
+reader for the old layout, not an implementation of it.
 
 The format engine is Rust (the ``medh5`` crate); this package is its Python
 face.  ``__version__`` is the engine's --- the Cargo workspace version, stamped

@@ -1,0 +1,9 @@
+# The Rust that CI, the release and a checkout build with: one version, bumped
+# on purpose in a pull request of its own. `stable` moved under the project: a
+# release re-runs CI on its tag, and a lint that a new stable adds fails
+# `clippy -D warnings` there, after the pull request passed. `rust-version` in
+# Cargo.toml is the oldest Rust the crates promise, and the `msrv` job holds it.
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

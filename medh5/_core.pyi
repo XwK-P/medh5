@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from types import TracebackType
 from typing import Any, ClassVar, final
 
@@ -211,6 +212,7 @@ __all__ = [
     "VOXEL_KINDS",
     "__format_version__",
     "__version__",
+    "_read_stats",
     "affine_summary",
     "agreement_box_iou",
     "agreement_compare",
@@ -483,6 +485,7 @@ __all__ = [
     "slices_to_box",
     "source_check",
     "source_pin",
+    "source_resolve",
     "spatial_chunk_for",
     "splits_from_json",
     "stale_index_entries",
@@ -494,6 +497,7 @@ __all__ = [
     "task_preflight",
     "task_reconcile",
     "task_row_fingerprint",
+    "task_row_fingerprints",
     "task_schema_text",
     "task_subjects_digest",
     "task_validate",
@@ -659,9 +663,21 @@ VOXEL_KINDS: tuple[str, ...]
 __format_version__: str
 __version__: str
 
+def _read_stats() -> dict[str, int]:
+    """The engine's dataset reads by kind (`whole`, `window`, `hyperslab`,
+    `rows`, `strings`) since the last call, and the counts set back to zero.
+
+    Private, for the tests that hold a read path to its number of reads: the
+    reads are the engine's, so a count of `h5py` calls sees none of them.
+    """
+    ...
+
 def affine_summary(affine: npt.ArrayLike) -> dict[str, Any]: ...
 def agreement_box_iou(a: Any, b: Any) -> float:
-    """IoU of two `(S, 2)` boxes in the same space."""
+    """IoU of two `(S, 2)` boxes in the same space.  Refused for boxes of
+    different numbers of axes or of none (`ValueError`), and for a bound that
+    is not finite or a `lo` above its `hi` (E406).
+    """
     ...
 
 def agreement_compare(
@@ -711,7 +727,9 @@ def agreement_voxel_value(agreement: Any) -> float | None: ...
 def amend(path: str | os.PathLike[str], *, codec: str | None = None) -> SampleWriter:
     """Copy-on-write amend: build a new file from the old and replace it.
 
-    Anything holding the old file open keeps reading the old inode.
+    On POSIX, anything holding the old file open keeps reading the old inode.
+    Windows cannot replace an open file: close every reader of it before the
+    commit, whose rename otherwise fails and leaves the file as it was.
     """
     ...
 
@@ -1059,19 +1077,21 @@ def dataset_manifest_load(path: str | os.PathLike[str]) -> Any: ...
 def dataset_manifest_save(doc: Any, path: str | os.PathLike[str]) -> str: ...
 def dataset_manifest_sha256(doc: Any) -> str: ...
 def dataset_manifest_stale(doc: Any) -> list[str]: ...
-def dataset_moments_from_json(doc: Any) -> tuple[int, float, float, float, float]:
+def dataset_moments_from_json(doc: Any) -> tuple[int, float, float, float, float, int]:
     """`Moments.from_json`: the state the JSON form describes."""
     ...
 
 def dataset_moments_json(m: Any) -> Any: ...
-def dataset_moments_merge(m: Any, other: Any) -> tuple[int, float, float, float, float]:
+def dataset_moments_merge(
+    m: Any, other: Any
+) -> tuple[int, float, float, float, float, int]:
     """`Moments.merge` (Chan--Golub--LeVeque): the merged state."""
     ...
 
 def dataset_moments_std(m: Any) -> float: ...
 def dataset_moments_update(
     m: Any, values: Any
-) -> tuple[int, float, float, float, float]:
+) -> tuple[int, float, float, float, float, int]:
     """`Moments.update`: the state after folding in `values`."""
     ...
 
@@ -1706,6 +1726,12 @@ def source_pin(
     """A source reference pinned to what the sample is now."""
     ...
 
+def source_resolve(uri: str, base: str | os.PathLike[str] | None = None) -> Path:
+    """The file a source URI names, relative to `base` when it is relative: a
+    `file:` URI decoded as the engine decodes it.
+    """
+    ...
+
 def spatial_chunk_for(
     spatial_shape: Sequence[int],
     patch: Sequence[int] | int | None = None,
@@ -1752,6 +1778,13 @@ def task_reconcile(
     ...
 
 def task_row_fingerprint(doc: Any, row_id: str) -> str: ...
+def task_row_fingerprints(doc: Any) -> dict[str, str]:
+    """Every row's fingerprint by row id --- the first row of an id, as
+    `task_row_fingerprint` finds it --- from one parse of the manifest: a
+    parse per row made fingerprinting a task's rows quadratic.
+    """
+    ...
+
 def task_schema_text() -> str: ...
 def task_subjects_digest(doc: Any, partition: str) -> str: ...
 def task_validate(doc: Any) -> list[dict[str, Any]]:
@@ -1834,7 +1867,9 @@ def world_to_index(
 def written_version(source: str | None, profiles: Sequence[str] = ...) -> str:
     """The `medh5_version` a commit writes: the lowest version `profiles` need
     (`1.0`, or `1.1` with `clinical`), and never below `source`, the version
-    an amended file already declared (1.1 §2.3).
+    an amended file already declared (1.1 §2.3).  An amendment that removes
+    the clinical profile (`drop_clinical`) passes no `source`: the imaging
+    projection is written at the lowest version what remains needs (1.1 §2.1).
     """
     ...
 
@@ -2283,7 +2318,8 @@ class Dataset:
     @property
     def ndim(self) -> int: ...
     def read(self) -> npt.NDArray[Any]:
-        """The whole dataset as an array."""
+        """The whole dataset as an array: a numeric dataset as its dtype, a
+        string dataset as an object array of `str`."""
         ...
     @property
     def shape(self) -> tuple[int, ...]: ...
@@ -2321,6 +2357,9 @@ class FeatureCacheHandle:
         ...
     def close(self) -> None: ...
     def entries(self) -> list[dict[str, Any]]: ...
+    def entry_count(self) -> int:
+        """How many entries the cache holds, without building them."""
+        ...
     def event_entry(self, content_id: str, event_id: str) -> dict[str, Any] | None: ...
     def get(self, entry_id: str) -> npt.NDArray[Any]:
         """An entry's payload, its checksum verified."""
@@ -2863,7 +2902,12 @@ class SampleDocument:
     @property
     def group_id(self) -> str: ...
     @classmethod
-    def loads(cls, payload: str | bytes) -> SampleDocument: ...
+    def loads(cls, payload: str | bytes) -> SampleDocument:
+        """Parse a document from its JSON text, or from that text's UTF-8 bytes.
+
+        Bytes that are not UTF-8 are refused (§2.4), not decoded with
+        replacement characters standing in for what was there."""
+        ...
     def quality_of(self, key: str | None) -> QualityRecord | None: ...
     @property
     def subject_id(self) -> str: ...
@@ -3152,7 +3196,10 @@ class SampleWriter:
         prov: Activity | str | None = None,
         codec: str | None = None,
     ) -> None:
-        """Write a boolean `mask` annotation (FOV, ignore region)."""
+        """Write a boolean `mask` annotation (FOV, ignore region).  A
+        floating-point mask holding a value other than 0 and 1 is refused
+        (E411) rather than read as set wherever it is non-zero.
+        """
         ...
     def add_mesh(
         self,
@@ -3271,8 +3318,10 @@ class SampleWriter:
         """Write a voxel annotation, choosing the encoding by measurement.
 
         Returns the chosen `kind` and the overlap statistics behind the choice.
-        Masks stored as `instances` are one object per class, each minted an
-        id above every id the sample holds (§7.4).
+        `encoding` is `"auto"` or one of `TRANSCODABLE`: a `mask` has no
+        classes, so it is refused (E404), as a transcode to it is.  Masks
+        stored as `instances` are one object per class, each minted an id
+        above every id the sample holds (§7.4).
         """
         ...
     def add_timepoint(self, timepoint_id: str, **fields: Any) -> Timepoint:
@@ -3326,7 +3375,9 @@ class SampleWriter:
         ...
     @property
     def closed(self) -> bool:
-        """Whether `commit` or `abort` has run."""
+        """Whether the writer has committed or been aborted.  A commit refused
+        before it changed anything leaves it open.
+        """
         ...
     @property
     def codec(self) -> str:
@@ -3338,8 +3389,13 @@ class SampleWriter:
 
         `digests=True` recomputes every digest, and refuses (E701) to restamp
         one whose bytes the amended file already failed; `digests=False`
-        stamps only datasets that carry none.  Returns the `content_id`, or
-        `None` when already committed.
+        stamps only datasets that carry none (or one in another algorithm than
+        the file's).  An amended file keeps its `digest_algo`.  A commit
+        refused before it changes anything --- no image (E201), a reference
+        that does not resolve, a schema error (E005) --- leaves the writer
+        open, to mend and commit again; one that fails after it began writing
+        aborts it.  Returns the `content_id`, or `None` when already
+        committed; committing an aborted writer raises.
         """
         ...
     def deidentification(self, **fields: Any) -> Deidentification: ...
@@ -3352,7 +3408,10 @@ class SampleWriter:
     @document.setter
     def document(self, value: SampleDocument) -> None: ...
     def drop_clinical(self) -> None:
-        """Remove the clinical profile: the imaging projection (1.1 §10)."""
+        """Remove the clinical profile: the imaging projection (1.1 §10), written
+        at the lowest version what remains needs.  A sample with no clinical
+        profile to remove keeps the version it declared (1.1 §2.1).
+        """
         ...
     def extra(self, namespace: str, value: Any) -> None:
         """Set a namespaced extension member of the document."""
@@ -3632,7 +3691,8 @@ class Tracking:
     def coverage(self) -> dict[Any, Any]:
         """`{timepoint: frozenset of class ids}`: the classes the annotators at
         each timepoint committed to finding (§11.3), whose absence is
-        therefore a finding.
+        therefore a finding --- those of the annotations there that ignore no
+        part of their grid (§7.7).
         """
         ...
     def get(self, instance_id: Any, default: Any = None) -> Any: ...
@@ -3658,8 +3718,9 @@ class Tracking:
     def state_at(self, instance_id: int, timepoint: str) -> str:
         """`present`, `resolved` or `unexamined`.  `resolved` is claimed only
         where the object's class is in that timepoint's `coverage`; anywhere
-        else an unseen object is `unexamined`: nobody looked, so its absence
-        measures nothing.  `KeyError` for an id no track has.
+        else an unseen object is `unexamined`: nobody looked, or an ignore
+        region may hide it, so its absence measures nothing.  `KeyError` for
+        an id no track has.
         """
         ...
     def states(self, instance_id: int) -> dict[str, str]:
@@ -3673,7 +3734,8 @@ class Tracking:
     def to_json(self) -> dict[str, Any]: ...
     def unexamined(self) -> dict[str, tuple[int, ...]]:
         """`{timepoint: instance ids}` of the objects that are `unexamined`
-        there: not seen, and of a class nobody committed to finding.
+        there: not seen, and of a class nobody there examined without
+        ignoring part of the volume.
         """
         ...
     def values(self) -> tuple[Track, ...]: ...

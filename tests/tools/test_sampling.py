@@ -323,30 +323,75 @@ class TestPatchSampler:
             assert patch.strategy == "uniform"
             assert patch.used_index is None
 
-    def test_S14_3_an_indexed_draw_reads_at_most_two_datasets_at_63_classes(
-        self, tmp_path: Path, monkeypatch
+    def test_S14_3_an_annotation_named_that_is_not_there_is_refused(
+        self, indexed, tmp_path: Path
     ):
-        """190 HDF5 reads and 7.6 ms per draw: the class table, re-read per class."""
+        """A misspelt name drew `uniform` windows without a word, and
+        `balanced` failed only on the draws whose coin chose foreground; boxes
+        named for a foreground draw did the same."""
+        with medh5.open(indexed) as sample:
+            for strategy in ("uniform", "balanced", "foreground"):
+                with pytest.raises(KeyError, match="organs_tpX"):
+                    PatchSampler(4, strategy=strategy).draw(sample, "organs_tpX", 0)
+        path = tmp_path / "boxes.medh5"
+        with Flat.open_writer(path) as w:
+            w.add_boxes("boxes", np.array([[[0, 2]] * 3], np.float32), [1], grid="g")
+        with medh5.open(path) as sample:
+            for strategy in ("balanced", "foreground"):
+                with pytest.raises(MEDH5ValidationError, match="voxel annotation"):
+                    PatchSampler(4, strategy=strategy).draw(sample, "boxes", 0)
+            # No foreground is ever drawn: the window is measured in its grid.
+            for sampler in (
+                PatchSampler(4, strategy="uniform"),
+                PatchSampler(4, strategy="balanced", foreground_prob=0.0),
+            ):
+                assert sampler.draw(sample, "boxes", 0).strategy == "uniform"
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            ("strategy", "vibes"),
+            ("foreground_prob", 1.5),
+            ("class_weights", "popularity"),
+        ],
+    )
+    def test_S14_3_a_setting_changed_later_is_checked_as_the_constructor_checks_it(
+        self, indexed, name, value
+    ):
+        """Set after construction, a bad setting was taken and refused at the
+        next draw --- in a DataLoader worker, an epoch in."""
+        sampler = PatchSampler(4, strategy="foreground")
+        before = getattr(sampler, name)
+        with pytest.raises(MEDH5ValidationError):
+            setattr(sampler, name, value)
+        assert getattr(sampler, name) == before
+        with medh5.open(indexed) as sample:
+            assert sampler.draw(sample, "organs_tp0", 0).strategy == "foreground"
+            sampler.strategy = "uniform"
+            assert sampler.draw(sample, "organs_tp0", 0).strategy == "uniform"
+
+    def test_S14_3_an_indexed_draw_reads_at_most_two_datasets_at_63_classes(
+        self, tmp_path: Path
+    ):
+        """190 HDF5 reads and 7.6 ms per draw: the class table, re-read per class.
+
+        The reads are the engine's, so the engine counts them: a count of
+        `h5py` calls, which the package no longer makes, could not fail."""
+        from medh5 import _core
         from medh5.sampling import PatchSampler
 
         path = Framed.many_classes(tmp_path / "many.medh5")
-        reads = {"n": 0}
-        original = h5py.Dataset.__getitem__
-
-        def counting(self: Any, key: Any) -> Any:
-            reads["n"] += 1
-            return original(self, key)
-
         sampler = PatchSampler(8, strategy="foreground")
+        draws = 20
         with medh5.open(path) as s:
             sampler.draw(s, "organs", np.random.default_rng(0))
-            monkeypatch.setattr(h5py.Dataset, "__getitem__", counting)
-            draws = 20
+            _core._read_stats()
             for i in range(draws):
                 patch = sampler.draw(s, "organs", np.random.default_rng(i))
-            monkeypatch.undo()
+            reads = _core._read_stats()
         assert patch.used_index is True
-        assert reads["n"] <= 2 * draws
+        # One row of a class's pool per draw, at least: the count sees them.
+        assert draws <= sum(reads.values()) <= 2 * draws, reads
 
     def test_S14_3_a_draw_picks_what_it_picked_before(self, tmp_path: Path):
         """One row is read instead of the pool, and the same row: runs reproduce.

@@ -176,8 +176,19 @@ fn inspect() -> Vec<Command> {
                 flag("rewrite_digests", "rewrite-digests", "restamp digests over the current bytes --- see --reason")
                     .requires("reason"),
             )
-            .arg(opt("reason", "reason", "why the digests are being rewritten; recorded in the file"))
-            .arg(opt("performed_by", "by", "who is making the change; recorded in provenance"))
+            // Recorded only by the restamp: without it they would do nothing.
+            .arg(
+                opt(
+                    "reason",
+                    "reason",
+                    "with --rewrite-digests: why the digests are being rewritten; recorded in the file",
+                )
+                .requires("rewrite_digests"),
+            )
+            .arg(
+                opt("performed_by", "by", "with --rewrite-digests: who is making the change; recorded in provenance")
+                    .requires("rewrite_digests"),
+            )
             .arg(json()),
         Command::new("timeline")
             .about("timepoints and what belongs to each")
@@ -205,8 +216,8 @@ fn seg() -> Vec<Command> {
         .subcommand(
             Command::new("convert")
                 .about(
-                    "re-encode (spec §7.6): losslessly, except that a probmap is thresholded at its threshold (§7.5) \
-                     and loses its probabilities",
+                    "re-encode (spec §7.6), losslessly but in two cases: a probmap keeps the voxels at or above its \
+                     threshold (§7.5), and instances to a dense encoding lose their ids (--drop-identity)",
                 )
                 .arg(positional("path", "the sample holding the annotation"))
                 .arg(positional("annotation", "the voxel annotation to re-encode"))
@@ -298,8 +309,8 @@ fn curation() -> Vec<Command> {
             .arg(positional("b", "second annotation id").value_name("B"))
             .arg(opt("metric", "metric", "voxel agreement metric: dice (default) or iou").value_parser(["dice", "iou"]))
             .arg(
-                opt("threshold", "threshold", "IoU threshold when matching objects (default 0.5)")
-                    .value_parser(clap::value_parser!(f64))
+                opt("threshold", "threshold", "IoU threshold when matching objects, in (0, 1] (default 0.5)")
+                    .value_parser(iou_threshold)
                     .allow_negative_numbers(true),
             )
             .arg(flag("record", "record", "print the `quality.agreement` record this measurement produces"))
@@ -316,10 +327,13 @@ fn curation() -> Vec<Command> {
             .arg(int(
                 "date_shift_days",
                 "date-shift-days",
-                "shift dates by N days instead of dropping them, preserving intervals",
+                "with --apply: shift dates by N days instead of dropping them, preserving intervals",
             ))
-            .arg(opt("salt", "salt", "salt the UID pseudonyms; keep it to reproduce the mapping").default_value(""))
-            .arg(opt("performed_by", "by", "who performed the de-identification; recorded in the file"))
+            .arg(
+                opt("salt", "salt", "with --apply: salt the UID pseudonyms; keep it to reproduce the mapping")
+                    .default_value(""),
+            )
+            .arg(opt("performed_by", "by", "with --apply: who performed the de-identification; recorded in the file"))
             .arg(
                 flag(
                     "pseudonymise_ids",
@@ -377,8 +391,12 @@ fn dataset() -> Command {
                     "write-claims",
                     "stamp each sample with its partition and this manifest's digest",
                 ))
-                .arg(int("fold", "fold", "with --k-folds --write-claims: the validation fold"))
-                .arg(opt("assigned_by", "assigned-by", "recorded on each claim as who assigned it"))
+                // Written only into the claims: without them they would do nothing.
+                .arg(int("fold", "fold", "with --k-folds --write-claims: the validation fold").requires("write_claims"))
+                .arg(
+                    opt("assigned_by", "assigned-by", "with --write-claims: recorded on each claim as who assigned it")
+                        .requires("write_claims"),
+                )
                 .arg(json()),
         )
         .subcommand(
@@ -663,6 +681,17 @@ fn conformance() -> Command {
         )
 }
 
+/// An IoU two objects must reach to match: in (0, 1].  NaN matched nothing,
+/// and 0 or less matched every pair, objects that do not touch among them.
+fn iou_threshold(text: &str) -> Result<f64, String> {
+    let threshold: f64 = text.trim().parse().map_err(|_| format!("{text:?} is not a number"))?;
+    if threshold > 0.0 && threshold <= 1.0 {
+        Ok(threshold)
+    } else {
+        Err(format!("{text} is no IoU threshold: two objects match at an IoU in (0, 1]"))
+    }
+}
+
 /// Hours on the subject clock: a number whose microseconds the clock's
 /// `int64` holds.  NaN and infinity would saturate to a cutoff nobody gave.
 fn clock_hours(text: &str) -> Result<f64, String> {
@@ -754,7 +783,12 @@ fn cache() -> Command {
             .about("check a cache's checksums and pins, and --- given a task --- its admissibility (T4xx)")
             .arg(positional("path", "a .medh5cache file"))
             .arg(opt("task", "task", "also check the cache against this task manifest (T404-T406)"))
-            .arg(opt("base", "base", "resolve the entries' relative source URIs here (default: the cache's directory)"))
+            .arg(opt(
+                "base",
+                "base",
+                "resolve the entries' relative source URIs here (default: the manifest's directory with --task, else \
+                 the cache's)",
+            ))
             .arg(json()),
     )
 }
@@ -764,6 +798,57 @@ mod tests {
     #[test]
     fn the_grammar_is_consistent() {
         super::command().debug_assert();
+    }
+
+    #[test]
+    fn an_iou_threshold_lies_in_0_to_1() {
+        assert_eq!(super::iou_threshold("0.5"), Ok(0.5));
+        assert_eq!(super::iou_threshold("1"), Ok(1.0));
+        assert_eq!(super::iou_threshold("1e-9"), Ok(1e-9));
+        for refused in ["nan", "NaN", "inf", "-inf", "0", "-0", "-1", "1.0000001", "2", "x", ""] {
+            assert!(super::iou_threshold(refused).is_err(), "{refused}");
+        }
+    }
+
+    /// An option that only another acts on is refused without it, rather
+    /// than accepted and ignored: a run that reads as recorded, or as
+    /// assigned to a fold, is not one.
+    #[test]
+    fn a_partner_flag_is_refused_without_its_partner() {
+        let refused = |args: &[&str]| {
+            let argv = std::iter::once("medh5").chain(args.iter().copied());
+            super::command().try_get_matches_from(argv).map(|_| ()).unwrap_err()
+        };
+        for (args, partner) in [
+            (&["fix", "x.medh5", "--reason", "why"][..], "--rewrite-digests"),
+            (&["fix", "x.medh5", "--by", "me"], "--rewrite-digests"),
+            (&["fix", "x.medh5", "--rewrite-digests"], "--reason"),
+            (&["dataset", "split", "m.json", "--k-folds", "5", "--fold", "0"], "--write-claims"),
+            (&["dataset", "split", "m.json", "--assigned-by", "me"], "--write-claims"),
+        ] {
+            let error = refused(args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument, "{args:?}");
+            assert!(error.to_string().contains(partner), "{args:?}: {error}");
+        }
+        let accepted = ["medh5", "fix", "x.medh5", "--rewrite-digests", "--reason", "why", "--by", "me"];
+        assert!(super::command().try_get_matches_from(accepted).is_ok());
+        let accepted = ["medh5", "dataset", "split", "m.json", "--write-claims", "--assigned-by", "me"];
+        assert!(super::command().try_get_matches_from(accepted).is_ok());
+    }
+
+    /// As documented (`docs/reference/cli.md`), and as the 1.x parser
+    /// allowed: a long option shortens to a prefix that names it alone, and a
+    /// prefix naming two is refused rather than guessed.
+    #[test]
+    fn a_long_option_shortens_to_a_prefix_that_names_it_alone() {
+        fn argv(flag: &str) -> [&str; 8] {
+            ["medh5", "seg", "convert", "x.medh5", "seg", "--to", "labelmap", flag]
+        }
+        let matches = super::command().try_get_matches_from(argv("--dry")).unwrap();
+        let (_, seg) = matches.subcommand().unwrap();
+        let (_, convert) = seg.subcommand().unwrap();
+        assert!(convert.get_flag("dry_run") && !convert.get_flag("drop_identity"));
+        assert!(super::command().try_get_matches_from(argv("--dr")).is_err());
     }
 
     #[test]

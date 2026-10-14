@@ -6,10 +6,11 @@
 //! rather than the class count: on the 200-structure phantom, mean degree 3.4
 //! coloured into 5 layers.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde_json::{json, Value};
 
+use super::encode::check_target;
 use super::payload::{normalize_masks, Masks};
 use crate::Result;
 
@@ -106,70 +107,138 @@ pub fn bbox_volume(mask: &ndarray::ArrayD<bool>) -> u64 {
 
 /// Tight `(start, stop)` per axis of a mask, or `None` when empty.
 pub fn bbox(mask: &ndarray::ArrayD<bool>) -> Option<Vec<(usize, usize)>> {
-    let ndim = mask.ndim();
-    let mut lo = vec![usize::MAX; ndim];
-    let mut hi = vec![0usize; ndim];
+    let mask = mask.as_standard_layout();
+    bbox_flat(mask.as_slice().expect("standard layout"), mask.shape())
+}
+
+/// [`bbox`] of a mask given as its C-order values and its shape.
+///
+/// A mask is scanned a row of its last axis at a time: a row's first and
+/// last `true` bound that axis, and the row's place bounds the others, so
+/// no index is built per voxel.
+pub(crate) fn bbox_flat(values: &[bool], shape: &[usize]) -> Option<Vec<(usize, usize)>> {
+    let Some((&width, outer)) = shape.split_last() else {
+        // A 0-d mask: one value, no axes.
+        return values.first().copied().filter(|v| *v).map(|_| Vec::new());
+    };
+    if width == 0 || values.is_empty() {
+        return None;
+    }
+    let mut lo = vec![usize::MAX; shape.len()];
+    let mut hi = vec![0usize; shape.len()];
+    let mut at = vec![0usize; outer.len()];
     let mut any = false;
-    for (idx, v) in mask.indexed_iter() {
-        if *v {
+    for row in values.chunks_exact(width) {
+        if let Some(first) = row.iter().position(|v| *v) {
+            let last = row.iter().rposition(|v| *v).unwrap_or(first);
             any = true;
-            for axis in 0..ndim {
-                lo[axis] = lo[axis].min(idx[axis]);
-                hi[axis] = hi[axis].max(idx[axis] + 1);
+            for (axis, index) in at.iter().enumerate() {
+                lo[axis] = lo[axis].min(*index);
+                hi[axis] = hi[axis].max(index + 1);
             }
+            let axis = outer.len();
+            lo[axis] = lo[axis].min(first);
+            hi[axis] = hi[axis].max(last + 1);
+        }
+        // The next row's index along the outer axes, last axis fastest.
+        for (index, extent) in at.iter_mut().zip(outer).rev() {
+            *index += 1;
+            if *index < *extent {
+                break;
+            }
+            *index = 0;
         }
     }
     any.then(|| lo.into_iter().zip(hi).collect())
 }
 
+/// Voxels per block in [`analyse`]'s overlap pass: the per-voxel state is
+/// held for one block at a time, whatever the volume.
+const ANALYSE_BLOCK: usize = 1 << 16;
+
 /// Measure counts, the overlap graph, a greedy colouring and localization.
 ///
-/// Pairwise overlap is computed only on voxels carrying more than one label,
-/// which keeps the quadratic part small.
+/// The overlap graph comes from the set of classes each voxel carries.  The
+/// sets are interned as the classes are visited in order, so a voxel's set
+/// grows by one class at a time into a table of the sets that occur; two
+/// classes overlap when one set holds both.  A set that later grew into a
+/// larger one holds no pair the larger one lacks, so only the sets that
+/// never grew are paired --- the cost follows the overlap regions, not the
+/// square of the class count.
 pub fn analyse(masks: &Masks, spatial_shape: Option<&[usize]>) -> Result<OverlapStats> {
     let shape = normalize_masks(masks, spatial_shape)?;
     let class_ids: Vec<i64> = masks.keys().copied().collect();
     let n_voxels: usize = shape.iter().product();
-    let mut counts = BTreeMap::new();
-    let mut depth = vec![0u16; n_voxels];
-    for (cid, mask) in masks {
-        let mut count = 0u64;
-        for (i, v) in mask.iter().enumerate() {
-            if *v {
-                count += 1;
-                depth[i] += 1;
-            }
-        }
-        counts.insert(*cid, count);
-    }
-    let labelled = depth.iter().filter(|d| **d > 0).count() as u64;
-    let multi: Vec<usize> = depth.iter().enumerate().filter(|(_, d)| **d > 1).map(|(i, _)| i).collect();
-    let mut edges = BTreeSet::new();
-    if !multi.is_empty() {
-        let picked: Vec<(i64, Vec<bool>)> = masks
-            .iter()
-            .map(|(cid, mask)| {
-                let flat: Vec<bool> = mask.iter().copied().collect();
-                (*cid, multi.iter().map(|i| flat[*i]).collect())
-            })
-            .filter(|(_, p): &(i64, Vec<bool>)| p.iter().any(|v| *v))
-            .collect();
-        for i in 0..picked.len() {
-            for j in i + 1..picked.len() {
-                let (a, pa) = &picked[i];
-                let (b, pb) = &picked[j];
-                if pa.iter().zip(pb).any(|(x, y)| *x && *y) {
-                    edges.insert(if a < b { (*a, *b) } else { (*b, *a) });
+    let planes: Vec<ndarray::CowArray<'_, bool, ndarray::IxDyn>> =
+        masks.values().map(|m| m.as_standard_layout()).collect();
+    let flats: Vec<&[bool]> = planes.iter().map(|p| p.as_slice().expect("standard layout")).collect();
+    let mut counts = vec![0u64; flats.len()];
+    // `sets[0]` is the empty set; `grown[s]` whether a class was added to
+    // set `s` at some voxel, and `next` the set that made.
+    let mut sets: Vec<Vec<u32>> = vec![Vec::new()];
+    let mut grown: Vec<bool> = vec![false];
+    let mut next: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut labelled = 0u64;
+    let mut held = vec![0u32; ANALYSE_BLOCK.min(n_voxels)];
+    let mut start = 0;
+    while start < n_voxels {
+        let stop = (start + ANALYSE_BLOCK).min(n_voxels);
+        let held = &mut held[..stop - start];
+        held.fill(0);
+        for (k, flat) in flats.iter().enumerate() {
+            let class = k as u32;
+            // Neighbouring voxels mostly carry the same set: remember the
+            // last step taken.
+            let mut last: Option<(u32, u32)> = None;
+            for (slot, v) in held.iter_mut().zip(&flat[start..stop]) {
+                if !*v {
+                    continue;
                 }
+                counts[k] += 1;
+                let from = *slot;
+                *slot = match last {
+                    Some((f, to)) if f == from => to,
+                    _ => {
+                        let to = *next.entry((from, class)).or_insert_with(|| {
+                            let mut set = sets[from as usize].clone();
+                            set.push(class);
+                            sets.push(set);
+                            grown.push(false);
+                            (sets.len() - 1) as u32
+                        });
+                        grown[from as usize] = true;
+                        last = Some((from, to));
+                        to
+                    }
+                };
+            }
+        }
+        labelled += held.iter().filter(|s| **s != 0).count() as u64;
+        start = stop;
+    }
+    let mut edges = BTreeSet::new();
+    for (set, grew) in sets.iter().zip(&grown) {
+        if *grew {
+            continue;
+        }
+        for (i, a) in set.iter().enumerate() {
+            for b in &set[i + 1..] {
+                // Classes are visited in ascending id order.
+                edges.insert((class_ids[*a as usize], class_ids[*b as usize]));
             }
         }
     }
+    let counts: BTreeMap<i64, u64> = class_ids.iter().copied().zip(counts).collect();
     let mut localized = BTreeSet::new();
-    for (cid, mask) in masks {
+    for (cid, flat) in class_ids.iter().zip(&flats) {
         if counts[cid] == 0 {
             continue;
         }
-        if bbox_volume(mask) as f64 <= LOCALIZED_BBOX_FRACTION * n_voxels as f64 {
+        let volume: u64 = match bbox_flat(flat, &shape) {
+            Some(bounds) => bounds.iter().map(|(lo, hi)| (hi - lo) as u64).product(),
+            None => 0,
+        };
+        if volume as f64 <= LOCALIZED_BBOX_FRACTION * n_voxels as f64 {
             localized.insert(*cid);
         }
     }
@@ -307,14 +376,16 @@ pub fn cost_model(stats: &OverlapStats, ignore: bool) -> CostModel {
 ///
 /// `ignore` says an in-band ignore region will be written with the masks,
 /// which forces `uint16` planes and moves the `layers`/`bitmask` crossover.
+///
+/// A `prefer` other than `auto` is returned as given; the writer refuses one
+/// the masks cannot be written in, and [`select_encoding_checked`] refuses it
+/// here.
 pub fn select_encoding(stats: &OverlapStats, soft: bool, prefer: Option<&str>, ignore: bool) -> String {
     if soft {
         return "probmap".into();
     }
-    if let Some(p) = prefer {
-        if p != "auto" {
-            return p.into();
-        }
+    if let Some(p) = prefer.filter(|p| *p != "auto") {
+        return p.into();
     }
     let nonempty: Vec<i64> = stats.class_ids.iter().filter(|c| stats.counts[c] > 0).copied().collect();
     let all_localized = !nonempty.is_empty() && nonempty.iter().all(|c| stats.localized.contains(c));
@@ -329,6 +400,24 @@ pub fn select_encoding(stats: &OverlapStats, soft: bool, prefer: Option<&str>, i
         return "layers".into();
     }
     "bitmask".into()
+}
+
+/// [`select_encoding`], returning a `prefer` other than `auto` only when it
+/// is an encoding the masks can be written in --- one [`check_target`]
+/// accepts: `mask` (E404) has no classes, so every class would merge into one
+/// volume and `class_ids` would be lost, and any other name (E401) is no
+/// encoding.
+///
+/// Public for the workspace's frontends, not as API: 2.0.x keeps the 2.0.1
+/// signature of [`select_encoding`].
+///
+/// [`check_target`]: super::encode::check_target
+#[doc(hidden)]
+pub fn select_encoding_checked(stats: &OverlapStats, soft: bool, prefer: Option<&str>, ignore: bool) -> Result<String> {
+    if let Some(p) = prefer.filter(|p| !soft && *p != "auto") {
+        check_target(p)?;
+    }
+    Ok(select_encoding(stats, soft, prefer, ignore))
 }
 
 #[cfg(test)]
@@ -357,6 +446,135 @@ mod tests {
         assert_eq!(stats.edges, BTreeSet::from([(1, 3)]));
         assert_eq!(stats.n_layers(), 2);
         assert_eq!(layers_from_colouring(&stats.colouring), vec![vec![1, 2], vec![3]]);
-        assert_eq!(select_encoding(&stats, false, None, false), "layers");
+        assert_eq!(select_encoding_checked(&stats, false, None, false).unwrap(), "layers");
+    }
+
+    #[test]
+    fn s7_6_a_preferred_encoding_is_one_the_masks_can_be_written_in() {
+        let mut masks = Masks::new();
+        masks.insert(1, block(&[4, 4, 4], &[0, 0, 0], 2));
+        let stats = analyse(&masks, None).unwrap();
+        for kind in ["labelmap", "layers", "bitmask", "instances", "probmap"] {
+            assert_eq!(select_encoding_checked(&stats, false, Some(kind), false).unwrap(), kind);
+        }
+        assert_eq!(select_encoding_checked(&stats, false, Some("auto"), false).unwrap(), "labelmap");
+        // `mask` keeps no class, and `rle` or a typo is no encoding at all.
+        assert_eq!(select_encoding_checked(&stats, false, Some("mask"), false).unwrap_err().code(), Some("E404"));
+        // The public form keeps its 2.0.1 signature: a preference is returned as given.
+        assert_eq!(select_encoding(&stats, false, Some("mask"), false), "mask");
+        for unknown in ["rle", "labelmaps", ""] {
+            assert_eq!(select_encoding_checked(&stats, false, Some(unknown), false).unwrap_err().code(), Some("E401"));
+        }
+    }
+
+    /// The per-voxel `indexed_iter` scan `bbox` was until 2.0.2.
+    fn reference_bbox(mask: &ArrayD<bool>) -> Option<Vec<(usize, usize)>> {
+        let ndim = mask.ndim();
+        let mut lo = vec![usize::MAX; ndim];
+        let mut hi = vec![0usize; ndim];
+        let mut any = false;
+        for (idx, v) in mask.indexed_iter() {
+            if *v {
+                any = true;
+                for axis in 0..ndim {
+                    lo[axis] = lo[axis].min(idx[axis]);
+                    hi[axis] = hi[axis].max(idx[axis] + 1);
+                }
+            }
+        }
+        any.then(|| lo.into_iter().zip(hi).collect())
+    }
+
+    /// The pairwise scan `analyse` built the overlap graph with until 2.0.2.
+    fn reference_edges(masks: &Masks) -> BTreeSet<(i64, i64)> {
+        let n: usize = masks.values().next().map(|m| m.len()).unwrap_or(0);
+        let mut depth = vec![0u16; n];
+        for mask in masks.values() {
+            for (i, v) in mask.iter().enumerate() {
+                depth[i] += u16::from(*v);
+            }
+        }
+        let multi: Vec<usize> = (0..n).filter(|i| depth[*i] > 1).collect();
+        let picked: Vec<(i64, Vec<bool>)> = masks
+            .iter()
+            .map(|(c, m)| {
+                let flat: Vec<bool> = m.iter().copied().collect();
+                (*c, multi.iter().map(|i| flat[*i]).collect())
+            })
+            .collect();
+        let mut edges = BTreeSet::new();
+        for i in 0..picked.len() {
+            for j in i + 1..picked.len() {
+                if picked[i].1.iter().zip(&picked[j].1).any(|(x, y)| *x && *y) {
+                    edges.insert((picked[i].0, picked[j].0));
+                }
+            }
+        }
+        edges
+    }
+
+    /// A deterministic mask of scattered boxes, for the equivalence tests.
+    fn scattered(shape: &[usize], state: &mut u64, boxes: usize) -> ArrayD<bool> {
+        let mut draw = |n: usize| {
+            *state ^= *state << 13;
+            *state ^= *state >> 7;
+            *state ^= *state << 17;
+            (*state % n.max(1) as u64) as usize
+        };
+        let mut m = ArrayD::from_elem(IxDyn(shape), false);
+        for _ in 0..boxes {
+            let origin: Vec<usize> = shape.iter().map(|n| draw(*n)).collect();
+            let size: Vec<usize> = shape.iter().map(|n| 1 + draw((*n / 3).max(1))).collect();
+            for (idx, v) in m.indexed_iter_mut() {
+                if (0..shape.len()).all(|a| idx[a] >= origin[a] && idx[a] < origin[a] + size[a]) {
+                    *v = true;
+                }
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn bbox_answers_as_the_per_voxel_scan_did() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        for shape in [vec![7usize, 5, 9], vec![1, 1, 1], vec![3, 0, 4], vec![6], vec![4, 3, 2, 5], vec![]] {
+            for boxes in [0, 1, 3] {
+                let mask = scattered(&shape, &mut state, boxes);
+                assert_eq!(bbox(&mask), reference_bbox(&mask), "{shape:?} with {boxes} boxes");
+                // A view that is not in standard layout reads the same.
+                let reversed = mask.slice_each_axis(|_| ndarray::Slice::new(0, None, -1)).to_owned();
+                assert_eq!(bbox(&reversed), reference_bbox(&reversed), "{shape:?} reversed");
+            }
+        }
+        let scalar = ArrayD::from_elem(IxDyn(&[]), true);
+        assert_eq!(bbox(&scalar), Some(Vec::new()));
+    }
+
+    #[test]
+    fn s7_6_analyse_finds_the_overlap_graph_the_pairwise_scan_found() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        for (shape, classes) in [(vec![9usize, 11, 13], 12), (vec![40, 40], 30), (vec![5, 6, 7], 1)] {
+            let mut masks = Masks::new();
+            for c in 0..classes {
+                masks.insert(3 * c as i64 + 1, scattered(&shape, &mut state, 2));
+            }
+            masks.insert(1000, ArrayD::from_elem(IxDyn(&shape), false));
+            let stats = analyse(&masks, None).unwrap();
+            assert_eq!(stats.edges, reference_edges(&masks), "{shape:?}");
+            for (c, m) in &masks {
+                assert_eq!(stats.counts[c], m.iter().filter(|v| **v).count() as u64);
+            }
+            let union = (0..shape.iter().product::<usize>())
+                .filter(|i| masks.values().any(|m| m.as_slice().unwrap()[*i]))
+                .count();
+            assert_eq!(stats.n_labelled_voxels, union as u64);
+        }
+        // More voxels than one block holds.
+        let shape = [3usize, 200, 300];
+        let mut masks = Masks::new();
+        for c in 1..=5 {
+            masks.insert(c, scattered(&shape, &mut state, 3));
+        }
+        assert_eq!(analyse(&masks, None).unwrap().edges, reference_edges(&masks));
     }
 }

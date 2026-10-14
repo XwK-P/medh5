@@ -233,24 +233,33 @@ fn check_required(profiles: Option<&[String]>) -> Result<()> {
     Ok(())
 }
 
-/// Run `rules` in order, collecting what each finds.
+/// Run `rules` in order, collecting what each finds, and the names of the
+/// rules run.
 ///
 /// A rule that stops on an error reports it as one finding --- under the
 /// error's own code when it has one, the defect the rule met, and as E001
 /// ("could not read the file") when it has none --- and the rules after it
-/// still run.
-fn run_rules(ctx: &mut rules::Context, rules: &[(&'static str, rules::Rule)]) -> Vec<Diagnostic> {
+/// still run.  A file of another major (E002) is not read past the container
+/// rule: what this major's rules would say of it is not its content's.
+fn run_rules(ctx: &mut rules::Context, rules: &[(&'static str, rules::Rule)]) -> (Vec<Diagnostic>, Vec<&'static str>) {
     let mut out = Vec::new();
+    let mut run = Vec::new();
     for (name, rule) in rules {
-        match rule(ctx) {
-            Ok(found) => out.extend(found),
-            Err(e) => out.push(match e.code() {
+        run.push(*name);
+        let found = match rule(ctx) {
+            Ok(found) => found,
+            Err(e) => vec![match e.code() {
                 Some(code) => ctx.err(code, "/", format!("{name} stopped: {}", e.message())),
                 None => ctx.err("E001", "/", format!("{name} could not read the file: {}", e.python_line())),
-            }),
+            }],
+        };
+        let unsupported = found.iter().any(|d| d.code == "E002");
+        out.extend(found);
+        if unsupported {
+            break;
         }
     }
-    out
+    (out, run)
 }
 
 /// Validate an open sample root.
@@ -282,10 +291,10 @@ pub fn validate_root_with(
     ctx.attr_names = attr_names.cloned();
     let mut report = Report::new(path, level);
     report.profiles = declared;
-    let rules = rules::rules_for(level);
-    report.diagnostics = run_rules(&mut ctx, &rules);
+    let (diagnostics, run) = run_rules(&mut ctx, &rules::rules_for(level));
+    report.diagnostics = diagnostics;
     report.checked = json!({
-        "rules": rules.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        "rules": run,
         "schema_checked": ctx.schema_checked,
     });
     report.sort();
@@ -314,8 +323,10 @@ pub fn validate_collection(root: &hdf5::Group, path: &str, level: &str, profiles
     check_required(profiles)?;
     let mut ctx = rules::Context::new(root.clone(), path, level, Vec::new(), false);
     let header = rules::check_collection(&mut ctx)?;
+    // Another major's members are not read as this major's (E002).
+    let unsupported = header.iter().any(|d| d.code == "E002");
     let mut members = Vec::new();
-    if let Some(node) = ops::child_group(root, SAMPLES_GROUP) {
+    if let Some(node) = ops::child_group(root, SAMPLES_GROUP).filter(|_| !unsupported) {
         for key in ops::members(&node)? {
             if let Some(member) = ops::child_group(&node, &key) {
                 let names = attr_names_for(&member, level);
@@ -426,7 +437,8 @@ mod tests {
         let mut ctx = rules::Context::new(file.as_group().unwrap(), "x.medh5", "semantic", Vec::new(), false);
         let rules: [(&'static str, rules::Rule); 3] =
             [("check_a", stops_on_a_defect), ("check_b", cannot_read), ("check_c", finds_one)];
-        let found = run_rules(&mut ctx, &rules);
+        let (found, run) = run_rules(&mut ctx, &rules);
+        assert_eq!(run, ["check_a", "check_b", "check_c"]);
         let codes: Vec<&str> = found.iter().map(|d| d.code.as_str()).collect();
         assert_eq!(codes, ["E405", "E001", "W903"]);
         assert_eq!(found[0].message, "check_a stopped: 6 instance ids for 3 class ids");

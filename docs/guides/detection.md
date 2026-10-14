@@ -72,8 +72,14 @@ way rather than reading differently.
 ## Check it
 
 ```bash
-medh5 validate case.medh5 --level strict --profile det
+medh5 validate case.medh5 --level integrity --profile det
 ```
+
+`--level integrity` runs every check, every byte against its digest included,
+and fails on errors. `--level strict` also fails on warnings — a sample with no
+de-identification record (`W903`), or whose classes carry no ontology code
+(`W912`), fails it — so keep it for the dataset you publish; see
+[Choose a level](validate.md#choose-a-level).
 
 `--profile det` holds the file to having **some** detection annotation — the
 check is `task='detection'`, which oriented boxes, keypoints and points satisfy

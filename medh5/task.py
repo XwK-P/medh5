@@ -37,15 +37,17 @@ import copy
 import json
 import os
 import re
+import shutil
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
+from medh5._files import temporary_beside
 from medh5.clinical import (
     SELECTION_POLICIES,
     Event,
@@ -102,6 +104,15 @@ def _findings(found: Iterable[Mapping[str, Any]]) -> tuple[Finding, ...]:
     return tuple(Finding.from_json(f) for f in found)
 
 
+def _default_source_id(uri: str, sample_key: str | None) -> str:
+    """A reference's id when none is given (:attr:`SourceRef.source_id`), as id
+    characters."""
+    path = _core.source_resolve(uri) if uri[:5].lower() == "file:" else PurePath(uri)
+    name = f"{path.parent.name}/{path.stem}" if path.parent.name else path.stem
+    key = f":{sample_key}" if sample_key else ""
+    return re.sub(r"[^A-Za-z0-9_.@:-]", "_", f"{name}{key}")[:128]
+
+
 @dataclass(frozen=True, slots=True)
 class SourceRef:
     """One sample --- a file, or a member of a ``.medh5c`` --- at a pinned version.
@@ -118,7 +129,17 @@ class SourceRef:
     content_id: str
     sample_key: str | None = None
     source_id: str = ""
+    """Default: the file's stem, after the directory holding it when the URI
+    names one (``site-a_P-01``), and ``:<key>`` for a member."""
     local_subject_id: str | None = None
+
+    def __post_init__(self) -> None:
+        # Derived once, here: an empty id failed the schema (T101), and the
+        # stem alone gave site-a/P-01.medh5 and site-b/P-01.medh5 one (T204).
+        if not self.source_id:
+            object.__setattr__(
+                self, "source_id", _default_source_id(self.uri, self.sample_key)
+            )
 
     @classmethod
     def pin(
@@ -134,19 +155,9 @@ class SourceRef:
         ``uri`` is what the manifest records (default: ``path`` as given) ---
         pass a relative one to keep a manifest movable with its data.
         """
-        doc = _core.source_pin(os.fspath(path), sample_key, source_id, uri)
-        found = cls.from_json(doc)
-        if not found.source_id:
-            key = f":{sample_key}" if sample_key else ""
-            default = re.sub(r"[^A-Za-z0-9_.@:-]", "_", f"{Path(found.uri).stem}{key}")
-            found = cls(
-                found.uri,
-                found.content_id,
-                found.sample_key,
-                default[:128],
-                found.local_subject_id,
-            )
-        return found
+        return cls.from_json(
+            _core.source_pin(os.fspath(path), sample_key, source_id, uri)
+        )
 
     @property
     def locator(self) -> str:
@@ -154,12 +165,16 @@ class SourceRef:
         return self.uri if self.sample_key is None else f"{self.uri}::{self.sample_key}"
 
     def resolve(self, base: PathLike | None = None) -> Path:
-        """The file the URI names, relative to ``base`` when it is relative."""
-        text = self.uri.removeprefix("file://")
-        path = Path(text)
-        if base is not None and not path.is_absolute():
-            return Path(base) / path
-        return path
+        """The file the URI names, relative to ``base`` when it is relative.
+
+        A ``file:`` URI is decoded as the engine decodes it --- its host empty
+        or ``localhost``, percent-escapes decoded, a Windows drive kept ---
+        so what :meth:`pathlib.Path.as_uri` writes names the path it was made
+        from.
+        """
+        return Path(
+            _core.source_resolve(self.uri, None if base is None else os.fspath(base))
+        )
 
     def open(self, base: PathLike | None = None) -> Sample:
         """Open the sample (the pin is not checked; see :meth:`check`)."""
@@ -260,11 +275,13 @@ class Target:
     ``horizon_us`` and the members after it are keyword-only, and
     ``horizon_us`` has no default: a window of no length labels nothing, and
     the schema requires at least one microsecond (T101).  A negative needs an
-    observation at least ``min_follow_up_us`` after the cutoff (default: the
-    horizon).  A row it cannot label is censored --- kept with its target
-    unobserved --- or, with ``censoring="exclude"``, excluded; a row whose
-    outcome had already occurred is excluded as prevalent unless
-    ``exclude_prevalent=False``.
+    observation inside the window at least ``min_follow_up_us`` after the
+    cutoff.  The default, the horizon, leaves a negative only an observation
+    at exactly ``cutoff + horizon_us``, so nearly every row without a positive
+    is censored: give ``min_follow_up_us`` whenever negatives matter.  A row
+    it cannot label is censored --- kept with its target unobserved --- or,
+    with ``censoring="exclude"``, excluded; a row whose outcome had already
+    occurred is excluded as prevalent unless ``exclude_prevalent=False``.
     """
 
     id: str
@@ -377,11 +394,12 @@ class TaskManifest:
     manifest's directory when it was loaded from a file.
     """
 
-    __slots__ = ("_doc", "_normal", "base")
+    __slots__ = ("_doc", "_ids", "_normal", "base")
 
     def __init__(self, doc: Mapping[str, Any], *, base: PathLike | None = None) -> None:
         self._doc: dict[str, Any] = copy.deepcopy(dict(doc))
         self._normal: dict[str, Any] | None = None
+        self._ids: dict[str, Any] = {}
         self.base: Path | None = None if base is None else Path(base)
         self._normalised()
 
@@ -435,13 +453,26 @@ class TaskManifest:
         return cls(doc, base=path.parent)
 
     def save(self, path: PathLike) -> Path:
-        """Write the manifest, pretty-printed, with its fingerprint."""
+        """Write the manifest, pretty-printed, with its fingerprint.
+
+        Through a temporary file renamed over *path*: a write cut short --- a
+        full disk, a crash --- leaves the previous manifest whole.
+        """
         path = Path(path)
         doc = self.to_json()
         doc["fingerprint"] = self.manifest_fingerprint
-        path.write_text(
-            json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+        target = path.resolve() if path.is_symlink() else path
+        temporary, fd = temporary_beside(target)
+        try:
+            with open(fd, "w", encoding="utf-8") as out:
+                out.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
+                out.flush()
+                os.fsync(out.fileno())
+            if target.exists():
+                shutil.copymode(target, temporary)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
         return path
 
     def _normalised(self) -> dict[str, Any]:
@@ -451,7 +482,18 @@ class TaskManifest:
 
     def _changed(self) -> None:
         self._normal = None
+        self._ids = {}
         self._doc.pop("fingerprint", None)
+
+    def _identity(self, key: str) -> Any:
+        """A fingerprint (or ``rows``, every row's), computed once until the
+        manifest changes: each was a parse of the whole manifest per access."""
+        if key not in self._ids:
+            if key == "rows":
+                self._ids[key] = dict(_core.task_row_fingerprints(self._doc))
+            else:
+                self._ids.update(_core.task_fingerprints(self._doc))
+        return self._ids[key]
 
     def add_subject(
         self,
@@ -557,12 +599,12 @@ class TaskManifest:
     @property
     def task_fingerprint(self) -> str:
         """Identifies the task: the digest of its canonical definition."""
-        return str(_core.task_fingerprints(self._doc)["task"])
+        return str(self._identity("task"))
 
     @property
     def manifest_fingerprint(self) -> str:
         """Identifies the whole manifest, rows and pins included."""
-        return str(_core.task_fingerprints(self._doc)["manifest"])
+        return str(self._identity("manifest"))
 
     @property
     def declared_fingerprint(self) -> str | None:
@@ -571,17 +613,32 @@ class TaskManifest:
 
     def row_fingerprint(self, row_id: str) -> str:
         """Identifies one example: task, subject, pinned versions, cutoff."""
-        return str(_core.task_row_fingerprint(self._doc, row_id))
+        found = self._identity("rows").get(row_id)
+        if found is None:  # the engine's KeyError
+            return str(_core.task_row_fingerprint(self._doc, row_id))
+        return str(found)
 
     def subjects_digest(self, partition: str) -> str:
         """Who is in a partition --- what learned preprocessing records."""
-        return str(_core.task_subjects_digest(self._doc, partition))
+        key = f"subjects:{partition}"
+        if key not in self._ids:
+            self._ids[key] = _core.task_subjects_digest(self._doc, partition)
+        return str(self._ids[key])
 
     # -- checking ----------------------------------------------------------
 
     def validate(self) -> list[Finding]:
-        """Everything wrong with the manifest that opening no file can find."""
-        return list(_findings(_core.task_validate(self._doc)))
+        """Everything wrong with the manifest that opening no file can find ---
+        a document that fails its schema is the one finding T101, as
+        ``medh5 task validate`` reports it."""
+        from medh5.errors import MEDH5ValidationError
+
+        try:
+            return list(_findings(_core.task_validate(self._doc)))
+        except MEDH5ValidationError as exc:
+            if exc.code is None:
+                raise
+            return [Finding(exc.code, "/", exc.message)]
 
     def _base(self, base: PathLike | None) -> str | None:
         found = base if base is not None else self.base
@@ -604,6 +661,7 @@ class TaskManifest:
     def __setstate__(self, state: Mapping[str, Any]) -> None:
         self._doc = state["doc"]
         self._normal = None
+        self._ids = {}
         self.base = None if state["base"] is None else Path(state["base"])
 
     def __repr__(self) -> str:
@@ -660,6 +718,10 @@ class Packed:
         return len(self.offsets) - 1
 
     def __getitem__(self, i: int) -> str | None:
+        n = len(self)
+        if not -n <= i < n:
+            raise IndexError(f"cell {i} of {n}")
+        i %= n
         if self.valid is not None and not self.valid[i]:
             return None
         return self.data[int(self.offsets[i]) : int(self.offsets[i + 1])].decode(
@@ -944,8 +1006,9 @@ class SlotFill:
     annotations: tuple[str, ...]
     """Eligible voxel annotations on the image's grid: admissible as inputs."""
     label_annotations: tuple[str, ...] = ()
-    """Every voxel annotation on the grid: supervision, which --- like the
-    target --- may come from after the cutoff and never enters an input."""
+    """Every voxel annotation on the grid that labels or examined one of the
+    slot's classes: supervision, which --- like the target --- may come from
+    after the cutoff and never enters an input."""
 
 
 @dataclass(frozen=True, slots=True)

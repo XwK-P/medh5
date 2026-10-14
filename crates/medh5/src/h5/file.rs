@@ -6,7 +6,9 @@
 //! copy-on-write command --- amend, `scrub --apply`, `fix`, `recompress` ---
 //! goes through [`AtomicFile`], and when the target exists its permission bits
 //! are carried onto the replacement: these are the commands most likely to be
-//! pointed at data whose mode *is* its access control.
+//! pointed at data whose mode *is* its access control.  A target that is a
+//! symbolic link is followed: the file it names is replaced, beside itself,
+//! and the link kept.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,10 +26,75 @@ use crate::{Error, Result};
 /// validators and every copy-on-write path open files through.
 pub fn open_read(path: &Path) -> Result<hdf5::File> {
     super::init();
-    let handle = hdf5::File::open(path)
-        .map_err(|e| Error::File(format!("failed to open {}: {}", repr_str(&path.to_string_lossy()), e)))?;
+    let failed = |why: &dyn std::fmt::Display| {
+        Error::File(format!("failed to open {}: {why}", repr_str(&path.to_string_lossy())))
+    };
+    // Asked of the system first: HDF5's report of a missing file is its error
+    // stack, which carries the time of the call, and a report that differs
+    // from run to run is no report to compare (`validate --json`).
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => return Err(failed(&"it is a directory, not a file")),
+        Ok(_) => {}
+        Err(err) => return Err(failed(&os_reason(&err))),
+    }
+    let handle = hdf5::File::open(path).map_err(|e| failed(&e))?;
+    close_on_exec(&handle);
     check_self_contained(&handle, Some(path))?;
     Ok(handle)
+}
+
+/// Keep the descriptor HDF5 opened `file` through out of every program this
+/// process starts.
+///
+/// HDF5 opens a file without `O_CLOEXEC`, so a child started while it was
+/// open, by any thread, inherited the descriptor: it could write a file opened
+/// for writing, and it held the lock HDF5 takes through the descriptor after
+/// the file was closed, so the next open of the file failed "unable to lock
+/// file" for as long as the child ran.  Only the `sec2` driver, the default,
+/// hands back a descriptor; another is left as it is, and so is a Windows
+/// handle.
+pub(crate) fn close_on_exec(file: &hdf5::File) {
+    #[cfg(unix)]
+    {
+        use hdf5::file::FileDriver;
+
+        use crate::h5sys::{h5f, h5p};
+
+        if !matches!(file.access_plist().and_then(|fapl| fapl.get_driver()), Ok(FileDriver::Sec2)) {
+            return;
+        }
+        super::locked(|| {
+            let mut handle: *mut std::ffi::c_void = std::ptr::null_mut();
+            // SAFETY: under HDF5's lock, for a file that stays open for the
+            // call; `sec2` hands back a pointer to the descriptor it holds.
+            unsafe {
+                if h5f::H5Fget_vfd_handle(file.id(), h5p::H5P_DEFAULT, &mut handle) < 0 || handle.is_null() {
+                    return;
+                }
+                let fd = *(handle as *const libc::c_int);
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 {
+                    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    let _ = file;
+}
+
+/// What the system said went wrong, without the error number: "no such file
+/// or directory" alike on every platform, and the system's own words
+/// otherwise.
+fn os_reason(err: &std::io::Error) -> String {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        return "no such file or directory".into();
+    }
+    let full = err.to_string();
+    match err.raw_os_error() {
+        Some(code) => full.strip_suffix(&format!(" (os error {code})")).unwrap_or(&full).to_string(),
+        None => full,
+    }
 }
 
 /// Create (truncate) an HDF5 file with the format's library-version bounds.
@@ -37,10 +104,72 @@ pub fn open_read(path: &Path) -> Result<hdf5::File> {
 /// features newer than 1.10 are used only where an object needs them.
 pub fn create_truncate(path: &Path) -> Result<hdf5::File> {
     super::init();
-    hdf5::File::with_options()
+    let file = hdf5::File::with_options()
         .with_fapl(|p| p.libver_bounds(LibraryVersion::V110, LibraryVersion::latest()))
         .create(path)
-        .map_err(|e| Error::File(format!("failed to create {}: {}", repr_str(&path.to_string_lossy()), e)))
+        .map_err(|e| Error::File(format!("failed to create {}: {}", repr_str(&path.to_string_lossy()), e)))?;
+    close_on_exec(&file);
+    Ok(file)
+}
+
+/// The most links a chain is followed through, as Linux bounds one.
+const MAX_LINKS: usize = 40;
+
+/// The file a replace of `target` must replace: where its symbolic links
+/// lead, so the link stays a link and the file it names is the one rewritten.
+///
+/// The temporary file was made beside the link and renamed over it, which
+/// turned the link into an independent copy and left the file it named
+/// untouched --- for `scrub --apply`, the identifying original, while the user
+/// believed it scrubbed.  Only the last component is followed: a directory
+/// reached through a link is the directory the rename happens in either way.
+/// A link that leads nowhere names the file to create, as `open` takes it.
+fn resolve_links(target: &Path) -> Result<PathBuf> {
+    let mut path = target.to_path_buf();
+    for _ in 0..MAX_LINKS {
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if !may_follow(&path, &meta) {
+                    return Err(Error::File(format!(
+                        "{} is a symbolic link another user owns, in a directory anyone can write to; it is not \
+                         followed, as the system would not follow it to open the file",
+                        repr_str(&path.to_string_lossy())
+                    )));
+                }
+                let leads_to = fs::read_link(&path).map_err(|e| crate::error::os_error(&e, &path))?;
+                // `join` keeps an absolute target as it is.
+                path = match path.parent() {
+                    Some(dir) => dir.join(leads_to),
+                    None => leads_to,
+                };
+            }
+            _ => return Ok(path),
+        }
+    }
+    Err(Error::File(format!(
+        "{} leads through more than {MAX_LINKS} symbolic links",
+        repr_str(&target.to_string_lossy())
+    )))
+}
+
+/// Whether a write may follow the link `link`: not one in a sticky directory
+/// anyone can write to (`/tmp`) that neither the user nor the directory's owner
+/// owns --- the rule the system applies to `open` (Linux's
+/// `fs.protected_symlinks`), which a replace that resolves the link itself
+/// would otherwise step around.
+#[cfg(unix)]
+fn may_follow(link: &Path, meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let dir = link.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let Ok(dir_meta) = fs::metadata(dir) else { return true };
+    // SAFETY: `geteuid` has no preconditions.
+    let user = unsafe { libc::geteuid() };
+    dir_meta.mode() & 0o1002 != 0o1002 || meta.uid() == user || meta.uid() == dir_meta.uid()
+}
+
+#[cfg(not(unix))]
+fn may_follow(_link: &Path, _meta: &fs::Metadata) -> bool {
+    true
 }
 
 /// A sibling name no other writer in any process is using.
@@ -74,7 +203,7 @@ fn existing_mode(target: &Path) -> Option<u32> {
 
 /// Create the temporary file before any data, readable by its owner only when
 /// it will replace an existing file.
-fn precreate(tmp: &Path, mode: Option<u32>) -> Result<()> {
+fn precreate(tmp: &Path, mode: Option<u32>) -> std::io::Result<()> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -104,10 +233,58 @@ fn set_mode(path: &Path, mode: u32) {
 }
 
 /// Flush a closed file to stable storage before it is renamed into place.
-fn fsync_path(path: &Path) -> Result<()> {
+///
+/// Windows flushes only through a handle that may write, so this runs before
+/// the file is made read-only.
+fn fsync_path(path: &Path) -> std::io::Result<()> {
     let file = fs::OpenOptions::new().read(true).write(cfg!(windows)).open(path)?;
     file.sync_all()?;
     Ok(())
+}
+
+/// Rename `from` over `to`.
+///
+/// Windows refuses to replace a read-only file, so a read-only target is made
+/// writable for the rename --- the replacement carries the mode back --- and
+/// read-only again if the rename fails.
+fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        if let Ok(meta) = fs::metadata(to) {
+            let kept = meta.permissions();
+            if kept.readonly() {
+                let mut writable = kept.clone();
+                // Windows only, where this clears the read-only attribute.
+                #[allow(clippy::permissions_set_readonly_false)]
+                writable.set_readonly(false);
+                fs::set_permissions(to, writable)?;
+                let renamed = fs::rename(from, to);
+                if renamed.is_err() {
+                    let _ = fs::set_permissions(to, kept);
+                }
+                return renamed;
+            }
+        }
+    }
+    fs::rename(from, to)
+}
+
+/// Remove a temporary file, which may already be read-only: Windows does not
+/// delete a read-only file.
+fn remove_temporary(path: &Path) {
+    #[cfg(windows)]
+    {
+        if let Ok(meta) = fs::metadata(path) {
+            let mut writable = meta.permissions();
+            if writable.readonly() {
+                // Windows only, where this clears the read-only attribute.
+                #[allow(clippy::permissions_set_readonly_false)]
+                writable.set_readonly(false);
+                let _ = fs::set_permissions(path, writable);
+            }
+        }
+    }
+    let _ = fs::remove_file(path);
 }
 
 fn fsync_dir(dir: &Path) {
@@ -120,6 +297,51 @@ fn fsync_dir(dir: &Path) {
     let _ = dir;
 }
 
+/// Whether two paths name one existing file: the same path, or one reached
+/// through `..`, a symbolic link or a hard link.  A path naming nothing names
+/// no file.
+///
+/// The file's identity is compared, not its name: the device and inode on
+/// POSIX, the volume serial number and file index on Windows.  A canonical
+/// path resolves symbolic links, but a hard link is a second name with nothing
+/// to resolve, so comparing canonical paths let a command on Windows write
+/// over the file it read.
+#[doc(hidden)]
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((identity(a), identity(b)), (Some(x), Some(y)) if x == y)
+}
+
+#[cfg(unix)]
+fn identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(windows)]
+fn identity(path: &Path) -> Option<(u32, u64)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
+    };
+    // As `fs::metadata` opens it: asking for no access, so a file another
+    // process holds open or locks still answers, and a directory opens too.
+    let file = fs::OpenOptions::new().access_mode(0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(path).ok()?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the handle is `file`'s, open for the call, and `info` is a
+    // writable structure of the type the call fills.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return None;
+    }
+    Some((info.dwVolumeSerialNumber, u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow)))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path).ok()
+}
+
 /// Close `file` and every object opened through it --- what h5py's
 /// `File.close()` does.
 ///
@@ -129,44 +351,79 @@ fn fsync_dir(dir: &Path) {
 /// locked against the next writer.  Those objects become invalid instead:
 /// using one fails, and dropping one does nothing.  `flush` first, so a
 /// writer learns of a failed write rather than losing it in the close.
+///
+/// A close that fails is an error too --- an object whose cached data could
+/// not be written, the file's own last write --- so a commit never renames a
+/// file whose close failed.
 pub fn close_everything(file: hdf5::File, flush: bool) -> Result<()> {
     use crate::h5sys::h5f::{self, H5F_scope_t};
-    use crate::h5sys::h5i;
     let fid = file.id();
     // Released below, so the handle's own drop must not release it again.
     std::mem::forget(file);
     super::locked(|| unsafe {
         let flushed = !flush || h5f::H5Fflush(fid, H5F_scope_t::H5F_SCOPE_LOCAL) >= 0;
         // Read now: the calls below clear HDF5's record of the failure.
-        let refused = (!flushed).then(super::ops::hdf5_error_text);
-        let release = |types: std::os::raw::c_uint| {
-            let count = h5f::H5Fget_obj_count(fid, types);
-            if count <= 0 {
-                return;
-            }
-            let mut ids = vec![0 as h5i::hid_t; count as usize];
-            let found = h5f::H5Fget_obj_ids(fid, types, ids.len(), ids.as_mut_ptr());
-            for &id in ids.iter().take(found.max(0) as usize) {
-                while h5i::H5Iis_valid(id) > 0 {
-                    if h5i::H5Idec_ref(id) <= 0 {
-                        break;
-                    }
-                }
-            }
-        };
-        release(
-            h5f::H5F_OBJ_LOCAL | h5f::H5F_OBJ_DATASET | h5f::H5F_OBJ_GROUP | h5f::H5F_OBJ_DATATYPE | h5f::H5F_OBJ_ATTR,
-        );
-        // The file identifiers last: this one, and any handed out for it.
-        release(h5f::H5F_OBJ_LOCAL | h5f::H5F_OBJ_FILE);
-        if h5i::H5Iis_valid(fid) > 0 {
-            while h5i::H5Idec_ref(fid) > 0 {}
+        if !flushed {
+            let why = super::ops::hdf5_error_text();
+            release_all(fid);
+            return Err(Error::Io(format!("could not flush the file: {why}")));
         }
-        match refused {
+        match release_all(fid) {
             None => Ok(()),
-            Some(why) => Err(Error::Io(format!("could not flush the file: {why}"))),
+            Some(why) => Err(Error::Io(format!("could not close the file: {why}"))),
         }
     })
+}
+
+/// Release every identifier open through the file `fid`, and `fid` last;
+/// what HDF5 said about the first release that failed, if one did.  The
+/// caller holds the HDF5 lock.
+///
+/// # Safety
+///
+/// `fid` is a file identifier the caller owns.
+unsafe fn release_all(fid: crate::h5sys::h5i::hid_t) -> Option<String> {
+    use crate::h5sys::h5f;
+    use crate::h5sys::h5i;
+    let mut failed = None;
+    // A failed release leaves the identifier open, so each is released until
+    // it is gone or HDF5 refuses.
+    let mut release = |id: h5i::hid_t| unsafe {
+        while h5i::H5Iis_valid(id) > 0 {
+            let left = h5i::H5Idec_ref(id);
+            if left < 0 && failed.is_none() {
+                failed = Some(super::ops::hdf5_error_text());
+            }
+            if left <= 0 {
+                break;
+            }
+        }
+    };
+    let opened = |types: std::os::raw::c_uint| unsafe {
+        let count = h5f::H5Fget_obj_count(fid, types);
+        if count <= 0 {
+            return Vec::new();
+        }
+        let mut ids = vec![0 as h5i::hid_t; count as usize];
+        let found = h5f::H5Fget_obj_ids(fid, types, ids.len(), ids.as_mut_ptr());
+        ids.truncate(found.max(0) as usize);
+        ids
+    };
+    for id in opened(
+        h5f::H5F_OBJ_LOCAL | h5f::H5F_OBJ_DATASET | h5f::H5F_OBJ_GROUP | h5f::H5F_OBJ_DATATYPE | h5f::H5F_OBJ_ATTR,
+    ) {
+        release(id);
+    }
+    // The file identifiers last: this one, and any handed out for it.
+    for id in opened(h5f::H5F_OBJ_LOCAL | h5f::H5F_OBJ_FILE) {
+        release(id);
+    }
+    release(fid);
+    #[cfg(test)]
+    if CLOSE_FAILS.with(|fails| fails.replace(false)) {
+        failed.get_or_insert_with(|| "H5Fclose(): the close failed (a test made it)".into());
+    }
+    failed
 }
 
 /// What a test runs on the target just before a commit's rename.
@@ -176,6 +433,9 @@ type RenameHook = Box<dyn FnMut(&Path)>;
 #[cfg(test)]
 thread_local! {
     static BEFORE_RENAME: std::cell::RefCell<Option<RenameHook>> = const { std::cell::RefCell::new(None) };
+    /// Set by a test to have the next close report the failure HDF5 reports
+    /// of a close it could not finish.
+    static CLOSE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// An HDF5 file being written to a temporary sibling of its target.
@@ -191,18 +451,20 @@ pub struct AtomicFile {
 }
 
 impl AtomicFile {
-    /// Start writing `target`.
+    /// Start writing `target`: through its symbolic links, if it is one
+    /// (`resolve_links`), so the file it names is the one replaced.
     pub fn create(target: &Path) -> Result<AtomicFile> {
         if let Some(parent) = target.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent)?;
             }
         }
-        let tmp = temporary_name(target);
-        let mode = existing_mode(target);
+        let target = resolve_links(target)?;
+        let tmp = temporary_name(&target);
+        let mode = existing_mode(&target);
         precreate(&tmp, mode)?;
         match create_truncate(&tmp) {
-            Ok(handle) => Ok(AtomicFile { target: target.to_path_buf(), tmp, mode, handle: Some(handle) }),
+            Ok(handle) => Ok(AtomicFile { target, tmp, mode, handle: Some(handle) }),
             Err(err) => {
                 let _ = fs::remove_file(&tmp);
                 Err(err)
@@ -215,7 +477,8 @@ impl AtomicFile {
         self.handle.as_ref().expect("an AtomicFile is open until committed")
     }
 
-    /// The path that will be replaced.
+    /// The path that will be replaced: the file the target given named,
+    /// its symbolic links followed.
     pub fn target(&self) -> &Path {
         &self.target
     }
@@ -234,24 +497,26 @@ impl AtomicFile {
             close_everything(handle, true)?;
         }
         let result = (|| -> Result<()> {
+            // Flushed before the mode is set: a read-only file refuses the
+            // writable handle Windows flushes through.
+            fsync_path(&self.tmp)?;
             if let Some(mode) = self.mode {
                 set_mode(&self.tmp, mode);
             }
-            fsync_path(&self.tmp)?;
             #[cfg(test)]
             BEFORE_RENAME.with(|hook| {
                 if let Some(hook) = hook.borrow_mut().as_mut() {
                     hook(&self.target)
                 }
             });
-            fs::rename(&self.tmp, &self.target)?;
+            replace(&self.tmp, &self.target)?;
             if let Some(parent) = self.target.parent() {
                 fsync_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent });
             }
             Ok(())
         })();
         if result.is_err() {
-            let _ = fs::remove_file(&self.tmp);
+            remove_temporary(&self.tmp);
         }
         // Nothing is left for Drop to clean up.
         self.tmp = PathBuf::new();
@@ -334,6 +599,37 @@ pub fn atomic_rewrite<T>(
     Ok(value)
 }
 
+/// Write `bytes` as `target` the way [`AtomicFile`] writes a file: to a
+/// temporary sibling, flushed, its mode the target's, renamed into place
+/// through the target's symbolic links.  A write cut short leaves the
+/// previous file whole --- what a text file written over its input needs.
+pub(crate) fn write_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
+    let given = target;
+    let target = resolve_links(target)?;
+    let tmp = temporary_name(&target);
+    let mode = existing_mode(&target);
+    // An I/O error names the file asked for, as the engine words one; the
+    // temporary's name would tell the caller nothing.
+    let named = |e: std::io::Error| crate::error::os_error(&e, given);
+    precreate(&tmp, mode).map_err(named)?;
+    let result = (|| -> std::io::Result<()> {
+        fs::write(&tmp, bytes)?;
+        fsync_path(&tmp)?;
+        if let Some(mode) = mode {
+            set_mode(&tmp, mode);
+        }
+        replace(&tmp, &target)?;
+        if let Some(parent) = target.parent() {
+            fsync_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent });
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        remove_temporary(&tmp);
+    }
+    result.map_err(named)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +655,167 @@ mod tests {
         drop((kept, group));
     }
 
+    /// A small file holding `value`, written through [`AtomicFile`].
+    fn write_value(target: &Path, value: i32) -> Result<()> {
+        let out = AtomicFile::create(target)?;
+        out.handle().new_dataset::<i32>().shape([1]).create("v")?.write(&[value])?;
+        out.commit()
+    }
+
+    fn read_value(path: &Path) -> i32 {
+        open_read(path).unwrap().dataset("v").unwrap().read_raw::<i32>().unwrap()[0]
+    }
+
+    /// Nothing temporary is left in `dir`.
+    fn no_temporaries(dir: &Path) -> bool {
+        fs::read_dir(dir).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().contains(".tmp-"))
+    }
+
+    /// A missing file is reported in the system's words, the same on every
+    /// run: HDF5's error stack carries the time of the call, which made
+    /// `validate --json` differ from run to run.
+    #[test]
+    fn s14_4_a_missing_file_is_reported_the_same_on_every_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.medh5");
+        let first = open_read(&missing).unwrap_err().to_string();
+        let second = open_read(&missing).unwrap_err().to_string();
+        assert_eq!(first, second);
+        assert_eq!(
+            first,
+            format!("failed to open {}: no such file or directory", repr_str(&missing.to_string_lossy()))
+        );
+        let err = open_read(dir.path()).unwrap_err();
+        assert!(matches!(err, Error::File(_)));
+        assert!(err.to_string().ends_with(": it is a directory, not a file"), "{err}");
+    }
+
+    /// A replace through a symbolic link replaces the file the link names
+    /// and keeps the link, whether the link is absolute or relative, or one
+    /// of a chain: the link was replaced by an independent copy, and the file
+    /// it named left as it was --- for `scrub --apply`, the identifying
+    /// original.
+    #[cfg(unix)]
+    #[test]
+    fn s14_4_a_replace_through_a_symlink_keeps_the_link() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let farm = dir.path().join("farm");
+        fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(&farm).unwrap();
+        let real = data.join("real.medh5");
+        write_value(&real, 1).unwrap();
+        let absolute = farm.join("absolute.medh5");
+        symlink(&real, &absolute).unwrap();
+        let relative = farm.join("relative.medh5");
+        symlink("../data/real.medh5", &relative).unwrap();
+        let chained = farm.join("chained.medh5");
+        symlink("relative.medh5", &chained).unwrap();
+        for (value, link) in [(2, &absolute), (3, &relative), (4, &chained)] {
+            let inode = fs::metadata(&real).unwrap();
+            write_value(link, value).unwrap();
+            assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink(), "{link:?} is no longer a link");
+            assert_eq!(read_value(&real), value, "{link:?}");
+            assert_eq!(read_value(link), value, "{link:?}");
+            use std::os::unix::fs::MetadataExt;
+            assert_ne!(fs::metadata(&real).unwrap().ino(), inode.ino(), "replaced, not written in place");
+            assert!(no_temporaries(&data) && no_temporaries(&farm));
+        }
+        // The replacement takes the real file's mode, as it always did.
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o640)).unwrap();
+        write_value(&chained, 5).unwrap();
+        assert_eq!(fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o640);
+    }
+
+    /// A link that leads nowhere names the file to create, as `open` takes
+    /// it; a loop of links is refused, not followed for ever.
+    #[cfg(unix)]
+    #[test]
+    fn s14_4_a_dangling_link_is_created_through_and_a_loop_refused() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("link.medh5");
+        symlink("made.medh5", &link).unwrap();
+        write_value(&link, 7).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(read_value(&dir.path().join("made.medh5")), 7);
+        let (a, b) = (dir.path().join("a.medh5"), dir.path().join("b.medh5"));
+        symlink("b.medh5", &a).unwrap();
+        symlink("a.medh5", &b).unwrap();
+        let err = write_value(&a, 8).unwrap_err();
+        assert!(err.to_string().contains("more than 40 symbolic links"), "{err}");
+        assert!(no_temporaries(dir.path()));
+    }
+
+    /// A link in a sticky directory anyone can write to is followed only
+    /// when the user or the directory's owner owns it, as the system follows
+    /// it to open a file there; otherwise a link planted in `/tmp` could
+    /// point a write at any file of the user's.
+    #[cfg(unix)]
+    #[test]
+    fn s14_4_a_link_another_user_planted_in_a_shared_directory_is_not_followed() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        let mine = dir.path().join("mine.medh5");
+        write_value(&mine, 1).unwrap();
+        let link = shared.join("out.medh5");
+        symlink(&mine, &link).unwrap();
+        write_value(&link, 2).unwrap();
+        assert_eq!(read_value(&mine), 2, "the user's own link is followed");
+        // Only root can give a link to another user.
+        if unsafe { libc::geteuid() } == 0 {
+            let path = std::ffi::CString::new(link.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(unsafe { libc::lchown(path.as_ptr(), 4242, 4242) }, 0);
+            let err = write_value(&link, 3).unwrap_err();
+            assert!(err.to_string().contains("another user owns"), "{err}");
+            assert_eq!(read_value(&mine), 2);
+            assert!(no_temporaries(&shared) && no_temporaries(dir.path()));
+        }
+    }
+
+    /// A read-only file is replaced, and stays read-only.  The temporary
+    /// file was made read-only and *then* opened for writing to flush it,
+    /// which Windows refuses, and Windows does not rename over a read-only
+    /// file.
+    #[test]
+    fn s14_4_a_read_only_file_is_replaced_and_stays_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ro.medh5");
+        write_value(&path, 1).unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&path, perms).unwrap();
+        write_value(&path, 2).unwrap();
+        assert_eq!(read_value(&path), 2);
+        assert!(fs::metadata(&path).unwrap().permissions().readonly());
+        assert!(no_temporaries(dir.path()));
+        set_mode(&path, 0o644);
+    }
+
+    /// A close that fails stops the commit before the rename: the target is
+    /// left as it was and the temporary file removed.  The final close's
+    /// result was ignored, so a file whose close failed could be renamed
+    /// into place.
+    #[test]
+    fn s14_4_a_failed_close_is_not_renamed_into_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.medh5");
+        write_value(&path, 1).unwrap();
+        CLOSE_FAILS.with(|fails| fails.set(true));
+        let err = write_value(&path, 2).unwrap_err();
+        assert!(err.to_string().starts_with("could not close the file: "), "{err}");
+        assert_eq!(read_value(&path), 1);
+        assert!(no_temporaries(dir.path()));
+        CLOSE_FAILS.with(|fails| fails.set(true));
+        let file = create_truncate(&dir.path().join("d.h5")).unwrap();
+        assert!(close_everything(file, false).is_err());
+    }
+
     #[test]
     fn s14_4_temporary_names_are_unique_within_a_process() {
         let names: std::collections::HashSet<PathBuf> = (0..50).map(|_| temporary_name(Path::new("x.medh5"))).collect();
@@ -378,6 +835,58 @@ mod tests {
         fs::write(&path, &payload).unwrap();
         fsync_path(&path).unwrap();
         assert_eq!(fs::read(&path).unwrap(), payload);
+    }
+
+    /// A child started while a file was open kept HDF5's descriptor, and the
+    /// lock HDF5 holds through it: the file could not be opened again until
+    /// the child exited.  The command line's `bench` test met it when a
+    /// Python another test started outlived the sample being timed.
+    #[cfg(unix)]
+    #[test]
+    fn s14_4_a_child_process_inherits_no_open_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.h5");
+        create_truncate(&path).unwrap();
+        for door in [create_truncate, open_read] {
+            let file = door(&path).unwrap();
+            let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+            drop(file);
+            // For writing: an exclusive lock, which any lock the child kept refuses.
+            let again = create_truncate(&path).map(drop);
+            child.kill().unwrap();
+            child.wait().unwrap();
+            again.unwrap();
+        }
+    }
+
+    /// Off POSIX the 2.0.1 checks compared canonical paths, which a hard link
+    /// gets past: on Windows `task reconcile -o` wrote the manifest over its
+    /// source and `clinical export -o` over the sample it read.
+    #[test]
+    fn s14_4_same_file_knows_every_name_of_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.medh5");
+        let twin = dir.path().join("b.medh5");
+        fs::write(&file, b"same bytes").unwrap();
+        fs::write(&twin, b"same bytes").unwrap();
+        let hard = dir.path().join("hard.medh5");
+        fs::hard_link(&file, &hard).unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        let dotted = dir.path().join("sub").join("..").join("a.medh5");
+        let missing = dir.path().join("missing.medh5");
+
+        assert!(same_file(&file, &file));
+        assert!(same_file(&file, &hard));
+        assert!(same_file(&dotted, &file));
+        assert!(!same_file(&file, &twin), "equal bytes are not one file");
+        assert!(!same_file(&file, &missing));
+        assert!(!same_file(&missing, &missing), "a path naming nothing names no file");
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.medh5");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            assert!(same_file(&link, &hard));
+        }
     }
 
     /// The HDF5 file identifiers open on `path` in this process.

@@ -6,10 +6,12 @@ use super::{grid_spatial, loc, str_attr, sub_dataset, Context};
 use crate::annotations::encode::normalization_tolerance;
 use crate::array::{DType, NdArray};
 use crate::digest::{parse_digest, DEFAULT_ALGO};
+use crate::h5::attrs;
 use crate::h5::data::{self, Kind};
-use crate::h5::{attrs, ops};
+use crate::h5::ops::{self, Node};
 use crate::integrity::digest::{dataset_digest_inspected, STREAM_BYTES};
-use crate::integrity::{stale_index_entries, unbound, verify_root_inspecting, Binding};
+use crate::integrity::verify::verify_root_reporting;
+use crate::integrity::{unbound, Binding};
 use crate::json::{py_float, repr_int_tuple, repr_str};
 use crate::validate::Diagnostic;
 use crate::Result;
@@ -18,6 +20,12 @@ use crate::Result;
 /// E701--E704, W901, W913 for a projection's), the sampling index's currency
 /// (§13.3, W905), and the stored values of probability maps as the digest
 /// pass reads them (§7.5: E404, E411).
+///
+/// An object that cannot be read --- a dataset whose chunk no longer
+/// decodes --- is E001 where it is, and every other object is still checked.
+/// Every finding is reported whatever else the file holds: a file in which
+/// no digest parses had its E703, its `content_id` mismatch and its stale
+/// index dropped, and passed, while `verify` failed it.
 pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let root = ctx.root.clone();
@@ -33,34 +41,48 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         }
     }
     // The stored probabilities are checked as the digest pass reads them.
-    let mut probmaps = probmaps(ctx)?;
-    let result = verify_root_inspecting(&root, ctx.attr_names.as_ref(), None, algo_known, &mut |path, block| {
+    let mut probmaps = probmaps(ctx, &mut out)?;
+    let (result, unread) = verify_root_reporting(&root, ctx.attr_names.as_ref(), algo_known, &mut |path, block| {
         if let Some(check) = probmaps.get_mut(path) {
             check.feed(block);
         }
         Ok(())
     })?;
-    for (path, check) in probmaps.iter_mut().filter(|(_, c)| !c.read) {
+    for (path, e) in &unread {
+        out.push(match (path.is_empty(), e.code()) {
+            (true, None) => {
+                ctx.err("E001", "/", format!("the root's `content_id` could not be checked: {}", e.python_line()))
+            }
+            (true, Some(_)) => ctx.failed("/", e),
+            (false, _) => ctx.failed(format!("/{path}"), e),
+        });
+    }
+    let unreadable: Vec<&str> = unread.iter().map(|(path, _)| path.as_str()).collect();
+    for (path, check) in probmaps.iter_mut().filter(|(p, c)| !c.read && !unreadable.contains(&p.as_str())) {
         // Undigested, so the pass above did not read it.
-        let ds = root.dataset(path)?;
-        dataset_digest_inspected(
-            &ds,
-            path,
-            DEFAULT_ALGO,
-            STREAM_BYTES,
-            Some(&mut |block| {
-                check.feed(block);
-                Ok(())
-            }),
-        )?;
+        let read = root.dataset(path).map_err(crate::Error::from).and_then(|ds| {
+            dataset_digest_inspected(
+                &ds,
+                path,
+                DEFAULT_ALGO,
+                STREAM_BYTES,
+                Some(&mut |block| {
+                    check.feed(block);
+                    Ok(())
+                }),
+            )
+        });
+        if let Err(e) = read {
+            out.push(ctx.failed(format!("/{path}"), &e));
+        }
     }
     for (path, check) in &probmaps {
         out.extend(check.findings(ctx, path));
     }
-    if result.checked.is_empty() && result.undigested.is_empty() {
-        return Ok(out);
-    }
-    if !result.undigested.is_empty() && result.checked.is_empty() {
+    // W901 says no dataset carries a digest: one whose digest does not parse,
+    // or whose type has none, carries one.
+    let digested = !(result.checked.is_empty() && result.malformed.is_empty() && result.unverifiable.is_empty());
+    if !result.undigested.is_empty() && !digested && !unread.iter().any(|(path, _)| !path.is_empty()) {
         out.push(ctx.err("W901", "/", "no dataset carries a `digest` attribute"));
     }
     for path in &result.malformed {
@@ -92,7 +114,7 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             ),
         ));
     }
-    if result.content_id_declared.is_some() {
+    if result.content_id_declared.is_some() && !unreadable.contains(&"") {
         // A line binds a dataset's bytes to the path it names (§13.2).  A
         // dataset carrying a digest that no line lists claims an attestation
         // it does not have: its object is reached first through `index/`,
@@ -129,7 +151,7 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             }
         }
     }
-    for name in stale_index_entries(&root)? {
+    for name in &result.stale_index {
         out.push(ctx.err(
             "W905",
             format!("/index/{name}"),
@@ -174,49 +196,57 @@ struct ProbmapCheck {
     read: bool,
 }
 
-fn probmaps(ctx: &Context) -> Result<BTreeMap<String, ProbmapCheck>> {
-    let mut out = BTreeMap::new();
+/// Every probability map's check, by its data's path.  A map whose header
+/// cannot be read is E001 where it is, and the others are still checked.
+fn probmaps(ctx: &Context, out: &mut Vec<Diagnostic>) -> Result<BTreeMap<String, ProbmapCheck>> {
+    let mut checks = BTreeMap::new();
     let grids = ops::child_group(&ctx.root, "grids");
     for (name, group) in ctx.children("annotations")? {
-        if str_attr(loc(&group), "kind")?.as_deref() != Some("probmap") {
-            continue;
+        match probmap(&group, grids.as_ref()) {
+            Ok(Some(check)) => {
+                checks.insert(format!("annotations/{name}/data"), check);
+            }
+            Ok(None) => {}
+            Err(e) => out.push(ctx.failed(format!("/annotations/{name}"), &e)),
         }
-        let Some(ds) = sub_dataset(&group, "data") else { continue };
-        let Kind::Numeric(dtype) = data::kind(&ds)? else { continue };
-        let shape = ds.shape();
-        let Some((&classes, spatial)) = shape.split_first() else { continue };
-        let class_ids = attrs::get_i64s(loc(&group), "class_ids")?.unwrap_or_default();
-        // A grid that cannot be read is the semantic level's finding; here it
-        // only means the map is not summed.
-        let on_grid = match (str_attr(loc(&group), "grid").ok().flatten(), &grids) {
-            (Some(grid), Some(grids)) if ops::exists(grids, &grid) => grid_spatial(grids, &grid)
-                .is_ok_and(|g| g.iter().map(|v| usize::try_from(*v).ok()).eq(spatial.iter().map(|v| Some(*v)))),
-            _ => false,
-        };
-        let sound = classes > 0 && classes == class_ids.len() && !spatial.is_empty() && on_grid;
-        let normalized = attrs::get_bool(loc(&group), "normalized")?.unwrap_or(false);
-        out.insert(
-            format!("annotations/{name}/data"),
-            ProbmapCheck {
-                class_ids,
-                spatial: spatial.to_vec(),
-                dtype,
-                classes,
-                summed: if normalized && sound {
-                    spatial.iter().try_fold(1usize, |n, e| n.checked_mul(*e))
-                } else {
-                    None
-                },
-                seen: 0,
-                sums: Vec::new(),
-                bad: None,
-                off: None,
-                unsummed: None,
-                read: false,
-            },
-        );
     }
-    Ok(out)
+    Ok(checks)
+}
+
+/// The check of one annotation's stored values, if it is a probability map
+/// with numeric data.
+fn probmap(group: &Node, grids: Option<&hdf5::Group>) -> Result<Option<ProbmapCheck>> {
+    if str_attr(loc(group), "kind")?.as_deref() != Some("probmap") {
+        return Ok(None);
+    }
+    let Some(ds) = sub_dataset(group, "data") else { return Ok(None) };
+    let Kind::Numeric(dtype) = data::kind(&ds)? else { return Ok(None) };
+    let shape = ds.shape();
+    let Some((&classes, spatial)) = shape.split_first() else { return Ok(None) };
+    let class_ids = attrs::get_i64s(loc(group), "class_ids")?.unwrap_or_default();
+    // A grid that cannot be read is the semantic level's finding; here it
+    // only means the map is not summed.  A grid is a group: a dataset of its
+    // name is none.
+    let on_grid = match (str_attr(loc(group), "grid").ok().flatten(), grids) {
+        (Some(grid), Some(grids)) if ops::is_group(grids, &grid) => grid_spatial(grids, &grid)
+            .is_ok_and(|g| g.iter().map(|v| usize::try_from(*v).ok()).eq(spatial.iter().map(|v| Some(*v)))),
+        _ => false,
+    };
+    let sound = classes > 0 && classes == class_ids.len() && !spatial.is_empty() && on_grid;
+    let normalized = attrs::get_bool(loc(group), "normalized")?.unwrap_or(false);
+    Ok(Some(ProbmapCheck {
+        class_ids,
+        spatial: spatial.to_vec(),
+        dtype,
+        classes,
+        summed: if normalized && sound { spatial.iter().try_fold(1usize, |n, e| n.checked_mul(*e)) } else { None },
+        seen: 0,
+        sums: Vec::new(),
+        bad: None,
+        off: None,
+        unsummed: None,
+        read: false,
+    }))
 }
 
 impl ProbmapCheck {

@@ -568,6 +568,9 @@ fn check_ownership(records: &ClinicalRecords, events: &HashMap<&str, &Event>, ba
 fn check_chains(records: &ClinicalRecords, events: &HashMap<&str, &Event>, base: &str, out: &mut Vec<Finding>) {
     let mut successors: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut predecessors: HashMap<&str, Vec<&str>> = HashMap::new();
+    // A link given twice is one link, as selection reads it: the copy was
+    // reported as a branch and a merge of the one chain.
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
     for (i, l) in records.links.iter().enumerate() {
         if l.relation != "supersedes" || l.source_type != "event" || l.target_type != "event" {
             continue;
@@ -609,8 +612,10 @@ fn check_chains(records: &ClinicalRecords, events: &HashMap<&str, &Event>, base:
                 ));
             }
         }
-        successors.entry(old.event_id.as_str()).or_default().push(new.event_id.as_str());
-        predecessors.entry(new.event_id.as_str()).or_default().push(old.event_id.as_str());
+        if seen.insert((new.event_id.as_str(), old.event_id.as_str())) {
+            successors.entry(old.event_id.as_str()).or_default().push(new.event_id.as_str());
+            predecessors.entry(new.event_id.as_str()).or_default().push(old.event_id.as_str());
+        }
     }
     let loc = format!("{base}/links");
     for (old, news) in &successors {
@@ -665,16 +670,25 @@ fn check_chains(records: &ClinicalRecords, events: &HashMap<&str, &Event>, base:
         }
         settled.extend(path);
     }
-    if let Some(at) = cyclic.iter().next() {
+    // One finding per record a cycle runs through (a link never crosses
+    // records), named by its first version.
+    let mut cycles: BTreeMap<&str, &str> = BTreeMap::new();
+    for &at in &cyclic {
+        cycles.entry(events[at].record_id.as_str()).or_insert(at);
+    }
+    for at in cycles.values() {
         out.push(finding("E816", &loc, format!("the `supersedes` links through {} form a cycle", repr_str(at))));
     }
-    // One chain per record: exactly one version that supersedes nothing.
+    check_transitive_availability(events, &successors, &predecessors, &loc, out);
+    // One chain per record: exactly one version that supersedes nothing.  A
+    // record a cycle runs through has none, which its cycle already says;
+    // any cycle skipped this check for every record.
     let mut by_record: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for e in &records.events {
         by_record.entry(e.record_id.as_str()).or_default().push(e.event_id.as_str());
     }
     for (record, versions) in by_record {
-        if versions.len() < 2 || !cyclic.is_empty() {
+        if versions.len() < 2 || cycles.contains_key(record) {
             continue;
         }
         let roots = versions.iter().filter(|v| !predecessors.contains_key(**v)).count();
@@ -691,6 +705,76 @@ fn check_chains(records: &ClinicalRecords, events: &HashMap<&str, &Event>, base:
                 ),
             ));
         }
+    }
+}
+
+/// §7.2: no version known available before an *earlier* one could have
+/// been, however far back along its chain.  Each link is checked on its own
+/// in [`check_chains`]; a version of unknown availability between the two
+/// hid the contradiction, and selection then certified the newest version at
+/// a cutoff before its ancestor existed.
+///
+/// One pass in chain order (a version after all its predecessors), carrying
+/// the latest known lower bound of availability among each version's
+/// ancestors; a version on or after a cycle is never reached.
+fn check_transitive_availability<'a>(
+    events: &HashMap<&str, &'a Event>,
+    successors: &HashMap<&'a str, Vec<&'a str>>,
+    predecessors: &HashMap<&'a str, Vec<&'a str>>,
+    loc: &str,
+    out: &mut Vec<Finding>,
+) {
+    let mut waiting: HashMap<&str, usize> = predecessors.iter().map(|(v, olds)| (*v, olds.len())).collect();
+    // The ancestor whose known availability starts latest, and that start;
+    // the smaller id among equals, whatever order the pass takes.
+    let mut latest: HashMap<&str, (i64, &str)> = HashMap::new();
+    let later = |a: (i64, &'a str), b: (i64, &'a str)| {
+        if (b.0, std::cmp::Reverse(b.1)) > (a.0, std::cmp::Reverse(a.1)) {
+            b
+        } else {
+            a
+        }
+    };
+    let mut ready: Vec<&str> = successors.keys().copied().filter(|v| !predecessors.contains_key(v)).collect();
+    while let Some(at) = ready.pop() {
+        let own = events[at].available.map(|a| (a.lo, at));
+        let passed = match (latest.get(at).copied(), own) {
+            (Some(a), Some(b)) => Some(later(a, b)),
+            (a, b) => a.or(b),
+        };
+        for &next in successors.get(at).map(Vec::as_slice).unwrap_or_default() {
+            if let Some(p) = passed {
+                let held = latest.entry(next).or_insert(p);
+                *held = later(*held, p);
+            }
+            let n = waiting.get_mut(next).expect("a successor has a predecessor");
+            *n -= 1;
+            if *n == 0 {
+                ready.push(next);
+            }
+        }
+    }
+    let mut found: Vec<(&str, i64, i64, &str)> = Vec::new();
+    for (&at, &(lo, holder)) in &latest {
+        let Some(available) = events[at].available else { continue };
+        // A predecessor that contradicts it was reported with its link.
+        let neighbour = predecessors[at].iter().any(|p| events[p].available.is_some_and(|a| available.hi < a.lo));
+        if available.hi < lo && !neighbour {
+            found.push((at, available.hi, lo, holder));
+        }
+    }
+    found.sort_unstable();
+    for (at, hi, lo, holder) in found {
+        out.push(finding(
+            "E816",
+            loc,
+            format!(
+                "{} was available by {hi} but revises {}, an earlier version of its record available no earlier \
+                 than {lo}",
+                repr_str(at),
+                repr_str(holder)
+            ),
+        ));
     }
 }
 
@@ -866,6 +950,73 @@ mod tests {
         let cycles: Vec<&str> =
             found.iter().filter(|f| f.message.contains("cycle")).map(|f| f.message.as_str()).collect();
         assert_eq!(cycles, ["the `supersedes` links through 'v0' form a cycle"]);
+    }
+
+    #[test]
+    fn s7_2_availability_is_never_contradicted_along_the_chain() {
+        // Each link holds on its own: v2's availability is unknown.  But v3
+        // was available by 5, and v1, which it revises, no earlier than 10.
+        let mut v1 = event("v1", "r");
+        v1.available = Some(Bounds::exact(10));
+        let v2 = event("v2", "r");
+        let mut v3 = event("v3", "r");
+        v3.available = Some(Bounds::exact(5));
+        let links = vec![
+            Link::new(("event", "v2"), "supersedes", ("event", "v1")),
+            Link::new(("event", "v3"), "supersedes", ("event", "v2")),
+        ];
+        let ctx = SampleContext::default();
+        let check = |events: Vec<Event>| check_records(&records(events, links.clone()), &ctx, "/clinical");
+        let found = check(vec![v1.clone(), v2.clone(), v3.clone()]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].code, "E816");
+        assert!(found[0].message.starts_with("'v3' was available by 5 but revises 'v1'"), "{}", found[0].message);
+        // Selection certified v3 at 7, before v1 could exist.
+        let refs: Vec<(usize, &Link)> = links.iter().map(|l| (0, l)).collect();
+        let events = [v1.clone(), v2.clone(), v3.clone()];
+        let chosen = crate::clinical::select(&events, &refs, 7, &crate::clinical::SelectionPolicy::strict()).unwrap();
+        assert_eq!(chosen.event_ids(&events), ["v3"], "what the check now refuses");
+        let mut later = v3.clone();
+        later.available = Some(Bounds::exact(15));
+        assert!(check(vec![v1.clone(), v2.clone(), later]).is_empty());
+        // A neighbour's contradiction is reported once, with its link.
+        let mut known = v2;
+        known.available = Some(Bounds::exact(12));
+        let found = check(vec![v1, known, v3]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].location, "/clinical/links#row=1");
+    }
+
+    #[test]
+    fn s7_2_a_link_given_twice_is_one_link() {
+        // As selection reads it; it was a branch and a merge of one chain.
+        let mut v1 = event("v1", "r");
+        v1.available = Some(Bounds::exact(10));
+        let mut v2 = event("v2", "r");
+        v2.available = Some(Bounds::exact(20));
+        let link = Link::new(("event", "v2"), "supersedes", ("event", "v1"));
+        let twice = records(vec![v1, v2], vec![link.clone(), link]);
+        assert!(check_records(&twice, &SampleContext::default(), "/clinical").is_empty());
+        let refs: Vec<(usize, &Link)> = twice.links.iter().map(|l| (0, l)).collect();
+        let chosen =
+            crate::clinical::select(&twice.events, &refs, 25, &crate::clinical::SelectionPolicy::strict()).unwrap();
+        assert_eq!(chosen.event_ids(&twice.events), ["v2"]);
+    }
+
+    #[test]
+    fn s7_2_a_cycle_hides_no_other_record() {
+        // `a` and `c` each cycle; `b`'s two versions are not linked at all.
+        let events = ["a1", "a2", "b1", "b2", "c1", "c2"].map(|id| event(id, &id[..1])).to_vec();
+        let cycle = |x: &str, y: &str| {
+            [Link::new(("event", x), "supersedes", ("event", y)), Link::new(("event", y), "supersedes", ("event", x))]
+        };
+        let links = [cycle("a1", "a2"), cycle("c1", "c2")].concat();
+        let found = check_records(&records(events, links), &SampleContext::default(), "/clinical");
+        let messages: Vec<&str> = found.iter().map(|f| f.message.as_str()).collect();
+        assert_eq!(messages.len(), 3, "{messages:?}");
+        assert!(messages.contains(&"the `supersedes` links through 'a1' form a cycle"), "{messages:?}");
+        assert!(messages.contains(&"the `supersedes` links through 'c1' form a cycle"), "{messages:?}");
+        assert!(messages.iter().any(|m| m.starts_with("record 'b' has 2 versions")), "{messages:?}");
     }
 
     #[test]

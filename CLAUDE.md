@@ -13,6 +13,9 @@ pip install -e ".[dev,torch,nifti,dicom,dicomseg]"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace            # unit tests, the corpus, the README doctest
+# THIRD_PARTY_NOTICES is generated from Cargo.lock: after changing the lock,
+# run it without --check to regenerate the file, or CI fails
+python .github/scripts/third_party_notices.py --check
 
 # Full Python suite (90% coverage floor)
 pytest tests/ --cov=medh5 --cov-report=term-missing --cov-fail-under=90
@@ -48,11 +51,15 @@ All of these must pass before committing:
 ```bash
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings \
   && cargo test --workspace \
+  && python .github/scripts/third_party_notices.py --check \
   && ruff check . && ruff format --check . && mypy medh5 \
   && pytest tests/ --cov=medh5 --cov-fail-under=90 \
   && medh5 conformance run /tmp/corpus \
+  && cargo run --release -p medh5-cli -- conformance run /tmp/corpus-native \
   && mkdocs build --strict
 ```
+
+CONTRIBUTING.md has the same chain; keep the two equal (a test compares them).
 
 ## The model
 
@@ -82,8 +89,8 @@ and the CLI are layers over it, and all three read and write the same bytes.
 
 - **`crates/medh5`** — the engine (crates.io `medh5`). Modules map onto
   specification sections, so a spec change has one obvious home: `sample`
-  (§2, §4, §14.4), `geometry` (§3), `annotations` (§5–§9), `transforms` (§10),
-  `labels`, `curation` (§11–§12), `integrity` (§13), `storage` (§14),
+  (§2, §4, §14.4), `geometry` (§3), `annotations` (§6–§9), `transforms` (§10),
+  `labels` (§5), `curation` (§11–§12), `integrity` (§13), `storage` (§14),
   `validate` (§15; its rules one module per domain of the code table, E0xx …
   E8xx), `collection`, `dataset`, `sampling`, `conformance`; and for 1.1,
   `version` (1.1 §2: full, projection, unsupported), `clinical` (1.1 §3–§10:
@@ -150,10 +157,11 @@ it into every file's `generator`. The crates' `=X.Y.Z` pins on each other in
   happened) and *available* time (when it became known) are separate pairs of
   inclusive bounds; unknown stays null and strict selection never uses it. A
   revision is a new immutable event linked by `supersedes`, never an edit.
-- **Inputs only through attestation.** A row reads a payload only when a
-  selected event attests it (structurally, or as `asserted_by_event_id`); crop
-  centres come from eligible annotations only. Supervision, like the target,
-  may come from after the cutoff — and never enters an input.
+- **Inputs only through attestation.** A row reads a payload only when an
+  admitted event owns it (structurally), or an eligible version asserts it (as
+  `asserted_by_event_id`); crop centres come from eligible annotations only.
+  Supervision, like the target, may come from after the cutoff — and never
+  enters an input.
 - **A later minor is a projection**: read, validated as what is known, unknowns
   `W913`, and never amended, recompressed or packed. An unknown profile refuses
   an amendment. Known profiles are re-derived from content, as in 1.0.
@@ -177,11 +185,25 @@ it into every file's `generator`. The crates' `=X.Y.Z` pins on each other in
   whole cohort takes it a subject at a time (`preflight_each`): the command
   line's `--json` (`write_preflight`), once built as one tree, took 12 GB at
   200 subjects.
+- **The native inventory follows the lock.** RustSec sees crates, not the C
+  libraries they compile (zlib 1.3.2 ships as `libz-sys` 1.1.29). `SECURITY.md`
+  lists each statically linked library and dispositions every advisory against
+  it, with a VEX statement in `vex/`; a `-sys` bump or vendored update changes
+  its row (a test compares) and re-reads its advisories. `advisories.yml`
+  (`cargo audit`, `pip-audit`) runs weekly and on the release tag, before
+  anything is published.
 
 ## Linting & style
 
 - **ruff** is pinned in the `dev` extra and in `.pre-commit-config.yaml` (bump
   both). **rustfmt** (`rustfmt.toml`) and **clippy** with `-D warnings` for Rust.
+  CI also runs the commit hooks over every file (`pre-commit run --all-files`):
+  trailing whitespace, final newlines, YAML syntax. Vendored C is excluded.
+- **Rust is pinned** in `rust-toolchain.toml`, which rustup reads in a checkout
+  and every CI and release job installs; bump it on purpose, in a pull request
+  of its own. `rust-version` stays the crates' minimum (the `msrv` job). The
+  tools that build the artifacts --- maturin, CMake, rustup-init --- are pinned
+  in `.github/scripts/build-dist.sh`.
 
 ## Testing patterns
 
@@ -212,11 +234,12 @@ it into every file's `generator`. The crates' `=X.Y.Z` pins on each other in
 `docs/` is the MkDocs site: `tutorials/`, `guides/` (how-to), `reference/`,
 `explanation/`, `spec/`, and `examples/` (standalone scripts). `CHANGELOG.md`
 stays at the root and `hooks/mkdocs_hooks.py` pulls it in; the same hook renders
-the diagnostic-code, cohort-code, task-and-cache-code and schema tables from
-their sources (edit `crates/medh5/data/codes.json`, the `CHECK_CODES` table in
-`crates/medh5/src/dataset/check.rs`, the `CODES` table in
-`crates/medh5/src/companion/mod.rs`, or the schema — never the page) and emits
-redirects for moved pages (`REDIRECTS`). There are no separate design records:
+the diagnostic-code, cohort-code and schema tables from their sources (edit
+`crates/medh5/data/codes.json`, the `CHECK_CODES` table in
+`crates/medh5/src/dataset/check.rs`, or the schema — never the page) and emits
+redirects for moved pages (`REDIRECTS`). task-cache-1 §9 writes its code table
+out, so a reader of the raw text sees it; a test holds it to the `CODES` table
+in `crates/medh5/src/companion/mod.rs`, so edit both. There are no separate design records:
 the reasoning lives in `docs/explanation/design-rationale.md`.
 
 The docs are tested, not proofread:

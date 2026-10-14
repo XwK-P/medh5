@@ -61,6 +61,21 @@ size_t blosc2_filter_function(unsigned flags, size_t cd_nelmts,
 
 herr_t blosc2_set_local(hid_t dcpl, hid_t type, hid_t space);
 
+/* medh5: the most a chunk is decompressed to: twice the buffer HDF5 hands the
+ * filter, and 64 KiB more, as the Zstandard filter caps it
+ * (src/zstd_filter.rs).  That buffer is at least the chunk HDF5 expects back,
+ * and a filter applied before this one when the chunk was written (a
+ * Fletcher32 checksum, which is what the plain branch below is for) adds a
+ * little to it, never this much.  What a chunk decompresses to is otherwise
+ * the file's to state: a chunk header of special values states up to 2 GB in
+ * a few bytes, and the filter values up to 4 GB. */
+static size_t medh5_output_ceiling(size_t buf_size) {
+  if (buf_size > (SIZE_MAX - 65536) / 2) {
+    return SIZE_MAX;
+  }
+  return buf_size * 2 + 65536;
+}
+
 
 /* Register the filter, passing on the HDF5 return value */
 int register_blosc2(char **version, char **date){
@@ -584,6 +599,15 @@ size_t blosc2_filter_function(unsigned flags, size_t cd_nelmts,
         goto b2nd_decomp_out;
       }
 
+      /* medh5: the filter values state the chunk's size, and a file can
+       * state any; allocated only when it is a chunk HDF5 can take back. */
+      if (outbuf_size > medh5_output_ceiling(*buf_size)) {
+        PUSH_ERR("blosc2_filter", H5E_CALLBACK,
+                 "Chunk size in the filter values (%zu bytes) is larger than "
+                 "the chunk (%zu bytes)", outbuf_size, *buf_size);
+        goto b2nd_decomp_out;
+      }
+
       outbuf = malloc(outbuf_size);
       if (outbuf == NULL) {
         PUSH_ERR("blosc2_filter", H5E_CALLBACK, "Cannot allocate decompression buffer");
@@ -602,10 +626,13 @@ size_t blosc2_filter_function(unsigned flags, size_t cd_nelmts,
 
     } else {
 
-      uint8_t *chunk;
+      /* medh5: initialised.  A super-chunk of no chunks fails the call below
+       * before it sets either, and the exit path then freed whatever the
+       * stack held. */
+      uint8_t *chunk = NULL;
       blosc2_context *dctx = NULL;
 
-      bool needs_free;
+      bool needs_free = false;
       cbytes = blosc2_schunk_get_lazychunk(schunk, 0, &chunk, &needs_free);
       if (cbytes < 0) {
         PUSH_ERR("blosc2_filter", H5E_CALLBACK, "Cannot get chunk from super-chunk");
@@ -614,7 +641,16 @@ size_t blosc2_filter_function(unsigned flags, size_t cd_nelmts,
 
       /* Get the exact outbuf_size from the buffer header */
       int32_t nbytes;
-      blosc2_cbuffer_sizes(chunk, &nbytes, NULL, NULL);
+      /* medh5: the header is file content.  Upstream ignored a header that
+       * did not parse and allocated whatever size it stated: read, checked,
+       * and capped before anything is allocated. */
+      if (blosc2_cbuffer_sizes(chunk, &nbytes, NULL, NULL) < 0 || nbytes <= 0
+          || (size_t) nbytes > medh5_output_ceiling(*buf_size)) {
+        PUSH_ERR("blosc2_filter", H5E_CALLBACK,
+                 "Blosc2 chunk header is unreadable or states a size (%d bytes) "
+                 "larger than the chunk (%zu bytes)", nbytes, *buf_size);
+        goto b2_decomp_out;
+      }
       outbuf_size = nbytes;
 
 #ifdef BLOSC2_DEBUG
@@ -655,7 +691,10 @@ size_t blosc2_filter_function(unsigned flags, size_t cd_nelmts,
 
   failed:
   if (outbuf) free(outbuf);
-  blosc2_destroy();
+  /* medh5: upstream called blosc2_destroy() here, tearing down Blosc2's
+   * global context and mutexes on every damaged chunk, while a window read
+   * (src/b2nd_slice.c) may be decompressing outside HDF5's lock on another
+   * thread.  Nothing this call allocated outlives it. */
 
   return 0;
 

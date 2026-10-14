@@ -38,7 +38,7 @@ A **source reference** names one sample — a standalone file or a member of a `
 | Field | Meaning |
 |---|---|
 | `source_id` | The id the manifest and reconciliation records use for this source (1.0 id syntax, plus `@` and `:`) |
-| `uri` | Where the bytes are: a path, absolute or relative to the manifest's directory; `file://` accepted |
+| `uri` | Where the bytes are: a path, absolute or relative to the manifest's directory, or a `file:` URI (RFC 8089) — its host empty or `localhost`, its path percent-decoded |
 | `sample_key` | The member of a collection, or null for a standalone file |
 | `content_id` | **The pin**: the 1.0 §13.2 address of the sample version the reference names |
 | `local_subject_id` | The sample's own `identity.subject_id`, as the manifest maps it to a subject; when absent, the subject's own `subject_id` |
@@ -131,7 +131,7 @@ fingerprint (§3.2) of the version as `medh5-clinical-1.schema.json#/$defs/event
 nineteen members present (null where the column is null, each pair of bounds `[lo, hi]`, `value_num`
 a float), and `sources` the `source_id`s of exactly the fragments that hold it — before selection; a difference, a duplicate with no record, a record whose `sources` are not the holders, a
 second record of one event, or a record of an event no two fragments hold is **T305**. Documents
-present in several fragments must be identical (**T305**). A `document` event's content includes the
+present in several fragments **MUST** be identical (**T305**). A `document` event's content includes the
 document it owns: its holders **MUST** own one text — the same media type, text, language and source
 type, whatever id each fragment gives it — and the merged version owns that one document (1.1 §6;
 a document event owns at most one). A version several fragments hold is merged from the one whose
@@ -174,9 +174,14 @@ unknown `roi`, fails the schema (**T101**).
 | `name` | — | Stable across the cohort: never a filename or a visit-specific image id |
 | `modality` | — | The image `modality` that fills it |
 | `required` | `false` | A row with no eligible image for a required slot is excluded (`missing_required_slot`) |
-| `patch` | null | The region read, in voxels of the image's **own** grid; null reads the whole volume |
+| `patch` | null | The region read around the centre, in voxels of the image's **own** grid; null reads the whole volume |
 | `roi` | `center` | `center` (voxel `⌊n/2⌋` on each spatial axis of `n` voxels) or `eligible_instances` (the centre of the first eligible instance) |
 | `classes` | `[]` | Class ids read as label supervision from voxel annotations on the image's grid (§6) |
+
+On a spatial axis of `n` voxels, a `patch` of `p` around centre `c` starts at `c − ⌊p/2⌋`, shifted
+inside the axis — to `0`, or to `n − p` — so the patch keeps its size wherever the axis allows; an
+axis no longer than the patch is read whole and padded, `⌊(p − n)/2⌋` voxels before it and the rest
+after. Padding is never valid (§6).
 
 A slot is filled per row by the **newest eligible image** of its modality: an image an admitted
 `imaging` event `describes` (1.1 §7.3). Newest is by that event's order bounds (1.1 §9.1): the
@@ -244,7 +249,7 @@ in error, never the whole preflight's failure.
 | `positive` | — | `value_text`s that are the outcome |
 | `negative` | `[]` | `value_text`s that are a verified absence of it |
 | `horizon_us` | — | The window `(c, c + h]` an outcome must fall in |
-| `min_follow_up_us` | `horizon_us` | A negative needs an observation at least this long after the cutoff |
+| `min_follow_up_us` | `horizon_us` | A negative needs an observation at least this long after the cutoff (rule 4). With the default, only an observation whose effective start is exactly `c + h` can be one, so nearly every row without a positive is censored: give it whenever negatives matter |
 | `censoring` | `censor` | `censor` keeps an unlabelled row with its target unobserved; `exclude` drops it |
 | `exclude_prevalent` | `true` | Exclude rows whose outcome had already occurred by the cutoff |
 
@@ -257,12 +262,14 @@ negative observes nothing. In order:
 
 1. **prevalent** — a positive whose effective start is definitely at or before `c`
    (`exclude_prevalent`);
-2. **positive** — a positive whose effective start is definitely inside `(c, c + h]`: value `1.0`;
+2. **positive** — a positive whose effective start is definitely inside `(c, c + h]` — its bounds
+   `[lo, hi]` have `lo > c` and `hi ≤ c + h` — the earliest such naming the outcome: value `1.0`;
 3. **censored** — a positive whose time straddles either edge of the window, or is unknown, or a
    planned positive whose time may fall inside the window: the outcome cannot be placed, and is not
    a negative;
-4. **negative** — a negative observed inside the window at or after `c + min_follow_up`: value
-   `0.0`;
+4. **negative** — a negative whose effective start is definitely inside the window and definitely
+   at or after `c + min_follow_up` — its bounds `[lo, hi]` have `lo > c`, `hi ≤ c + h` and
+   `lo ≥ c + min_follow_up` — the latest such naming the observation: value `0.0`;
 5. **censored** otherwise — insufficient follow-up is not a negative label.
 
 ## 6. Input views
@@ -284,8 +291,9 @@ A frontend reads **only** what a row admits, and only when it builds the batch:
 - **images** — each slot's fill, read as the region of §3.5 on the image's own grid, with the
   region's validity: inside the image and inside its 1.0 §4.4 valid region, never the padding;
 - **labels** — supervision for a slot's classes, read from the voxel annotations on the slot
-  image's grid. Like the target, supervision may come from after the cutoff, and it never enters an
-  input; coverage (1.0 §11.3) comes with it, so a class nobody examined is not a negative.
+  image's grid that label or examined one of them. Like the target, supervision may come from after
+  the cutoff, and it never enters an input; coverage (1.0 §11.3) comes with it, so a class nobody
+  examined is not a negative.
 
 Masks stay distinct, because they mean different things to a loss: sequence **padding**, modality
 **availability** (was the slot filled), voxel **validity** (field of view), annotation **coverage**
@@ -296,8 +304,9 @@ Time keeps the meaning 1.1 §5.2 gives it. A frontend **MUST NOT** collapse an i
 instant chosen from its bounds: each time an input carries — effective start, effective end,
 availability — is given as both bounds (relative to the cutoff, in whatever unit), with whether it is
 known; an unknown time is marked unknown, never zero. A `static` event stays distinct from one of
-`unknown` time, events of one **tie group** stay marked as such (their order in a sequence is a storage
-tie-break, not evidence), and a plan admitted by `plans` stays marked as a plan. Missingness stays
+`unknown` time, events of one **tie group** — a connected component of the overlap relation on their
+order bounds (1.1 §9.1) — stay marked as such (their order in a sequence is a storage tie-break, not
+evidence), and a plan admitted by `plans` stays marked as a plan. Missingness stays
 apart from measurement: an absent value, a value known only as a bound (`value_comparator`) and a
 `missing_reason` are each represented, never read as a measured value. Every availability an input
 carries is at or before the cutoff — what strict selection admits — and only what a version
@@ -306,7 +315,8 @@ after it.
 
 A frontend reads each source as the version its row pins: a source whose `content_id` is no longer the
 pin when a batch is built — the file was replaced after preflight — is refused (**T302**), never
-read in its place. That check is §2's step 1 alone: it compares the *stored* `content_id`, and
+read in its place. A read already in progress finishes on the bytes it opened; every new one
+re-checks the source. That check is §2's step 1 alone: it compares the *stored* `content_id`, and
 re-hashes nothing. The bytes are verified by preflight (step 4: the clinical datasets always, every
 dataset with `--deep`), so an edit made in place after preflight that leaves the stored digests and
 `content_id` as they were is found by running preflight again, not by building a batch.
@@ -341,6 +351,16 @@ One HDF5 file, conventionally `*.medh5cache`:
 Every entry names **every source version it read**, as `{uri, sample_key, content_id}`. The full
 sample `content_id` is the source key: a conservative, sufficient one — any change to the sample
 makes its entries stale. A finer dependency key would need its own specification.
+
+An entry copies its task's source reference, so a relative `uri` is relative to the **task
+manifest's directory**: a validator given the task resolves it there, and one given none against
+the base it is given, by default the cache's own directory.
+
+Entry ids are unique, and so is what a reader looks an entry up by (§7.2): in an event-level cache
+the `content_id` of its (first) source with its `event_id` — one feature per event version — and in
+a patient-level one its `row_id` — one feature per row. A manifest repeating any of them is corrupt
+(**T401**): a lookup would serve one entry, and the other's checksum would never be compared. A
+writer refuses an entry that would repeat one, or make the manifest fail its schema.
 
 ### 7.2 Levels
 
@@ -377,7 +397,8 @@ recording `fitted_on` is held to the one comparison of §8 (T405), a vocabulary 
 
 ## 8. Cache validation
 
-Validation never modifies a source. Two failures are told apart, because they need different fixes:
+Validation never modifies a source. A path that names no file is refused, as opening it is: there
+is no cache to report on. Two failures are told apart, because they need different fixes:
 
 - **stale** — **T403**: an entry's source no longer has the content it pins, or cannot be reached.
   The cache is right about a sample that changed; rebuild the entry.
@@ -390,7 +411,9 @@ Given a task (and its preflight), validation also checks that the cache belongs 
 - **T404** — built for another task (`task_fingerprint`), or a patient-level entry for a row the
   task does not have, at another cutoff, for another version of its row (`row_fingerprint`: a source
   of its subject added, removed or re-pinned), or reading a source version its row's subject does
-  not pin (compared by `content_id`, so a relocated copy is the same version);
+  not pin (compared by `content_id`, so a relocated copy is the same version); and a patient-level
+  entry of a row the task's preflight leaves in `error`, whose admitted versions are unknown — one
+  T404, never T406;
 - **T405** — learned preprocessing fitted on another task, another split (`set_id`), another
   membership, or a partition other than the task's training partition;
 - **T406** — a patient-level entry encodes event versions other than those its row admits at its
@@ -414,7 +437,32 @@ a cache rebuilt at the same path for another task is otherwise read under the fi
 
 ## 9. Finding codes
 
-<!--@companion-codes-->
+Twenty codes, distinct from the format's E/W codes: a task can be wrong about perfectly valid files.
+The engine's `CODES` table (`crates/medh5/src/companion/mod.rs`) is their source, and a test holds
+this table to it.
+
+| Code | Meaning |
+|---|---|
+| <a id="t101"></a>`T101` | the manifest is not JSON, or fails its JSON Schema |
+| <a id="t102"></a>`T102` | the manifest's policy, slot or target definition is inconsistent |
+| <a id="t103"></a>`T103` | a declared fingerprint does not match the manifest |
+| <a id="t201"></a>`T201` | a subject is declared twice, or a row names an undeclared subject |
+| <a id="t202"></a>`T202` | a subject's partition is not one of the split's partitions |
+| <a id="t203"></a>`T203` | one source belongs to two subjects, or two subjects pin one sample |
+| <a id="t204"></a>`T204` | a row id or a source id is not unique |
+| <a id="t301"></a>`T301` | a source cannot be opened, or names a collection member that does not exist |
+| <a id="t302"></a>`T302` | a source's content no longer matches its pinned content_id |
+| <a id="t303"></a>`T303` | a source's identity.subject_id is not the subject the manifest maps it to |
+| <a id="t304"></a>`T304` | a subject's fragments disagree about their clock, or it is not the subject's |
+| <a id="t305"></a>`T305` | an event or document present in several fragments differs, or is not reconciled |
+| <a id="t306"></a>`T306` | a source is a version or profile this engine cannot certify, or its clinical tables are invalid |
+| <a id="t401"></a>`T401` | a cache's manifest is corrupt, or fails its schema |
+| <a id="t402"></a>`T402` | a cache entry's payload is corrupt, or has the wrong dtype or shape |
+| <a id="t403"></a>`T403` | a cache entry's source changed or cannot be reached: the entry is stale |
+| <a id="t404"></a>`T404` | a cache or preflight is of another task, manifest, row or row version, or a validated cache changed |
+| <a id="t405"></a>`T405` | learned preprocessing was fitted on a split other than the task's training partition |
+| <a id="t406"></a>`T406` | a cache entry is not admissible as input at the row's cutoff |
+| <a id="t407"></a>`T407` | an event-level cache entry names an event its source lacks, or a document that event does not own |
 
 ## 10. Schemas and implementations
 

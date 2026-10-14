@@ -33,8 +33,8 @@ hundred bytes rather than a decompression pass.
 scanning the labels and records what it did:
 
 ```python
-patch = batch["meta"]["patch"]
-patch["used_index"]     # True, False, or None
+item["meta"]["patch"]["used_index"]     # True, False, or None
+batch["meta"]["patch"]["used_index"]    # after collate: a list, one per item
 ```
 
 Three states, because there are three answers. `True` means the index answered
@@ -45,10 +45,10 @@ consults no index at all. A class in `foreground_classes` that an annotation
 cannot express is not one the draw could pick: it has no voxels there, so one
 sampler configured for a whole cohort keeps every file's index.
 
-`False` is the one that costs you:
+`False` is the one that costs you. Count it per batch:
 
 ```python
-scanning = [p for p in patches if p["used_index"] is False]
+scanned = sum(used is False for used in batch["meta"]["patch"]["used_index"])
 ```
 
 An index carries the digest of the annotation it derives from, so it goes
@@ -79,10 +79,13 @@ than the patch.
 w.add_grid("ct", shape=..., spacing=..., patch_hint=(96, 96, 96))
 ```
 
-`patch_hint` is how you say what you will read. Without one it assumes a
-reasonable default and you get a reasonable answer. L3 is detected per core
-where the platform allows and falls back to ~1.375 MiB; chunks are held between
-512 KiB and 4 MiB.
+`patch_hint` is how you say what you will read; without one the optimiser
+assumes a 64-voxel patch on each axis. The cache budget is 80 % of one CPU's
+share of the L3 (its size over the CPUs sharing it), or of ~1.375 MiB where
+the platform reports none, held between 512 KiB and 4 MiB. A chunk starts at
+the patch, each axis rounded up to a power of two, and no computed chunk is
+larger than 4 MiB: a patch whose rounding would pass that starts at the patch
+itself, halved until it fits.
 
 For an existing cohort, `--rechunk` re-derives the chunk shape as well as the
 codec, by the writer's own rule — from each grid's `patch_hint`, one plane per
@@ -165,8 +168,11 @@ cluster, not about the file.
 
 Measured with 2.0.0 on one four-core machine, on a 192×256×256 synthetic CT
 with eight classes, reading a new window for every patch. 1.4.4, measured
-beside an earlier build of 2.0, was as fast or slower on every row
-([changelog](../changelog.md)). The 0.x column is the layout 1.0 replaced, as
+beside an earlier build of 2.0, was as fast or slower on every row. That
+comparison is the [changelog](../changelog.md)'s, under 2.0.0, and its 2.0
+figures are the earlier build's, not this table's: 3.5 ms for the eight-class
+labels, 3–3.5 ms to the first patch, 0.19 ms for a metadata read and 600
+patches/s with four workers. The 0.x column is the layout 1.0 replaced, as
 measured then.
 
 | Metric | Target | 0.x | Measured |

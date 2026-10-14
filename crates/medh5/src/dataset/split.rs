@@ -459,7 +459,9 @@ fn deal<'a>(ordered: Vec<(Option<String>, String, Vec<&'a Entry>)>, shares: &Ind
 /// optional: a split is fully usable as a JSON file.
 ///
 /// Every refusal is met before the first file is amended: the fold, a split
-/// that places something twice, a sample inside a collection, and each file
+/// that places something twice, a manifest holding a sample the split does
+/// not place (one it was not made from), a sample inside a collection, and
+/// each file
 /// amending would refuse --- another major or a later minor (1.1 §2.3), a
 /// profile this engine does not implement, HDF5 references, a file the
 /// validator rejects, which a commit refuses to write (§15), and a dataset
@@ -513,12 +515,37 @@ pub fn write_claims(
             by_path.insert(path.as_str(), assignment);
         }
     }
+    let place = |entry: &Entry| -> Option<&Assignment> {
+        by_path.get(locator(entry).as_str()).or_else(|| by_path.get(entry.path.as_str())).copied()
+    };
+    // A manifest with a sample the split does not place is not the one it
+    // was made from, nor part of it: the cohort grew, or the paths moved.
+    // Its claims were stamped with the split's digest --- stale against this
+    // manifest the moment they were written (C201) --- and the samples the
+    // split did not name were passed over in silence.
+    let unplaced: Vec<String> = manifest.entries.iter().filter(|e| place(e).is_none()).map(locator).collect();
+    if !unplaced.is_empty() {
+        let shown: Vec<&str> = unplaced.iter().take(3).map(String::as_str).collect();
+        let more = if unplaced.len() > 3 { format!(" and {} more", unplaced.len() - 3) } else { String::new() };
+        let why = if split.manifest_sha256 == manifest.sha256() {
+            "the split names its samples by other paths --- re-split this manifest".to_string()
+        } else {
+            format!(
+                "it was made from another manifest (digest {}, this one's is {}) --- re-split this manifest, or pass \
+                 the one the split was made from",
+                &split.manifest_sha256[..12.min(split.manifest_sha256.len())],
+                &manifest.sha256()[..12]
+            )
+        };
+        return Err(Error::invalid(format!(
+            "the split places no partition for {} of this manifest's samples ({}{more}): {why}",
+            unplaced.len(),
+            shown.join(", ")
+        )));
+    }
     let mut planned = Vec::new();
     for entry in &manifest.entries {
-        let named = locator(entry);
-        let Some(placed) = by_path.get(named.as_str()).or_else(|| by_path.get(entry.path.as_str())) else {
-            continue;
-        };
+        let Some(placed) = place(entry) else { continue };
         if let Some(key) = &entry.key {
             return Err(Error::invalid(format!(
                 "{}#{key} is inside a collection --- unpack it before writing split claims",

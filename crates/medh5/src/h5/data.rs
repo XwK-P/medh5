@@ -3,6 +3,8 @@
 //! Regions are read **in one call** (spec §14.5): `d[(k, *roi)]`, never
 //! `d[k][roi]`, which materialises the whole sub-array first.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use hdf5::filters::Filter;
 use hdf5::types::{TypeDescriptor as TD, VarLenAscii, VarLenUnicode};
 use hdf5::{Hyperslab, SliceOrIndex};
@@ -26,6 +28,58 @@ impl Layout {
     pub fn contiguous() -> Layout {
         Layout::default()
     }
+}
+
+// -- read accounting ------------------------------------------------------------
+
+/// A read of a dataset's data, as [`read_stats`] counts it.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Read {
+    /// A whole dataset ([`read`]).
+    Whole,
+    /// A region through the Blosc2 blocks it covers (the `window` module).
+    Window,
+    /// A region through HDF5's filter pipeline.
+    Hyperslab,
+    /// Rows as their stored bytes, for a digest or a comparison.
+    Rows,
+    /// Strings: a scalar, or rows of an array.
+    Strings,
+}
+
+impl Read {
+    /// Every kind, in the order [`read_stats`] reports them.
+    pub const ALL: [Read; 5] = [Read::Whole, Read::Window, Read::Hyperslab, Read::Rows, Read::Strings];
+
+    /// The kind's name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Read::Whole => "whole",
+            Read::Window => "window",
+            Read::Hyperslab => "hyperslab",
+            Read::Rows => "rows",
+            Read::Strings => "strings",
+        }
+    }
+}
+
+/// The reads of each kind since [`read_stats`] last took them.
+///
+/// A test holds a read path to its number of reads --- 1.x drew a patch in
+/// 190 --- and a count kept in Python cannot see the engine's reads, so the
+/// engine counts its own: one relaxed increment per read, nothing more.
+static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+
+fn counted(read: Read) {
+    READS[read as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+/// The reads of each kind ([`Read::ALL`]) counted since the last call, in
+/// every thread, and the counts set back to zero.  For tests: not an API.
+#[doc(hidden)]
+pub fn read_stats() -> [(Read, u64); 5] {
+    Read::ALL.map(|read| (read, READS[read as usize].swap(0, Ordering::Relaxed)))
 }
 
 /// What a dataset stores.
@@ -179,6 +233,7 @@ pub(crate) fn read_stored_rows(ds: &hdf5::Dataset, size: usize, start: usize, co
             h5s::H5Screate_simple(counts.len() as i32, counts.as_ptr(), std::ptr::null())
         };
         if status >= 0 && bytes > 0 {
+            counted(Read::Rows);
             status = h5d::H5Dread(ds.id(), ftype, mspace, fspace, h5p::H5P_DEFAULT, buf.as_mut_ptr().cast());
         }
         h5s::H5Sclose(mspace);
@@ -270,6 +325,7 @@ pub fn read(ds: &hdf5::Dataset) -> Result<NdArray> {
     super::alive(ds)?;
     let dtype = dtype(ds)?;
     ensure_allocatable(ds, &ds.shape(), dtype.itemsize())?;
+    counted(Read::Whole);
     if is_plain_enum(ds) {
         return read_enum(ds, dtype);
     }
@@ -384,11 +440,14 @@ pub fn read_region(ds: &hdf5::Dataset, index: &[Index]) -> Result<NdArray> {
         return Ok(NdArray::zeros(dtype, &out_shape));
     }
     if is_plain_enum(ds) {
+        counted(Read::Hyperslab);
         return read_enum_region(ds, dtype, &axes, &out_shape);
     }
     if let Some(window) = super::window::read_window(ds, dtype, &axes, &out_shape)? {
+        counted(Read::Window);
         return Ok(window);
     }
+    counted(Read::Hyperslab);
     read_hyperslab(ds, dtype, &axes, &out_shape)
 }
 
@@ -536,6 +595,7 @@ fn read_string_rows(ds: &hdf5::Dataset, td: &TD, start: usize, count: usize) -> 
     let n: usize = count.saturating_mul(shape[1..].iter().product::<usize>());
     out.try_reserve_exact(n)
         .map_err(|_| Error::Io(format!("{n} strings of {} are more than this process can hold", ds.name())))?;
+    counted(Read::Strings);
     match td {
         TD::VarLenUnicode => {
             out.extend(ds.read_slice::<VarLenUnicode, _, IxDyn>(hyper)?.iter().map(|s| s.as_bytes().to_vec()))
@@ -642,6 +702,9 @@ pub fn read_stored_strings(ds: &hdf5::Dataset) -> Result<Vec<Vec<u8>>> {
             ds.name(),
             extents.iter().map(usize::to_string).collect::<Vec<_>>().join(" x ")
         )));
+    }
+    if ds.is_scalar() {
+        counted(Read::Strings);
     }
     Ok(match td {
         TD::VarLenUnicode if ds.is_scalar() => {
@@ -781,6 +844,10 @@ pub fn filters(ds: &hdf5::Dataset) -> Result<Vec<(i32, Vec<u32>)>> {
 }
 
 /// The number of bytes the dataset occupies when decompressed.
+///
+/// The shape is the file's to state, and its product with the element size
+/// need not fit a machine word: such a size is an error, where it wrapped
+/// round (or, in a debug build, panicked).
 pub fn nbytes(ds: &hdf5::Dataset) -> Result<usize> {
     let itemsize = match kind(ds)? {
         Kind::Numeric(d) => d.itemsize(),
@@ -789,8 +856,17 @@ pub fn nbytes(ds: &hdf5::Dataset) -> Result<usize> {
         Kind::Strings if matches!(ds.dtype()?.to_descriptor(), Ok(TD::VarLenUnicode | TD::VarLenAscii)) => 8,
         _ => ds.dtype()?.size(),
     };
-    let n: usize = ds.shape().iter().product();
-    Ok(n * itemsize)
+    let shape = ds.shape();
+    if shape.contains(&0) {
+        return Ok(0);
+    }
+    shape.iter().try_fold(itemsize, |n, e| n.checked_mul(*e)).ok_or_else(|| {
+        Error::Io(format!(
+            "{} holds {} elements of {itemsize} bytes, more bytes than this process can count",
+            ds.name(),
+            shape.iter().map(usize::to_string).collect::<Vec<_>>().join(" x ")
+        ))
+    })
 }
 
 /// A fixed-length string type: NUL-padded, `width` bytes, ASCII or UTF-8 ---
@@ -877,11 +953,12 @@ pub fn write_fixed_strings(ds: &hdf5::Dataset, values: &[String], width: usize, 
 /// Recreate a fixed-length string dataset wider, keeping its creation
 /// property list (filters, chunking, fill value) and its attributes.
 ///
-/// Built under a temporary name and moved into place, so a pipeline HDF5
-/// cannot rebuild for the new type leaves the original untouched.  One value
+/// Built under a temporary name and swapped into place ([`swap_in`]), so a
+/// pipeline HDF5 cannot rebuild for the new type, or a failure at any later
+/// step, leaves the original where it was and no temporary behind.  One value
 /// per element of the dataset, as [`write_fixed_strings`].
 pub fn recreate_fixed_strings(ds: &hdf5::Dataset, values: &[String], width: usize, ascii: bool) -> Result<()> {
-    use crate::h5sys::{h5d, h5i, h5l, h5p, h5s, h5t};
+    use crate::h5sys::{h5d, h5i, h5p, h5s, h5t};
     use std::ffi::CString;
     check_fixed_strings(ds, values, width)?;
     let full = ds.name();
@@ -925,27 +1002,80 @@ pub fn recreate_fixed_strings(ds: &hdf5::Dataset, values: &[String], width: usiz
             }
             Ok(id)
         }
-    })?;
+    });
+    let created = match created {
+        Ok(id) => id,
+        Err(err) => {
+            // Linked when it was created, whatever happened after.
+            let _ = super::ops::unlink(&parent, &staging);
+            return Err(err);
+        }
+    };
     // SAFETY: `created` is a dataset id we own; closing it releases it.
     super::locked(|| unsafe { h5d::H5Dclose(created) });
-    let replacement = parent.dataset(&staging)?;
-    for key in super::attrs::names(ds)? {
-        super::attrs::copy_raw(ds, &replacement, &key)?;
-    }
-    drop(replacement);
-    super::ops::unlink(&parent, &name)?;
-    super::locked(|| -> Result<()> {
-        let from = CString::new(staging.as_str()).map_err(|e| Error::Value(e.to_string()))?;
-        let to = CString::new(name.as_str()).map_err(|e| Error::Value(e.to_string()))?;
-        // SAFETY: both names are valid C strings in the same group.
-        let status = unsafe {
-            h5l::H5Lmove(parent.id(), from.as_ptr(), parent.id(), to.as_ptr(), h5p::H5P_DEFAULT, h5p::H5P_DEFAULT)
-        };
-        if status < 0 {
-            return Err(Error::Io(format!("could not move the widened {full} into place")));
+    let copied = (|| -> Result<()> {
+        let replacement = parent.dataset(&staging)?;
+        for key in super::attrs::names(ds)? {
+            super::attrs::copy_raw(ds, &replacement, &key)?;
         }
         Ok(())
-    })
+    })();
+    if let Err(err) = copied {
+        let _ = super::ops::unlink(&parent, &staging);
+        return Err(err);
+    }
+    swap_in(&parent, &name, &staging, &format!("{name}.orig-{suffix}"), &move_link)
+}
+
+/// Rename the link `from` in `group` to `to`.
+fn move_link(group: &hdf5::Group, from: &str, to: &str) -> Result<()> {
+    use crate::h5sys::{h5l, h5p};
+    use std::ffi::CString;
+    let source = CString::new(from).map_err(|e| Error::Value(e.to_string()))?;
+    let target = CString::new(to).map_err(|e| Error::Value(e.to_string()))?;
+    // SAFETY: both names are valid C strings in the same live group.
+    let status = super::locked(|| unsafe {
+        h5l::H5Lmove(group.id(), source.as_ptr(), group.id(), target.as_ptr(), h5p::H5P_DEFAULT, h5p::H5P_DEFAULT)
+    });
+    if status < 0 {
+        return Err(Error::Io(format!(
+            "could not move {} to {} in {}",
+            crate::json::repr_str(from),
+            crate::json::repr_str(to),
+            group.name()
+        )));
+    }
+    Ok(())
+}
+
+/// Put the dataset linked as `staging` in `parent` in place of `name`.
+///
+/// The original is moved aside first and unlinked last, so a failure at any
+/// step leaves it where it was and `staging` gone; it was unlinked first, and
+/// a move that then failed lost it.  `mv` renames a link ([`move_link`]).
+fn swap_in(
+    parent: &hdf5::Group,
+    name: &str,
+    staging: &str,
+    aside: &str,
+    mv: &dyn Fn(&hdf5::Group, &str, &str) -> Result<()>,
+) -> Result<()> {
+    if let Err(err) = mv(parent, name, aside) {
+        let _ = super::ops::unlink(parent, staging);
+        return Err(err);
+    }
+    if let Err(err) = mv(parent, staging, name) {
+        let _ = super::ops::unlink(parent, staging);
+        return match mv(parent, aside, name) {
+            Ok(()) => Err(err),
+            Err(_) => Err(Error::Io(format!(
+                "{err}; the original of {} could not be put back and is left as {}",
+                crate::json::repr_str(name),
+                crate::json::repr_str(aside)
+            ))),
+        };
+    }
+    super::ops::unlink(parent, aside)
 }
 
 #[cfg(test)]
@@ -1035,6 +1165,63 @@ mod tests {
         // One string is a scalar: a vector is refused, not cut to its first.
         let err = read_scalar_string(&small).unwrap_err();
         assert!(err.to_string().contains("not one string"), "{err}");
+    }
+
+    /// A dataset's size is the file's to state, and one past what a machine
+    /// word counts is an error: it wrapped round (or panicked, in a debug
+    /// build).
+    #[test]
+    fn s14_5_a_size_past_a_machine_word_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("n.h5")).unwrap();
+        let huge = file.new_dataset::<u64>().shape([1usize << 61, 4]).chunk([1, 4]).create("huge").unwrap();
+        let err = nbytes(&huge).unwrap_err();
+        assert!(err.to_string().contains("more bytes than this process can count"), "{err}");
+        let empty = file.new_dataset::<u64>().shape([0usize, 1 << 62]).chunk([1, 1]).create("empty").unwrap();
+        assert_eq!(nbytes(&empty).unwrap(), 0);
+        let small = file.new_dataset::<u16>().shape([3usize, 5]).create("small").unwrap();
+        assert_eq!(nbytes(&small).unwrap(), 30);
+    }
+
+    /// A widened dataset is swapped in with the original moved aside first
+    /// and unlinked last: a step that fails leaves the original under its
+    /// name, holding what it held, and nothing temporary behind.  The
+    /// original was unlinked first, and a move that then failed lost it.
+    #[test]
+    fn s2_5_a_failed_swap_leaves_the_original_in_place() {
+        let (_dir, file, ds) = fixed(2);
+        let before: Vec<String> = vec!["a".into(), "b".into()];
+        write_fixed_strings(&ds, &before, 8, true).unwrap();
+        let group = file.as_group().unwrap();
+        let fails_at = |n: usize| {
+            let calls = std::cell::Cell::new(0);
+            move |group: &hdf5::Group, from: &str, to: &str| {
+                calls.set(calls.get() + 1);
+                if calls.get() == n {
+                    return Err(Error::Io(format!("move {n} refused")));
+                }
+                move_link(group, from, to)
+            }
+        };
+        for n in [1, 2] {
+            create_strings(&group, "s.scrub-x", &["c".into(), "d".into()]).unwrap();
+            let err = swap_in(&group, "s", "s.scrub-x", "s.orig-x", &fails_at(n)).unwrap_err();
+            assert!(err.to_string().contains(&format!("move {n} refused")), "{err}");
+            assert_eq!(members(&group), vec!["s".to_string()], "after a failed move {n}");
+            assert_eq!(read_strings(&file.dataset("s").unwrap()).unwrap(), before);
+        }
+        // Widened for real: the values and the attributes, under the name.
+        crate::h5::attrs::write(&ds, "note", &crate::h5::attrs::AttrValue::Str("kept".into())).unwrap();
+        let wider: Vec<String> = vec!["a much longer value".into(), "b".into()];
+        recreate_fixed_strings(&ds, &wider, 32, true).unwrap();
+        assert_eq!(members(&group), vec!["s".to_string()]);
+        let now = file.dataset("s").unwrap();
+        assert_eq!(read_strings(&now).unwrap(), wider);
+        assert_eq!(crate::h5::attrs::get_str(&now, "note").unwrap().as_deref(), Some("kept"));
+    }
+
+    fn members(group: &hdf5::Group) -> Vec<String> {
+        crate::h5::ops::members(group).unwrap()
     }
 
     /// A string read is held a slab at a time, each slab within its budget by

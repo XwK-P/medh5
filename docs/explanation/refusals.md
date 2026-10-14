@@ -34,7 +34,15 @@ would report there:
 | `E401` | the annotation is of a kind the format cannot hold (`to-rtstruct` on a mask, `to-dicom-seg` on boxes or a `mask`) |
 | `E402` | a class the sample's label set does not have |
 | `E405` | a mask or SEG does not fit its grid: another shape, or frames that are not the grid's slices; a SEG export whose source images are not the annotation grid's slices |
-| `E414` | a space or frame of reference the annotation cannot be in: a grid in another known frame, or one in pixels or another convention where patient coordinates are needed |
+| `E414` | a space or frame of reference the annotation cannot be in: a grid in another known frame, one in pixels or another convention where patient coordinates are needed, or an RTSTRUCT whose ROIs are in several frames |
+
+## No converter writes over what it reads
+
+A `--report`, or an output, naming a file the command reads or writes — through
+`..` or a link included — is refused before anything is converted, and so is a
+report inside the DICOM tree or nnU-Net dataset the command reads, or the
+nnU-Net dataset it writes. `from-dicom-seg --report case.medh5` used to replace
+the sample with its own JSON report, and exit 0.
 
 ## NIfTI
 
@@ -43,6 +51,13 @@ not the same grid, and `from_nifti` will not resample one onto the other to make
 the import work. Resampling is a decision with a filter, an interpolation order
 and a loss of information attached to it; make it deliberately, in your own
 code, and say so.
+
+**A 2-D plane off z = 0 is refused.** A 2-D grid (§3.6) lies on the first two
+world axes and has no z of its own, so a 2-D NIfTI must lie in the x-y world
+plane at z = 0, to 10⁻³ mm. Moved there, a plane at z = 50 shared one grid with
+a plane — or a mask — from any other slice. A plane not parallel to x-y is
+refused too. Saved as `(x, y, 1)`, the image imports as a one-slice volume that
+keeps its position.
 
 **A file that declares no geometry is refused.** `sform_code == qform_code == 0`
 is NIfTI stating that it carries no spatial mapping — voxel indices and nothing
@@ -75,7 +90,9 @@ as a label set allows one — lowercase letters, digits and underscores, so
 (`--class`, `to_nifti(class_key=...)`). A 0/1 mask has no value for "nobody
 looked here", and its `0` means "examined, absent" (§7.7), so every ignored
 voxel would leave as a negative. The whole annotation's labelmap keeps them, as
-its ignore id.
+its ignore id. For the same reason the class must be one the annotation
+examined: a class outside `annotated_class_ids` went out as an empty mask, a
+verified negative to whoever imported it back, and is refused.
 
 ## DICOM
 
@@ -91,11 +108,23 @@ to slice 0 reports the wrong activity everywhere that LUT does not apply. One
 rotated slice placed on the first slice's direction matrix puts those voxels
 where the scanner never did. Neither shows up in the output.
 
-**Irregular slice spacing is refused.** Spacing is measured as the gap between
-consecutive slice origins, not read from `SliceThickness` — which is the slab,
-and is regularly different. If the gaps disagree by more than a tolerance, the
-stack is not a regular grid, and pretending otherwise silently distorts every
-distance measured from it.
+**Irregular slice spacing is refused.** Spacing is measured from the slice
+origins, not read from `SliceThickness` — which is the slab, and is regularly
+different. Every slice must lie within a tenth of the slice spacing, and at
+least 0.01 mm, of where the regular stack puts it: measured per slice against
+the whole stack, because drift accumulates and position rounding does not, so
+drift that every gap hides is refused and rounding is not. A stack that is not
+a regular grid, written as one, silently distorts every distance measured from
+it. Each gap used to be held to 1 % of the median gap instead, which passed
+4.5 mm of drift and refused positions rounded to two decimals.
+
+**A refused series is left out; the tree is not.** Every series is checked
+before its sample is written, and one that is refused — a localizer in three
+orientations, a sheared or irregular stack, a transfer syntax no installed
+decoder reads — is left out with a warning naming it, which fails the command's
+exit status, and the series beside it import. A subject with no series left gets
+no file, and only a tree in which nothing can be imported is refused whole. One
+such series used to abort the whole import.
 
 **A sheared stack is refused.** The grid is orthonormal: slice *k* sits at the
 origin plus *k* steps along the slice normal. A tilted gantry — routine in head
@@ -155,6 +184,12 @@ positionally. If your label set uses ids 1 and 3, importing by number would
 quietly turn "lesion" into whatever class holds id 2. `from_dicom_seg` matches
 on `SegmentLabel` and records the mapping as a decision.
 
+**Segments of one class are combined.** A SEG may carry one segment per lesion,
+each labelled "Lesion". Each segment used to replace the one before, so every
+lesion but the last was lost without a word. A class records where it is, not
+which segment drew it, so the segments of one class are combined — their union,
+or for `FRACTIONAL` their maximum — and the report records it.
+
 **Frames go only where they were drawn.** Each frame is placed by its own
 position, and must be one of the grid's slices, starting at its first voxel,
 with the grid's row and column directions and pixel spacing; a SEG drawn on
@@ -174,6 +209,12 @@ segment and name it. A `LABELMAP` SEG holds every segment in one frame, by
 pixel value, and names none; read as binary, every frame became segment 1. It
 is refused by name, and so is a frame that names no segment.
 
+**A one-plane SEG read on its own states its thickness, or is refused.** One
+plane has no neighbour to measure a step against, so `read_dicom_seg` takes its
+`SpacingBetweenSlices`, else its `SliceThickness` (recorded as a decision), and
+refuses one that states neither: 1 mm used to be assumed, without a note. A SEG
+imported into a sample takes the grid's slices instead.
+
 **Export writes an annotation onto its own grid only.** A SEG's frames take
 their geometry from its source images, so the images must be the annotation
 grid's slices (`E405` otherwise) in its frame of reference (`E414`; a frame
@@ -187,6 +228,12 @@ was drawn.
 (`E401`) before anything is read. A geometric annotation has no voxels to
 write, and a `mask` no class to name a segment by: the export met the one as
 an `AttributeError` and the other as an `IndexError` out of `highdicom`.
+
+**Only the classes the annotation examined are exported.** A segment's 0 says
+examined and absent, which a class outside `annotated_class_ids` never was. By
+default such a class is left out, recorded as a decision, and naming one is
+refused. Every class used to go out, and one nobody looked for became an empty
+segment — a verified negative to whoever read it back.
 
 **Export refuses an ignore region.** A binary segment has no value for "not
 examined": its 0 says examined and absent. Written from `dense()`, every voxel
@@ -205,6 +252,24 @@ a grid in another known frame of reference than the RTSTRUCT's, on import, and
 source images in another frame than the contours', on export (`E414`). Stored
 as read, contours on an RAS grid or one in metres landed centimetres to metres
 from the anatomy.
+
+**Only areas import.** A medh5 contour is a closed polygon (§8.6), so an import
+takes the ROIs drawn as `CLOSED_PLANAR` contours, and `CLOSEDPLANAR_XOR` ones
+that are nested or apart on every slice, whose exclusive-or is then the holes
+nesting describes. An ROI of `POINT`, `OPEN_PLANAR` or `OPEN_NONPLANAR`
+contours is left out with a warning: filling a line, or recording a class
+examined with nothing in it, would invent an area nobody drew. An ROI mixing
+areas with points or lines is refused, since which of the two it is cannot be
+told, and so is one mixing exclusive-or contours with plain ones, which PS3.3
+C.8.8.6.1 forbids, and one whose exclusive-or contours cross, which nesting no
+longer describes.
+
+**Every contour must lie in a slice of the grid.** One between two slices,
+across several (drawn on another orientation, or not planar) or outside the grid
+is refused rather than moved onto a slice. Each ROI is in the frame of reference
+it states, and ROIs in several frames are refused (`E414`) before the sample is
+opened; which frame applied used to depend on the order of the file's frame
+list.
 
 **Export refuses a mask.** `to-rtstruct` on a voxel annotation is an error, not
 a marching-squares fallback: the contours it would produce are not the contours
@@ -241,6 +306,14 @@ sanitises `dataset.json` names into label-set keys, so a dataset naming a class
 `"Tumour Core"` or `"GTV"` resolved nothing — and the export, skipping the miss
 silently, came out listing every class, with label files of the right shape in
 which every voxel was 0.
+
+**A destination holding other NIfTI files is refused.** nnU-Net trains on every
+case file it finds in `imagesTr`, whatever `numTraining` says. An export into a
+directory an earlier one wrote left whatever the new one dropped — a removed
+case, a dropped channel, a case moved to `imagesTs` and still in `imagesTr`, in
+train and test at once — under a `dataset.json` describing none of them. A NIfTI
+file there that this export would not write is refused before anything is
+written; an identical export rewrites its own files.
 
 **The export is refused as a whole, before a file is written**, when any case
 cannot be one of the dataset: a case name that is no file name, or that differs

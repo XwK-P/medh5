@@ -45,7 +45,7 @@ class Case:
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     suffix: str = ".medh5"
-    """``.medh5c`` for a collection case (§2.1); the corpus runner honours it."""
+    """``.medh5c`` for a collection case (§2.2); the corpus runner honours it."""
     mutated: bool = False
     """Built by editing a committed file, so its digests are deliberately stale.
 

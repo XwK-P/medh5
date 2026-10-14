@@ -129,9 +129,19 @@ class ClassificationAnnotation(Annotation):
     def state(self, class_key: int | str, *, scope_id: int | None = None) -> str:
         """``"positive"``, ``"negative"`` or ``"unknown"`` for one class (§9).
 
-        ``unknown`` is the answer whenever the class is outside
-        ``annotated_class_ids``: nobody looked, so its absence carries no
-        information and training code must not treat it as a negative.
+        ``positive`` when the class is asserted above 0.  Under
+        ``closure = "implicit"`` it is also positive when a class it is an
+        ``is_a`` ancestor of is asserted above 0 in the same scope unit: a
+        hierarchical classification asserts only the most specific class, and
+        its ancestors hold (§5.4, §9).  Under ``closure = "explicit"`` nothing
+        is inferred.  :meth:`value`, :attr:`labels` and
+        :attr:`asserted_class_ids` stay literal under both.
+
+        ``negative`` when the class is asserted at 0, or was examined (it is
+        in ``annotated_class_ids``) and nothing implies it.  ``unknown`` is the
+        answer whenever the class is outside ``annotated_class_ids``: nobody
+        looked, so its absence carries no information and training code must
+        not treat it as a negative.
         """
         return str(self._handle.state(class_key, scope_id=scope_id))
 

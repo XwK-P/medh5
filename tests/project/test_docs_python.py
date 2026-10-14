@@ -252,8 +252,10 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     )
     pack([case, other], root / "shard.medh5c", keys=["case_0001", "case_0002"])
 
-    # The tutorial's own file name, so its opening example runs as written.
+    # The tutorial's own file name, so its opening example runs as written, and
+    # the front pages' two-visit subject.
     shutil.copyfile(case, root / "case_0001.medh5")
+    shutil.copyfile(case, root / "subject.medh5")
 
     # The clinical pages' cohort (format 1.1): the runnable example's own files
     # and task manifest, so a page and the example cannot describe two cohorts.
@@ -322,7 +324,6 @@ TORCH_NAMES = frozenset(
         "dataset",
         "ds",
         "item",
-        "patches",
         "loader",
         "batch",
         "criterion",
@@ -380,9 +381,6 @@ def _torch_names(workspace: dict[str, Any]) -> dict[str, Any]:
         "ds": patches,
         # `annotations=` is what puts `item["label"]` there; a tutorial reads it.
         "item": patches[0],
-        # `patches` on the performance page is a list of patch *meta* dicts, and
-        # `p["used_index"]` is the line that says so.
-        "patches": [patches[i]["meta"]["patch"] for i in range(len(patches))],
         "loader": loader,
         "batch": batch,
         # The masked-loss example: an unreduced loss over the one-hot target.
@@ -649,10 +647,16 @@ def _execute(page: Path, line: int, code: str, namespace: dict[str, Any]) -> Non
         raise AssertionError(
             f"{page.relative_to(ROOT)}:{line} does not run: {exc}\n---\n{code}"
         ) from exc
-    except SystemExit:
+    except SystemExit as exc:
         # A page that ends in `raise SystemExit(...)` is showing a pipeline
-        # gate; running it is the point, exiting the test run is not.
-        pass
+        # gate; running it is the point, exiting the test run is not.  But a
+        # gate that closes on the page's own sample is an example that does
+        # not work: only a clean exit passes.  A message exits 1.
+        if exc.code not in (None, 0):
+            raise AssertionError(
+                f"{page.relative_to(ROOT)}:{line} exits with {exc.code!r}, a "
+                "gate that fails on the sample the page describes\n---\n" + code
+            ) from exc
     except NameError as exc:
         # A name the page leaves to its prose is one the runner binds; one
         # nobody binds is a block that did not run.  Only the loader names are
@@ -690,6 +694,17 @@ def test_a_block_using_a_name_nobody_binds_fails() -> None:
         _execute(page, 3, "DataLoader(ds)\n", {})
     with pytest.raises(AssertionError, match="name 'DataLoader'"):
         _execute(page, 3, "DataLoader(ds)\n", {"torch": object()})
+
+
+@pytest.mark.parametrize("code", ["raise SystemExit(1)", 'raise SystemExit("no")'])
+def test_a_gate_that_closes_fails(code: str) -> None:
+    """The runner passed every `SystemExit`, so a page's gate could fail on the
+    page's own sample, the opposite of what the page promises, and pass."""
+    page = DOCS / "guides" / "example.md"
+    with pytest.raises(AssertionError, match="exits with"):
+        _execute(page, 3, code + "\n", {})
+    _execute(page, 3, "raise SystemExit(0)\n", {})
+    _execute(page, 3, "raise SystemExit\n", {})
 
 
 def test_the_ignore_example_round_trips(workspace: dict[str, Any], tmp_path: Path):

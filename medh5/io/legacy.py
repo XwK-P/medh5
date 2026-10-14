@@ -47,7 +47,8 @@ written down, rather than a dependency on code that still runs.
     /bbox_labels            (n,) strings           (optional)
 
     root attrs              schema_version, image_names, label, label_name,
-                            has_seg, seg_names, has_bbox, extra (JSON)
+                            has_seg, seg_names, has_bbox, extra (JSON),
+                            and shape up to 0.5
     /images attrs           shape, spacing, origin, direction (flattened
                             row-major), axis_labels, coord_system, patch_size
 
@@ -168,7 +169,9 @@ def build_label_set(
     ``Liver``) are one class, named by the first, and *report* lists them
     (a ``label_set`` guess).  Two mappings that give a key different ids keep
     the first, and an id two keys ask for goes to the first of them, the
-    other being minted a new one; each is a ``label_set`` warning.
+    other being minted a new one; each is a ``label_set`` warning.  A file
+    that cannot be read is an ``unreadable`` warning, and the label set is
+    minted from the rest.
     """
     label_set, notes = _core.legacy_build_label_set([os.fspath(p) for p in paths])
     if report is not None:

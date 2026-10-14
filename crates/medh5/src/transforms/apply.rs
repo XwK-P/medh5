@@ -10,7 +10,10 @@
 //! extent's half-voxel margin a point takes the outermost sample's value, where
 //! SciPy's constant mode gives zero.
 
-use ndarray::{Array2, ArrayD, Axis, Dimension, IxDyn};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
+
+use ndarray::{Array2, ArrayD, Axis, IxDyn};
 
 use crate::geometry::grid::Grid;
 use crate::geometry::linalg::{det, inv};
@@ -150,7 +153,7 @@ pub fn linear_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &
 /// The cubic B-spline filter pole, `sqrt(3) - 2`.
 const CUBIC_POLE: f64 = -0.2679491924311227;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Boundary {
     /// `mode="constant"`: mirror-initialised prefilter, no interpolation outside.
     Constant,
@@ -235,10 +238,13 @@ fn spline_filter(data: &mut ArrayD<f64>, boundary: Boundary) {
 fn pad_edge(data: &ArrayD<f64>, pad: usize) -> ArrayD<f64> {
     let shape: Vec<usize> = data.shape().iter().map(|n| n + 2 * pad).collect();
     let src_shape = data.shape().to_vec();
-    ArrayD::from_shape_fn(IxDyn(&shape), |idx| {
-        let at: Vec<usize> =
-            (0..idx.ndim()).map(|k| (idx[k] as i64 - pad as i64).clamp(0, src_shape[k] as i64 - 1) as usize).collect();
-        data[IxDyn(&at)]
+    // The index is moved in place: collecting it into a `Vec` allocated once
+    // per voxel.
+    ArrayD::from_shape_fn(IxDyn(&shape), |mut idx| {
+        for (k, n) in src_shape.iter().enumerate() {
+            idx[k] = (idx[k] as i64 - pad as i64).clamp(0, *n as i64 - 1) as usize;
+        }
+        data[idx]
     })
 }
 
@@ -289,6 +295,7 @@ fn spline_interpolate(coeffs: &ArrayD<f64>, coords: &Array2<f64>, boundary: Boun
     let mut starts = vec![0i64; dim];
     let mut weights = vec![[0.0f64; 4]; dim];
     let mut idx = vec![0usize; dim];
+    let mut digits = vec![0usize; dim];
     for point in coords.outer_iter() {
         let mut constant = false;
         for axis in 0..dim {
@@ -312,7 +319,6 @@ fn spline_interpolate(coeffs: &ArrayD<f64>, coords: &Array2<f64>, boundary: Boun
         for h in 0..filter_size {
             // Odometer over the 4**S footprint, last axis fastest.
             let mut rest = h;
-            let mut digits = vec![0usize; dim];
             for axis in (0..dim).rev() {
                 digits[axis] = rest % 4;
                 rest /= 4;
@@ -356,37 +362,193 @@ pub fn cubic_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &s
     check_extrapolation(extrapolation)?;
     let spatial: Vec<usize> = field.shape()[1..].to_vec();
     check_points(&spatial, coords)?;
-    let inside = inside_extent(&spatial, coords);
     if extrapolation == "error" {
-        // SciPy has no raising mode; the domain check happens here, against the
-        // bounds `linear_sample` uses, rather than folding into constant-zero.
-        refuse_outside(&inside)?;
+        refuse_outside(&inside_extent(&spatial, coords))?;
     }
-    let boundary = if extrapolation == "nearest" { Boundary::Nearest } else { Boundary::Constant };
-    // Clamped to the outermost samples, every point is interpolated; `zero`
-    // then zeroes the points beyond the extent, as `linear_sample` does.
-    // `nearest` interpolates the edge-extended field everywhere, and its
-    // points are clamped only to `EXACT_INTEGER`, where the weights stop
-    // changing --- unclamped, a coordinate of 1e300 overflowed the indices.
-    let clamped = Array2::from_shape_fn(coords.dim(), |(row, axis)| match boundary {
-        Boundary::Constant => coords[[row, axis]].clamp(0.0, (spatial[axis] as f64 - 1.0).max(0.0)),
-        Boundary::Nearest => coords[[row, axis]].clamp(-EXACT_INTEGER, EXACT_INTEGER),
-    });
-    let coords = &clamped;
-    let components = field.shape()[0];
-    let mut out = Array2::<f64>::zeros((coords.nrows(), components));
-    for c in 0..components {
-        let plane = field.index_axis(Axis(0), c).to_owned();
-        let (mut coeffs, npad) = match boundary {
-            Boundary::Nearest => (pad_edge(&plane, 12), 12),
-            Boundary::Constant => (plane, 0),
-        };
-        spline_filter(&mut coeffs, boundary);
-        for (row, v) in spline_interpolate(&coeffs, coords, boundary, npad).into_iter().enumerate() {
-            out[[row, c]] = if extrapolation == "zero" && !inside[row] { 0.0 } else { v };
+    CubicCoefficients::new(field, extrapolation)?.sample(coords)
+}
+
+/// A field's cubic B-spline coefficients: each component prefiltered once,
+/// under the boundary its extrapolation takes, for any number of
+/// evaluations.  Prefiltering is a pass over the whole field per component,
+/// and it was made again for every evaluation --- once per training item.
+pub(crate) struct CubicCoefficients {
+    spatial: Vec<usize>,
+    extrapolation: String,
+    boundary: Boundary,
+    npad: usize,
+    planes: Vec<ArrayD<f64>>,
+}
+
+impl std::fmt::Debug for CubicCoefficients {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CubicCoefficients")
+            .field("spatial", &self.spatial)
+            .field("extrapolation", &self.extrapolation)
+            .field("components", &self.planes.len())
+            .finish()
+    }
+}
+
+impl CubicCoefficients {
+    /// Prefilter every component of a `(C, *spatial)` field.
+    pub(crate) fn new(field: &ArrayD<f64>, extrapolation: &str) -> Result<CubicCoefficients> {
+        check_field(field)?;
+        check_extrapolation(extrapolation)?;
+        let boundary = if extrapolation == "nearest" { Boundary::Nearest } else { Boundary::Constant };
+        let npad = if boundary == Boundary::Nearest { 12 } else { 0 };
+        let planes = field
+            .outer_iter()
+            .map(|plane| {
+                let mut coeffs = if npad > 0 { pad_edge(&plane.to_owned(), npad) } else { plane.to_owned() };
+                spline_filter(&mut coeffs, boundary);
+                coeffs
+            })
+            .collect();
+        Ok(CubicCoefficients {
+            spatial: field.shape()[1..].to_vec(),
+            extrapolation: extrapolation.to_string(),
+            boundary,
+            npad,
+            planes,
+        })
+    }
+
+    /// Interpolate at `(N, S)` continuous indices, as [`cubic_sample`] does.
+    pub(crate) fn sample(&self, coords: &Array2<f64>) -> Result<Array2<f64>> {
+        let spatial = &self.spatial;
+        check_points(spatial, coords)?;
+        let inside = inside_extent(spatial, coords);
+        if self.extrapolation == "error" {
+            // SciPy has no raising mode; the domain check happens here, against
+            // the bounds `linear_sample` uses, rather than folding into
+            // constant-zero.
+            refuse_outside(&inside)?;
+        }
+        // Clamped to the outermost samples, every point is interpolated;
+        // `zero` then zeroes the points beyond the extent, as `linear_sample`
+        // does.  `nearest` interpolates the edge-extended field everywhere,
+        // and its points are clamped only to `EXACT_INTEGER`, where the
+        // weights stop changing --- unclamped, a coordinate of 1e300
+        // overflowed the indices.
+        let clamped = Array2::from_shape_fn(coords.dim(), |(row, axis)| match self.boundary {
+            Boundary::Constant => coords[[row, axis]].clamp(0.0, (spatial[axis] as f64 - 1.0).max(0.0)),
+            Boundary::Nearest => coords[[row, axis]].clamp(-EXACT_INTEGER, EXACT_INTEGER),
+        });
+        let mut out = Array2::<f64>::zeros((clamped.nrows(), self.planes.len()));
+        for (c, coeffs) in self.planes.iter().enumerate() {
+            for (row, v) in spline_interpolate(coeffs, &clamped, self.boundary, self.npad).into_iter().enumerate() {
+                out[[row, c]] = if self.extrapolation == "zero" && !inside[row] { 0.0 } else { v };
+            }
+        }
+        Ok(out)
+    }
+
+    /// The bytes the coefficients take.
+    fn nbytes(&self) -> usize {
+        self.planes.iter().map(|plane| plane.len() * std::mem::size_of::<f64>()).sum()
+    }
+}
+
+/// The most bytes of cubic coefficients transform handles keep between
+/// evaluations, across the process.  A training worker keeps up to 32 samples
+/// open (`medh5.torch`), each with its resolved transform, and the
+/// coefficients of one image-sized field take ~175 MB: kept without a bound,
+/// they could hold gigabytes per worker, where 2.0.1 held them only while it
+/// evaluated.
+pub(crate) const CUBIC_CACHE_BYTES: usize = 256 * 1024 * 1024;
+
+static CUBIC_BUDGET: CoefficientBudget = CoefficientBudget::new(CUBIC_CACHE_BYTES);
+
+/// Bytes of kept coefficients, counted against a limit.
+pub(crate) struct CoefficientBudget {
+    held: AtomicUsize,
+    limit: usize,
+}
+
+impl CoefficientBudget {
+    pub(crate) const fn new(limit: usize) -> CoefficientBudget {
+        CoefficientBudget { held: AtomicUsize::new(0), limit }
+    }
+
+    /// Count `bytes` as held, if they fit within the limit.
+    fn reserve(&self, bytes: usize) -> bool {
+        self.held
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
+                held.checked_add(bytes).filter(|total| *total <= self.limit)
+            })
+            .is_ok()
+    }
+}
+
+/// Coefficients a cache keeps, counted against its budget until they drop.
+struct Kept {
+    coefficients: CubicCoefficients,
+    bytes: usize,
+    budget: &'static CoefficientBudget,
+}
+
+impl Drop for Kept {
+    fn drop(&mut self) {
+        self.budget.held.fetch_sub(self.bytes, Ordering::Relaxed);
+    }
+}
+
+/// A transform handle's cubic coefficients: made at its first evaluation,
+/// and kept for the next while the process-wide budget has room for them.
+pub(crate) struct CubicCache {
+    slot: OnceLock<Kept>,
+    budget: &'static CoefficientBudget,
+}
+
+impl Default for CubicCache {
+    fn default() -> CubicCache {
+        CubicCache::within(&CUBIC_BUDGET)
+    }
+}
+
+impl std::fmt::Debug for CubicCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CubicCache").field("kept_bytes", &self.slot.get().map(|kept| kept.bytes)).finish()
+    }
+}
+
+impl CubicCache {
+    pub(crate) const fn within(budget: &'static CoefficientBudget) -> CubicCache {
+        CubicCache { slot: OnceLock::new(), budget }
+    }
+
+    /// Interpolate at `(N, S)` continuous indices, as [`cubic_sample`] does,
+    /// through the kept coefficients, or ones `make` makes when none are.
+    pub(crate) fn sample(
+        &self,
+        coords: &Array2<f64>,
+        make: impl FnOnce() -> Result<CubicCoefficients>,
+    ) -> Result<Array2<f64>> {
+        if let Some(kept) = self.slot.get() {
+            return kept.coefficients.sample(coords);
+        }
+        match self.keep(make()?) {
+            Ok(kept) => kept.sample(coords),
+            // Past the budget they serve this evaluation alone, and the next
+            // makes them again, as every evaluation did before 2.0.2.
+            Err(made) => made.sample(coords),
         }
     }
-    Ok(out)
+
+    /// Keep `made` if the budget has room for it, else hand it back.
+    fn keep(&self, made: CubicCoefficients) -> std::result::Result<&CubicCoefficients, CubicCoefficients> {
+        let bytes = made.nbytes();
+        if !self.budget.reserve(bytes) {
+            return Err(made);
+        }
+        if let Err(lost) = self.slot.set(Kept { coefficients: made, bytes, budget: self.budget }) {
+            // Another thread filled the slot first, with the same
+            // coefficients: this copy returns its bytes as it drops.
+            drop(lost);
+        }
+        Ok(&self.slot.get().expect("the slot is filled").coefficients)
+    }
 }
 
 /// Interpolate a field with the declared interpolation.
@@ -619,6 +781,50 @@ mod tests {
         assert_eq!(cubic_sample(&ones, &outside, "zero").unwrap()[[0, 0]], 0.0);
         assert!((cubic_sample(&ones, &outside, "nearest").unwrap()[[0, 0]] - 1.0).abs() < 1e-6);
         assert!(cubic_sample(&ones, &outside, "error").is_err());
+    }
+
+    #[test]
+    fn s10_4_coefficients_past_the_budget_are_not_kept_and_answer_alike() {
+        let field = ArrayD::from_shape_fn(IxDyn(&[2, 4, 5]), |i| {
+            let v = (i[0] * 20 + i[1] * 5 + i[2]) as f64;
+            v * v * 0.37 + v / 3.0
+        });
+        let coords = Array2::from_shape_vec((3, 2), vec![1.3, 2.7, -4.0, 0.1, 2.9, 3.95]).unwrap();
+        let make = || CubicCoefficients::new(&field, "nearest");
+        let alone = cubic_sample(&field, &coords, "nearest").unwrap();
+        let bytes = make().unwrap().nbytes();
+        // Room for one field's coefficients and half of another's.
+        let budget: &'static CoefficientBudget = Box::leak(Box::new(CoefficientBudget::new(bytes + bytes / 2)));
+        let held = || budget.held.load(Ordering::Relaxed);
+        let first = CubicCache::within(budget);
+        assert_eq!(first.sample(&coords, make).unwrap(), alone);
+        assert!(first.slot.get().is_some());
+        assert_eq!(held(), bytes);
+        // Past what remains, they are made for each evaluation and kept for none.
+        let second = CubicCache::within(budget);
+        for _ in 0..2 {
+            assert_eq!(second.sample(&coords, make).unwrap(), alone);
+            assert!(second.slot.get().is_none());
+            assert_eq!(held(), bytes);
+        }
+        // Dropped coefficients return their bytes, and the room is used again.
+        drop(first);
+        assert_eq!(held(), 0);
+        assert_eq!(second.sample(&coords, make).unwrap(), alone);
+        assert!(second.slot.get().is_some());
+        assert_eq!(held(), bytes);
+        drop(second);
+        assert_eq!(held(), 0);
+        // A copy that lost the race to fill a slot gives its bytes back.
+        let racing: &'static CoefficientBudget = Box::leak(Box::new(CoefficientBudget::new(2 * bytes)));
+        let raced = CubicCache::within(racing);
+        for _ in 0..2 {
+            assert!(raced.keep(make().unwrap()).is_ok());
+            assert_eq!(racing.held.load(Ordering::Relaxed), bytes);
+        }
+        assert_eq!(raced.sample(&coords, || unreachable!("the coefficients are kept")).unwrap(), alone);
+        drop(raced);
+        assert_eq!(racing.held.load(Ordering::Relaxed), 0);
     }
 
     #[test]

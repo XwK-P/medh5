@@ -5,6 +5,11 @@
 //! (`binary-foreground`), a small hierarchy with overlap-capable sub-regions
 //! (`brats-subregions`), and a flat multi-organ set (`amos22-organs`).
 //!
+//! `brats-subregions` uses the BraTS 2023 numbering (enhancing tumour is 3) and
+//! adds a synthetic parent, `tumor`, as id 4.  BraTS releases up to 2021 label
+//! enhancing tumour 4: their masks are relabelled 4 to 3 before they are
+//! written with this vocabulary, or their enhancing tumour lands on the parent.
+//!
 //! **No ontology codes are bundled.**  A wrong SNOMED-CT or FMA binding is a
 //! silent data-integrity defect that propagates into every file written with
 //! the vocabulary and that no validator can detect.  Bindings are the curator's

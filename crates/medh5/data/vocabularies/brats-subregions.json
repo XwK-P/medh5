@@ -1,7 +1,7 @@
 {
   "id": "brats-subregions",
   "version": "2023.1",
-  "description": "BraTS glioma sub-regions: the three published voxel labels.",
+  "description": "BraTS glioma sub-regions in the BraTS 2023 numbering: 1 necrotic tumour core, 2 peritumoral edematous/invaded tissue, 3 GD-enhancing tumour. Id 4 is not a BraTS label but a synthetic parent the three roll up to. BraTS releases up to 2021 label enhancing tumour 4, not 3: relabel 4 to 3 before writing their masks with this vocabulary. Written unchanged, their enhancing tumour lands on the synthetic parent and enhancing_tumor reads empty.",
   "classes": [
     {
       "id": 1,

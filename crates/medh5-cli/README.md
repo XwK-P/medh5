@@ -11,9 +11,9 @@ the same exit codes: `0` success, `1` a handled error, `2` a usage error.
 ```bash
 cargo install --locked medh5-cli # or a binary from the GitHub Release, or Homebrew
 medh5 info case.medh5            # grids, images, annotations, coverage
-medh5 validate case.medh5 --level strict
+medh5 validate case.medh5 --level integrity
 medh5 verify case.medh5          # digests and content_id
-medh5 conformance run corpus/    # the 157-case conformance corpus
+medh5 conformance run corpus/    # the 163-case conformance corpus
 ```
 
 HDF5 is linked statically: the binary needs nothing installed. Building it
@@ -37,7 +37,8 @@ and says so when the flag is missing. The release binaries are built with it.
 integration with Python libraries — nibabel, pydicom, highdicom — and lives
 in the Python package, as does the dataloader row of `medh5 bench` (PyTorch).
 The binary hands them to a Python interpreter that has the package installed
-(`python3`, or `MEDH5_PYTHON`), and says what to install when there is none:
+(`python3` — `python` on Windows — or `MEDH5_PYTHON`), and says what to install
+when there is none:
 
 ```bash
 pip install "medh5[nifti,dicom]"

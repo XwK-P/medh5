@@ -21,6 +21,20 @@ pub fn encode_identity() -> Payload {
 /// only in one grid's index space silently breaks when the image is resampled.
 pub fn encode_affine(matrix: &ArrayD<f64>) -> Result<Payload> {
     let dim = affine_dimension(matrix.shape())?;
+    // Every entry a number, as the validator holds it (E504): the last row's
+    // comparison and the singularity test both passed a NaN, and an infinite
+    // translation was never looked at, so every point mapped to NaN or ∞.
+    let bad = matrix.iter().filter(|v| !v.is_finite()).count();
+    if bad > 0 {
+        return Err(Error::coded(
+            "E504",
+            if bad == 1 {
+                "affine `matrix` holds 1 entry that is not a finite number".to_string()
+            } else {
+                format!("affine `matrix` holds {bad} entries that are not finite numbers")
+            },
+        ));
+    }
     let last: Vec<f64> = (0..=dim).map(|c| matrix[[dim, c]]).collect();
     let mut expected = vec![0.0; dim + 1];
     expected[dim] = 1.0;

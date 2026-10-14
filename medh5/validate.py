@@ -273,7 +273,8 @@ def validate_root(
 
 
 def rules_for(level: Level) -> tuple[str, ...]:
-    """The rules a pass at *level* runs, in order."""
+    """The rules a pass at *level* runs, in order.  An unknown *level* is a
+    ``ValueError``, as it is to the validators."""
     return tuple(_core.rules_for(level))
 
 

@@ -286,8 +286,26 @@ impl PatchSampler {
     ///
     /// Auto-selection stays inside `grid` when the caller named one, and skips
     /// `mask` (no classes, so it can only answer "no foreground here").
+    ///
+    /// A name is checked before any draw: a misspelt one drew `uniform`
+    /// windows without a word, and `balanced` failed only on the draws whose
+    /// coin chose foreground.  A non-voxel annotation (boxes, a
+    /// classification) has no foreground to draw, so it is refused where a
+    /// draw may need foreground; a `uniform` draw only measures its window in
+    /// the annotation's grid.
     pub fn annotation(&self, sample: &Sample, annotation: Option<&str>, grid: Option<&str>) -> Result<Option<String>> {
         if let Some(name) = annotation {
+            let found = sample.annotation(name)?;
+            let may_need_foreground =
+                self.strategy == "foreground" || (self.strategy == "balanced" && self.foreground_prob > 0.0);
+            if may_need_foreground && !found.is_voxel() {
+                return Err(Error::invalid(format!(
+                    "annotation {} is a {} annotation; {} draws take foreground from a voxel annotation (§7)",
+                    repr_str(name),
+                    repr_str(found.kind()),
+                    repr_str(&self.strategy)
+                )));
+            }
             return Ok(Some(name.to_string()));
         }
         for (name, ann) in sample.annotations()? {

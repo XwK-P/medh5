@@ -123,6 +123,59 @@ class TestVolumeDataset:
         with pytest.raises(MEDH5ValidationError, match="no annotation"):
             VolumeDataset(indexed_cohort, annotations={"nope": []})[0]
 
+    def test_S8_a_box_annotation_is_refused_by_name_in_every_format(
+        self, tmp_path, label_set
+    ):
+        """Boxes have no voxels: every label format failed on a missing method
+        (`.instances`, `.dense`, `.labelmap`) instead of naming the annotation."""
+        path = tmp_path / "boxes.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, dtype=np.int16), grid="g", modality="CT")
+            box = np.asarray([[[0.5, 2.5], [0.5, 2.5], [0.5, 2.5]]], np.float32)
+            w.add_boxes("det", box, [1], grid="g", annotated_classes=[1])
+        for label_format in ("onehot", "labelmap", "instances"):
+            dataset = VolumeDataset(
+                [path], annotations={"det": [1]}, label_format=label_format
+            )
+            with pytest.raises(MEDH5ValidationError, match="'det' is 'boxes'"):
+                dataset[0]
+        assert (
+            "label"
+            not in VolumeDataset([path], annotations={"det": [1]}, label_format="none")[
+                0
+            ]
+        )
+
+    def test_images_outside_the_timepoint_are_refused(self, tmp_path, label_set, masks):
+        """`timepoint=` was ignored beside `images=`: tp0's CT was read for tp1."""
+        path = write_sample(
+            tmp_path / "two.medh5",
+            label_set=label_set,
+            masks=masks,
+            timepoints=("tp0", "tp1"),
+        )
+        with pytest.raises(MEDH5ValidationError, match="not at timepoint 'tp1'"):
+            VolumeDataset([path], images=["CT_tp0"], timepoint="tp1")[0]
+        item = VolumeDataset([path], images=["CT_tp1"], timepoint="tp1")[0]
+        assert set(item["images"]) == {"CT_tp1"}
+
+    def test_a_broken_torch_is_not_reported_as_missing(self, monkeypatch):
+        """Any failure to import torch read as "not installed", without its cause."""
+        from medh5.torch import _compat
+
+        monkeypatch.setattr(_compat, "AVAILABLE", False)
+        broken = OSError("libcudart.so.12: cannot open shared object file")
+        monkeypatch.setattr(_compat, "_ERROR", broken)
+        with pytest.raises(ImportError, match="failed to import .*libcudart") as caught:
+            _compat.require_torch()
+        assert caught.value.__cause__ is broken
+        absent = ModuleNotFoundError("No module named 'torch'", name="torch")
+        monkeypatch.setattr(_compat, "_ERROR", absent)
+        with pytest.raises(ImportError, match=r"pip install 'medh5\[torch\]'"):
+            _compat.require_torch()
+
     def test_an_empty_dataset_and_bad_format_are_refused(self, indexed_cohort):
         with pytest.raises(MEDH5ValidationError):
             VolumeDataset([])
@@ -259,6 +312,46 @@ class TestPatchDataset:
             label_format="instances",
         )
         assert [o["class_id"] for o in ds[0]["label"]["les"]] == [3]
+
+    def test_instances_are_read_without_decoding_a_mask(
+        self, tmp_path, label_set, monkeypatch
+    ):
+        """`instances()` decoded every object's mask for every patch, and an
+        item carries none: the object columns give the same objects."""
+        from types import SimpleNamespace
+
+        from medh5.annotations.voxel import InstancesAnnotation
+        from medh5.sampling import Patch
+
+        def decoded(*_: Any) -> Any:
+            raise AssertionError("a mask was decoded")
+
+        path = tmp_path / "small.medh5"
+        self._instances(path, label_set, (4, 4, 4))
+        patch = Patch(slices=(slice(0, 4), slice(0, 4), slice(2, 4)))
+        with medh5.open(path) as sample:
+            ann = sample.annotations["les"]
+            every = PatchDataset._instances_in(
+                SimpleNamespace(instances=ann.instances), patch
+            )
+            monkeypatch.setattr(InstancesAnnotation, "instances", decoded)
+            monkeypatch.setattr(InstancesAnnotation, "crop", decoded)
+            read = PatchDataset._instances_in(ann, patch)
+        assert len(read) == len(every) == 2
+        for found, expected in zip(read, every, strict=True):
+            assert found.keys() == expected.keys()
+            assert found["box"].dtype == expected["box"].dtype
+            np.testing.assert_array_equal(found["box"], expected["box"])
+            for key in ("instance_id", "class_id", "score"):
+                assert found[key] == expected[key]
+                assert type(found[key]) is type(expected[key])
+        item = PatchDataset(
+            [path],
+            PatchSampler(8, strategy="uniform"),
+            annotations={"les": []},
+            label_format="instances",
+        )[0]
+        assert sorted(o["class_id"] for o in item["label"]["les"]) == [1, 3]
 
     def test_S8_1_a_box_touching_the_patch_edge_does_not_overlap_it(self):
         """Edges sit half a voxel out: a box ending at ``start - 0.5`` covers
@@ -534,6 +627,63 @@ class TestPairedPatchDataset:
         item = PairedPatchDataset([registered], PatchSampler(8))[0]
         assert item["label"]["response"] == {"lesion": 1.0}
         assert item["meta"]["label_annotation"] == "response"
+
+    @staticmethod
+    def _three(tmp_path: Path, label_set: Any, masks: Any) -> Path:
+        return write_sample(
+            tmp_path / "three.medh5",
+            label_set=label_set,
+            masks=masks,
+            timepoints=("tp0", "tp1", "tp2"),
+        )
+
+    def test_S3_7_a_named_change_label_is_only_its_own_pair_s(
+        self, tmp_path, label_set, masks
+    ):
+        """`label=` was served as the target of every pair of the file."""
+        path = self._three(tmp_path, label_set, masks)
+        with medh5.amend(path) as w:
+            w.add_classification(
+                "grew", labels={3: 1.0}, scope="sample", timepoints=["tp0", "tp1"]
+            )
+        ds = PairedPatchDataset(
+            [path],
+            PatchSampler(8),
+            pair_sampler=TimepointPairSampler("consecutive"),
+            align="none",
+            label="grew",
+        )
+        labels = {tuple(ds[i]["meta"]["pair"]): ds[i].get("label") for i in (0, 1)}
+        assert labels == {
+            ("tp0", "tp1"): {"grew": {"lesion": 1.0}},
+            ("tp1", "tp2"): None,
+        }
+        voxels = PairedPatchDataset(
+            [path], PatchSampler(8), align="none", label="organs_tp0"
+        )
+        with pytest.raises(MEDH5ValidationError, match="label='organs_tp0' is a"):
+            voxels[0]
+
+    def test_S3_7_a_named_annotation_is_drawn_from_at_its_own_visit(
+        self, tmp_path, label_set, masks
+    ):
+        """`annotation=` was used at every visit, and refused for every pair
+        not starting at its own --- the longitudinal guide's example too."""
+        path = self._three(tmp_path, label_set, masks)
+        ds = PairedPatchDataset(
+            [path],
+            PatchSampler(8, strategy="foreground"),
+            pair_sampler=TimepointPairSampler("consecutive"),
+            align="none",
+            annotation="organs_tp0",
+        )
+        for index, pair in enumerate((["tp0", "tp1"], ["tp1", "tp2"])):
+            meta = ds[index]["meta"]
+            assert meta["pair"] == pair
+            grids = {tp: p["grid_id"] for tp, p in meta["patches"].items()}
+            assert grids == {tp: f"ct_{tp}" for tp in pair}
+        with pytest.raises(KeyError, match="nope"):
+            PairedPatchDataset([path], PatchSampler(8), annotation="nope")[0]
 
     def test_S10_2_align_transform_refuses_frames_it_cannot_relate(self, unregistered):
         """`transform_between` returns None for "one frame" and "no path" alike.
@@ -1007,11 +1157,34 @@ class TestHandleCache:
     ):
         """A forked child must never touch the parent's HDF5 descriptors."""
         cache = HandleCache()
-        cache.get(indexed_cohort[0])
+        inherited = cache.get(indexed_cohort[0])
         assert len(cache) == 1
         monkeypatch.setattr(os, "getpid", lambda: cache.owner_pid + 1)
         cache.get(indexed_cohort[1])
         assert len(cache) == 1, "the inherited handle must be dropped, not reused"
+        # Abandoned, never closed: the descriptors are the parent's.  Only the
+        # length was checked, which a cache closing them passed too.
+        assert inherited.is_open
+        assert inherited.identity.sample_id == "case0"
+
+    def test_S14_4_clear_closes_what_this_process_opened(
+        self, indexed_cohort, monkeypatch
+    ):
+        """`clear()` abandoned in the process that opened the handles too,
+        which pinned every one of them open for the life of the process."""
+        cache = HandleCache()
+        idle = cache.get(indexed_cohort[0])
+        with cache.lease(indexed_cohort[1]) as leased:
+            cache.clear()
+            assert not idle.is_open, "closed: this process opened it"
+            assert leased.is_open, "a handle in use is never closed under its reader"
+            assert leased.identity.sample_id == "case1"
+        cache.close_all()
+        assert not leased.is_open and len(cache) == 0
+        inherited = cache.get(indexed_cohort[2])
+        monkeypatch.setattr(os, "getpid", lambda: cache.owner_pid + 1)
+        cache.clear()
+        assert len(cache) == 0 and inherited.is_open, "inherited: abandoned"
 
     def test_S14_4_close_all_abandons_handles_it_did_not_open(
         self, indexed_cohort, monkeypatch

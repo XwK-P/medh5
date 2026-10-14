@@ -1163,3 +1163,79 @@ class TestAsWorld:
             with pytest.raises(MEDH5ValidationError) as caught:
                 s.annotations["world"].as_world("other")
             assert caught.value.code == "E414"
+
+
+TETRAHEDRON = np.array(
+    [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    dtype=np.float32,
+)
+FACES = np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]], dtype=np.int32)
+
+
+class TestEncoderRefusals:
+    @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+    def test_S8_2_a_box_coordinate_that_is_not_finite_is_refused(self, bad):
+        """`lo > hi` let NaN through: every comparison with it is false."""
+        boxes = np.array([[[0.5, 2.5], [0.5, bad], [0.5, 2.5]]], np.float32)
+        with pytest.raises(MEDH5ValidationError) as exc:
+            encode_boxes(boxes, [1])
+        assert exc.value.code == "E406"
+
+    @pytest.mark.parametrize("which", ["centers", "sizes"])
+    def test_S8_3_an_obb_that_is_not_finite_is_refused(self, which):
+        columns = {"centers": np.zeros((1, 3)), "sizes": np.ones((1, 3))}
+        columns[which][0, 1] = np.nan
+        with pytest.raises(MEDH5ValidationError) as exc:
+            encode_obb(columns["centers"], columns["sizes"], np.eye(3)[None], [1])
+        assert exc.value.code == "E406"
+
+    @pytest.mark.parametrize("offsets", [[0, 3, 2], [0, 1, 3], [0, 2, 6]])
+    def test_S8_7_mesh_offsets_are_checked_when_encoded(self, offsets):
+        """They were checked only when the sample was committed."""
+        with pytest.raises(MEDH5ValidationError) as exc:
+            encode_mesh(
+                TETRAHEDRON,
+                FACES,
+                mesh_offsets=offsets,
+                mesh_class_ids=[1] * (len(offsets) - 1),
+            )
+        assert exc.value.code == "E408"
+
+
+class TestColumnReads:
+    def test_S8_2_columns_are_read_once_and_read_only(self, tmp_path):
+        path = tmp_path / "b.medh5"
+        boxes = np.array([[[0.5, 2.5], [0.5, 2.5], [0.5, 2.5]]] * 2, np.float32)
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("ct", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="ct", modality="CT")
+            w.add_boxes("bx", boxes, [1, 1], grid="ct", scores=[0.5, float("nan")])
+            w.add_points("pt", TETRAHEDRON, grid="ct")
+        with medh5.open(path) as sample:
+            bx, pt = sample.annotations["bx"], sample.annotations["pt"]
+            assert bx.boxes is bx.boxes and pt.points is pt.points
+            for column in (bx.boxes, pt.points):
+                with pytest.raises(ValueError):
+                    column[0] = 0
+            # No instance_ids: a box's id is its row; a NaN score is no score.
+            assert [(i.instance_id, i.score) for i in bx] == [(0, 0.5), (1, None)]
+        with pytest.raises(medh5.MEDH5FileError):
+            _ = pt.points
+
+    def test_S8_6_polygons_read_as_each_polygon_reads(self, tmp_path):
+        path = tmp_path / "c.medh5"
+        polygons = [
+            Polygon(np.arange(9, dtype=float).reshape(3, 3), 1, (0, 1)),
+            Polygon(np.arange(12, dtype=float).reshape(4, 3) + 10, 1, (0, 2)),
+        ]
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("ct", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="ct", modality="CT")
+            w.add_contours("rt", polygons, grid="ct")
+        with medh5.open(path) as sample:
+            rt = sample.annotations["rt"]
+            read = list(rt.polygons())
+            assert len(read) == 2
+            for i, (got, want) in enumerate(zip(read, polygons, strict=True)):
+                assert np.array_equal(got.vertices, want.vertices)
+                assert np.array_equal(rt.polygon(i), want.vertices)

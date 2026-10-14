@@ -13,6 +13,14 @@ Codes are grouped by domain::
     E3xx  label set      E4xx  annotations  E5xx  transforms
     E6xx  curation       E7xx  integrity    E8xx  clinical (1.1)
     W9xx  warnings
+
+The package's own exceptions derive from :class:`MEDH5Error`, and two of them
+from a built-in as well: :class:`MEDH5FileError` is an ``OSError`` and
+:class:`MEDH5ValidationError` a ``ValueError``.  Not every error raised is one
+of them.  An argument of the wrong type or value raises the built-in of that
+meaning (``TypeError``, ``ValueError``, ``KeyError``, ``IndexError``), and a
+read or write that HDF5 fails --- a damaged chunk, say --- a plain
+``OSError``: catch ``OSError`` as well as :class:`MEDH5Error` to catch both.
 """
 
 from __future__ import annotations
@@ -36,7 +44,13 @@ Domain = Literal[
 
 
 class MEDH5Error(Exception):
-    """Base exception for every error raised by this package."""
+    """Base of the package's own exceptions: a file, version, schema,
+    validation or integrity error.
+
+    Not every error raised derives from it: a wrong argument raises the
+    built-in of that meaning, and a read or write that HDF5 fails a plain
+    ``OSError`` (see the module's documentation).
+    """
 
 
 class MEDH5FileError(MEDH5Error, OSError):

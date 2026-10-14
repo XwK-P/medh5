@@ -13,10 +13,13 @@ The write model: ``create`` writes to a sibling temporary file and atomically
 replaces the target on ``commit``, so a reader never sees a half-written
 sample and a crash leaves the previous file intact.  ``amend`` is
 copy-on-write: it builds a new file from the old one and replaces it, because
-HDF5 does not reclaim space on delete --- and anything holding the old file
-open keeps reading the old inode.  Every ``add_*`` validates as it goes, and
-``commit`` refuses to write a file the validator would reject.  The builder is
-the format engine's ``SampleWriter``::
+HDF5 does not reclaim space on delete.  On POSIX anything holding the old file
+open keeps reading the old inode; Windows cannot replace an open file, so
+close every reader of it before committing an amendment.  Every ``add_*``
+validates as it goes, and ``commit`` refuses to write a file the validator
+would reject: refused before it changed anything, it leaves the writer open
+to mend and commit again.  The builder is the format engine's
+``SampleWriter``::
 
     with medh5.create("case.medh5", sample_id="case-001") as w:
         w.add_grid("ct", shape=(64, 64, 32), spacing=(0.8, 0.8, 2.0))

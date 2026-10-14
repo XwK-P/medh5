@@ -415,6 +415,31 @@ class TestPublication:
         results = score(suite, submitted)
         assert all("E999" in r.unexpected for r in results)
 
+    def test_S15_2_severity_is_scored(self, suite):
+        """The codes alone were compared, so a validator that reported every
+        code as a warning --- rejecting no file --- scored every case."""
+        cases = load_manifest(suite)["cases"]
+        everything = [
+            {
+                "file": c["file"],
+                "errors": [],
+                "warnings": [*c["expect_errors"], *c["expect_warnings"]],
+            }
+            for c in cases
+        ]
+        failed = {r.case.name for r in score(suite, everything) if not r.ok}
+        assert failed == {c["name"] for c in cases if c["expect_errors"]}
+        promoted = [
+            {
+                "file": c["file"],
+                "errors": [*c["expect_errors"], *c["expect_warnings"]],
+                "warnings": [],
+            }
+            for c in cases
+        ]
+        failed = {r.case.name for r in score(suite, promoted) if not r.ok}
+        assert failed == {c["name"] for c in cases if c["expect_warnings"]}
+
     def test_silence_about_a_case_is_a_failure_not_a_skip(self, suite):
         manifest = load_manifest(suite)
         submitted = [

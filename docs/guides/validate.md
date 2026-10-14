@@ -18,15 +18,15 @@ medh5 verify case.medh5
 ## Choose a level
 
 ```bash
-medh5 validate case.medh5 --level strict
+medh5 validate case.medh5 --level integrity
 ```
 
 | Level | Reads | Use for |
 |---|---|---|
 | `structural` | metadata + payload scans in bounded slabs | a fast "is this even a medh5 file" |
 | `semantic` *(default)* | the same, plus layer data | day-to-day |
-| `integrity` | every byte | after a file has moved between machines |
-| `strict` | every byte | CI, where a warning should stop a build |
+| `integrity` | every byte | after an import, or after a file has moved between machines |
+| `strict` | every byte | a dataset you publish, or CI, where a warning should stop a build |
 
 **None of them is free.** Even `structural` decompresses voxels — it reads a
 float image of up to 4 M values to test int16-losslessness, and may scan a
@@ -36,7 +36,12 @@ for `structural`, which found nothing there to scan, 287 ms for `semantic` and
 513 ms for `integrity`, against 0.13 ms for a metadata-only `open()`. Do not
 put one in a hot path.
 
-`strict` runs no extra rules — it promotes warnings to errors. Full table and
+`strict` runs no extra rules — it promotes warnings to errors. So it fails a
+file that conforms but is not ready to publish: one with no de-identification
+record (`W903`), or whose classes carry no ontology code (`W912`), as every
+freshly written or imported sample is until [de-identification](deidentify.md)
+and the label set's codes have dealt with both. Check a new file at
+`integrity`, and gate what you publish at `strict`. Full table and
 measurements in
 [Profiles and validation levels](../reference/profiles-and-levels.md).
 
@@ -46,6 +51,10 @@ measurements in
 case.medh5: FAILED [strict] profiles=core,seg (1 errors, 0 warnings)
   ERROR   E102 /grids/ct: `direction` is not orthonormal (max residual 0.4)
 ```
+
+A warning `strict` promotes keeps its code and still prints as `WARNING`; the
+first line counts it as an error. `FAILED [strict] … (2 errors, 0 warnings)`
+above two `WARNING` lines is two promoted warnings.
 
 Every diagnostic carries a stable code. Look it up in
 [Diagnostic codes](../reference/diagnostic-codes.md) — a code's meaning never

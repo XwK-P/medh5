@@ -63,6 +63,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -486,6 +487,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             if r.status in statuses and (partition is None or r.partition == partition)
         )
         self.slots: tuple[Slot, ...] = self.task.slots
+        self._channels = self._placeholder_channels(report)
         self.concepts = (
             concepts
             if concepts is not None
@@ -535,6 +537,55 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
     def __len__(self) -> int:
         return len(self.rows)
 
+    def _placeholder_channels(self, report: Preflight) -> dict[str, int]:
+        """Per slot some row leaves empty, its placeholder's channel extent.
+
+        A property of the slot, not of a row: read from the grids of the
+        images that fill it in *every* row of the task --- not this
+        partition's, and not the first row read, which worker order decides
+        --- so an empty multichannel slot batches beside a filled one.  Only
+        shapes cross rows, never values; 1 where no row fills the slot.
+        """
+        from medh5.torch.handles import _open
+
+        out: dict[str, int] = {}
+        for slot in self.slots:
+            fills = [row.slots.get(slot.name) for row in self.rows]
+            if all(fill is None or _filled(fill) for fill in fills):
+                continue  # no placeholder is ever built
+            images: dict[tuple[str, str | None, str], None] = {}
+            for row in report.rows:
+                # An erroneous row fills nothing: its sources are not its pins.
+                fill = row.slots.get(slot.name)
+                if row.status != "error" and fill is not None and _filled(fill):
+                    assert fill.fragment is not None and fill.image_id is not None
+                    images[(*self._source(row, fill.fragment), fill.image_id)] = None
+            extents: dict[int, list[str]] = {}
+            for path, member, image_id in images:
+                sample = _open((path, member))
+                try:
+                    shape = sample.images[image_id].shape
+                    spatial = len(sample.images[image_id].grid.spatial_shape)
+                finally:
+                    sample.close()
+                where = path if member is None else f"{path}::{member}"
+                extents.setdefault(math.prod(shape[: len(shape) - spatial]), []).append(
+                    f"{image_id!r} of {where}"
+                )
+            if len(extents) > 1:
+                listed = "; ".join(
+                    f"{n} in {', '.join(found[:3])}"
+                    for n, found in sorted(extents.items())
+                )
+                raise MEDH5ValidationError(
+                    f"slot {slot.name!r} is empty for some rows, and the images "
+                    f"that fill it have different channel counts ({listed}): no "
+                    "placeholder matches them all",
+                    "T102",
+                )
+            out[slot.name] = next(iter(extents), 1)
+        return out
+
     # -- reading -----------------------------------------------------------
 
     def _source(self, row: RowView, fragment: int) -> tuple[str, str | None]:
@@ -546,8 +597,9 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
         classes = tuple(slot.classes)
         if sample is None or fill.image_id is None:
             shape = tuple(slot.patch) if slot.patch is not None else ()
+            channels = self._channels.get(slot.name, 1)
             return {
-                "image": np.zeros((1, *shape), dtype=np.float32),
+                "image": np.zeros((channels, *shape), dtype=np.float32),
                 "valid": np.zeros(shape, dtype=bool),
                 "present": False,
                 "label": np.zeros((len(classes), *shape), dtype=np.float32),
@@ -592,6 +644,12 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             present = set(ann.class_ids)
             examined = set(ann.annotated_class_ids)
             wanted = [c for c in classes if c in present]
+            if not wanted and examined.isdisjoint(classes):
+                # It neither labels nor examined a class the slot asks for,
+                # so its ignore region (§7.7) is about other structures: an
+                # organ annotation ignoring the whole grid erased every
+                # lesion positive from the loss mask.
+                continue
             if wanted:
                 planes = np.pad(
                     np.asarray(ann.dense(wanted, roi=list(roi)), dtype=np.float32),
@@ -918,6 +976,11 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             return item
 
 
+def _filled(fill: Any) -> bool:
+    """Whether an image filled the slot (`_slot` builds a placeholder else)."""
+    return fill.fragment is not None and fill.image_id is not None
+
+
 def _no_time() -> dict[str, Any]:
     return {
         "start_age_h": np.zeros(2, dtype=np.float32),
@@ -992,6 +1055,7 @@ def _no_events() -> dict[str, npt.NDArray[Any]]:
 
 
 _SEQUENCES = ("events", "documents")
+_SLOTTED = ("images", "valid", "ignore", "label")
 
 
 def collate_clinical(batch: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1002,7 +1066,7 @@ def collate_clinical(batch: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     position is never an event.  ``meta`` stays a list of dicts.
     """
     require_torch()
-    from medh5.torch.collate import _collate_value
+    from medh5.torch.collate import _collate_value, _shared_keys
 
     if not batch:
         raise MEDH5ValidationError("cannot collate an empty batch")
@@ -1013,9 +1077,37 @@ def collate_clinical(batch: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             out[key] = _pad_sequences(values)
         elif key == "meta":
             out[key] = list(values)
+        elif key in _SLOTTED:
+            out[key] = {
+                slot: _stack_slot(f"{key}.{slot}", [v[slot] for v in values])
+                for slot in _shared_keys(repr(key), values)
+            }
         else:
             out[key] = _collate_value(key, values)
     return out
+
+
+def _stack_slot(name: str, values: Sequence[Any]) -> Any:
+    """One slot's arrays over the batch, stacked --- or refused with advice
+    that fits: a window size is fixed by the slot's `patch`, and an empty
+    row's placeholder takes the slot's channel extent, so what still differs
+    is whole volumes, or images of different channel counts."""
+    import torch
+
+    shapes = sorted({tuple(v.shape) for v in values})
+    if len(shapes) > 1:
+        channels = name.startswith("images.") and len({s[1:] for s in shapes}) == 1
+        advice = (
+            "the slot's images have different channel counts: batch rows "
+            "whose images agree, or use batch_size=1"
+            if channels
+            else "a slot without a `patch` reads each row's whole volume, and "
+            "an empty row has none: give the slot a `patch`, or use batch_size=1"
+        )
+        raise MEDH5ValidationError(
+            f"cannot stack {name!r}: the batch mixes shapes {shapes}; {advice}"
+        )
+    return torch.stack(list(values))
 
 
 def _pad_sequences(values: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1033,7 +1125,7 @@ def _pad_sequences(values: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         trailing = tuple(first.shape[1:])
         for row in filled:
             if tuple(row.shape[1:]) != trailing:
-                raise ValueError(
+                raise MEDH5ValidationError(
                     f"cannot collate {key!r}: one row's entries have shape "
                     f"{tuple(row.shape[1:])}, another's {trailing}"
                 )

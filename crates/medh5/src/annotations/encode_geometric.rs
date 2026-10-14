@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use ndarray::{Array2, ArrayD, IxDyn};
 use serde_json::{Map, Value};
 
-use super::encode::instance_id_array;
+use super::encode::{box_axis_ok, instance_id_array};
 use super::payload::{Payload, PayloadData};
 use crate::array::{DType, NdArray};
 use crate::geometry::affine::is_proper_rotation;
@@ -170,16 +170,19 @@ pub fn encode_boxes(boxes: &ArrayD<f64>, cols: &ObjectColumns, slice_index: Opti
     }
     let stored = boxes.mapv(|v| v as f32);
     let (n, s) = (shape[0], shape[1]);
+    // Held as stored: a bound float32 cannot hold is infinite there.
     let mut bad = 0;
     for i in 0..n {
-        if (0..s).any(|k| stored[[i, k, 0]] > stored[[i, k, 1]]) {
+        if (0..s).any(|k| !box_axis_ok(stored[[i, k, 0]], stored[[i, k, 1]])) {
             bad += 1;
         }
     }
     if bad > 0 {
         return Err(Error::coded(
             "E406",
-            format!("{bad} box(es) have lo > hi; boxes are stored [lo, hi] at voxel edges"),
+            format!(
+                "{bad} box(es) have lo > hi, or a bound that is not finite; boxes are stored [lo, hi] at voxel edges"
+            ),
         ));
     }
     let mut p = Payload::new("boxes");
@@ -240,8 +243,12 @@ pub fn encode_obb(
     let c = centers.mapv(|v| v as f32);
     let s = sizes.mapv(|v| v as f32);
     let r = rotations.mapv(|v| v as f32);
-    if s.iter().any(|v| *v < 0.0) {
-        return Err(Error::coded("E406", "obb sizes must be non-negative"));
+    // `!(v >= 0)` holds a NaN too, which `v < 0` let through.
+    if s.iter().any(|v| !(*v >= 0.0 && v.is_finite())) {
+        return Err(Error::coded("E406", "obb sizes must be finite and non-negative"));
+    }
+    if c.iter().any(|v| !v.is_finite()) {
+        return Err(Error::coded("E406", "obb centers must be finite"));
     }
     for i in 0..n {
         let mut m = Array2::<f64>::zeros((dim, dim));
@@ -536,6 +543,7 @@ pub fn encode_mesh(
         p.datasets.insert("vertex_class_ids".into(), column.into());
     }
     if let Some(offsets) = mesh_offsets {
+        check_mesh_offsets(offsets, faces.shape()[0])?;
         p.datasets.insert("mesh_offsets".into(), NdArray::from_vec(&[offsets.len()], offsets.to_vec())?.into());
     }
     if let Some(ids) = mesh_class_ids {
@@ -549,6 +557,32 @@ pub fn encode_mesh(
     declared.extend(mesh_class_ids.unwrap_or(&[]));
     p.class_ids = sorted_unique(declared);
     Ok(p)
+}
+
+/// Refuse `mesh_offsets` that do not delimit the faces (§8.7): mesh *m* is
+/// faces `[o[m], o[m+1])`, so the table has an entry (E405), never falls or
+/// starts below 0, and ends at the number of faces (E408) --- as a file is
+/// validated, here rather than at commit.
+fn check_mesh_offsets(offsets: &[i64], n_faces: usize) -> Result<()> {
+    let Some(last) = offsets.last() else {
+        return Err(Error::coded(
+            "E405",
+            "`mesh_offsets` is empty; an offset table starts at 0, so it has at least one entry",
+        ));
+    };
+    if offsets[0] < 0 || offsets.windows(2).any(|w| w[1] < w[0]) {
+        return Err(Error::coded(
+            "E408",
+            format!("`mesh_offsets` {} are not monotonic from 0", crate::json::repr_int_list(offsets)),
+        ));
+    }
+    if *last != n_faces as i64 {
+        return Err(Error::coded(
+            "E408",
+            format!("last offset {last} != faces length {n_faces}; mesh m is faces [o[m], o[m+1])"),
+        ));
+    }
+    Ok(())
 }
 
 // -- classification ---------------------------------------------------------------------

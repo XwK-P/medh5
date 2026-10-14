@@ -192,10 +192,13 @@ fn suffix_list(suffixes: Option<Vec<String>>) -> Vec<String> {
 
 #[pyfunction]
 #[pyo3(signature = (root, *, suffixes=None))]
-fn dataset_find(root: PathBuf, suffixes: Option<Vec<String>>) -> R<Vec<String>> {
+fn dataset_find(py: Python<'_>, root: PathBuf, suffixes: Option<Vec<String>>) -> R<Vec<String>> {
     let suffixes = suffix_list(suffixes);
-    let refs: Vec<&str> = suffixes.iter().map(String::as_str).collect();
-    Ok(manifest::find_with(&root, &refs)?.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+    let found = py.detach(move || {
+        let refs: Vec<&str> = suffixes.iter().map(String::as_str).collect();
+        manifest::find_with(&root, &refs)
+    })?;
+    Ok(found.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
 }
 
 /// `(manifest JSON, failures)`; `on_error="raise"` re-raises the first.
@@ -295,8 +298,9 @@ fn dataset_manifest_load<'py>(py: Python<'py>, path: PathBuf) -> R<Bound<'py, Py
 }
 
 #[pyfunction]
-fn dataset_manifest_stale(doc: &Bound<'_, PyAny>) -> R<Vec<String>> {
-    Ok(manifest_arg(doc)?.stale())
+fn dataset_manifest_stale(py: Python<'_>, doc: &Bound<'_, PyAny>) -> R<Vec<String>> {
+    let found = manifest_arg(doc)?;
+    Ok(py.detach(move || found.stale()))
 }
 
 // -- splits ------------------------------------------------------------------------------------
@@ -430,7 +434,7 @@ fn dataset_split_load<'py>(py: Python<'py>, path: PathBuf) -> R<Bound<'py, PyAny
 // Python dataclasses' fields: the JSON form carries `std`, and rebuilding M2
 // from it would not be exact.
 
-type RawMoments = (u64, f64, f64, f64, f64);
+type RawMoments = (u64, f64, f64, f64, f64, u64);
 
 fn moments_of(obj: &Bound<'_, PyAny>) -> PyResult<stats::Moments> {
     Ok(stats::Moments {
@@ -439,11 +443,16 @@ fn moments_of(obj: &Bound<'_, PyAny>) -> PyResult<stats::Moments> {
         m2: obj.getattr("m2")?.extract()?,
         minimum: obj.getattr("minimum")?.extract()?,
         maximum: obj.getattr("maximum")?.extract()?,
+        // A `Moments` pickled before the field existed has none.
+        nonfinite: match obj.getattr("nonfinite") {
+            Ok(v) => v.extract()?,
+            Err(_) => 0,
+        },
     })
 }
 
 fn raw_moments(m: &stats::Moments) -> RawMoments {
-    (m.count, m.mean, m.m2, m.minimum, m.maximum)
+    (m.count, m.mean, m.m2, m.minimum, m.maximum, m.nonfinite)
 }
 
 fn stats_of(obj: &Bound<'_, PyAny>) -> PyResult<stats::DatasetStats> {
@@ -459,6 +468,10 @@ fn stats_of(obj: &Bound<'_, PyAny>) -> PyResult<stats::DatasetStats> {
             k,
             stats::ClassStats {
                 class_id: v.getattr("class_id")?.extract()?,
+                key: match v.getattr("key") {
+                    Ok(key) => key.extract()?,
+                    Err(_) => None,
+                },
                 voxels: v.getattr("voxels")?.extract()?,
                 present_in: v.getattr("present_in")?.extract()?,
                 examined_in: v.getattr("examined_in")?.extract()?,
@@ -476,8 +489,8 @@ fn stats_of(obj: &Bound<'_, PyAny>) -> PyResult<stats::DatasetStats> {
 }
 
 /// A statistics state as `{samples, physical, total_voxels, failures,
-/// images: {key: (count, mean, m2, min, max)}, classes: {id: (voxels,
-/// present_in, examined_in)}}`.
+/// images: {key: (count, mean, m2, min, max, nonfinite)}, classes: {id:
+/// (voxels, present_in, examined_in, key)}}`.
 fn raw_stats<'py>(py: Python<'py>, s: &stats::DatasetStats) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     out.set_item("samples", s.samples)?;
@@ -491,7 +504,7 @@ fn raw_stats<'py>(py: Python<'py>, s: &stats::DatasetStats) -> PyResult<Bound<'p
     out.set_item("images", images)?;
     let classes = PyDict::new(py);
     for (k, c) in &s.classes {
-        classes.set_item(k, (c.voxels, c.present_in, c.examined_in))?;
+        classes.set_item(k, (c.voxels, c.present_in, c.examined_in, c.key.as_deref()))?;
     }
     out.set_item("classes", classes)?;
     Ok(out)
@@ -574,9 +587,16 @@ fn dataset_stats_class_weights<'py>(py: Python<'py>, s: &Bound<'py, PyAny>, sche
 fn stats_options(
     images: Option<&Bound<'_, PyAny>>,
     annotations: Option<&Bound<'_, PyAny>>,
-    sample_stride: usize,
+    sample_stride: i64,
     physical: bool,
-) -> PyResult<stats::StatsOptions> {
+) -> R<stats::StatsOptions> {
+    // A stride of 0 read as 1, and a negative one raised `OverflowError`.
+    let Some(sample_stride) = usize::try_from(sample_stride).ok().filter(|s| *s >= 1) else {
+        return Err(medh5::Error::invalid(format!(
+            "sample_stride must be at least 1, not {sample_stride}: it reads every Nth plane"
+        ))
+        .into());
+    };
     Ok(stats::StatsOptions {
         images: opt_strings(images)?,
         annotations: opt_strings(annotations)?,
@@ -592,7 +612,7 @@ fn dataset_stats_for<'py>(
     path: PathBuf,
     images: Option<&Bound<'py, PyAny>>,
     annotations: Option<&Bound<'py, PyAny>>,
-    sample_stride: usize,
+    sample_stride: i64,
     physical: bool,
 ) -> R<Bound<'py, PyDict>> {
     let options = stats_options(images, annotations, sample_stride, physical)?;
@@ -608,7 +628,7 @@ fn dataset_compute_stats<'py>(
     images: Option<&Bound<'py, PyAny>>,
     annotations: Option<&Bound<'py, PyAny>>,
     workers: usize,
-    sample_stride: usize,
+    sample_stride: i64,
     physical: bool,
 ) -> R<Bound<'py, PyDict>> {
     let options = stats_options(images, annotations, sample_stride, physical)?;

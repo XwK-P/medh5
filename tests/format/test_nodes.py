@@ -8,6 +8,7 @@ attributes decoded and encoded as §2.5 fixes.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -78,6 +79,57 @@ class TestDataset:
             first, second = np.asarray(ds), np.asarray(ds)
             first[0, 0, 0] += 1
             assert second[0, 0, 0] == image[0, 0, 0], "each read its own array"
+
+    def test_S2_5_string_datasets_read_as_object_arrays(self, tmp_path: Path):
+        """A string dataset reads as an object array of ``str`` in its stored
+        shape, as a numeric one reads as its dtype, and a key means what it
+        means to NumPy.  ``read()`` and ``numpy.asarray`` refused one,
+        ``ds[...]`` raised, ``ds[0]`` of a 2-D dataset was one element, and a
+        scalar ignored its key."""
+        h5py = pytest.importorskip("h5py")
+        path = tmp_path / "strings.medh5"
+        with Flat.open_writer(path) as w:
+            w.add_classification(
+                "staging", {"lesion": 1.0}, schemes=["Lung-RADS"], scheme_values=["4A"]
+            )
+        table = np.array([["a", "b", "c"], ["d", "e", "ü"]], dtype=object)
+        with h5py.File(path, "a") as f:
+            f.create_dataset("x_ext/table", data=table, dtype=h5py.string_dtype())
+        with medh5.open(path) as sample:
+            staging = sample.annotations["staging"]
+            schemes = staging.group["schemes"]
+            assert schemes.dtype == object and schemes.shape == (1,)
+            for read in (
+                schemes.read(),
+                np.asarray(schemes),
+                schemes[...],
+                schemes[:,],
+            ):
+                assert isinstance(read, np.ndarray) and read.dtype == object
+                assert read.tolist() == ["Lung-RADS"] == list(staging.schemes)
+            assert schemes[0] == schemes[-1] == "Lung-RADS"
+            with pytest.raises(IndexError):
+                schemes[1]
+
+            meta = sample.root["meta"]
+            assert meta.shape == () and isinstance(meta[()], str)
+            whole = meta.read()
+            assert whole.shape == () == meta[...].shape and whole.dtype == object
+            assert json.loads(whole.item()) == json.loads(meta[()])
+            assert json.loads(np.asarray(meta).item())["identity"]["sample_id"]
+            with pytest.raises(IndexError):
+                meta[0]
+
+            stored = sample.root["x_ext/table"]
+            assert stored.shape == (2, 3)
+            assert np.array_equal(stored.read(), table)
+            assert stored[0].tolist() == ["a", "b", "c"]
+            assert stored[1, 2] == "ü" and stored[:, 1].tolist() == ["b", "e"]
+            assert np.asarray(stored, dtype=str).tolist() == table.tolist()
+            with pytest.raises(IndexError):
+                stored[2]
+            # The numeric path is untouched.
+            assert np.array_equal(sample.root["images/CT"][...], Flat.image())
 
 
 class TestAttrs:

@@ -37,9 +37,9 @@ use crate::document::SampleDocument;
 use crate::geometry::grid::AXIS_KINDS;
 use crate::h5::attrs;
 use crate::h5::data::{self, Kind};
-use crate::h5::ops::{self, Node, NodeKind};
+use crate::h5::ops::{self, LinkKind, Node, NodeKind};
 use crate::integrity::AttrNameMap;
-use crate::json::py_float;
+use crate::json::{py_float, repr_str};
 use crate::validate::Diagnostic;
 use crate::{Error, Result};
 
@@ -155,6 +155,11 @@ impl Context {
         }
     }
 
+    /// The members of one of the root's groups that are objects, in name
+    /// order.  One that resolves to no object --- a soft link to nothing ---
+    /// is not among them: [`check_container`] reports it (E001), once, for
+    /// every rule that reads the group, where it was dropped unseen and a
+    /// dangling annotation or transform passed every level.
     fn children(&self, group: &str) -> Result<Vec<(String, Node)>> {
         match ops::child_group(&self.root, group) {
             None => Ok(Vec::new()),
@@ -163,7 +168,8 @@ impl Context {
     }
 }
 
-/// The members of a group as nodes, in name order.
+/// The members of a group as nodes, in name order: the groups and datasets
+/// among them ([`unresolved`] says what the others are).
 pub fn children(group: &hdf5::Group) -> Result<Vec<(String, Node)>> {
     let mut out = Vec::new();
     for name in ops::members(group)? {
@@ -172,6 +178,34 @@ pub fn children(group: &hdf5::Group) -> Result<Vec<(String, Node)>> {
         }
     }
     Ok(out)
+}
+
+/// What a member of `group` is when it is neither a group nor a dataset ---
+/// a soft link to nothing, an external link, a committed type --- for a
+/// message; `None` when it is one of the two.  The readers refuse such a
+/// member in the same words (E001).
+pub(crate) fn unresolved(group: &hdf5::Group, name: &str) -> Option<String> {
+    match ops::node_kind(group, name) {
+        Some(NodeKind::Group | NodeKind::Dataset) => None,
+        Some(NodeKind::Other) if ops::link_kind(group, name) == Some(LinkKind::External) => {
+            Some("an external link, which leads out of the file".into())
+        }
+        Some(NodeKind::Other) => Some("neither a group nor a dataset".into()),
+        None => Some(match ops::soft_link_target(group, name) {
+            Ok(target) => format!("a soft link to {}, which names no object", repr_str(&target)),
+            Err(_) => "a link that resolves to no object".into(),
+        }),
+    }
+}
+
+/// What a member of `group` is, for a message: a group, a dataset, or what
+/// [`unresolved`] says.
+fn describe(group: &hdf5::Group, name: &str) -> String {
+    match ops::node_kind(group, name) {
+        Some(NodeKind::Group) => "a group".into(),
+        Some(NodeKind::Dataset) => "a dataset".into(),
+        _ => unresolved(group, name).unwrap_or_else(|| "absent".into()),
+    }
 }
 
 /// One member as a node.
@@ -197,9 +231,11 @@ fn sub_dataset(node: &Node, name: &str) -> Option<hdf5::Dataset> {
     }
 }
 
+/// Whether `node` holds the dataset `name`: a group of that name, or a link
+/// to nothing, is no dataset to read.
 fn has_member(node: &Node, name: &str) -> bool {
     match node {
-        Node::Group(g) => ops::exists(g, name),
+        Node::Group(g) => ops::is_dataset(g, name),
         Node::Dataset(_) => false,
     }
 }
@@ -261,6 +297,10 @@ fn kinds_known(grids: &hdf5::Group, grid_id: &str) -> Result<bool> {
 
 /// The rules a level runs, with their names.  Each level includes every
 /// earlier level's rules.
+///
+/// A level this validator does not know runs no rule: every rule, which it
+/// was given, passed a misspelt level for a full pass.  The validators refuse
+/// one before they ask ([`LEVELS`](crate::validate::LEVELS)).
 pub fn rules_for(level: &str) -> Vec<(&'static str, Rule)> {
     let structural: Vec<(&'static str, Rule)> = vec![
         ("check_container", check_container),
@@ -289,6 +329,7 @@ pub fn rules_for(level: &str) -> Vec<(&'static str, Rule)> {
     match level {
         "structural" => structural,
         "semantic" => [structural, semantic].concat(),
-        _ => [structural, semantic, integrity].concat(),
+        "integrity" | "strict" => [structural, semantic, integrity].concat(),
+        _ => Vec::new(),
     }
 }

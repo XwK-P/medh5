@@ -17,6 +17,61 @@ use crate::json::repr_str;
 use crate::sample::Sample;
 use crate::{Error, Result};
 
+/// The local path a `file:` URI (RFC 8089) names, or `None` when `uri` is
+/// not one that names a path on this machine: its host is empty or
+/// `localhost`, its path is percent-decoded, and on Windows (`windows`) a
+/// drive path loses its leading slash (`file:///C:/x` is `C:/x`) and another
+/// host is a UNC share.  What Python's `Path.as_uri()` writes reads back as
+/// the path it was made from; stripping the prefix made `file://localhost/x`
+/// the relative `localhost/x`, left `%20` in a name, and joined `/C:/x` onto
+/// the base.
+fn file_uri_path(uri: &str, windows: bool) -> Option<String> {
+    let scheme = uri.get(..5).filter(|s| s.eq_ignore_ascii_case("file:"))?;
+    let rest = &uri[scheme.len()..];
+    let (host, path) = match rest.strip_prefix("//") {
+        Some(authority) => {
+            let at = authority.find('/').unwrap_or(authority.len());
+            (&authority[..at], &authority[at..])
+        }
+        None if rest.starts_with('/') => ("", rest),
+        None => return None,
+    };
+    let path = percent_decode(path)?;
+    let local = host.is_empty() || host.eq_ignore_ascii_case("localhost");
+    if !windows {
+        return local.then_some(path);
+    }
+    if !local {
+        return Some(format!(r"\\{host}{}", path.replace('/', r"\")));
+    }
+    let drive = path.as_bytes();
+    let drive_path = drive.len() >= 3
+        && drive[0] == b'/'
+        && drive[1].is_ascii_alphabetic()
+        && matches!(drive[2], b':' | b'|')
+        && drive.get(3).is_none_or(|c| *c == b'/');
+    Some(if drive_path { format!("{}:{}", &path[1..2], &path[3..]) } else { path })
+}
+
+/// `%XX` escapes decoded, or `None` for a malformed escape or a path that
+/// is not UTF-8 once decoded.
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = text.get(i + 1..i + 3).filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 /// One sample, standalone or a collection member, at a pinned version.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SourceRef {
@@ -66,9 +121,9 @@ impl SourceRef {
     }
 
     /// The file the locator names, relative to `base` when it is relative.
+    /// A `file:` URI is decoded as [`file_uri_path`] decodes it.
     pub fn resolve(&self, base: Option<&Path>) -> PathBuf {
-        let text = self.uri.strip_prefix("file://").unwrap_or(&self.uri);
-        let path = PathBuf::from(text);
+        let path = file_uri_path(&self.uri, cfg!(windows)).map_or_else(|| PathBuf::from(&self.uri), PathBuf::from);
         match base {
             Some(b) if path.is_relative() => b.join(path),
             _ => path,
@@ -211,5 +266,34 @@ impl SourceRef {
             content_id: text("content_id").ok_or_else(|| Error::invalid("a source pins its `content_id`"))?,
             local_subject_id: text("local_subject_id"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s2_a_file_uri_names_the_path_it_was_made_from() {
+        for (uri, posix, windows) in [
+            ("file:///data/a%20b.medh5", Some("/data/a b.medh5"), Some("/data/a b.medh5")),
+            ("file://localhost/data/x.medh5", Some("/data/x.medh5"), Some("/data/x.medh5")),
+            ("FILE:/data/%C3%A9.medh5", Some("/data/é.medh5"), Some("/data/é.medh5")),
+            ("file:///C:/data/x.medh5", Some("/C:/data/x.medh5"), Some("C:/data/x.medh5")),
+            ("file:///c|/x.medh5", Some("/c|/x.medh5"), Some("c:/x.medh5")),
+            ("file://server/share/x.medh5", None, Some(r"\\server\share\x.medh5")),
+            ("file:///bad%2", None, None),
+            ("file:///bad%+1", None, None),
+            ("file:relative.medh5", None, None),
+            ("data/x.medh5", None, None),
+        ] {
+            assert_eq!(file_uri_path(uri, false).as_deref(), posix, "{uri}");
+            assert_eq!(file_uri_path(uri, true).as_deref(), windows, "{uri}");
+        }
+        let at = |uri: &str| SourceRef::new(uri, None, "").resolve(Some(Path::new("/base")));
+        if cfg!(unix) {
+            assert_eq!(at("file://localhost/data/x.medh5"), PathBuf::from("/data/x.medh5"));
+        }
+        assert_eq!(at("x.medh5"), PathBuf::from("/base/x.medh5"));
     }
 }

@@ -59,20 +59,30 @@ fn main() -> medh5::Result<()> {
 | Module | Specification |
 |---|---|
 | [`sample`] | §2, §4, §14.4 — reading (`Sample`) and writing (`SampleWriter`, `create`, `amend`) |
+| [`document`] | §2.4 — the sample document, everything in `/meta` |
+| [`ids`] | §2.2, §2.3 — identifier rules |
 | [`geometry`] | §3 — grids, affines, frames, multiscale |
-| [`annotations`] | §5–§9 — the voxel and geometric encodings, headers, coverage |
-| [`transforms`] | §10 — affine, displacement, B-spline and composite transforms |
 | [`labels`] | §5 — label sets, hierarchies and ontology codes |
+| [`annotations`] | §6–§9 — the voxel and geometric encodings, headers, coverage |
+| [`transforms`] | §10 — affine, displacement, B-spline and composite transforms |
 | [`curation`] | §11, §12 — identity, provenance, quality, timelines, splits, scrubbing |
-| [`integrity`] | §13 — per-object digests and `content_id` |
+| [`integrity`], [`digest`] | §13 — per-object digests and `content_id`; the hash algorithms and digest strings |
 | [`storage`] | §14 — codec profiles, chunking, the sampling index |
 | [`validate`] | §15 — the validator and its diagnostic codes ([`codes`]) |
 | [`collection`] | §2.2 — packing samples into a `.medh5c` shard |
+| [`convert`] | Appendix B — the 0.x migration, and the `ConversionReport` every importer fills |
+| [`array`] | `NdArray`, the array every reader returns and every writer takes |
 | [`dataset`], [`sampling`] | cohort manifests, splits, statistics; patch sampling |
+| [`bench`] | reproducing the performance targets |
 | [`conformance`] | the conformance corpus third-party implementations run |
 | [`version`] | 1.1 §2 — which versions are read fully, read as a projection, or refused |
 | [`clinical`] | 1.1 §3–§10 — the clinical profile: records, columns, checks, selection, augmentation |
 | [`companion`] | task-cache-1 — task manifests, source pins, preflight row views, feature caches |
+
+`h5`, `json`, `numeric`, `pyval` and `rng` are public too, and are the engine's
+plumbing rather than the format: HDF5 access below the high-level API, the
+format's exact JSON serialisations, NumPy-compatible reductions, the 1.x value
+coercions, and the generator behind sampling.
 
 Errors are one [`Error`] type whose diagnostic code, when it has one, is the
 code the validator reports for the same defect (§15.2, [1.1] §11.2).
@@ -86,6 +96,12 @@ code the validator reports for the same defect (§15.2, [1.1] §11.2).
 [`medh5-cli`]: https://crates.io/crates/medh5-cli
 [`medh5-sys`]: https://crates.io/crates/medh5-sys
 [`sample`]: https://docs.rs/medh5/latest/medh5/sample/
+[`document`]: https://docs.rs/medh5/latest/medh5/document/
+[`ids`]: https://docs.rs/medh5/latest/medh5/ids/
+[`digest`]: https://docs.rs/medh5/latest/medh5/digest/
+[`convert`]: https://docs.rs/medh5/latest/medh5/convert/
+[`array`]: https://docs.rs/medh5/latest/medh5/array/
+[`bench`]: https://docs.rs/medh5/latest/medh5/bench/
 [`geometry`]: https://docs.rs/medh5/latest/medh5/geometry/
 [`annotations`]: https://docs.rs/medh5/latest/medh5/annotations/
 [`transforms`]: https://docs.rs/medh5/latest/medh5/transforms/

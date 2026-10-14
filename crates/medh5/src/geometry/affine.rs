@@ -193,8 +193,10 @@ pub fn box_to_slices(bbox: &[f64], shape: Option<&[usize]>) -> Result<Vec<SliceB
             )));
         }
     }
-    if (0..s).any(|k| bbox[2 * k] > bbox[2 * k + 1]) {
-        return Err(Error::coded("E406", "box has lo > hi on at least one axis"));
+    // `lo > hi` is false for a NaN, which became voxel 0 (`NaN as i64`), and
+    // an infinite bound a slice to the end of the integers.
+    if (0..s).any(|k| !(bbox[2 * k].is_finite() && bbox[2 * k + 1].is_finite() && bbox[2 * k] <= bbox[2 * k + 1])) {
+        return Err(Error::coded("E406", "box has lo > hi, or a bound that is not finite, on at least one axis"));
     }
     let mut out = Vec::with_capacity(s);
     for k in 0..s {
@@ -311,6 +313,20 @@ mod tests {
         assert_eq!(box_to_slices(&[2.0, 3.0], None).unwrap(), vec![(2, 3)]);
         assert_eq!(slices_to_box(&[(12, 40)]), vec![11.5, 39.5]);
         assert_eq!(box_to_slices(&[2.0, 1.0], None).unwrap_err().code(), Some("E406"));
+    }
+
+    /// `lo > hi` is false for a NaN: a NaN bound became voxel 0 and an
+    /// infinite one a slice to the end of the integers, clipped or not.
+    #[test]
+    fn s8_1_a_bound_that_is_not_finite_is_e406() {
+        let (nan, inf) = (f64::NAN, f64::INFINITY);
+        for (lo, hi) in [(nan, 4.0), (0.0, nan), (nan, nan), (-inf, 4.0), (0.0, inf), (-inf, inf), (inf, inf)] {
+            let bbox = [0.0, 1.0, lo, hi];
+            for shape in [None, Some(&[4, 10][..])] {
+                assert_eq!(box_to_slices(&bbox, shape).unwrap_err().code(), Some("E406"), "{bbox:?} {shape:?}");
+            }
+        }
+        assert_eq!(box_to_slices(&[0.0, 1.0, -0.5, 9.5], Some(&[4, 10])).unwrap(), vec![(0, 1), (0, 10)]);
     }
 
     #[test]

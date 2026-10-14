@@ -1,5 +1,5 @@
-//! Revision chains and prospective selection at a cutoff (1.1 §9;
-//! task-and-cache contract §4).
+//! Revision chains and prospective selection at a cutoff (1.1 §9; the
+//! policy is the task-and-cache contract's §3.4).
 //!
 //! What a model may see at cutoff `c` is decided here, once, for every
 //! frontend.  Strictly:
@@ -11,7 +11,9 @@
 //!    straddles `c` makes the whole selection **uncertifiable**, because the
 //!    record's absence would then depend on history after the cutoff;
 //! 3. the task's kinds, context window, plan and static policy;
-//! 4. only the links and payloads those versions attest.
+//! 4. only the payloads those versions own, and the links --- with their
+//!    payloads --- that an eligible version (one from step 2) asserts between
+//!    admitted events and documents.
 //!
 //! Stable ids break ties for *storage*; they are not evidence of order.  Two
 //! events whose ordering times overlap share a tie group, and an event limit
@@ -410,7 +412,8 @@ enum Attests {
     /// payload, attested when its source is selected.
     Structure { source: usize },
     /// A link carrying `asserted_by_event_id`, attested when that version is
-    /// selected and its event and document endpoints are admitted too.
+    /// eligible (steps 1-2) and its event and document endpoints are
+    /// admitted.
     Assertion { by: usize, source: Option<usize>, target: Option<usize> },
 }
 
@@ -496,6 +499,15 @@ impl<'a> Prepared<'a> {
                 continue;
             }
             current.push(chain[k]);
+        }
+        // What may attest: a version known at the cutoff and current in its
+        // record, whatever the filters below admit as input (1.1 §7.3).  They
+        // choose what a row reads; requiring an asserter to pass them withdrew
+        // known evidence --- an asserting procedure of unknown time, of a kind
+        // the task does not read, or cut by a limit attested nothing.
+        let mut eligible = vec![false; events.len()];
+        for &i in &current {
+            eligible[i] = true;
         }
         let status = match (policy.selection.as_str(), uncertain_records.is_empty()) {
             ("latest_provable", _) => "provable",
@@ -646,7 +658,7 @@ impl<'a> Prepared<'a> {
         let mut asserted: Vec<(usize, String, String)> = Vec::new();
         for (i, how) in &self.attests {
             let Attests::Assertion { by, source, target } = how else { continue };
-            if !chosen[*by] {
+            if !eligible[*by] {
                 continue;
             }
             let (fragment, l) = self.links[*i];
@@ -921,6 +933,63 @@ mod tests {
         assert!(s.admits(0, "image", "CT_tp0"));
         assert!(!s.admits(0, "image", "CT_tp1"));
         assert!(!s.admits(0, "annotation", "lesions_tp0"), "a later grounding is not available at baseline");
+    }
+
+    #[test]
+    fn s7_3_an_asserting_version_need_only_be_eligible() {
+        let mut ct0 = version("ct0", "ct0", 60 * HOUR, Some((61 * HOUR, 61 * HOUR)));
+        ct0.kind = "imaging".into();
+        let mut g = version("g", "g", -10 * HOUR, Some((72 * HOUR, 72 * HOUR)));
+        g.kind = "procedure".into();
+        let image = Link::new(("event", "ct0"), "describes", ("image", "CT_tp0"));
+        let mut seg = Link::new(("event", "ct0"), "describes", ("annotation", "seg"));
+        seg.asserted_by_event_id = Some("g".into());
+        let newer = sup("g_v2", "g");
+        let at = |events: &[Event], policy: &SelectionPolicy| {
+            select(events, &[(0, &image), (0, &seg), (0, &newer)], 100 * HOUR, policy).unwrap()
+        };
+        let strict = SelectionPolicy::strict();
+        assert!(at(&[ct0.clone(), g.clone()], &strict).admits(0, "annotation", "seg"));
+        // Each filter chooses what a row reads; none withdraws what g, known at
+        // the cutoff, asserts.  Each withdrew it.
+        let mut unknown_time = g.clone();
+        unknown_time.temporal_type = "unknown".into();
+        unknown_time.effective_start = None;
+        let mut planned = g.clone();
+        planned.status = "planned".into();
+        let mut kinds = strict.clone();
+        kinds.kinds = Some(vec!["imaging".into()]);
+        let mut window = strict.clone();
+        window.context_us = Some(50 * HOUR);
+        let mut limit = strict.clone();
+        limit.max_events = Some(1);
+        for (asserter, policy) in
+            [(&unknown_time, &strict), (&planned, &strict), (&g, &kinds), (&g, &window), (&g, &limit)]
+        {
+            let events = [ct0.clone(), asserter.clone()];
+            let s = at(&events, policy);
+            assert_eq!(ids(&s, &events), ["ct0"], "{policy:?}");
+            assert!(s.admits(0, "annotation", "seg"), "{asserter:?} {policy:?}");
+            assert_eq!(s.links, [0, 1]);
+        }
+        // Evidence not known at the cutoff, withdrawn, or replaced by a newer
+        // version by then attests nothing.
+        let mut late = g.clone();
+        late.available = Some(Bounds::exact(200 * HOUR));
+        let mut unknown = g.clone();
+        unknown.available = None;
+        let mut withdrawn = g.clone();
+        withdrawn.status = "entered_in_error".into();
+        let mut g_v2 = version("g_v2", "g", -10 * HOUR, Some((80 * HOUR, 80 * HOUR)));
+        g_v2.kind = "procedure".into();
+        for events in [vec![late], vec![unknown], vec![withdrawn], vec![g.clone(), g_v2]] {
+            let events = [vec![ct0.clone()], events].concat();
+            assert!(!at(&events, &strict).admits(0, "annotation", "seg"), "{events:?}");
+        }
+        // The link's event endpoint must still be admitted.
+        let mut procedures = strict.clone();
+        procedures.kinds = Some(vec!["procedure".into()]);
+        assert!(!at(&[ct0, g], &procedures).admits(0, "annotation", "seg"));
     }
 
     #[test]

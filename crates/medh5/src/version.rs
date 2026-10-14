@@ -36,30 +36,28 @@ pub enum Support {
     Unsupported,
 }
 
-/// `(major, minor)` of a version string; a bare major reads as minor 0.
+/// `(major, minor)` of a version string: `MAJOR.MINOR`, each a run of ASCII
+/// digits; a bare major reads as minor 0.  Nothing else parses: whitespace
+/// and signs are no part of a version (1.0 §2.1).
 pub fn parse(version: &str) -> Option<(u32, u32)> {
-    let text = version.trim();
-    match text.split_once('.') {
-        None => Some((text.parse().ok()?, 0)),
-        Some((major, minor)) => Some((major.trim().parse().ok()?, minor.trim().parse().ok()?)),
-    }
+    let number = |text: &str| if text.bytes().all(|b| b.is_ascii_digit()) { text.parse().ok() } else { None };
+    let (major, minor) = version.split_once('.').unwrap_or((version, "0"));
+    Some((number(major)?, number(minor)?))
 }
 
-/// The support a file of `version` gets.
+/// The support a file of `version` gets.  The major is the text before the
+/// first `.`, compared exactly: ` 1` or `01` is no major this engine
+/// implements.  The readers refuse the file this calls unsupported
+/// ([`crate::sample::require_major`]), so the two cannot disagree.
 pub fn support(version: &str) -> Support {
-    let (Some((major, minor)), Some((latest_major, latest_minor))) = (parse(version), parse(LATEST_VERSION)) else {
-        // `1.x` with a minor this engine cannot parse is still major 1.
-        return match version.trim().split('.').next() {
-            Some(m) if m.trim() == "1" => Support::Projection,
-            _ => Support::Unsupported,
-        };
-    };
-    if major != latest_major {
-        Support::Unsupported
-    } else if minor <= latest_minor {
-        Support::Full
-    } else {
-        Support::Projection
+    if version.split('.').next() != LATEST_VERSION.split('.').next() {
+        return Support::Unsupported;
+    }
+    match (parse(version), parse(LATEST_VERSION)) {
+        (Some((_, minor)), Some((_, latest))) if minor <= latest => Support::Full,
+        // A higher minor, or one this engine cannot parse (`1.x`, `1.0 `):
+        // still major 1, read as what this engine knows.
+        _ => Support::Projection,
     }
 }
 
@@ -149,6 +147,26 @@ mod tests {
         assert_eq!(later("1.1", "1.0"), "1.1");
         assert_eq!(required_for(&["core", "seg"]), "1.0");
         assert_eq!(required_for(&["core", "clinical"]), "1.1");
+    }
+
+    /// `parse` trimmed, and the readers compare the major as text: a file
+    /// of ` 1.0` was fully supported, amendable and validated, and no
+    /// reader would open it.
+    #[test]
+    fn s2_1_whitespace_is_no_part_of_a_version() {
+        // `01` is the number 1, but not the major the readers name.
+        for refused in [" 1.0", "01.0", "+1.0", "1 .0", "\t1.1"] {
+            assert_eq!(support(refused), Support::Unsupported, "{refused:?}");
+        }
+        // Major 1 with a minor that is no number: a projection, as `1.x`.
+        for unknown in ["1.0 ", "1. 0", "1.+1", "1.0\n"] {
+            assert_eq!(support(unknown), Support::Projection, "{unknown:?}");
+        }
+        for unparsed in [" 1.0", "+1.0", "1 .0", "1.0 ", "1. 0", "1.+1", "", "1."] {
+            assert_eq!(parse(unparsed), None, "{unparsed:?}");
+        }
+        assert_eq!(parse("1.10"), Some((1, 10)));
+        assert_eq!(parse("1"), Some((1, 0)));
     }
 
     #[test]

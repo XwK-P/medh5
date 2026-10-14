@@ -34,13 +34,49 @@ a usable negative example. A class in neither was not examined, and its absence
 carries no information. Training code that treats the second as a negative is
 learning from the annotator's schedule.
 
+### Closure
+
+`closure` says whether a class's `is_a` ancestors hold where it does (§5.4).
+Under `"explicit"`, the default, nothing is inferred: a class holds where it is
+stored. Under `"implicit"` every ancestor of a stored class holds too, and the
+readers answer that way: `dense()`, `contains()`, `voxel_counts()` and
+`class_bboxes()` give a class the voxels of every class in `class_ids` it is an
+ancestor of, in every encoding, and a classification's `state()` is
+`positive` for an ancestor of a class asserted above 0 in the same scope unit.
+What is stored stays literal: `labelmap()`, a classification's `value()`,
+`labels` and `asserted_class_ids`.
+
+```python
+from medh5.labels import LabelClass, LabelSet
+
+kidneys = LabelSet("kidneys", classes=[
+    LabelClass(1, "kidney", "Kidney"),
+    LabelClass(2, "left_kidney", "Left kidney", parents=[1]),
+])
+with medh5.create("kidneys.medh5", sample_id="k1") as w:
+    w.label_set(kidneys)
+    w.add_grid("ct", shape=(4, 4, 4), spacing=(1.0, 1.0, 1.0))
+    w.add_image("CT", np.zeros((4, 4, 4), np.int16), grid="ct", modality="CT")
+    w.add_classification("finding", {"left_kidney": 1.0},
+                         annotated_classes=["kidney", "left_kidney"],
+                         closure="implicit")
+
+with medh5.open("kidneys.medh5") as s:
+    finding = s.annotations["finding"]
+    assert finding.state("kidney") == "positive"   # a left kidney is a kidney
+    assert finding.value("kidney") is None         # nothing was asserted for it
+```
+
+Under `"explicit"` the same file would answer `negative` for `kidney`: it was
+examined, and nothing was asserted for it.
+
 An **ignore** region marks voxels that must not contribute to a loss in either
 direction. It is not a class: in band (`labelmap`, `layers`) its voxels hold
 the annotation's `ignore_id` (`65535` unless the header says otherwise), and
 under the other encodings it is a separate `mask` annotation:
 
 ```python
-ann.has_ignore_region      # is there one at all?
+ann.has_ignore_region      # is any voxel ignored, in band or in the sibling mask?
 ann.header.ignore_mask     # the id of a separate mask annotation, or None
 ann.ignore_mask(roi=roi)   # labelmap and layers only --- see below
 ```
@@ -48,6 +84,10 @@ ann.ignore_mask(roi=roi)   # labelmap and layers only --- see below
 The ignore id is not a class, so `dense([65535])` is refused with `E404`
 rather than returning a plane — an all-zero mask would be indistinguishable
 from "examined, and absent", and the ignored voxels would go into the loss.
+The same holds for an `ignore_id` the header declares, and for `0`, background:
+`dense()` and `contains()` refuse both (`E404`). A stored `ignore_id` outside
+`1..65535`, or one that is also a class id, is refused when the annotation is
+opened (`E404`).
 
 Where the region lives depends on the encoding, and the writer decides.
 `add_segmentation(..., ignore=region)` stores it in band under `labelmap` and
@@ -142,6 +182,12 @@ dropped**. Four cases:
 | anything → `mask` | A `mask` has no classes, so every class would merge into one volume and the coverage contract would be lost. Build a deliberate union with `encode_mask` and write it with `add_mask`. |
 | `instances` → dense | Every voxel survives and every `instance_id` does not — and `instance_id` is what tracking joins on across visits (§7.4). Refused unless you pass `drop_identity=True` (`--drop-identity`), which records a `transcode` activity saying identity was dropped. One-way: identity is not recoverable afterwards. |
 
+`medh5.annotations.voxel.transcode_payload`, which converts an encoded payload
+without a file, refuses the same conversions, and carries an in-band ignore
+region to `labelmap` and `layers`. `check_roundtrip(payload, kind)` transcodes
+a payload to `kind` and says whether every class mask and the in-band ignore
+region decode from the result as they did from the payload.
+
 One conversion loses something and is not refused, because §7.6 allows it: a
 `probmap` is lossless only under its `threshold` (§7.5). Converted to another
 encoding, it keeps the voxels at or above the threshold as the class, and its
@@ -190,6 +236,11 @@ b.boxes[0]              # [[1.5, 5.5], [3.5, 8.5], [4.5, 10.5]]
 b.as_slices()[0]        # (slice(2, 6), slice(4, 9), slice(5, 11))
 b.object_class_ids, b.scores, b.instance_ids   # one entry per box
 ```
+
+The columns are read once and returned read-only; copy one to edit it.
+`instance_ids` is optional (§8.2). Without it, iterating gives each box its
+0-based row as `instance_id`, which joins nothing across visits. A score that
+is not a number reads as `None`.
 
 `object_class_ids` is each box's class. `class_ids` is the header's coverage
 tuple, as on every annotation: every class the annotation can express, which
@@ -356,6 +407,12 @@ load("brats-subregions")
 ```
 
 Ids `0` (background) and `65535` (ignore) are reserved.
+
+`brats-subregions` uses the BraTS 2023 numbering: 1 necrotic tumour core,
+2 peritumoral edema, 3 enhancing tumour. Id 4 is not a BraTS label. It is a
+synthetic `tumor` parent of the three. BraTS releases up to 2021 label enhancing
+tumour 4, so relabel 4 to 3 before writing their masks with this vocabulary.
+Written unchanged, their enhancing tumour lands on the parent.
 
 ## Related
 

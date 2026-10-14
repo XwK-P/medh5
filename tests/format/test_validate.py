@@ -12,16 +12,19 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5.errors import CODES, MEDH5ValidationError
+from medh5.errors import CODES, MEDH5ValidationError, MEDH5VersionError
+from medh5.labels import LabelSet, Skeleton
 from medh5.validate import (
+    LEVELS,
     Diagnostic,
     Report,
     merge,
+    rules_for,
     validate_file,
     validate_paths,
     validate_root,
 )
-from tests.helpers import encode_attr, str_dtype, write_sample
+from tests.helpers import SHAPE, encode_attr, str_dtype, write_sample
 from tests.kits import Framed, History, Numbered, Organs
 
 
@@ -74,6 +77,17 @@ class TestLevels:
         ):
             validate_root(handle, level="paranoid")  # type: ignore[arg-type]
 
+    def test_S15_1_an_unknown_level_names_no_rules(self):
+        """`rules_for` answered a misspelt level with every rule, as if it were
+        the full pass; it is refused as the validators refuse it."""
+        with pytest.raises(ValueError, match="unknown validation level"):
+            rules_for("paranoid")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("level", LEVELS)
+    def test_S15_1_a_report_names_the_rules_its_level_runs(self, sample_path, level):
+        report = validate_file(sample_path, level=level)
+        assert tuple(report.checked["rules"]) == rules_for(level)
+
     def test_a_valid_sample_is_clean(self, sample_path):
         report = validate_file(sample_path, level="integrity")
         assert report.ok
@@ -83,6 +97,20 @@ class TestLevels:
         report = validate_file(tmp_path / "nope.medh5")
         assert not report.ok
         assert "E001" in report.codes
+
+    def test_S15_a_missing_file_is_reported_the_same_on_every_run(self, tmp_path):
+        """The report of a missing file was HDF5's error stack, which carries
+        the time of the call and an address: ``validate --json`` differed
+        from run to run, and could not be compared with an expected report."""
+        missing = tmp_path / "nope.medh5"
+        first = validate_file(missing)
+        assert first.dumps() == validate_file(missing).dumps()
+        [diagnostic] = first.diagnostics
+        assert diagnostic.code == "E001"
+        assert diagnostic.message.endswith(": no such file or directory")
+        [diagnostic] = validate_file(tmp_path).diagnostics
+        assert diagnostic.code == "E001"
+        assert diagnostic.message.endswith(": it is a directory, not a file")
 
     def test_validate_paths_returns_one_report_each(self, sample_path):
         reports = validate_paths([sample_path, sample_path])
@@ -137,6 +165,81 @@ class TestRules:
             handle.attrs["medh5_version"] = ""
         assert at(validate_file(sample_path, level="structural"), "/") == ["E001"]
 
+    def test_S2_1_a_version_that_is_not_a_string_is_E001(self, sample_path):
+        """§2.1 makes `medh5_version` a string; a number was read as its text
+        and passed."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle.attrs["medh5_version"] = 1
+        assert at(validate_file(sample_path, level="structural"), "/") == ["E001"]
+
+    @pytest.mark.parametrize(
+        "version",
+        ["1.0", "1", "1.1", "1.2", "1.x", "1.0 ", " 1.0", "01.0", "2.0", "0.9", "x"],
+    )
+    def test_S2_1_the_validator_refuses_the_versions_the_reader_refuses(
+        self, sample_path, version
+    ):
+        """E002 is the readers' own refusal of a major: the validator passes no
+        file `open` refuses for its version, and refuses none it reads."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle.attrs["medh5_version"] = version
+        try:
+            with medh5.open(sample_path):
+                refused = False
+        except MEDH5VersionError:
+            refused = True
+        assert ("E002" in codes(sample_path, "structural")) is refused
+
+    @pytest.mark.parametrize(
+        "version, support",
+        [
+            ("1.0", "full"),
+            ("1", "full"),
+            ("1.2", "projection"),
+            ("1.0 ", "projection"),
+            ("1. 0", "projection"),
+            (" 1.0", None),
+            ("01.0", None),
+            ("+1.0", None),
+        ],
+    )
+    def test_S2_1_whitespace_is_no_part_of_a_version(
+        self, sample_path, version, support
+    ):
+        """`MAJOR.MINOR` (§2.1; 1.1 §2).  The support a version gets trimmed
+        it, and the readers did not: ` 1.0` was a fully supported version no
+        reader opens, and `1.0 ` was validated and amended as 1.0.  Before the
+        major, whitespace or a sign is another major; after it, a minor this
+        engine does not know: read as a projection, and never amended."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle.attrs["medh5_version"] = version
+        before = sample_path.read_bytes()
+        if support is None:
+            with pytest.raises(MEDH5VersionError):
+                medh5.open(sample_path)
+            with pytest.raises(MEDH5VersionError):
+                medh5.amend(sample_path)
+            assert sample_path.read_bytes() == before
+            return
+        with medh5.open(sample_path) as sample:
+            assert sample.support == support
+        warned = "W913" in at(validate_file(sample_path, level="structural"), "/")
+        assert warned is (support == "projection")
+        if support == "projection":
+            with pytest.raises(MEDH5VersionError):
+                medh5.amend(sample_path)
+            assert sample_path.read_bytes() == before
+
+    def test_S2_1_another_major_is_not_read_as_this_one(self, sample_path):
+        """Every rule still ran after E002, so a file of another major was
+        reported for every way it is not a 1.x file (§2.1: readers refuse it)."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle.attrs["medh5_version"] = "2.0"
+            del handle["meta"]
+        report = validate_file(sample_path, level="strict")
+        assert [d.code for d in report.diagnostics] == ["E002"]
+        assert report.checked["rules"] == ["check_container"]
+
     def test_missing_meta_is_reported(self, sample_path):
         with h5py.File(sample_path, "r+") as handle:
             del handle["meta"]
@@ -157,6 +260,19 @@ class TestRules:
         with h5py.File(longitudinal_path, "r+") as handle:
             handle["grids/ct_tp1"].attrs["frame_uid"] = encode_attr("pseudo:frame-tp0")
         assert "W910" in codes(longitudinal_path)
+
+    def test_S3_7_a_transform_to_an_atlas_relates_no_two_timepoints(self, tmp_path):
+        """One end in a frame no grid is in counted as another timepoint, so a
+        lone registration to an atlas silenced W911 for visits nothing
+        relates."""
+        path = visits(tmp_path / "v.medh5", ("F0", "ATLAS"))
+        assert at(validate_file(path), "/transforms") == ["W911"]
+
+    def test_S3_7_two_visits_registered_to_one_atlas_are_related(self, tmp_path):
+        path = visits(tmp_path / "v.medh5", ("F0", "ATLAS"), ("F1", "ATLAS"))
+        assert "W911" not in codes(path)
+        path = visits(tmp_path / "w.medh5", ("F0", "F1"))
+        assert "W911" not in codes(path)
 
     def test_S7_7_partial_coverage_without_ignore_warns(
         self, tmp_path, label_set, masks
@@ -248,6 +364,140 @@ class TestRules:
 
     def test_S15_2_E603_names_agents_too(self):
         assert medh5.CODES["E603"].summary == "unknown agent or activity type"
+
+
+class TestAnnotationHeaders:
+    """§6.2, §7.2, §7.3, §7.7: what a reader assumes of an annotation's header
+    and the tables beside its data.  Unchecked, a missing `closure` read as
+    `explicit`, an `ignore_id` of 0 made all background ignored, and a class
+    given no bit or no layer read as absent everywhere --- a negative nobody
+    looked for."""
+
+    @staticmethod
+    def _encoded(path: Path, label_set: Any, masks: Any, encoding: str) -> Path:
+        if encoding == "labelmap":
+            masks = {1: masks[1], 2: masks[2]}  # a labelmap's classes are disjoint
+        return write_sample(path, label_set=label_set, masks=masks, encoding=encoding)
+
+    @pytest.mark.parametrize("attribute", ["task", "closure", "class_ids"])
+    def test_S6_2_a_missing_required_attribute_is_E412(
+        self, tmp_path, label_set, masks, attribute
+    ):
+        path = self._encoded(tmp_path / "a.medh5", label_set, masks, "labelmap")
+        with h5py.File(path, "r+") as handle:
+            del handle["annotations/organs_tp0"].attrs[attribute]
+        report = validate_file(path, level="structural")
+        found = [d for d in report.diagnostics if d.location.startswith("/annotations")]
+        assert [d.code for d in found] == ["E412"], found
+        assert attribute in found[0].message
+
+    @pytest.mark.parametrize(
+        ("ignore_id", "finding"),
+        [
+            (0, "outside 1..65535"),
+            (70000, "outside 1..65535"),
+            (2, "a class id"),
+            (255, None),
+        ],
+    )
+    def test_S7_7_a_stored_ignore_id_is_a_uint16_no_class_uses(
+        self, tmp_path, label_set, masks, ignore_id, finding
+    ):
+        path = self._encoded(tmp_path / "a.medh5", label_set, masks, "labelmap")
+        with h5py.File(path, "r+") as handle:
+            handle["annotations/organs_tp0"].attrs["ignore_id"] = np.int64(ignore_id)
+        report = validate_file(path)
+        found = [d for d in report.diagnostics if d.location.startswith("/annotations")]
+        if finding is None:
+            assert found == []
+        else:
+            assert [d.code for d in found] == ["E404"] and finding in found[0].message
+
+    @pytest.mark.parametrize(
+        ("positions", "expected"),
+        [
+            ([1, 1, 3], ["E404", "E404"]),
+            ([[1, 2, 3]], ["E405"]),
+            ([1, 2], ["E404", "E405"]),
+        ],
+        ids=["a class twice and one never", "two-dimensional", "a class without a bit"],
+    )
+    def test_S7_3_each_class_has_one_bit(
+        self, tmp_path, label_set, masks, positions, expected
+    ):
+        path = self._encoded(tmp_path / "a.medh5", label_set, masks, "bitmask")
+        with h5py.File(path, "r+") as handle:
+            group = handle["annotations/organs_tp0"]
+            del group["bit_class_ids"]
+            group.create_dataset("bit_class_ids", data=np.array(positions, np.uint16))
+        found = at(validate_file(path), "/annotations/organs_tp0/bit_class_ids")
+        assert sorted(found) == expected
+
+    @pytest.mark.parametrize(
+        "rows",
+        [[[1, 2], [3, 0], [0, 0]], [[1, 2]]],
+        ids=["a row too many", "one too few"],
+    )
+    def test_S7_2_each_layer_has_one_row(self, tmp_path, label_set, masks, rows):
+        path = self._encoded(tmp_path / "a.medh5", label_set, masks, "layers")
+        with h5py.File(path, "r+") as handle:
+            group = handle["annotations/organs_tp0"]
+            del group["layer_class_ids"]
+            group.create_dataset("layer_class_ids", data=np.array(rows, np.uint16))
+        found = at(validate_file(path), "/annotations/organs_tp0/layer_class_ids")
+        assert found == ["E405"]
+
+
+class TestNonFiniteValues:
+    """§8.2, §8.3, §10.3: a NaN compares false, so `lo > hi`, `size < 0` and
+    an affine's last-row check each passed one, and a reader cropped nothing,
+    or mapped every point to NaN."""
+
+    @staticmethod
+    def _boxes(path: Path) -> Path:
+        one = np.array([[4.0, 4.0, 4.0]], np.float32)
+        with Framed.writer(path) as w:
+            w.add_boxes(
+                "det", np.array([Framed.box(1, 3)], np.float32), ["c1"], grid="g"
+            )
+            w.add_obb(
+                "obb", one, one / 2, np.eye(3, dtype=np.float32)[None], ["c1"], grid="g"
+            )
+        return path
+
+    @pytest.mark.parametrize("value", [np.nan, -np.inf])
+    def test_S8_2_a_box_bound_that_is_not_finite_is_E406(self, tmp_path, value):
+        path = self._boxes(tmp_path / "b.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["annotations/det/boxes"][0, 0, 0] = value
+        report = validate_file(path)
+        (found,) = [d for d in report.diagnostics if d.location == "/annotations/det"]
+        assert found.code == "E406" and "not finite" in found.message
+
+    def test_S8_3_an_edge_length_that_is_not_finite_is_E406(self, tmp_path):
+        path = self._boxes(tmp_path / "b.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["annotations/obb/sizes"][0, 0] = np.nan
+        assert at(validate_file(path), "/annotations/obb") == ["E406"]
+
+    @pytest.mark.parametrize("value", [np.nan, np.inf])
+    def test_S8_3_a_centre_that_is_not_finite_is_E406(self, tmp_path, value):
+        # The writer refuses one; the validator checked only `sizes`.
+        path = self._boxes(tmp_path / "b.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["annotations/obb/centers"][0, 2] = value
+        report = validate_file(path)
+        (found,) = [d for d in report.diagnostics if d.location == "/annotations/obb"]
+        assert found.code == "E406" and "`centers`" in found.message
+
+    @pytest.mark.parametrize("value", [np.nan, np.inf])
+    def test_S10_3_an_affine_entry_that_is_not_finite_is_E504(self, tmp_path, value):
+        path = visits(tmp_path / "v.medh5", ("F0", "F1"))
+        with h5py.File(path, "r+") as handle:
+            handle["transforms/t0/matrix"][0, 1] = value
+        report = validate_file(path)
+        (found,) = [d for d in report.diagnostics if d.location == "/transforms/t0"]
+        assert found.code == "E504" and "not a finite number" in found.message
 
 
 class TestStoredProbabilities:
@@ -411,6 +661,48 @@ class TestStrings:
         (found,) = [d for d in report.diagnostics if d.code == "E004"]
         assert "scalar" in found.message
 
+    @staticmethod
+    def _undecodable(path: Path, name: str, old: bytes, new: bytes) -> Path:
+        """The scalar string *name* with *old* replaced by bytes that are not
+        UTF-8, under a UTF-8 declaration."""
+        with h5py.File(path, "r+") as f:
+            raw = f[name][()]
+            raw = raw if isinstance(raw, bytes) else raw.encode("utf-8")
+            assert old in raw
+            del f[name]
+            f.create_dataset(
+                name,
+                data=np.array(raw.replace(old, new), dtype=object),
+                dtype=h5py.string_dtype("utf-8"),
+            )
+        return path
+
+    def test_S2_4_a_meta_that_is_not_utf8_is_E004(self, tmp_path):
+        """Read lossily, a byte that is not UTF-8 became U+FFFD and the
+        document parsed: `subject_id` read back as `subj-\ufffd`."""
+        path = write_sample(tmp_path / "meta.medh5")
+        self._undecodable(path, "meta", b'"subj-A"', b'"subj-\xff"')
+        report = validate_file(path, level="structural")
+        (found,) = [d for d in report.diagnostics if d.location == "/meta"]
+        assert found.code == "E004"
+        assert "not valid UTF-8" in found.message
+
+    def test_S2_4_a_meta_of_numbers_is_E004(self, tmp_path):
+        """It stopped the rule as E001, "could not read the file"."""
+        path = self._meta(tmp_path / "meta.medh5", data=7)
+        report = validate_file(path, level="structural")
+        assert [(d.code, d.location) for d in report.diagnostics] == [("E004", "/meta")]
+
+    def test_S3_a_clinical_descriptor_that_is_not_utf8_is_E801(self, tmp_path):
+        """1.1 §3: `clinical/meta` is UTF-8 text, as `/meta` is."""
+        path = tmp_path / "h.medh5"
+        History.write(path)
+        self._undecodable(path, "clinical/meta", b'":"', b'":"\xfe')
+        report = validate_file(path, level="structural")
+        found = [d for d in report.diagnostics if d.location == "/clinical/meta"]
+        assert [d.code for d in found] == ["E801"]
+        assert "not valid UTF-8" in found[0].message
+
     def test_S14_5_strings_too_large_to_hold_are_reported(self, tmp_path):
         path = write_sample(tmp_path / "s.medh5")
         with h5py.File(path, "r+") as f:
@@ -571,6 +863,102 @@ class TestCorruptFiles:
         with medh5.open(sample_path) as sample:
             note = sample.root["images/CT_tp0"].attrs["x_note"]
         assert note == "ok\ufffd\ufffd"
+
+
+class TestNodeKinds:
+    """§2.3, §2.4, §4.2: what each object is, not only that it is there.  A
+    soft link to nothing, or a dataset where a group belongs, passed every
+    level --- strict too --- while the reader refused the file or read it
+    empty; so did an image of strings, which `read()` refused."""
+
+    @staticmethod
+    def _dangle(group: Any, name: str) -> None:
+        """*name* in *group* as a soft link that names no object."""
+        if name in group:
+            del group[name]
+        group[name] = h5py.SoftLink("/nowhere")
+
+    @staticmethod
+    def _replace(handle: Any, name: str, **dataset: Any) -> None:
+        """*name* as a dataset of *dataset*, keeping its attributes."""
+        kept = dict(handle[name].attrs)
+        del handle[name]
+        made = handle.create_dataset(name, **dataset)
+        for key, value in kept.items():
+            made.attrs[key] = value
+
+    def _edit(self, handle: Any, edit: str) -> None:
+        if edit == "meta is a group":
+            del handle["meta"]
+            handle.create_group("meta")
+        elif edit == "meta names nothing":
+            self._dangle(handle, "meta")
+        elif edit == "images names nothing":
+            self._dangle(handle, "images")
+        elif edit.endswith(" is a dataset") and edit.split()[0] in handle.keys() | {
+            "transforms"
+        }:
+            name = edit.split()[0]
+            if name in handle:
+                del handle[name]
+            handle.create_dataset(name, data=np.zeros(3))
+        elif edit == "an image names nothing":
+            self._dangle(handle["images"], "CT_tp0")
+        elif edit == "an annotation names nothing":
+            self._dangle(handle["annotations"], "organs_tp0")
+        elif edit == "a transform names nothing":
+            self._dangle(handle.create_group("transforms"), "t")
+        elif edit == "a grid is a dataset":
+            self._replace(handle, "grids/ct_tp0", data=np.zeros(3))
+        elif edit == "an image of strings":
+            self._replace(handle, "images/CT_tp0", data=np.full(SHAPE, b"ab", "S2"))
+        elif edit == "an image of compounds":
+            pairs = np.zeros(SHAPE, [("re", "<i2"), ("im", "<i2")])
+            self._replace(handle, "images/CT_tp0", data=pairs)
+        else:  # pragma: no cover
+            raise AssertionError(edit)
+
+    @pytest.mark.parametrize(
+        ("edit", "location", "code"),
+        [
+            ("meta is a group", "/meta", "E004"),
+            ("meta names nothing", "/meta", "E004"),
+            ("images names nothing", "/images", "E008"),
+            ("images is a dataset", "/images", "E008"),
+            ("grids is a dataset", "/grids", "E008"),
+            ("annotations is a dataset", "/annotations", "E008"),
+            ("transforms is a dataset", "/transforms", "E008"),
+            ("an image names nothing", "/images/CT_tp0", "E001"),
+            ("an annotation names nothing", "/annotations/organs_tp0", "E001"),
+            ("a transform names nothing", "/transforms/t", "E001"),
+            ("a grid is a dataset", "/grids/ct_tp0", "E109"),
+            ("an image of strings", "/images/CT_tp0", "E001"),
+            ("an image of compounds", "/images/CT_tp0", "E001"),
+        ],
+    )
+    def test_S2_3_an_object_of_the_wrong_kind_fails_every_level(
+        self, sample_path, edit, location, code
+    ):
+        with h5py.File(sample_path, "r+") as handle:
+            self._edit(handle, edit)
+        for level in LEVELS:
+            report = validate_file(sample_path, level=level)
+            assert code in at(report, location), (level, report.diagnostics)
+            assert not report.ok, level
+
+    def test_S4_1_an_images_group_of_nothing_holds_no_image(self, sample_path):
+        with h5py.File(sample_path, "r+") as handle:
+            self._dangle(handle["images"], "CT_tp0")
+        report = validate_file(sample_path, level="structural")
+        (found,) = [d for d in report.diagnostics if d.code == "E201"]
+        assert "no member of `images` is one" in found.message
+        # The reader refuses it as the file's defect, not as a missing name.
+        with (
+            medh5.open(sample_path) as sample,
+            pytest.raises(MEDH5ValidationError) as exc,
+        ):
+            sample.images["CT_tp0"].read()
+        assert exc.value.code == "E001"
 
 
 class TestStrictPromotion:
@@ -780,6 +1168,36 @@ def core_sample(path: Path, **grid: Any) -> Path:
     with medh5.create(path, codec="portable") as w:
         w.add_grid("g", shape=(4, 6, 6), spacing=(1.0, 1.0, 1.0), **grid)
         w.add_image("CT", np.zeros((4, 6, 6), np.int16), grid="g", modality="CT")
+    return path
+
+
+def visits(path: Path, *transforms: tuple[str, str]) -> Path:
+    """Two visits, `tp0` in frame F0 and `tp1` in F1, and an identity affine
+    for each (from, to) pair of frames, `t0`, `t1`, ..."""
+    with medh5.create(path, codec="portable") as w:
+        for tp, frame in (("tp0", "F0"), ("tp1", "F1")):
+            w.add_timepoint(tp)
+            w.add_grid(
+                f"ct_{tp}",
+                shape=(4, 6, 6),
+                spacing=(1.0, 1.0, 1.0),
+                timepoint=tp,
+                frame_uid=frame,
+            )
+            w.add_image(
+                f"CT_{tp}",
+                np.zeros((4, 6, 6), np.int16),
+                grid=f"ct_{tp}",
+                modality="CT",
+            )
+        for i, (source, target) in enumerate(transforms):
+            w.add_transform(
+                f"t{i}",
+                kind="affine",
+                from_frame=source,
+                to_frame=target,
+                matrix=np.eye(4),
+            )
     return path
 
 
@@ -1082,6 +1500,72 @@ class TestClinicalWithoutTheDocument:
         found = codes(path)
         assert "E005" in found
         assert "E813" not in found
+
+
+class TestReferencesWithoutTheDocument:
+    """§6.2, §8.4: an annotation's timepoints and a keypoint skeleton resolve
+    against `/meta`.  When it could not be read, each was reported undeclared
+    (E409) or unknown (E413) beside the real finding, as the clinical
+    references were (above)."""
+
+    @staticmethod
+    def _referring(path: Path, label_set: Any) -> Path:
+        skeletal = LabelSet(
+            label_set.id,
+            version=label_set.version,
+            classes=list(label_set.classes),
+            skeletons=[Skeleton("pair", (1, 2), ((1, 2),))],
+        )
+        points = np.array([[[2.0, 3.0, 4.0], [5.0, 6.0, 7.0]]], np.float32)
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(skeletal)
+            for tp in ("tp0", "tp1"):
+                w.add_timepoint(tp)
+                w.add_grid(
+                    f"ct_{tp}", shape=SHAPE, spacing=(1.0, 1.0, 1.0), timepoint=tp
+                )
+                w.add_image(
+                    f"CT_{tp}",
+                    np.zeros(SHAPE, np.int16),
+                    grid=f"ct_{tp}",
+                    modality="CT",
+                )
+            w.add_keypoints(
+                "spine",
+                points,
+                ["liver", "spleen"],
+                ["liver"],
+                grid="ct_tp0",
+                skeleton="pair",
+            )
+            w.add_classification(
+                "response",
+                {"liver": 1.0},
+                scope="sample",
+                multilabel=False,
+                timepoints=["tp0", "tp1"],
+            )
+        return path
+
+    def test_S6_2_an_unreadable_document_leaves_references_unjudged(
+        self, tmp_path, label_set
+    ):
+        path = self._referring(tmp_path / "r.medh5", label_set)
+        assert not {"E409", "E413"} & codes(path)
+        with h5py.File(path, "r+") as handle:
+            del handle["meta"]
+            handle.create_dataset("meta", data="{", dtype=str_dtype())
+        found = codes(path)
+        assert "E004" in found
+        assert not {"E409", "E413"} & found
+
+    def test_S8_4_a_skeleton_the_label_set_lacks_is_still_E413(
+        self, tmp_path, label_set
+    ):
+        path = self._referring(tmp_path / "r.medh5", label_set)
+        with h5py.File(path, "r+") as handle:
+            handle["annotations/spine"].attrs["skeleton"] = encode_attr("nope")
+        assert at(validate_file(path), "/annotations/spine") == ["E413"]
 
 
 class TestProjection:

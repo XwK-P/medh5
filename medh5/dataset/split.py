@@ -36,6 +36,10 @@ from medh5.dataset.manifest import Entry, Manifest
 
 DEFAULT_RATIOS: dict[str, float] = dict(_core.dataset_default_ratios())
 
+_EDITS = [0]
+"""Bumped by every change to any :class:`Assignment`, so a :class:`Split`'s
+cached lookup knows when its assignments may have moved."""
+
 
 @dataclass(slots=True)
 class Assignment:
@@ -46,6 +50,10 @@ class Assignment:
     fold: int | None = None
     stratum: str | None = None
     entries: tuple[str, ...] = ()
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        _EDITS[0] += 1
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -69,6 +77,36 @@ class Split:
     seed: int = 0
     k_folds: int | None = None
     ratios: Mapping[str, float] = field(default_factory=lambda: dict(DEFAULT_RATIOS))
+    _lookup: Any = field(default=None, init=False, repr=False, compare=False)
+
+    def _places(self) -> dict[str, tuple[str, int | None]]:
+        """``group -> (partition, fold)``, built once and kept while the
+        assignments stand: rebuilding the whole split per call made the
+        documented per-entry loop take 34 s at 3,000 subjects.
+
+        They stand while no :class:`Assignment` has changed and the list
+        still holds what it held.  An assignment put in another's place, or a
+        slice assigned, changes neither the list's identity nor its length,
+        so the list is compared with a copy taken when the lookup was built:
+        element by element, identity first, a pass over pointers when nothing
+        moved."""
+        state = (_EDITS[0], self.group_by)
+        if (
+            self._lookup is None
+            or self._lookup[0] != state
+            or self._lookup[1] != self.assignments
+        ):
+            places: dict[str, tuple[str, int | None]] = {}
+            for a in self.assignments:
+                fold = a.fold if type(a.fold) is int else None
+                places.setdefault(str(a.group), (str(a.partition), fold))
+            self._lookup = (state, list(self.assignments), places)
+        found: dict[str, tuple[str, int | None]] = self._lookup[2]
+        return found
+
+    def _place(self, entry: Entry) -> tuple[str, int | None] | None:
+        key = _core.dataset_group_keys([entry._fields()], self.group_by)[0]
+        return self._places().get(key)
 
     def _doc(self) -> dict[str, Any]:
         return {
@@ -83,14 +121,14 @@ class Split:
         }
 
     def partition_of(self, entry: Entry) -> str | None:
-        found: str | None = _core.dataset_split_partition_of(
-            self._doc(), entry._fields()
-        )
-        return found
+        """The partition *entry*'s group went to, or ``None``.  To list a
+        partition, :meth:`paths` is one call where this is one per entry."""
+        place = self._place(entry)
+        return None if place is None else place[0]
 
     def fold_of(self, entry: Entry) -> int | None:
-        found: int | None = _core.dataset_split_fold_of(self._doc(), entry._fields())
-        return found
+        place = self._place(entry)
+        return None if place is None else place[1]
 
     def paths(self, partition: str) -> tuple[str, ...]:
         """The entries of *partition*: a file's path, or ``path::key`` for a
@@ -222,13 +260,15 @@ def write_claims(
 
     Every refusal is met before the first file is amended, so a refused write
     leaves every file as it was: a ``fold`` the split lacks, a split whose
-    :meth:`~Split.leaks` is not empty, a sample inside a collection, and each
-    file amending would refuse --- a later minor version, an unknown profile,
-    HDF5 references, a file the validator rejects, or a dataset whose bytes
-    fail its digest (E701), which a commit refuses to restamp.  Only a failure
-    while writing, such as a full disk, can stop it part way.  A fold outside the
-    split's range was not a refusal at all: every file was written as
-    ``train``.
+    :meth:`~Split.leaks` is not empty, a *manifest* holding a sample the split
+    does not place --- one the split was not made from, whose claims would be
+    stale on arrival (C201) --- a sample inside a collection, and each file
+    amending would refuse --- a later minor version, an unknown profile, HDF5
+    references, a file the validator rejects, or a dataset whose bytes fail its
+    digest (E701), which a commit refuses to restamp.  Only a failure while
+    writing, such as a full disk, can stop it part way.  A manifest *filtered*
+    from the split's (``manifest.filter(...)``) is accepted: its samples are
+    all placed, and claim the split they belong to.
 
     Amending rewrites each file, so this is not free --- and it is optional.  A
     split is fully usable as a JSON file; the claim exists for the case where a

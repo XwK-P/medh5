@@ -19,6 +19,7 @@ from medh5.curation.agreement import (
     iou,
 )
 from medh5.errors import MEDH5ValidationError
+from medh5.labels import LabelClass, LabelSet
 from medh5.validate import validate_file
 from tests.helpers import SHAPE, block, lesion, write_raters
 from tests.kits import Framed
@@ -346,6 +347,19 @@ class TestAgreement:
             assert result.matched and result.matched[0][2] == pytest.approx(1.0)
             assert result.mean_iou == pytest.approx(1.0)
 
+    @pytest.mark.parametrize("threshold", [float("nan"), -1.0, 0.0, 1.5, float("inf")])
+    def test_an_iou_threshold_lies_in_0_to_1(self, tmp_path, label_set, threshold):
+        """As ``medh5 agree --threshold`` holds it.  The Python API took any
+        float: NaN matched no object, and 0 or less every pair, objects that
+        do not touch among them, each scored as agreement."""
+        path = write_raters(tmp_path / "raters.medh5", label_set)
+        with medh5.open(path) as sample:
+            a, b = sample.annotations["r1"], sample.annotations["r2"]
+            for measure in (compare_instances, compare):
+                with pytest.raises(MEDH5ValidationError, match=r"in \(0, 1\]"):
+                    measure(a, b, threshold=threshold)
+            assert compare_instances(a, b, threshold=1.0).threshold == 1.0
+
     def test_no_matches_scores_zero(self, tmp_path, label_set):
         path = write_raters(
             tmp_path / "nomatch.medh5",
@@ -584,3 +598,318 @@ class TestWorldUnits:
             assert compare_instances(
                 s.annotations["ras"], s.annotations["ras"]
             ).value == pytest.approx(1.0)
+
+
+class TestClassMeaningsAcrossFiles:
+    """A class id is a number within its own label set: compared across two
+    files, "liver" in one was scored against "spleen" in the other at a Dice
+    of 1.  An id the two label sets give two meanings is refused with C102,
+    the code ``dataset check`` gives the same clash in a cohort."""
+
+    @staticmethod
+    def _rater(path: Path, classes: dict[int, str] | None, found: int) -> Path:
+        """Class *found* drawn at one place, as a mask and as a box."""
+        mask = np.zeros(Framed.SHAPE, bool)
+        mask[2:4, 2:5, 2:5] = True
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_grid(
+                "g", shape=Framed.SHAPE, spacing=(2.0, 1.0, 1.0), frame_uid="1.2.3.4"
+            )
+            w.add_image("CT", np.zeros(Framed.SHAPE, np.int16), grid="g", modality="CT")
+            if classes is not None:
+                named = [LabelClass(i, k, k.title()) for i, k in classes.items()]
+                w.label_set(LabelSet("organs", version="1.0.0", classes=named))
+            w.add_segmentation(
+                "seg", grid="g", masks={found: mask}, annotated_classes=[found]
+            )
+            w.add_boxes(
+                "boxes",
+                np.array([Framed.box(2, 4)], np.float32),
+                [found],
+                grid="g",
+                annotated_classes=[found],
+            )
+        return path
+
+    def test_C102_an_id_meaning_two_classes_is_refused_not_scored(self, tmp_path: Path):
+        a = self._rater(tmp_path / "a.medh5", {1: "liver", 2: "spleen"}, 1)
+        b = self._rater(tmp_path / "b.medh5", {1: "spleen", 2: "liver"}, 1)
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            for name, compare_of in (
+                ("seg", compare_voxel),
+                ("boxes", compare_instances),
+                ("seg", compare),
+                ("boxes", compare),
+            ):
+                with pytest.raises(MEDH5ValidationError) as caught:
+                    compare_of(sa.annotations[name], sb.annotations[name])
+                assert caught.value.code == "C102"
+                message = str(caught.value)
+                assert "1 is 'liver' in the first and 'spleen' in the second" in message
+                assert "a.medh5" in message and "b.medh5" in message
+
+    def test_C102_a_class_name_is_one_id_on_both_sides(self, tmp_path: Path):
+        """'liver' is 1 in one file and 2 in the other: by name, the two sides
+        name two ids, and agreement compares one."""
+        a = self._rater(tmp_path / "a.medh5", {1: "liver", 2: "spleen"}, 1)
+        b = self._rater(tmp_path / "b.medh5", {1: "spleen", 2: "liver"}, 2)
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            for name, compare_of in (
+                ("seg", compare_voxel),
+                ("boxes", compare_instances),
+            ):
+                with pytest.raises(MEDH5ValidationError) as caught:
+                    compare_of(
+                        sa.annotations[name], sb.annotations[name], classes=["liver"]
+                    )
+                assert caught.value.code == "C102"
+                assert "'liver' is id 1" in str(caught.value)
+            # By id, each side has examined a class the other has not: an
+            # id only `b` uses is named by `b`'s label set.
+            result = compare_voxel(sa.annotations["seg"], sb.annotations["seg"])
+            assert result.value is None
+            assert result.skipped == (
+                "liver (not examined by both)",
+                "liver (not examined by both)",
+            )
+
+    def test_C102_label_sets_that_agree_on_the_class_compare_it(self, tmp_path: Path):
+        """A later version of the vocabulary that adds a class: the ids both
+        files use mean the same, and are scored."""
+        a = self._rater(tmp_path / "a.medh5", {1: "liver", 2: "spleen"}, 1)
+        b = self._rater(tmp_path / "b.medh5", {1: "liver", 2: "spleen", 3: "kidney"}, 1)
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            seg = (sa.annotations["seg"], sb.annotations["seg"])
+            assert compare_voxel(*seg).value == 1.0
+            assert compare_voxel(*seg, classes=["liver"]).per_class == {"liver": 1.0}
+            found = compare_instances(sa.annotations["boxes"], sb.annotations["boxes"])
+            assert found.value == pytest.approx(1.0)
+        # A class one vocabulary lacks is one the other side never examined.
+        c = self._rater(tmp_path / "c.medh5", {1: "liver"}, 1)
+        with medh5.open(a) as sa, medh5.open(c) as sc:
+            seg = (sa.annotations["seg"], sc.annotations["seg"])
+            assert compare_voxel(*seg).value == 1.0
+            spleen = compare_voxel(*seg, classes=["spleen"])
+            assert spleen.value is None
+            assert spleen.skipped == ("spleen (not examined by both)",)
+
+    def test_without_a_label_set_an_id_is_compared_as_a_number(self, tmp_path: Path):
+        a = self._rater(tmp_path / "a.medh5", None, 1)
+        b = self._rater(tmp_path / "b.medh5", None, 1)
+        labelled = self._rater(tmp_path / "c.medh5", {1: "liver"}, 1)
+        with medh5.open(a) as sa, medh5.open(b) as sb, medh5.open(labelled) as sc:
+            for other in (sb, sc):
+                seg = compare_voxel(sa.annotations["seg"], other.annotations["seg"])
+                assert seg.value == 1.0
+                found = compare_instances(
+                    sa.annotations["boxes"], other.annotations["boxes"]
+                )
+                assert found.value == pytest.approx(1.0)
+
+
+class TestInstanceIdsAreSampleScoped:
+    """§7.4: an `instance_id` names an object within its own sample.  Two
+    raters' files that each number from 1 matched disjoint lesions by id,
+    at an F1 of 1 and a mean IoU of 0."""
+
+    @staticmethod
+    def _rater(path: Path, places: list[tuple[int, int]], ids: list[int]) -> Path:
+        with Framed.writer(path) as w:
+            w.add_boxes(
+                "boxes",
+                np.array([Framed.box(lo, hi) for lo, hi in places], np.float32),
+                ["c1"] * len(places),
+                grid="g",
+                instance_ids=ids,
+            )
+        return path
+
+    def test_S7_4_two_files_objects_match_by_iou(self, tmp_path: Path):
+        a = self._rater(tmp_path / "a.medh5", [(0, 1), (2, 3)], [1, 2])
+        b = self._rater(tmp_path / "b.medh5", [(4, 5), (6, 7)], [1, 2])
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            result = compare_instances(sa.annotations["boxes"], sb.annotations["boxes"])
+            assert result.matched_by == "iou"
+            assert result.value == 0.0
+            assert result.mean_iou is None
+            assert (result.only_in_a, result.only_in_b) == ((0, 1), (0, 1))
+        # The same objects, numbered apart: matched by where they are.
+        c = self._rater(tmp_path / "c.medh5", [(0, 1), (2, 3)], [1, 3])
+        with medh5.open(a) as sa, medh5.open(c) as sc:
+            result = compare_instances(sa.annotations["boxes"], sc.annotations["boxes"])
+            assert result.matched_by == "iou"
+            assert result.value == pytest.approx(1.0)
+            assert [pair[:2] for pair in result.matched] == [(0, 0), (1, 1)]
+
+    def test_S7_4_within_one_sample_an_id_is_the_object(self, tmp_path: Path):
+        """Within one sample ids state the correspondence, and an id-matched
+        pair is paired whatever its IoU: its report gives no threshold."""
+        path = tmp_path / "one.medh5"
+        with Framed.writer(path) as w:
+            for name, places, ids in (
+                ("r1", [(0, 1), (2, 3)], [1, 2]),
+                ("r2", [(0, 1), (2, 3)], [1, 3]),
+            ):
+                w.add_boxes(
+                    name,
+                    np.array([Framed.box(lo, hi) for lo, hi in places], np.float32),
+                    ["c1", "c1"],
+                    grid="g",
+                    instance_ids=ids,
+                )
+        with medh5.open(path) as s:
+            result = compare_instances(s.annotations["r1"], s.annotations["r2"])
+            assert result.matched_by == "instance_id"
+            assert result.value == pytest.approx(0.5)
+            assert result.to_json()["threshold"] is None
+        with medh5.open(path) as first, medh5.open(path) as second:
+            across = compare_instances(
+                first.annotations["r1"], second.annotations["r2"]
+            )
+            assert across.matched_by == "iou"
+            assert across.to_json()["threshold"] == pytest.approx(0.5)
+
+    def test_the_command_line_reports_no_threshold_for_an_id_match(
+        self, tmp_path: Path, capsys
+    ):
+        from medh5.cli import main
+
+        path = tmp_path / "one.medh5"
+        with Framed.writer(path) as w:
+            for name in ("r1", "r2"):
+                w.add_boxes(
+                    name,
+                    np.array([Framed.box(0, 2)], np.float32),
+                    ["c1"],
+                    grid="g",
+                    instance_ids=[1],
+                )
+        assert main(["agree", str(path), "r1", "r2", "--json"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["matched_by"] == "instance_id" and report["threshold"] is None
+
+
+class TestBoxesOfOneSpace:
+    """§8.1: IoU is a ratio of two volumes of one space.  A 2-D box against
+    a 3-D one scored about 10, as an area over a volume, and matched; a box of
+    no axes scored 1; a NaN, infinite or inverted bound scored as a box."""
+
+    def test_S8_1_box_iou_refuses_what_is_not_two_boxes_of_one_space(self):
+        plane = np.array([[0.0, 1.0], [0.0, 1.0]])
+        volume = np.array([[0.0, 1.0], [0.0, 1.0], [0.0, 0.1]])
+        for pair in ((plane, volume), (volume, plane)):
+            with pytest.raises(ValueError, match="not in one space"):
+                box_iou(*pair)
+        with pytest.raises(ValueError, match="at least one axis"):
+            box_iou(np.zeros((0, 2)), np.zeros((0, 2)))
+        for bad in ([np.nan, 1.0], [0.0, np.inf], [-np.inf, 0.0], [1.0, 0.0]):
+            broken = np.array([bad, [0.0, 1.0]])
+            for pair in ((broken, plane), (plane, broken)):
+                with pytest.raises(MEDH5ValidationError) as caught:
+                    box_iou(*pair)
+                assert caught.value.code == "E406"
+        assert box_iou(volume, volume) == pytest.approx(1.0)
+        flat = np.array([[0.0, 0.0], [0.0, 1.0]])
+        assert box_iou(flat, flat) == 0.0
+
+    def test_E414_boxes_of_two_and_three_axes_are_not_compared(self, tmp_path: Path):
+        path = tmp_path / "mixed.medh5"
+        with medh5.create(path, sample_id="mixed", codec="portable") as w:
+            w.add_grid("g2", shape=(4, 4), spacing=(1.0, 1.0), frame_uid="1.2.3.4")
+            w.add_grid(
+                "g3", shape=(4, 4, 4), spacing=(1.0, 1.0, 1.0), frame_uid="1.2.3.4"
+            )
+            w.add_image("XR", np.zeros((4, 4), np.int16), grid="g2", modality="DX")
+            w.add_image("CT", np.zeros((4, 4, 4), np.int16), grid="g3", modality="CT")
+            w.label_set(Framed.label_set())
+            w.add_boxes(
+                "plane",
+                np.array([[[0, 1], [0, 1]]], np.float32),
+                ["c1"],
+                grid="g2",
+                space="world",
+            )
+            w.add_boxes(
+                "volume",
+                np.array([[[0, 1], [0, 1], [0, 0.1]]], np.float32),
+                ["c1"],
+                grid="g3",
+                space="world",
+            )
+        with medh5.open(path) as s:
+            plane, volume = s.annotations["plane"], s.annotations["volume"]
+            assert not s.grids["g2"].comparable_with(s.grids["g3"])
+            for pair, axes in (
+                ((plane, volume), "2 and 3"),
+                ((volume, plane), "3 and 2"),
+            ):
+                for compare_of in (compare_instances, compare):
+                    with pytest.raises(MEDH5ValidationError) as caught:
+                        compare_of(*pair)
+                    assert caught.value.code == "E414"
+                    assert f"boxes of {axes} spatial axes" in str(caught.value)
+
+    def test_E406_an_inverted_box_in_a_file_is_named_not_scored(self, tmp_path: Path):
+        """A box the writer would refuse, planted: refused by the comparison,
+        which names the object, rather than scored as the box of its
+        inversion."""
+        import h5py
+
+        path = tmp_path / "planted.medh5"
+        with Framed.writer(path) as w:
+            for name in ("r1", "r2"):
+                w.add_boxes(
+                    name, np.array([Framed.box(0, 2)], np.float32), ["c1"], grid="g"
+                )
+        with h5py.File(path, "r+") as f:
+            boxes = f["annotations/r2/boxes"]
+            planted = boxes[...]
+            planted[0, :2] = planted[0, :2, ::-1]
+            boxes[...] = planted
+        with medh5.open(path) as s, pytest.raises(MEDH5ValidationError) as caught:
+            compare_instances(s.annotations["r1"], s.annotations["r2"])
+        assert caught.value.code == "E406"
+        assert "annotation 'r2': object 0" in str(caught.value)
+
+
+class TestVoxelCountsReadTogether:
+    """Every class is counted from one read of each side, and agrees with the
+    per-class Dice of the masks themselves."""
+
+    def test_S11_2_many_classes_score_as_their_masks_do(self, tmp_path: Path):
+        rng = np.random.default_rng(7)
+        classes = 12
+        first = rng.integers(0, classes + 1, Framed.SHAPE)
+        second = np.where(
+            rng.random(Framed.SHAPE) < 0.3,
+            rng.integers(0, classes + 1, Framed.SHAPE),
+            first,
+        )
+        ignore = np.zeros(Framed.SHAPE, bool)
+        ignore[:, :, :3] = True
+        path = tmp_path / "many.medh5"
+        with Framed.writer(path) as w:
+            w.label_set(Framed.label_set(classes))
+            for name, labels, encoding, ignored in (
+                ("a", first, "labelmap", ignore),
+                ("b", second, "layers", None),
+            ):
+                w.add_segmentation(
+                    name,
+                    grid="g",
+                    masks={c: labels == c for c in range(1, classes + 1)},
+                    encoding=encoding,
+                    ignore=ignored,
+                )
+        with medh5.open(path) as s:
+            a, b = s.annotations["a"], s.annotations["b"]
+            dice_of = compare_voxel(a, b)
+            iou_of = compare_voxel(b, a, metric="iou")
+        kept = ~ignore
+        for c in range(1, classes + 1):
+            x, y = (first == c) & kept, (second == c) & kept
+            both = int((x & y).sum())
+            assert dice_of.per_class[f"c{c}"] == pytest.approx(
+                2 * both / (x.sum() + y.sum())
+            )
+            assert iou_of.per_class[f"c{c}"] == pytest.approx(both / (x | y).sum())

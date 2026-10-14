@@ -73,24 +73,44 @@ disjoint are not — usually a rater including a lesion in the organ it sits in.
 
 ## Change the encoding later
 
-Without touching the annotation's meaning — losslessly, except for a
-`probmap`, which §7.6 makes lossless only under its `threshold` (§7.5): another
-encoding keeps the voxels at or above it as the class, and the probabilities
-are gone:
+Without touching the annotation's meaning — losslessly, with two exceptions
+(§7.6):
 
 ```bash
 medh5 seg convert case.medh5 organs --to bitmask --dry-run
 ```
 
+- **A `probmap`** is lossless only under its `threshold` (§7.5): another
+  encoding keeps the voxels at or above it as the class, and the
+  probabilities are gone.
+- **`instances` to a dense encoding** — `labelmap`, `layers`, `bitmask` or
+  `probmap` — keeps every voxel and drops every `instance_id`, the id that
+  [joins an object across visits](longitudinal.md#join-the-objects). It is
+  refused unless you ask for it, and the transcode is then recorded in the
+  provenance:
+
+```bash
+medh5 seg convert case.medh5 lesions_tp0 --to bitmask --drop-identity
+```
+
+In Python, `w.transcode_annotation("lesions_tp0", "bitmask", drop_identity=True)`.
+
 Not every conversion is possible: an encoding that cannot represent overlap
-refuses a transcode from one that does, rather than dropping voxels. `--dry-run`
-says what would happen.
+refuses a transcode from one that does, rather than dropping voxels.
+`--dry-run` says what would happen, refusals included.
 
 ## Check it
 
 ```bash
-medh5 validate case.medh5 --level strict
+medh5 validate case.medh5 --level integrity
 ```
+
+`--level integrity` runs every check, every byte against its digest included,
+and fails on errors. `--level strict` also fails on warnings, so it fails the
+sample written above: it carries no de-identification record (`W903`), and its
+classes no ontology code (`W912`). Strict is the gate for a dataset you
+publish, once [de-identification](deidentify.md) and the label set's codes
+have dealt with both; see [Choose a level](validate.md#choose-a-level).
 
 ## Related
 

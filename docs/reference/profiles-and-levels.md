@@ -4,7 +4,7 @@ Two independent dials on `medh5 validate`: **how much** to check, and **what to
 hold the file to**.
 
 ```bash
-medh5 validate case.medh5 --level strict --profile seg --profile det
+medh5 validate case.medh5 --level integrity --profile seg --profile det
 ```
 
 ## Levels — how much to check

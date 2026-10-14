@@ -1,0 +1,119 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/XwK-P/medh5/blob/main/vex/medh5.openvex.json",
+  "author": "medh5 (https://github.com/XwK-P/medh5)",
+  "timestamp": "2026-10-13T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2026-85091",
+        "description": "zlib: heap overflow in gz_vacate() when gzprintf() or gzvprintf() follows a stalled non-blocking gzwrite()"
+      },
+      "products": [
+        {
+          "@id": "pkg:pypi/medh5@2.0.0",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/zlib@1.3.2"
+            },
+            {
+              "@id": "pkg:cargo/libz-sys@1.1.29"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:cargo/medh5-cli@2.0.0",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/zlib@1.3.2"
+            },
+            {
+              "@id": "pkg:cargo/libz-sys@1.1.29"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:github/XwK-P/medh5@v2.0.0",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/zlib@1.3.2"
+            },
+            {
+              "@id": "pkg:cargo/libz-sys@1.1.29"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:pypi/medh5@2.0.1",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/zlib@1.3.2"
+            },
+            {
+              "@id": "pkg:cargo/libz-sys@1.1.29"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:cargo/medh5-cli@2.0.1",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/zlib@1.3.2"
+            },
+            {
+              "@id": "pkg:cargo/libz-sys@1.1.29"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:github/XwK-P/medh5@v2.0.1",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/zlib@1.3.2"
+            },
+            {
+              "@id": "pkg:cargo/libz-sys@1.1.29"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:pypi/medh5@2.0.2",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/zlib@1.3.2"
+            },
+            {
+              "@id": "pkg:cargo/libz-sys@1.1.29"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:cargo/medh5-cli@2.0.2",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/zlib@1.3.2"
+            },
+            {
+              "@id": "pkg:cargo/libz-sys@1.1.29"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:github/XwK-P/medh5@v2.0.2",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/zlib@1.3.2"
+            },
+            {
+              "@id": "pkg:cargo/libz-sys@1.1.29"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "medh5 calls zlib only through compress2, uncompress, deflate and inflate on memory buffers (HDF5's deflate filter, C-Blosc2's zlib codec). Nothing it compiles in refers to the gzip file interface, so the linker never takes the gzwrite.c object from libz-sys's static archive: the 2.0.1 Linux wheels and an unstripped build of the 2.0.2 lock have no gz* symbol. SECURITY.md has the reasoning."
+    }
+  ]
+}

@@ -66,8 +66,8 @@ of a **higher minor** version than it implements, an implementation:
 - **MUST NOT** claim conformance to the newer version, or clinical-training support, because the
   file opened and its projection validated;
 - reports `content_id` it cannot recompute as **W913** ("unsupported, not verified"), never as
-  **E702**: a later minor may cover root attributes this implementation does not know. Dataset
-  digests (1.0 §13.1) are still checked and still report **E701**;
+  **E702**: a later minor **MAY** extend the attributes 1.0 §13.2 covers, which this implementation
+  does not know. Dataset digests (1.0 §13.1) are still checked and still report **E701**;
 - **MUST** refuse to amend, recompress or pack the file (§2.3).
 
 An unknown **major** version remains a refusal (**E002**).
@@ -343,9 +343,13 @@ invented to resolve it.
 A relationship used as a model input **MUST** be attested at the cutoff (§9): either it is the
 immutable **structural** link from an event to its own payload — a `document` event `describes`
 its document, an `imaging` event `describes` its image — or its `asserted_by_event_id` names an
-event version eligible at the cutoff. Adding or replacing an owned payload needs a new event
-version. An unattributed link supports navigation, never a claim about what was known when: a
-report-to-lesion grounding drawn later is not available with the original report.
+event version **eligible** at the cutoff: known available by then and the current version of its
+record (§9.1 steps 1–2), whether or not the task's kinds, plans, context window or event limit
+admit it as an input. Those choose what a row reads; they do not withdraw evidence known at the
+cutoff. The link's event and document endpoints are still admitted ones (§9.1 step 5). Adding or
+replacing an owned payload needs a new event version. An unattributed link supports navigation,
+never a claim about what was known when: a report-to-lesion grounding drawn later is not available
+with the original report.
 
 A single file cannot show when a link was written, so the rule is enforced where it can be: at the
 amendment boundary, where what an event version the sample already held attests is fixed with it. A
@@ -429,16 +433,18 @@ For cutoff `c` (`selection = strict_prospective`, the default):
    from below, plans included; its upper edge, `c`, is not a plan's, since a plan may lie after the
    cutoff. An ongoing interval is read with the fields of its eligible version, never its eventual
    end.
-4. **Order and ties.** Admitted events are ordered by their order bounds. Events whose bounds overlap
-   form one **tie group**: an uncertain or tied time is never fabricated into distinct exact times,
+4. **Order and ties.** Admitted events are ordered by their order bounds. The **tie groups** are the
+   connected components of the overlap relation on those inclusive bounds — bounds sharing an instant
+   overlap, and an event overlapping two others joins them in one group even when they do not overlap
+   each other. An uncertain or tied time is never fabricated into distinct exact times,
    and stable ids break ties only for storage. An event-count limit keeps the latest (or earliest)
    **timed** events, and a tie group straddling the boundary is kept or dropped **whole**, as the
    policy says; a limit of 0 keeps none. Static events are unordered under every ordering, so a limit
    never counts or drops them.
-5. **Payloads.** Only payloads the selected versions attest are admitted (§7.3): the structural
-   targets of selected `document` and `imaging` events, and the endpoints — with any
-   `target_annotation_id` — of links asserted by a selected event whose event and document endpoints
-   are themselves admitted. A future label, annotation, later-visit registration or whole-history
+5. **Payloads.** Only payloads attested at the cutoff are admitted (§7.3): the structural targets of
+   admitted `document` and `imaging` events, and the endpoints — with any `target_annotation_id` —
+   of links asserted by an eligible version (steps 1–2) whose event and document endpoints are
+   themselves admitted. A future label, annotation, later-visit registration or whole-history
    embedding cannot enter through a secondary reference. Eligibility covers every input dependency,
    including the choice of image, region and crop centre.
 
@@ -463,7 +469,7 @@ shape:
 
 | Event version | Effective | Available | Payload or relation | At hour 24 |
 |---|---|---|---|---|
-| `lab0` | −48 | −47 | Coded creatinine, numeric value with unit | Admitted (and inside any context of ≥ 72 h) |
+| `lab0` | −48 | −47 | Coded creatinine, numeric value with unit | Admitted (and inside any `closed` context of ≥ 72 h; an `open` one must be wider) |
 | `ct0` | 0 | 1 | `describes` image `CT_tp0` on grid `ct_tp0` | Admitted, with `CT_tp0` |
 | `report0_v1` | 0 | 4 | `describes` document `report0_text_v1`, record `report0` | Admitted, with its text |
 | `report0_v2` | 0 | 48 | New document; `supersedes` `report0_v1` | Not yet available; v1 remains the record's version |
@@ -544,6 +550,7 @@ or reviewing that implementation before its release, showed it was needed.
 | §2.1 | A writer writes the lowest version its content needs: 1.0 for imaging, 1.1 with `clinical`. | The draft said writers "SHOULD continue using 1.0" and that production defaults must not emit 1.1 before implementation; one rule states both, and keeps every 1.0 reader working for imaging-only data. |
 | §2.1 | An amendment that removes the clinical profile lowers the version: it is the §10 imaging projection, written to a new file or in place of its source. | Found by the review of 2.0 before its release: "an amendment never lowers the version" contradicted the reference writer, whose `drop_clinical` in an amendment rewrites a 1.1 sample in place as 1.0 — the projection §10 describes, a different sample with its own `content_id`. |
 | §2.2 | Unknown items of a higher minor are **W913**, the version itself is W913 at `/`, and an unrecomputable `content_id` is W913, not E702. | The draft required "unsupported features reported explicitly" and "integrity unsupported, not verified" but allocated no code. Reporting an item a later minor may define as an error would make the projection unusable; reporting nothing would claim conformance. |
+| §2.2 | A later minor **MAY** extend the attributes 1.0 §13.2 covers; 1.0 §13.2 now says so too. | Found by the audit of 2.0.1: 1.0 §13.2 said an attribute a later minor defines is never covered, and this clause that a later minor may cover attributes an older implementation does not know — the reason its `content_id` is W913, not E702. Both could not bind a 1.2; the reference reports W913, so 1.0 now says what this clause does. |
 | §2.3 | Known profiles are re-derived from the amended content; unknown profiles and higher minors refuse the amendment. | "A no-op amend MUST NOT silently remove an unsupported profile" was read against 1.0's rule that profiles are derived, not inherited. Keeping every declaration through any edit would keep false claims (an amendment removing the last voxel annotation would still declare `seg`); refusing the unknown is what the draft's safety requirement needs. |
 | §3 | The descriptor is canonical JSON, checked as such (E801); `shifted_utc` requires a declared de-identification (E802). | §8 of the draft required canonical serialization without saying what a validator does with a non-canonical one; equal descriptors must digest equally. A shifted clock is meaningless without the shift it is relative to. |
 | §3 | The declaration without the group, without events, or in a 1.0 file is E009; the group without the declaration E803. | The draft said "A recognized `clinical/meta` descriptor without that profile declaration is invalid" and that events need "at least one row", but gave no codes. |
@@ -560,6 +567,7 @@ or reviewing that implementation before its release, showed it was needed.
 | §7.2 | Merging chains (two predecessors) and a record whose versions the links do not order into one chain are E816, beside branches, cycles and contradicted availability. | The draft required "an acyclic, unambiguous `supersedes` chain"; a record with two unrelated versions is ambiguous in exactly the way selection cannot resolve. |
 | §7.3 | A writer amending a sample refuses a structural link from an event version the sample already held (E809). | Found by the fourth audit of 2.0: "adding or replacing an owned payload needs a new event version" had no point of enforcement, and one file cannot show when a link was written. Text attached in an amendment to an inherited text-less document event was owned by a version available a day before the text existed, and selection admitted it at that cutoff. |
 | §7.3 | An amendment also refuses a link asserted by an event version the sample held, and any change to a payload such a version attests; a held version dropped with the profile and added again in the same amendment is held to what it was. | Found by the review of 2.0 before its release: refusing only the structural link left three ways to attach later information to an earlier version — a grounding asserted by the original report, a lesion mask replaced under the id a procedure attests, and the refused link added once the profile was dropped and its records added again — and selection admitted each at the old version's availability. |
+| §7.3, §9.1 | An asserting version need only be *eligible* at the cutoff — known available and the current version of its record (§9.1 steps 1–2); the kinds, plan, unknown-time, window and limit filters choose inputs and do not withdraw its attestation. The link's event and document endpoints must still be admitted. | Found by the audit of 2.0.1: §7.3 said *eligible*, §9.1 step 5 *a selected event*, and the reference engine required the asserter to be admitted as an input, so a filter choosing what a row reads also withdrew evidence known at the cutoff — under the default ordering a segmentation of unknown time never attested its mask, and no crop centred on it. |
 | §8 | A collection's outer version must be at least each member's (E011); the packer declares the newest member's, and refuses a higher-minor member. | The draft required `1.1` outside a 1.1 member but gave no code, and said nothing of a member newer than the packer. |
 | §9 | Strict selection, the plan rule, tie groups, the event-limit boundary and payload attestation are defined here, normatively, and the task contract only names a policy. | The draft placed them in a companion "not an additional payload requirement". They define what a record *means* about what was known when; two implementations of one selection must agree, so they belong to the profile. |
 | §9.1 | An event with no order time (`unknown` time ordered by effective start, or without the time `order_by` names) is excluded as `unknown_time`. | "Unknown/coarse times may be excluded or handled by an explicitly named alternative policy": strict excludes them, and the exclusion is counted. |
@@ -567,6 +575,8 @@ or reviewing that implementation before its release, showed it was needed.
 | §9.1 | The context window bounds every admitted event's order time from below, plans included; a plan may lie after the cutoff. | Found by the fourth audit of 2.0: read literally, `[c − w, c]` excluded every future plan under `order_by = effective`, while the implementation applied no window to plans at all — so a stale order from 100 days before a 7-day window was admitted beside the week. The lower edge is what a window is for; the upper is the cutoff, which plans exist to lie beyond. |
 | §9.1 | An event-count limit counts **timed** events only, and a limit of 0 keeps none of them; a static event is unordered under every `order_by`. | Found by the 2.0 audit: ordered by availability, a static fact became a timed event a limit could drop, though step 3 calls it unordered and the task contract limits timed events; and 0, which the task schema admits, had no defined boundary. |
 | §9.1 | An event of `unknown` time is a plan only when `planned`: the plan rule reads a known effective start, and `order_by = available` admits an unknown-time event as unknown. | Found by the review of 2.0 before its release: the text made every event whose start is not definitely at or before `c` a plan, so an unknown-time event — which has no start — was one, excluded by default, and the ordering by availability that admits such events admitted none. The engine, its documentation and its tests always admitted it as unknown, which reads nothing unknown at the cutoff: its availability is at or before it, and its time stays marked unknown (task contract §6), never placed on the timeline. |
+| §9.1 | Tie groups are the connected components of the overlap relation on inclusive order bounds; bounds sharing an instant overlap. | Found by the audit of 2.0.1: "events whose bounds overlap form one tie group" read as chains or as pairs, and an event limit kept or dropped different events under each. The reference has always chained them, sweeping the bounds in order. |
+| §9.3 | `lab0` lies inside any `closed` context of 72 h or more; an `open` one must be wider. | Found by the audit of 2.0.1: at 72 h, `lab0`'s −48 h is the context's lower edge, which `closed` admits and `open` excludes (§9.1), so "any context of ≥ 72 h" held under one boundary only. |
 | §11 | Diagnostic codes E011, E801–E819, W913 and W914 are allocated, each with a conformance case. | The draft did not allocate codes for unimplemented rules; they are now implemented. |
 | §11.1 | `semantic` checks E802's rule for a `shifted_utc` clock, which needs `/meta`'s de-identification record; the rest of E802 stays `structural`. `integrity` adds E818 beside every 1.0 digest code, E704 included. | Found by the review of 2.0 before its release: the clause placed all of E802 at `structural`, though that rule compares the descriptor with `/meta`, a cross-reference the reference validator checks at `semantic` with the record rules — so a validator built from the text reported at `structural` a defect the reference reports only from `semantic` on; and it named 1.0's integrity codes E701–E703, written before 2.0 allocated E704. |
 

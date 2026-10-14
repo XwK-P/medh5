@@ -16,7 +16,9 @@ needs nothing installed:
   Blosc2 chunk a window covers, for reads that skip HDF5's filter pipeline.
 
 The engine calls `register_blosc2_filter()` and `register_zstd_filter()` once
-before touching a file.
+before touching a file. Both filters are compiled in, so nothing here needs
+HDF5's dynamically loaded plugins; the engine turns their loading off unless
+the user asks for it (`MEDH5_ALLOW_PLUGINS=1`, or `HDF5_PLUGIN_PATH`).
 
 **Building for MSVC targets:** cmake-rs, which builds HDF5, replaces CMake's
 release flags under the Visual Studio generator, `/DNDEBUG` included, so HDF5

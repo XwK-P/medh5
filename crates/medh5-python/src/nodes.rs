@@ -8,7 +8,7 @@
 
 use pyo3::exceptions::{PyIndexError, PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyEllipsis, PyList, PyString, PyTuple};
+use pyo3::types::{PyDict, PyEllipsis, PyList, PyTuple};
 
 use medh5::array::{Index, Slice};
 use medh5::h5::{attrs, data, ops};
@@ -174,6 +174,18 @@ impl Dataset {
     }
 }
 
+/// A string dataset as an object array of `str` in its stored shape (0-d for
+/// a scalar): what `read()` and `numpy.asarray(ds)` return and `ds[key]`
+/// indexes, so a key means what it means to NumPy, as it did to `h5py` ---
+/// `ds[0]` of a 2-D dataset is its first row, and a scalar takes `()` or `...`.
+fn strings_array<'py>(py: Python<'py>, ds: &medh5::hdf5::Dataset) -> R<Bound<'py, PyAny>> {
+    let source = ds.clone();
+    let values = py.detach(move || data::read_strings(&source))?;
+    let flat = crate::convert::numpy(py)?.call_method1("empty", (values.len(), "O"))?;
+    flat.set_item(PyEllipsis::get(py), PyList::new(py, values)?)?;
+    Ok(flat.call_method1("reshape", (PyTuple::new(py, ds.shape())?,))?)
+}
+
 /// Expand a NumPy-style key against `ndim` axes.
 fn dataset_key(key: &Bound<'_, PyAny>, ndim: usize) -> PyResult<Vec<Index>> {
     let items: Vec<Bound<'_, PyAny>> =
@@ -261,11 +273,7 @@ impl Dataset {
     }
     fn __getitem__<'py>(&self, py: Python<'py>, key: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         if data::is_strings(self.live()?) {
-            let values = data::read_strings(&self.ds)?;
-            if self.ds.shape().is_empty() {
-                return Ok(PyString::new(py, values.first().map(String::as_str).unwrap_or("")).into_any());
-            }
-            return Ok(PyList::new(py, values)?.as_any().get_item(key)?);
+            return Ok(strings_array(py, &self.ds)?.get_item(key)?);
         }
         let ndim = self.ds.shape().len();
         if ndim == 0 {
@@ -276,8 +284,12 @@ impl Dataset {
         let block = py.detach(move || data::read_region(&ds, &index))?;
         Ok(nd_to_py(py, block))
     }
-    /// The whole dataset as an array.
+    /// The whole dataset as an array: a numeric dataset as its dtype, a
+    /// string dataset as an object array of `str`.
     fn read<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        if data::is_strings(self.live()?) {
+            return strings_array(py, &self.ds);
+        }
         let ds = self.ds.clone();
         Ok(nd_to_py(py, py.detach(move || data::read(&ds))?))
     }

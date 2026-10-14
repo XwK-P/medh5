@@ -5,9 +5,9 @@ makes "conforming MEDH5 file" a claim somebody else can test.
 
 ## The corpus
 
-157 cases, each a file plus the **exact set of diagnostic codes** a conforming
+163 cases, each a file plus the **exact set of diagnostic codes** a conforming
 validator must emit for it. 51 are valid files an implementation must accept,
-32 of them with specific warnings; 106 are invalid ones it must reject with
+32 of them with specific warnings; 112 are invalid ones it must reject with
 specific errors. Between them they hold at least one case for every code in
 the specification's tables: 1.0 §15.2, and the codes [1.1](medh5-1.1.md) §11.2
 adds.
@@ -28,7 +28,7 @@ against each other.
 ```
 $ medh5 conformance list
 $ medh5 conformance run /tmp/corpus
-157/157 cases pass
+163/163 cases pass
 ```
 
 A test in this repository asserts that the specification's tables (1.0 §15.2
@@ -39,12 +39,12 @@ code the other lacks.
 
 ```
 $ medh5 conformance publish suite/
-wrote the suite to suite/: 157 cases, see suite/README.md
+wrote the suite to suite/: 163 cases, see suite/README.md
 ```
 
 | File | |
 |---|---|
-| `*.medh5`, `*.medh5c` | the cases: 151 samples and six collections |
+| `*.medh5`, `*.medh5c` | the cases: 157 samples and six collections |
 | `expected.json` | per case: the clause, the level, and the expected codes |
 | `codes.json` | the diagnostic code table as data (1.0 §15.2 and 1.1 §11.2) |
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |
@@ -89,7 +89,7 @@ one JSON array:
 
 ```
 $ medh5 conformance score suite/ results.json
-157/157 cases pass
+163/163 cases pass
 ```
 
 The scorer also takes the shape `medh5 validate --json` reports a file in: a
@@ -118,9 +118,14 @@ suite stops being a contract.
 
 ## How scoring works
 
-For each case, the set of codes you report must **equal** the expected set. A
-missing code is a defect you failed to catch; an extra code is a valid file you
-rejected. Both fail.
+For each case, the errors you report must **equal** the expected errors, and
+the warnings the expected warnings. A missing code is a defect you failed to
+catch; an extra code is a valid file you rejected. Both fail.
+
+Severity is scored. An expected error you report as a warning is missing as an
+error, and reported as a warning nobody expected: a validator that reports only
+warnings has accepted every file. Severity is the code table's — an `E` code is
+an error and a `W` code a warning — whatever a level such as `strict` promotes.
 
 A case you report nothing about fails too — silence about a file you were
 handed is not a pass.
@@ -137,9 +142,9 @@ stored digests cover the pre-edit bytes and an integrity pass adds a
 `"mutated": true`.
 
 *(That correction came from running it. The README first said deeper was safe;
-it is not, and 110 of the cases prove it.)*
+it is not, and 116 of the cases prove it.)*
 
-**A `.medh5c` case is a collection** (§2.1) — it contains samples rather than
+**A `.medh5c` case is a collection** (§2.2) — it contains samples rather than
 being one. `"file_suffix"` says which.
 
 **Verify the bytes first.** `SHA256SUMS` covers every published file, and
@@ -158,7 +163,7 @@ publish("suite/")
 check_checksums("suite/")           # names of files whose bytes changed
 
 results = score("suite/", submitted)
-summarize(results)                  # {"cases": 157, "passed": 157, "ok": True, ...}
+summarize(results)                  # {"cases": 163, "passed": 163, "ok": True, ...}
 ```
 
 ## Profiles
@@ -193,3 +198,11 @@ version: the clinical cases are not addressed to it. The higher-minor case
 (`W913-higher-minor-projection`) is what such an implementation should do with
 a newer file than it implements — read the supported projection, report what
 it does not know as `W913`, and never amend it.
+
+1.1 also changes what some files claiming 1.0 are expected to report, because
+it defines the `clinical` profile that 1.0 did not know. A 1.0 file declaring
+`clinical` (`E009-clinical-profile-in-a-1-0-file`) expects `E009`, where a
+validator of 1.0 alone reports the unknown profile as `E007`; and clinical
+content a file does not declare (`E803-clinical-content-undeclared`) is `E803`,
+where such a validator ignores an unknown group. The suite expects the 1.1
+answers.

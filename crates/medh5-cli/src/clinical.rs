@@ -17,6 +17,7 @@ use medh5::clinical::select::SelectionPolicy;
 use medh5::clinical::ClinicalRecords;
 use medh5::collection::{open_any, AnyFile};
 use medh5::companion::{preflight_each, validate_cache, write_preflight, Admitted, RowView, TaskManifest};
+use medh5::h5::file::same_file;
 use medh5::json::{pretty, repr_str};
 use medh5::sample::Sample;
 use medh5::Error;
@@ -194,8 +195,7 @@ fn select_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         _ => return Ok(ctx.usage("give the cutoff once: --cutoff-us or --cutoff-hours")),
     };
     let policy = policy_of(m)?;
-    let links: Vec<(usize, &Link)> = clinical.links.iter().map(|l| (0, l)).collect();
-    let selection = medh5::clinical::select(&clinical.events, &links, cutoff, &policy)?;
+    let selection = clinical.select(cutoff, &policy)?;
     if flag(m, "json") {
         ctx.emit(&selection.to_json(&clinical.events), true);
         return Ok(EXIT_OK);
@@ -229,6 +229,15 @@ fn select_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 
 fn export(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = req_str(m, "path");
+    // The write truncates whatever `--out` names: the sample itself, named
+    // again or through a link, became the JSON describing it, and exit 0.
+    if let Some(out) = get_str(m, "out").filter(|out| same_file(Path::new(path), Path::new(out))) {
+        return Err(Error::invalid(format!(
+            "--out {} is {}, the file being exported; write the records to another file",
+            repr_str(out),
+            repr_str(path)
+        )));
+    }
     let sample = open_sample(m)?;
     let records = clinical_of(&sample, path)?.records()?;
     let text = pretty(&records.to_json()) + "\n";
@@ -419,6 +428,22 @@ fn row_line(r: &RowView) -> (String, Vec<String>) {
 
 fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let (mut manifest, base) = load_task(m)?;
+    // The save replaces whatever `--out` names: a source sample, named again
+    // or through a link, became the manifest that pins it, and exit 0.
+    if let Some(out) = get_str(m, "out") {
+        for subject in &manifest.subjects {
+            if let Some(source) =
+                subject.sources.iter().find(|s| same_file(&s.resolve(base.as_deref()), Path::new(out)))
+            {
+                return Err(Error::invalid(format!(
+                    "--out {} is {}, a source of subject {}; write the manifest to another file",
+                    repr_str(out),
+                    repr_str(&source.locator()),
+                    repr_str(&subject.subject_id)
+                )));
+            }
+        }
+    }
     let mut recorded = 0;
     for i in 0..manifest.subjects.len() {
         let found = medh5::companion::view::reconcile(&manifest.subjects[i], base.as_deref())?;
@@ -434,12 +459,16 @@ fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 
 fn cache_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = Path::new(req_str(m, "path"));
-    let base = get_str(m, "base").map(PathBuf::from);
+    let mut base = get_str(m, "base").map(PathBuf::from);
     let (task, admitted) = match get_str(m, "task") {
         Some(file) => {
             let file = Path::new(file);
             let manifest = TaskManifest::load(file)?;
             let admitted = Admitted::preflight(&manifest, file.parent(), false)?;
+            // The entries copy the task's references, relative to its
+            // directory (task-cache-1 §7.1): resolved against the cache's,
+            // a cache kept anywhere else was all stale.
+            base = base.or_else(|| file.parent().map(Path::to_path_buf));
             (Some(manifest), Some(admitted))
         }
         None => (None, None),

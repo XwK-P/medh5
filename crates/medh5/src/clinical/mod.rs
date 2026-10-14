@@ -15,7 +15,7 @@
 //! - [`check`] --- the record rules the writer and the validator share;
 //! - [`schema`] --- the descriptor and logical-record JSON Schema;
 //! - [`select`] --- revision chains and prospective selection at a cutoff
-//!   (§9, the task-and-cache contract §4);
+//!   (§9; the policy is the task-and-cache contract's §3.4);
 //! - [`augment`] --- adding the profile to an existing sample (§10).
 
 pub mod augment;

@@ -26,6 +26,18 @@ normalises the wrong distribution.  A CT stored ``int16`` with slope 2 and
 intercept −1024 has a stored mean near 100 and a physical mean near −824; the
 statistics used to report the former while the tensors carried the latter.
 ``physical=False`` measures the stored values for the caller who wants them.
+
+The moments are over **finite** values.  A NaN or an infinity --- PET outside
+its field of view, resampled data --- is counted in ``Moments.nonfinite`` and
+left out: folded in, it made every moment NaN, let the minimum and maximum
+depend on the order of the files, and wrote ``null``, which a reload read as a
+mean of 0 and a standard deviation of 0 (normalising with ``(0, 1)``).  A
+statistics file whose moments are ``null`` is now refused on reload.
+
+A class id means its key in its label set, so ``ClassStats.key`` records it,
+and statistics in which one id carries two keys --- 1 is ``liver`` in some
+samples and ``spleen`` in others --- are refused rather than counted as one
+class under one loss weight (``dataset check`` reports the clash as C102).
 """
 
 from __future__ import annotations
@@ -44,19 +56,25 @@ from medh5 import _core
 
 @dataclass(slots=True)
 class Moments:
-    """Count, mean and M2 for one image key --- a Welford accumulator."""
+    """Count, mean and M2 for one image key --- a Welford accumulator over the
+    finite values folded in."""
 
     count: int = 0
     mean: float = 0.0
     m2: float = 0.0
     minimum: float = math.inf
     maximum: float = -math.inf
+    nonfinite: int = 0
+    """Values left out of the moments because they are NaN or infinite."""
 
-    def _set(self, raw: tuple[int, float, float, float, float]) -> None:
-        self.count, self.mean, self.m2, self.minimum, self.maximum = raw
+    def _set(self, raw: tuple[int, float, float, float, float, int]) -> None:
+        (self.count, self.mean, self.m2, self.minimum, self.maximum, self.nonfinite) = (
+            raw
+        )
 
     def update(self, values: npt.NDArray[Any]) -> None:
-        """Fold in one block of values (any shape)."""
+        """Fold in one block of values (any shape); a NaN or an infinity is
+        counted in ``nonfinite``, not folded in."""
         self._set(
             _core.dataset_moments_update(
                 self, np.asarray(values, dtype=np.float64).ravel()
@@ -77,6 +95,8 @@ class Moments:
 
     @classmethod
     def from_json(cls, doc: dict[str, Any]) -> Moments:
+        """The moments *doc* describes; a ``null`` moment over any value is
+        refused (``ValueError``), never read as 0."""
         out = cls()
         out._set(_core.dataset_moments_from_json(doc))
         return out
@@ -91,13 +111,15 @@ class ClassStats:
     ``present_in`` counts the samples that examined the class *and* found it,
     so ``prevalence`` is at most 1: a class drawn where nobody looked for it
     says nothing about how often it occurs (§11.3).  ``voxels`` counts every
-    voxel of it, examined or not.
+    voxel of it, examined or not.  ``key`` is what the id means in the label
+    set of the samples measured, ``None`` where none declares it.
     """
 
     class_id: int
     voxels: int = 0
     present_in: int = 0
     examined_in: int = 0
+    key: str | None = None
 
     @property
     def prevalence(self) -> float:
@@ -107,6 +129,7 @@ class ClassStats:
     def to_json(self) -> dict[str, Any]:
         return {
             "class_id": self.class_id,
+            "key": self.key,
             "voxels": self.voxels,
             "present_in": self.present_in,
             "examined_in": self.examined_in,
@@ -144,19 +167,21 @@ class DatasetStats:
             images[key] = moments
         self.images = images
         classes: dict[int, ClassStats] = {}
-        for class_id, (voxels, present_in, examined_in) in raw["classes"].items():
+        for class_id, (voxels, present_in, examined_in, key) in raw["classes"].items():
             stats = self.classes.get(class_id) or ClassStats(class_id)
-            stats.voxels, stats.present_in, stats.examined_in = (
+            stats.voxels, stats.present_in, stats.examined_in, stats.key = (
                 voxels,
                 present_in,
                 examined_in,
+                key,
             )
             classes[class_id] = stats
         self.classes = classes
 
     def merge(self, other: DatasetStats) -> None:
         """Fold another pass in.  Statistics over physical values do not merge
-        with statistics over stored ones."""
+        with statistics over stored ones, and a class id the two give
+        different keys is refused (``MEDH5ValidationError``)."""
         self._set(_core.dataset_stats_merge(self, other))
 
     def normalization(self, image_key: str) -> tuple[float, float]:
@@ -229,7 +254,8 @@ def compute_stats(
 
     Workers return accumulators, not arrays, and the results are merged in
     path order, so the statistics do not depend on the worker count.  A file
-    that cannot be read is listed in ``failures``, not fatal.
+    that cannot be read is listed in ``failures``, not fatal; a file giving a
+    class id another key than the files before it is refused, naming the file.
     """
     return DatasetStats._from_raw(
         _core.dataset_compute_stats(

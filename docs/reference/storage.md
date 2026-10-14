@@ -40,9 +40,12 @@ $ medh5 recompress cohort/*.medh5 --profile archive
 
 Recompression is **in place** by default: each file is rewritten atomically
 under the new profile, and a `.medh5c` collection member by member, each member
-keeping its `content_id`. `--out` writes beside the source instead, and takes a
-single input and a destination **filename** — not a directory, and not several
-files:
+keeping its `content_id`. A file reached through a symbolic link is rewritten
+where the link leads, and the link is kept; a link in a sticky directory anyone
+can write to that neither you nor the directory's owner owns is refused
+(`MEDH5FileError`, see [Atomic writes](#atomic-writes)). `--out` writes beside
+the source instead, and takes a single input and a destination **filename** —
+not a directory, and not several files:
 
 ```
 $ medh5 recompress case.medh5 --profile archive --out cold/case.medh5
@@ -65,7 +68,11 @@ much better than byte-level does. `training` byte-shuffles both for speed, and
 
 `portable` exists because a collaborator with a plain h5py install should be
 able to open the file at all. Blosc2 needs the filter plugin; gzip is in every
-HDF5 build.
+HDF5 build. Recompressing to `portable` also rewrites, contiguous, a dataset
+too small to compress that another writer stored under a plugin's filter, so
+the result needs none. `medh5 info` names each dataset's filters — Zstandard as
+`zstd:<level>`, a filter it cannot name as `filter:<id>` — so a dataset that
+needs a plugin shows it.
 
 Datasets under 64 KiB raw are stored **contiguous** and uncompressed: chunking
 and a filter pipeline cost more than they save at that size, and a contiguous
@@ -76,6 +83,14 @@ own warning.)
 from medh5.storage import PROFILES, resolve_profile, dataset_kwargs
 PROFILES["archive"].description
 ```
+
+`dataset_kwargs(shape, dtype, profile=..., role=...)` is the layout the writer
+gives one dataset — `{}` when it is stored contiguous, else `{"chunks": ...,
+"codec": ...}` with the codec named by the profile, a `CodecProfile` of your
+own included. Since 2.0 it is not the `h5py` keywords 1.x returned: to write a
+dataset with `h5py` in a profile's codec, pass
+`resolve_profile(profile).codec(role).kwargs()` and the chunks to
+`create_dataset`.
 
 ## Chunking
 
@@ -98,8 +113,13 @@ w.add_grid("ct", shape=..., spacing=..., patch_hint=(96, 96, 96))
 `patch_hint` is how you tell it what you will read. Without one it assumes a
 64-voxel cube, clipped to the grid, and you get a reasonable answer.
 
-L3 size is detected per-core where the platform allows and falls back to
-~1.375 MiB otherwise. Chunks are held between 512 KiB and 4 MiB.
+L3 is read as one CPU's share — the cache's size divided by the CPUs that
+share it — where the platform reports it, and taken as ~1.375 MiB otherwise.
+The budget a chunk grows toward is 80 % of that share, held between 512 KiB and
+4 MiB, and no computed chunk is larger than 4 MiB: a patch whose power-of-two
+rounding would start past it starts at the patch itself, halved until it fits.
+A grid smaller than the budget, or a patch well below it, gives a smaller
+chunk, and a grid's `chunk_hint` is used as given (clipped to the array).
 
 **Stacked encodings chunk per plane.** A `layers`, `bitmask` or `probmap`
 annotation — and a displacement field's components — is chunked
@@ -167,9 +187,18 @@ $ medh5 fix case.medh5 --rewrite-digests --reason "rebuilt by an external tool"
 
 ## Atomic writes
 
-`medh5.create` and `medh5.amend` build a temporary file beside the target and
-`os.replace` it into position on a clean exit. A file appears complete or not
-at all; an exception aborts and leaves nothing behind.
+`medh5.create` and `medh5.amend` build a temporary file beside the file they
+write and, on a clean exit, fsync it, rename it over that file and fsync the
+directory, so a file appears complete or not at all; an exception aborts and
+leaves nothing behind. `recompress`, `fix` and `scrub --apply` replace a file
+the same way.
+
+A target that is a symbolic link is followed, through a chain of links: the
+file it names is the one replaced, and the link stays a link. Other hard links
+to that file keep its previous content. A link in a sticky directory anyone can
+write to, such as `/tmp`, is followed only when you or the directory's owner
+own it — the rule Linux applies to opening one — and is otherwise refused
+(`MEDH5FileError`).
 
 `amend` is copy-on-write, and it copies through **every object of its version
 it does not interpret**, extensions included, so amending never silently drops

@@ -5,7 +5,18 @@ reports and their revisions, diagnoses, medications, assessments — each with *
 and **when it became known**. This page shows how to write that history, read it back, ask what was
 known at a moment, and add it to files you already have. The rules are [MEDH5 1.1](../spec/medh5-1.1.md);
 the cohort used below is the one
-[`docs/examples/clinical_longitudinal.py`](../examples/clinical_longitudinal.py) writes.
+[`docs/examples/clinical_longitudinal.py`](../examples/clinical_longitudinal.py) writes. Write it
+once, from a checkout of the repository:
+
+```bash
+python docs/examples/clinical_longitudinal.py cohort
+```
+
+That writes six subjects, `cohort/P-01.medh5` to `cohort/P-06.medh5`, and the task
+[Train on clinical tasks](clinical-training.md) loads, `cohort/progression.task.json`, which pins
+each file's `content_id`. The script ends by loading a training batch, so it needs PyTorch
+(`pip install "medh5[torch]"`). The examples below amend only copies, so the cohort stays as the
+task pins it.
 
 Nothing changes for imaging-only data: a sample without clinical records is still written as 1.0.
 
@@ -69,9 +80,12 @@ A few rules carry most of the meaning:
 ## Revise a record
 
 ```python
+import shutil
+
 from medh5.clinical import HOUR, Document, Event, Link
 
-with medh5.amend("cohort/P-03.medh5") as w:
+shutil.copyfile("cohort/P-03.medh5", "P-03-revised.medh5")   # the task pins the original
+with medh5.amend("P-03-revised.medh5") as w:
     w.add_event(Event("report0_v3", "report0", "document", "point", "amended",
                       effective_start_us=0, available_us=72 * HOUR))
     w.add_document(Document("report0_text_v3", "Addendum: nodule unchanged on review."))
@@ -114,11 +128,41 @@ with medh5.open("cohort/P-03.medh5") as s:
     assert provable.status == "provable"
 ```
 
-The same answer from the command line:
+A **policy** narrows what a selection reads: a context window before the cutoff, the event kinds
+admitted, plans, a limit on events ([task-cache-1](../spec/task-cache-1.md) §3.4). The window
+bounds each event's order time from below; one day before the cutoff leaves out the creatinine
+drawn two days before the scan:
+
+```python
+from medh5.clinical import HOUR, SelectionPolicy
+
+with medh5.open("cohort/P-03.medh5") as s:
+    last_day = s.clinical.select(24 * HOUR, SelectionPolicy(context_us=24 * HOUR))
+    assert last_day.event_ids == ["ct0", "report0_v1"]      # lab0, at -48 h, is outside
+    assert last_day.excluded == {"after_cutoff": 6, "outside_context": 1}
+```
+
+A **plan** — an event `planned`, or one whose start is not definitely at or before the cutoff —
+is left out unless the policy admits plans, and then it is marked as one, never read as an
+outcome. `select` takes records not read from a file, too:
+
+```python
+from medh5.clinical import DAY, HOUR, Event, SelectionPolicy, select
+
+order = Event("ct1_order", "ct1_order", "procedure", "point", "planned",
+              effective_start_us=90 * DAY, available_us=2 * HOUR)
+assert select([order], [], 24 * HOUR).excluded == {"plan": 1}
+with_plans = select([order], [], 24 * HOUR, SelectionPolicy(plans=True))
+assert with_plans.event_ids == ["ct1_order"] and with_plans.events[0].plan
+```
+
+A task carries its policy for every row (`TaskManifest.new(..., policy=...)`). The same answers
+from the command line, where `--policy-file` takes a whole policy as JSON:
 
 ```bash
 medh5 clinical show cohort/P-03.medh5
 medh5 clinical select cohort/P-03.medh5 --cutoff-hours 24
+medh5 clinical select cohort/P-03.medh5 --cutoff-hours 24 --context-us 86400000000
 ```
 
 ## Add a history to a 1.0 file
@@ -171,13 +215,17 @@ and reports the loss:
 medh5 clinical strip cohort/P-03.medh5 --out P-03-imaging.medh5
 ```
 
-`drop_clinical()` in an amendment writes it in place of its source:
+`drop_clinical()` in an amendment writes it in place of its source — here a copy, since the
+training task pins the original:
 
 ```python
-with medh5.amend("cohort/P-03.medh5") as w:
+import shutil
+
+shutil.copyfile("cohort/P-03.medh5", "P-03-dropped.medh5")
+with medh5.amend("P-03-dropped.medh5") as w:
     w.drop_clinical()
 
-with medh5.open("cohort/P-03.medh5") as s:
+with medh5.open("P-03-dropped.medh5") as s:
     assert s.version == "1.0"
 ```
 
@@ -192,3 +240,11 @@ Clinical tables are checked like everything else: the column encoding, the recor
 is found even when the stored `content_id` was left alone. A file of a **later** minor version than
 this package implements is read as a projection: what is known is validated, what is not is reported
 as `W913`, and the file is never amended.
+
+## Related
+
+- **[Train on clinical tasks](clinical-training.md)** — a task over this cohort, its preflight and
+  its batches.
+- **[Python API](../reference/python-api.md#clinical-history-format-11)** — the clinical records,
+  `select` and the writer's methods.
+- **[MEDH5 1.1](../spec/medh5-1.1.md)** — the profile, and strict selection (§9).
