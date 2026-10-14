@@ -372,6 +372,13 @@ Annotations arrive as `int64` label volumes with their own grid's affine, and
 every voxel of the §7.7 ignore region is `65535` whichever encoding stores it —
 pass `ignore_index=65535` to the loss.
 
+An identifier a sample does not have — a `frame_uid`, `value_units`,
+`modality`, `timepoint`, `subject_id`, or the `sample_key` of a file outside a
+collection — is `"none"` in `meta["medh5"]`, MONAI's own spelling: its
+`list_data_collate` refuses a `None`, so samples without a frame of reference
+(every NIfTI and nnU-Net import) could not be batched. `from_metatensor` reads
+`"none"` back as `None`.
+
 The affine construction (`affine_for`, `convert_affine`) does not import MONAI,
 so the geometry is testable — and tested — in an environment without it.
 

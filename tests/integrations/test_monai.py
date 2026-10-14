@@ -16,6 +16,36 @@ from tests.helpers import SHAPE
 from tests.kits import Hierarchy
 
 
+def _frameless(path: Path, *, seed: int = 0, images: tuple[str, ...] = ("CT",)) -> Path:
+    """A sample as the NIfTI and nnU-Net importers write one: no frame of
+    reference, no value units, a labelmap with an ignore band."""
+    rng = np.random.default_rng(seed)
+    organs = np.zeros(Hierarchy.SHAPE, dtype=np.uint16)
+    organs[2:6, 2:6, 2:6] = 1
+    ignore = np.zeros(Hierarchy.SHAPE, dtype=bool)
+    ignore[-1] = True
+    with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+        w.label_set(
+            LabelSet("v", version="1.0.0", classes=[LabelClass(1, "liver", "Liver")])
+        )
+        w.add_grid("g", shape=Hierarchy.SHAPE, spacing=(2.0, 1.0, 1.0))
+        for image_id in images:
+            w.add_image(
+                image_id,
+                rng.integers(0, 100, Hierarchy.SHAPE).astype(np.int16),
+                grid="g",
+                modality="CT",
+            )
+        w.add_segmentation(
+            "organs",
+            grid="g",
+            masks={1: organs == 1},
+            encoding="labelmap",
+            ignore=ignore,
+        )
+    return path
+
+
 class TestMonaiLabelDtype:
     """`to_dict` labels are `int64`: the full id range, and the ignore id intact."""
 
@@ -328,6 +358,25 @@ class TestMonai:
                 to_dict(sample, ["CT"], ["det"])
             assert set(to_dict(sample, ["CT"])) == {"CT"}
 
+    def test_a_sample_without_frame_uid_batches(self, tmp_path):
+        """MONAI's collate refused the `None` of a missing `frame_uid`, so no
+        NIfTI or nnU-Net import could be batched (D30)."""
+        pytest.importorskip("monai")
+        from monai.data import list_data_collate
+
+        from medh5.monai import to_dict
+
+        items = []
+        for i in range(2):
+            path = _frameless(tmp_path / f"case{i}.medh5", seed=i)
+            with medh5.open(path) as sample:
+                items.append(to_dict(sample, ["CT"], ["organs"]))
+        assert items[0]["CT"].meta["medh5"]["frame_uid"] == "none"
+        batch = list_data_collate(items)
+        assert tuple(batch["CT"].shape) == (2, *Hierarchy.SHAPE)
+        assert batch["CT"].meta["medh5"]["frame_uid"] == ["none", "none"]
+        assert batch["organs"].meta["medh5"]["sample_key"] == ["none", "none"]
+
     def test_medh5_metadata_is_json_safe(self, indexed_cohort):
         from medh5.monai import meta_dict
 
@@ -345,6 +394,30 @@ class TestMonai:
 
 class TestWithoutMonai:
     """The parts of the adapter that do not need MONAI installed."""
+
+    def test_from_metatensor_maps_none_back(self, tmp_path):
+        """`"none"` is how MONAI's metadata spells an absent value; a writer
+        reading it back gets `None`, not a frame named "none"."""
+        from medh5.monai import from_metatensor, meta_dict
+
+        path = _frameless(tmp_path / "f.medh5")
+        with medh5.open(path) as sample:
+            meta = meta_dict(sample, "CT")
+        assert meta["medh5"]["frame_uid"] == "none"
+        assert meta["medh5"]["value_units"] == "none"
+        assert meta["medh5"]["sample_key"] == "none"
+
+        class Duck:
+            def __array__(self, dtype=None, copy=None):
+                return np.zeros(Hierarchy.SHAPE, dtype=dtype)
+
+        duck = Duck()
+        duck.meta = meta  # type: ignore[attr-defined]
+        recovered = from_metatensor(duck)[1]["medh5"]
+        assert recovered["frame_uid"] is None
+        assert recovered["value_units"] is None
+        assert recovered["sample_key"] is None
+        assert recovered["modality"] == "CT"
 
     def test_from_metatensor_recovers_the_geometry(self):
         from medh5.monai import from_metatensor

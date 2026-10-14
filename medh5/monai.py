@@ -22,7 +22,7 @@ which need neither MONAI nor torch, so the geometry is testable without either.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -134,7 +134,10 @@ def meta_dict(
     Keys follow MONAI's own names where it has them (``affine``,
     ``original_affine``, ``spatial_shape``, ``space``) so its transforms find
     what they expect, plus the MEDH5 identifiers a writer needs to put the
-    result back where it came from.
+    result back where it came from.  An identifier the sample does not have
+    --- a ``frame_uid``, ``value_units``, ``modality``, ``timepoint``,
+    ``subject_id`` or, outside a collection, ``sample_key`` --- is ``"none"``,
+    MONAI's own spelling, because its collate refuses a ``None``.
     """
     image = sample.images[image_id]
     grid = _grid_for(sample, image_id, level)
@@ -152,20 +155,72 @@ def meta_dict(
         "original_channel_dim": (
             "no_channel" if grid.channel_axis is None else int(grid.channel_axis)
         ),
-        "medh5": {
-            "path": sample.path,
-            "sample_id": sample.identity.sample_id,
-            "subject_id": sample.identity.subject_id,
-            "image_id": image_id,
-            "grid_id": grid.grid_id,
-            "timepoint": grid.timepoint,
-            "frame_uid": grid.frame_uid,
-            "modality": image.modality,
-            "value_units": image.value_units,
-            "coord_system": grid.coord_system,
-            "units": grid.units,
-        },
+        "medh5": _spelled(
+            {
+                "path": sample.path,
+                "sample_key": _sample_key(sample),
+                "sample_id": sample.identity.sample_id,
+                "subject_id": sample.identity.subject_id,
+                "image_id": image_id,
+                "grid_id": grid.grid_id,
+                "timepoint": grid.timepoint,
+                "frame_uid": grid.frame_uid,
+                "modality": image.modality,
+                "value_units": image.value_units,
+                "coord_system": grid.coord_system,
+                "units": grid.units,
+            }
+        ),
     }
+
+
+_NONE = "none"
+"""How the metadata spells an absent value: MONAI's own ``TraceKeys.NONE``.
+
+MONAI's ``list_data_collate`` refuses a ``None`` anywhere in an item's
+metadata, and every sample without a ``frame_uid`` --- every NIfTI and nnU-Net
+import --- carried one, so no batch of them could be formed.
+:func:`from_metatensor` reads ``"none"`` back as ``None``.
+"""
+
+_ABSENT = (
+    "frame_uid",
+    "modality",
+    "sample_key",
+    "subject_id",
+    "timepoint",
+    "value_units",
+)
+"""The ``meta["medh5"]`` keys whose value may be absent, spelled :data:`_NONE`."""
+
+
+def _spelled(medh5_meta: dict[str, Any]) -> dict[str, Any]:
+    """*medh5_meta* with an absent value spelled :data:`_NONE`."""
+    for key in _ABSENT:
+        if key in medh5_meta and medh5_meta[key] is None:
+            medh5_meta[key] = _NONE
+    return medh5_meta
+
+
+def _unspelled(medh5_meta: Mapping[str, Any]) -> dict[str, Any]:
+    """*medh5_meta* with :data:`_NONE` read back as ``None``."""
+    out = dict(medh5_meta)
+    for key in _ABSENT:
+        if out.get(key) == _NONE:
+            out[key] = None
+    return out
+
+
+def _sample_key(sample: Sample) -> str | None:
+    """The collection member key *sample* was opened as, or ``None`` for a
+    standalone file: its root group's name under ``/samples`` (§2.2)."""
+    from medh5.collection import SAMPLES_GROUP
+
+    name = str(sample.root.name)
+    prefix = SAMPLES_GROUP.rstrip("/") + "/"
+    if not prefix.startswith("/"):
+        prefix = "/" + prefix
+    return name[len(prefix) :] if name.startswith(prefix) else None
 
 
 def to_metatensor(
@@ -278,6 +333,8 @@ def from_metatensor(tensor: Any) -> tuple[npt.NDArray[Any], dict[str, Any]]:
     tensor's own declared space, and ``units`` --- millimetres, MONAI's,
     unless :func:`to_metatensor` passed a ``px`` grid through --- so a caller
     can hand it to ``SampleWriter.add_grid`` without re-deriving anything.
+    ``medh5`` is the tensor's ``meta["medh5"]``, with ``"none"`` read back as
+    ``None``.
 
     A tensor whose metadata states no ``affine`` or no ``space`` is refused.
     A ``MetaTensor`` always states both, and anything else has no geometry:
@@ -299,7 +356,7 @@ def from_metatensor(tensor: Any) -> tuple[npt.NDArray[Any], dict[str, Any]]:
         )
     affine = np.asarray(meta["affine"], dtype=np.float64)
     spacing, origin, direction = decompose_affine(affine)
-    medh5_meta = meta.get("medh5", {}) or {}
+    medh5_meta = _unspelled(meta.get("medh5", {}) or {})
     return array, {
         "spacing": [float(v) for v in spacing],
         "origin": [float(v) for v in origin],
@@ -379,15 +436,18 @@ def _annotation_meta(
         # A label volume is spatial whatever its grid holds: `labelmap()` has
         # no channel axis, so there is none to name.
         "original_channel_dim": "no_channel",
-        "medh5": {
-            "path": sample.path,
-            "sample_id": sample.identity.sample_id,
-            "subject_id": sample.identity.subject_id,
-            "annotation_id": ann.ann_id,
-            "grid_id": ann.grid_id,
-            "coord_system": grid.coord_system,
-            "units": grid.units,
-        },
+        "medh5": _spelled(
+            {
+                "path": sample.path,
+                "sample_key": _sample_key(sample),
+                "sample_id": sample.identity.sample_id,
+                "subject_id": sample.identity.subject_id,
+                "annotation_id": ann.ann_id,
+                "grid_id": ann.grid_id,
+                "coord_system": grid.coord_system,
+                "units": grid.units,
+            }
+        ),
     }
 
 
