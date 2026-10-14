@@ -328,7 +328,7 @@ class TestPublication:
 
         expected = json.loads((suite / "companion" / "expected.json").read_text())
         fixtures = expected["fixtures"]
-        assert len(fixtures) == 14
+        assert len(fixtures) == 15
         for fixture in fixtures:
             path = suite / "companion" / fixture["file"]
             main(["task", fixture["level"], str(path), "--json"])
@@ -343,6 +343,10 @@ class TestPublication:
                 admitted = (row["selection"] or {}).get("events", [])
                 assert {e["event_id"] for e in admitted} == set(want["events"])
                 assert row["target"]["status"] == want["target"]
+                for fill in row["slots"]:
+                    inputs = want.get("inputs", {}).get(fill["slot"])
+                    if inputs is not None:
+                        assert fill["annotations"] == inputs["annotations"]
         assert (suite / "SHA256SUMS").exists()
         codes = json.loads((suite / "codes.json").read_text(encoding="utf-8"))
         assert {c["code"] for c in codes["codes"]} == set(CODES)

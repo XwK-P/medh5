@@ -60,15 +60,16 @@ the spec does not require installing this package.
 ## The task-and-cache fixtures
 
 The corpus scores a format validator. `companion/` scores an implementation of
-the separately versioned [task and cache contract](task-cache-1.md): fourteen
+the separately versioned [task and cache contract](task-cache-1.md): fifteen
 task manifests over the suite's own clinical samples, each pinned to the
 content those samples have in the suite. `companion/expected.json` gives, for
 each, the level it is checked at — `validate`, the manifest alone with no
 file opened, or `preflight`, its sources opened too — and the exact set of
 `T` codes checking it must find: one invalid manifest per code from `T101` to
-`T306`. For the valid one it also gives each row's status, the event versions
-strict selection admits at its cutoff, the image filling its slot and its
-target label — so two implementations of prospective selection can be
+`T306`. For the two valid ones it also gives each row's status, the event
+versions strict selection admits at its cutoff, the image filling its slot and
+its target label, and, where a row states `inputs`, the eligible annotations
+the slot may read — so two implementations of prospective selection can be
 compared on more than their error codes.
 
 ```
