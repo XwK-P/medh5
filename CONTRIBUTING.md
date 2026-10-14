@@ -181,6 +181,37 @@ Documentation here is checked against the code, not proofread:
 
 Preview with `mkdocs serve`, which live-reloads on port 8000.
 
+## Deprecating something
+
+Nothing is removed or renamed within a major version: it is deprecated, keeps
+working, and goes in 3.0.
+
+- **Python.** Warn with `medh5._deprecation.warn(message)`. Every message
+  starts with `medh5 3.0 ` and says what to use instead: `"medh5 3.0 removes
+  dataset_kwargs: use dataset_layout"`. A removed or renamed name raises
+  `DeprecationWarning`; a default whose *result* changes in 3.0 raises
+  `FutureWarning` (`category=FutureWarning`), only where the answer will
+  actually differ, so correct code never sees it.
+- **A module attribute**, a function as much as a constant, leaves `__all__`
+  and moves into the module's `_DEPRECATED = {name: (value, message)}` table,
+  served by `__getattr__ = module_getattr(__name__, _DEPRECATED)`. Reaching
+  the name warns, so a deprecated function needs no second warning in its
+  body. A deprecated method, parameter or attribute warns where it is used.
+- **The bindings.** A class or function `_core` binds directly warns through
+  `crates/medh5-python/src/deprecation.rs`, with the same prefix.
+- **Rust.** `#[deprecated(since = "2.1.0", note = "<what to use>; removed in
+  3.0")]` on items only: functions, methods, types, constants, fields. Never on
+  a `pub mod` (every use of every item inside warns, and `clippy -D warnings`
+  fails) or a `pub use` (ignored). A deprecated item still used inside the
+  workspace gets `#[allow(deprecated)]` at that use, with a comment saying why.
+- **Tests.** The suite turns any warning starting `medh5 3.0 ` into an error
+  (`filterwarnings` in `pyproject.toml`), so medh5 never uses what it
+  deprecates, and a test that means to trigger one says so with
+  `pytest.warns(DeprecationWarning, match="^medh5 3.0 ")`.
+  `tests/project/test_deprecations.py` checks every message and every
+  `#[deprecated]`.
+- **Changelog.** Every deprecation has an entry under `### Deprecated`.
+
 ## Changelog and releases
 
 Each pull request records its change in a fragment, `changes/<slug>.md`, and
