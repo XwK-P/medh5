@@ -347,7 +347,11 @@
   - Maintainer checklist in the pull request: once it merges, turn on "Require
     merge queue" in the ruleset for `main` (squash; the queue replaces "require
     branches to be up to date"), with `ci-ok` still the required check. The
-    queue is available only to a repository owned by an organization.
+    queue is available only to a repository owned by an organization, so it
+    also waits on the maintainer moving `XwK-P/medh5` to one, and on the pull
+    request that follows the move (`release.yml`'s `CANONICAL` checks, the
+    release scripts and their tests, the project URLs). Until then, merges
+    follow plans/README.md's interim rule: one at a time, each rebased.
 - **Tests.** In `test_packaging`: `_jobs()` also reads `build.yml`; the list of
   Rust-building jobs names the five callers (containers still 2); the 60-minute
   rule skips `uses:` jobs and checks `build.yml`; the upload-artifact count is
