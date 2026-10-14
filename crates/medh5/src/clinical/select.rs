@@ -663,7 +663,10 @@ impl<'a> Prepared<'a> {
             }
             let (fragment, l) = self.links[*i];
             let endpoint_ok = |kind: &str, id: &str, event: &Option<usize>| match kind {
-                "event" => event.is_some_and(|e| chosen[e]),
+                // The asserter itself needs only the eligibility its assertion
+                // does (1.1 §7.3): a procedure of unknown time attests the mask
+                // it asserts it drew, though it is never admitted.
+                "event" => event.is_some_and(|e| chosen[e] || e == *by),
                 "document" => documents.contains(&(fragment, id)),
                 _ => true,
             };

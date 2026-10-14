@@ -1084,7 +1084,7 @@ mod tests {
 
     fn fixed(n: usize) -> (tempfile::TempDir, hdf5::File, hdf5::Dataset) {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("s.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("s.h5"))).unwrap();
         let ds = file.new_dataset::<hdf5::types::FixedAscii<8>>().shape([n]).create("s").unwrap();
         (dir, file, ds)
     }
@@ -1110,7 +1110,7 @@ mod tests {
     #[test]
     fn s2_5_only_strings_are_rewritten_as_strings() {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("n.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("n.h5"))).unwrap();
         let ds = file.new_dataset::<u8>().shape([1]).create("n").unwrap();
         let err = write_fixed_strings(&ds, &["x".to_string()], 8, true).unwrap_err();
         assert!(err.to_string().contains("does not hold strings"), "{err}");
@@ -1137,7 +1137,7 @@ mod tests {
     #[test]
     fn s14_5_a_string_read_no_machine_can_hold_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("big.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("big.h5"))).unwrap();
         let fixed = file
             .new_dataset::<hdf5::types::FixedAscii<16>>()
             .shape([1usize << 59])
@@ -1173,7 +1173,7 @@ mod tests {
     #[test]
     fn s14_5_a_size_past_a_machine_word_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("n.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("n.h5"))).unwrap();
         let huge = file.new_dataset::<u64>().shape([1usize << 61, 4]).chunk([1, 4]).create("huge").unwrap();
         let err = nbytes(&huge).unwrap_err();
         assert!(err.to_string().contains("more bytes than this process can count"), "{err}");
@@ -1231,7 +1231,7 @@ mod tests {
     #[test]
     fn s13_1_strings_are_digested_a_bounded_slab_at_a_time() {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("s.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("s.h5"))).unwrap();
         let n = 20_000usize;
         let fixed = file.new_dataset::<hdf5::types::FixedAscii<1>>().shape([n / 4, 4]).create("fixed").unwrap();
         let values: Vec<String> = (0..n).map(|i| ((b'a' + (i % 26) as u8) as char).to_string()).collect();

@@ -45,7 +45,9 @@ pub struct Fixture {
     pub manifest: Value,
     /// The exact set of finding codes.
     pub findings: BTreeSet<String>,
-    /// For a valid preflight: `{row_id: {"status", "events", "slots", "target"}}`.
+    /// For a valid preflight: `{row_id: {"status", "events", "slots", "target"}}`,
+    /// and optionally `"inputs": {slot: {"annotations"}}`, the eligible voxel
+    /// annotations the slot may read as inputs.
     pub rows: Value,
 }
 
@@ -157,8 +159,8 @@ pub fn fixtures(corpus: &Path) -> Result<Vec<Fixture>> {
         "valid-two-subjects",
         "Two subjects in two partitions. At hour 24 the preliminary report is the version the record had; by hour \
          2190 the amendment, the follow-up CT and the lesion assessment are known. A planned order is never a completed \
-         treatment, a static observation is unordered, and the annotations attested by events of unknown time are never \
-         inputs. The worked subject's assessment labels its early row; nothing labels the others, so they are censored.",
+         treatment, a static observation is unordered, and no annotation is an input before the procedure that drew it is \
+         known (hour 2200). The worked subject's assessment labels its early row; nothing labels the others, so they are censored.",
         "§3, §4, §5; 1.1 §9",
         "preflight",
         task(valid_subjects()?, valid_rows()),
@@ -179,6 +181,23 @@ pub fn fixtures(corpus: &Path) -> Result<Vec<Fixture>> {
                 "censored"
             ),
         }),
+    ));
+
+    let mut after_seg0 = task(valid_subjects()?, vec![row("worked@h2250", "subj-clinical-01", 2250)]);
+    after_seg0["subjects"] = json!([subject("subj-clinical-01", Some("train"), vec![worked()?])]);
+    let mut attested = expect("eligible", &["lab0", "ct0", "report0_v2", "ct1", "response1"], "CT_tp1", "censored");
+    attested["inputs"] = json!({"ct": {"annotations": ["lesions_tp1"]}});
+    out.push(fixture(
+        "valid-self-asserted-mask",
+        "The segmentation procedure, of unknown time and so never selected under effective ordering, asserts that it \
+         describes the masks it drew. Once it is known (hour 2200), its assertion attests them: the follow-up CT's \
+         mask is an input, though the procedure is not; an implementation that requires the asserter to be selected \
+         when it is also the link's endpoint finds none.",
+        "§3.5; 1.1 §7.3, §9.1 step 5",
+        "preflight",
+        after_seg0,
+        &[],
+        json!({"worked@h2250": attested}),
     ));
 
     let mut no_namespace = task(valid_subjects()?, valid_rows());
@@ -467,6 +486,12 @@ fn check(file: &Path, base: &Path, level: &str, rows: &Value) -> Result<(BTreeSe
         }
         if want["target"] != json!(view.target.status) {
             differences.push(format!("{row_id}: target {} not {}", view.target.status, want["target"]));
+        }
+        for (slot, inputs) in want["inputs"].as_object().unwrap_or(&Map::new()) {
+            let found = view.slots.iter().find(|f| &f.slot == slot).map(|f| json!(f.annotations));
+            if found.as_ref() != Some(&inputs["annotations"]) {
+                differences.push(format!("{row_id}: slot {slot} reads {found:?}, not {}", inputs["annotations"]));
+            }
         }
     }
     Ok((found, differences))

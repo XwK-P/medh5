@@ -76,6 +76,12 @@ impl Host for NativeHost {
     }
 }
 
+/// `command.output()`, started through [`medh5::h5::spawn`] so that the child
+/// inherits no file this process has open.
+fn output(command: &mut Command) -> std::io::Result<std::process::Output> {
+    medh5::h5::spawn(command.stdout(Stdio::piped()).stderr(Stdio::piped()))?.wait_with_output()
+}
+
 /// The last line `bytes` hold that is not blank: of a traceback, the
 /// exception (`ModuleNotFoundError: No module named 'medh5'`).
 fn last_line(bytes: &[u8]) -> Option<String> {
@@ -88,9 +94,7 @@ fn last_line(bytes: &[u8]) -> Option<String> {
 /// format.  `Err` says why not, in Python's words where Python gave some.
 fn probe(python: &str, modules: &str) -> Result<(), String> {
     let code = format!("import medh5, {modules}; print(medh5.__version__)");
-    let ran = python_running(python, &code)
-        .stdin(Stdio::null())
-        .output()
+    let ran = output(python_running(python, &code).stdin(Stdio::null()))
         .map_err(|e| format!("{python} could not be run: {e}"))?;
     if !ran.status.success() {
         let why = last_line(&ran.stderr).unwrap_or_else(|| ran.status.to_string());
@@ -116,7 +120,9 @@ fn hand_over(python: &str, argv: &[String], err: &mut dyn Write) -> Option<i32> 
         return None;
     }
     let status =
-        python_running(python, "from medh5.cli import main; raise SystemExit(main())").args(argv).status().ok()?;
+        medh5::h5::spawn(python_running(python, "from medh5.cli import main; raise SystemExit(main())").args(argv))
+            .and_then(|mut child| child.wait())
+            .ok()?;
     Some(status.code().unwrap_or(EXIT_ERROR))
 }
 
@@ -137,11 +143,12 @@ fn measure_throughput(
     );
     // A 1.x package would measure its own dataloader under this one's name.
     probe(python, "medh5.bench").map_err(|why| format!("{needs}: {why}"))?;
-    let ran = python_running(python, CODE)
-        .args([path, &patch.to_string(), &workers.to_string(), annotation.unwrap_or("")])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("{needs}: {e}"))?;
+    let ran = output(
+        python_running(python, CODE)
+            .args([path, &patch.to_string(), &workers.to_string(), annotation.unwrap_or("")])
+            .stdin(Stdio::null()),
+    )
+    .map_err(|e| format!("{needs}: {e}"))?;
     if !ran.status.success() {
         // The last line of a traceback is the exception: `No module named 'torch'`.
         return Err(format!("{needs}: {}", last_line(&ran.stderr).unwrap_or_else(|| ran.status.to_string())));

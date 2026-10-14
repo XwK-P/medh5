@@ -1636,7 +1636,7 @@ mod tests {
 
         // Edited behind the library's back: refused, and nothing written.
         {
-            let file = hdf5::File::open_rw(&path).unwrap();
+            let file = crate::h5::file::marked(|| hdf5::File::open_rw(&path)).unwrap();
             let ct = file.dataset("images/CT").unwrap();
             ct.write_slice(&ndarray::arr3(&[[[999i16]]]), (0..1, 0..1, 0..1)).unwrap();
         }
@@ -1661,7 +1661,7 @@ mod tests {
         let read = || refuse_failed_digests(&open_read(&path).unwrap().as_group().unwrap(), &shown);
         read().unwrap();
         {
-            let file = hdf5::File::open_rw(&path).unwrap();
+            let file = crate::h5::file::marked(|| hdf5::File::open_rw(&path)).unwrap();
             let ct = file.dataset("images/CT").unwrap();
             ct.write_slice(&ndarray::arr3(&[[[999i16]]]), (0..1, 0..1, 0..1)).unwrap();
         }
@@ -1714,7 +1714,7 @@ mod tests {
 
         sample(&path);
         {
-            let file = hdf5::File::open_rw(&path).unwrap();
+            let file = crate::h5::file::marked(|| hdf5::File::open_rw(&path)).unwrap();
             let ct = file.dataset("images/CT").unwrap();
             ct.write_slice(&ndarray::arr3(&[[[999i16]]]), (0..1, 0..1, 0..1)).unwrap();
         }
@@ -1732,7 +1732,7 @@ mod tests {
     /// Every digest under `path`, and its `content_id`, restamped in `algo`,
     /// as a writer digesting in it would have written them.
     fn restamped_in(path: &Path, algo: &str) {
-        let file = hdf5::File::open_rw(path).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::open_rw(path)).unwrap();
         let root = file.as_group().unwrap();
         attrs::write(&root, "digest_algo", &AttrValue::Str(algo.into())).unwrap();
         stamp_digests(&root, algo, &["index"], false).unwrap();
@@ -1770,7 +1770,7 @@ mod tests {
             }
             // A third-party file carrying one digest in another algorithm.
             {
-                let file = hdf5::File::open_rw(&path).unwrap();
+                let file = crate::h5::file::marked(|| hdf5::File::open_rw(&path)).unwrap();
                 let notes = file.dataset("x_site/notes").unwrap();
                 let other = crate::integrity::digest::dataset_digest(&notes, "x_site/notes", "sha256").unwrap();
                 attrs::write(&notes, "digest", &AttrValue::Str(other)).unwrap();
@@ -1794,7 +1794,7 @@ mod tests {
             let path = dir.path().join("s.medh5");
             sample_of(&path, Some("MRN-000042"));
             {
-                let file = hdf5::File::open_rw(&path).unwrap();
+                let file = crate::h5::file::marked(|| hdf5::File::open_rw(&path)).unwrap();
                 if let Some((group, _)) = alias.split_once('/') {
                     file.create_group(group).unwrap();
                 }

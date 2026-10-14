@@ -120,7 +120,14 @@ pub fn load_subject(subject: &Subject, base: Option<&Path>, deep: bool) -> Resul
                 continue;
             }
         };
-        history.findings.extend(source.check(&sample, deep)?);
+        // A source off its pin is read no further: it adds no identity,
+        // clock, event, document or link, and no finding but its own speaks
+        // of its content (task-cache-1 §2, Appendix A).
+        let found = source.check(&sample, deep)?;
+        if !found.is_empty() {
+            history.findings.extend(found);
+            continue;
+        }
         // The sample is who the manifest maps it to: its `local_subject_id`
         // (a site's own id for the subject) when recorded, else the subject's.
         let found = sample.identity()?.subject_id.clone();
@@ -454,7 +461,13 @@ fn merge(history: &mut History, subject: &Subject) -> Result<Vec<Finding>> {
 pub fn reconcile(subject: &Subject, base: Option<&Path>) -> Result<Vec<super::task::Reconciled>> {
     let mut samples = Vec::new();
     for source in &subject.sources {
-        samples.push((source.source_id.clone(), source.open(base)?));
+        let sample = source.open(base)?;
+        // Nothing is reconciled from a source off its pin (task-cache-1
+        // Appendix A): its events are not the ones the task names.
+        if let Some(finding) = source.check(&sample, false)?.into_iter().next() {
+            return Err(Error::coded("T302", finding.message));
+        }
+        samples.push((source.source_id.clone(), sample));
     }
     let mut clinicals = Vec::new();
     for (id, sample) in &samples {

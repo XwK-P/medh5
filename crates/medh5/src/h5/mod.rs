@@ -163,6 +163,59 @@ pub(crate) fn locked<T>(f: impl FnOnce() -> T) -> T {
     hdf5::sync::sync(f)
 }
 
+/// Start `command` while no file is between HDF5's open and the mark that
+/// keeps it out of children ([`file::close_on_exec`]): under HDF5's lock,
+/// which every open through medh5 holds until its file is marked, and which
+/// every close takes too.  Only the start is held; the child runs, and is
+/// waited on, outside it.
+#[doc(hidden)]
+pub fn spawn(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    locked(|| {
+        let mut child = command.spawn()?;
+        settle(&mut child);
+        Ok(child)
+    })
+}
+
+/// Wait, briefly, until `child` has closed the descriptors it was not to
+/// inherit.  Linux resumes the parent of a `vfork`-style spawn as soon as
+/// `execve` replaces the child's memory, and closes the close-on-exec
+/// descriptors only after: for those microseconds the child shares every open
+/// file, and the lock HDF5 holds through it, so a file closed and opened again
+/// meanwhile fails "unable to lock file".  Held under HDF5's lock, the wait
+/// keeps every close and open out of that window.  A child that ends, or
+/// takes longer than a second, is not waited for further.
+#[cfg(target_os = "linux")]
+fn settle(child: &mut std::process::Child) {
+    use std::os::unix::io::RawFd;
+    use std::path::PathBuf;
+
+    let entries = |dir: &str| -> Vec<(RawFd, PathBuf)> {
+        let Ok(read) = std::fs::read_dir(dir) else { return Vec::new() };
+        read.flatten()
+            .filter_map(|e| Some((e.file_name().to_str()?.parse().ok()?, std::fs::read_link(e.path()).ok()?)))
+            .collect()
+    };
+    // SAFETY: `fcntl(F_GETFD)` only reads a descriptor's flags.
+    let ours: Vec<(RawFd, PathBuf)> = entries("/proc/self/fd")
+        .into_iter()
+        .filter(|(fd, _)| unsafe { libc::fcntl(*fd, libc::F_GETFD) } & libc::FD_CLOEXEC != 0)
+        .collect();
+    let theirs = format!("/proc/{}/fd", child.id());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < deadline && !matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+        if !entries(&theirs).iter().any(|entry| ours.contains(entry)) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_micros(50));
+    }
+}
+
+/// Elsewhere a spawn is one call (`posix_spawn` on macOS), or nothing is
+/// inherited (Windows).
+#[cfg(not(target_os = "linux"))]
+fn settle(_: &mut std::process::Child) {}
+
 /// An object's path relative to a sample root (`/samples/x/images/CT` with
 /// root `/samples/x` gives `images/CT`).
 pub fn relative_name(name: &str, root: &str) -> String {
@@ -226,13 +279,16 @@ mod tests {
             return;
         }
         let name = "h5::tests::s14_2_plugins_asked_for_load_from_the_standard_directory_only";
-        let run = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
             .args(["--exact", name, "--test-threads=1"])
             .env(CHILD, "1")
             .env(plugins::ALLOW, "1")
             .env_remove(plugins::SEARCH_PATH)
-            .output()
-            .unwrap();
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        // Through `spawn`, so the child catches no other test's file mid-open.
+        let run = super::spawn(&mut command).unwrap().wait_with_output().unwrap();
         let out = String::from_utf8_lossy(&run.stdout);
         assert!(run.status.success() && out.contains("1 passed"), "{out}{}", String::from_utf8_lossy(&run.stderr));
     }

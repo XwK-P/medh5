@@ -2655,7 +2655,7 @@ mod tests {
     #[test]
     fn s11_4_the_name_walk_reaches_every_link_and_ends() {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("links.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("links.h5"))).unwrap();
         let a = file.create_group("x_a").unwrap();
         a.new_dataset::<u8>().shape([2]).create("table").unwrap();
         file.create_group("x_b").unwrap().link_hard("/x_a/table", "Doe^Jane").unwrap();

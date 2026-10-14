@@ -1,0 +1,297 @@
+# W21-02 Integrity, versions and the code table
+
+| | |
+|---|---|
+| Branch | `w21/integrity` |
+| Size | L overall: PR 1 M, the others S–M |
+| Lands after | W21-00 PR 4, PR 5 |
+| Blocks | every new code (PR 2–4 here, W21-13 PR 2), W21-03 PR 2 |
+| Owns | `crates/medh5/src/{validate/**,integrity/**,digest.rs,codes.rs,version.rs}`, `crates/medh5/data/codes.json`, the spec text of its decisions (1.0 §3.3, §4.3, §5.4, §13, §15, §16; 1.1 §11.2; not §2.1's `digest_algo` row, which is W21-04's D3); touches `medh5/{validate.py,errors.py}` (W21-06's) for the `Code` fields and `codes_revision` |
+| Decisions | D1, D2, D4, D5, D6, D7, D8, D9, D11, D20 |
+| Backport | none (new codes change strict verdicts) |
+
+## Session prompt
+
+> Implement workstream W21-02 (integrity, versions and the code table) of medh5
+> 2.1.0 in this repository. First read `plans/README.md`,
+> `plans/2.1.0/README.md` and `plans/2.1.0/decisions.md` (D1, D2, D4–D9, D11,
+> D20), then `plans/2.1.0/w21-02-integrity.md` in full. Work from the latest
+> `main` on `w21/integrity`; land the four pull requests in order, one at a
+> time. PR 1 is the foundation every new code in 2.1.0 waits for, so finish it
+> first. For each item: re-check its "State at 2.0.2" on `main`, write the
+> tests first and see them fail, implement, write the specification text the
+> decision gives (with its Appendix C.1 row and the corrected count sentence),
+> add the conformance case, run the local gate from `CLAUDE.md`, add a
+> `changes/` fragment, push, and open a pull request titled `W21-02: …`. Do not
+> merge: the coordinator does. Ask before allocating any code not in D2.
+
+## Pull requests
+
+| PR | Items | Size |
+|---|---|---|
+| 1 | 02.1 Code-table revisions; 02.2 "a later minor" derived; 02.3 accessors for the version and kind tables | M |
+| 2 | 02.4 W915 | S |
+| 3 | 02.5 Canonical hex; 02.6 the index's digest algorithm | S–M |
+| 4 | 02.7 W916; 02.8 W917; 02.9 W918; 02.10 annotation pyramids reserved | S–M |
+
+## Items
+
+### 02.1 Code-table revisions (PR 1, D1)
+
+- **State at 2.0.2.** 1.0 §15.2: "a code's meaning never changes and a retired
+  code is never reused … a minor version may add codes but MUST NOT redefine
+  one"; §16: a minor "may add … error codes". In practice E506 and E704 were
+  allocated by 1.0 errata. `crates/medh5/data/codes.json` holds 95 entries
+  `{code, severity, domain, summary}`, with no version or revision.
+  `codes::Code` (`codes.rs`) is an exhaustive struct with all-pub fields: it
+  gains no field. `TestSpecSync` (`tests/format/test_conformance.py`) requires
+  every code in a spec table.
+- **Change.**
+  - The specification text of D1 (1.0 §15.1, §15.2, §16; 1.1 §11.2), and an
+    Appendix C.1 row. Until a revision-2 code exists the table is revision 1,
+    and D1's last sentence says so ("…complete for 1.0 at revision 1."). The
+    pull request that allocates the first revision-2 code (PR 2's W915 here, or
+    W21-13 PR 2's W919 if that merges first) makes the table revision 2: it
+    rewrites that sentence, marks its row (r2), sets the top-level revision,
+    and turns on `test_S15_2_a_pinned_revision_reports_no_later_code`.
+  - `codes.json` is already an object, `{"$comment": …, "codes": [...]}`, and
+    every reader takes `["codes"]` (`codes.rs`'s `Table`, `medh5/errors.py`,
+    `hooks/mkdocs_hooks.py`, `tests/format/test_conformance.py`), so add a
+    top-level `"revision": 1`. Each entry gains `"since"` (`"1.0"` or `"1.1"`:
+    the version whose rules it reports; the 22 codes 1.1 allocates are E011,
+    E801–E819, W913 and W914, as 1.1 §11.2 lists them) and `"revision": 1`.
+  - `conformance/suite.rs` writes the suite's own `codes.json` field by field
+    (`code`, `severity`, `domain`, `summary`): it gains `since` and `revision`
+    per entry and the table's `revision`, so a third party scoring against the
+    suite reads the revision it was built at.
+  - Rust: `codes::table_revision() -> u32` (read from the member; a `const`
+    cannot read embedded JSON); `codes::since(code: &str) -> Option<&'static
+    str>`; `codes::revision(code: &str) -> Option<u32>`. `validate::ValidateOptions`
+    (`#[non_exhaustive]`, `Default`, builders `level`, `profiles`,
+    `codes_revision(u32)`) and `validate::validate_file_with(path: &Path,
+    options: &ValidateOptions) -> Result<Report>`; `validate_file` delegates.
+    Pinning a revision drops every diagnostic whose code's revision is later,
+    before strict promotion. A revision below 1 or above the table's is refused
+    with `Error::invalid` (Python `ValueError`), in every frontend: revision 0
+    would drop every code and pass any file.
+  - Python: `Code` gains `since: str = "1.0"` and `revision: int = 1` (appended,
+    with defaults); `validate_file(…, *, codes_revision: int | None = None)` and
+    `validate_paths(…, *, codes_revision=None)`; `_core.pyi`.
+  - CLI: `medh5 validate --codes-revision N` (refuses N below 1 or above the
+    table's revision).
+  - `docs/reference/diagnostic-codes.md` is generated by the hook from
+    `codes.json`: the hook gains a "Since / rev." column.
+- **Tests.**
+  - `test_S15_2_every_code_names_its_version_and_revision`.
+  - `test_S15_2_a_revision_keeps_every_earlier_code`: a frozen list of the 95
+    revision-1 codes and their severities, which no later change may alter.
+  - `test_S15_2_a_pinned_revision_reports_no_later_code` (meaningful from PR 2;
+    write it against a revision-2 code there).
+  - `test_S15_2_a_revision_outside_the_table_is_refused` (0 and the table's
+    revision + 1, through Rust, Python and the CLI).
+  - `test_S16_an_erratum_code_changes_no_written_version`.
+  - Rust `s15_2_every_code_has_a_version_and_a_revision`.
+- **Docs.** 1.0 §15.1, §15.2, §16, Appendix C.1; 1.1 §11.2;
+  `docs/reference/profiles-and-levels.md`, `docs/guides/validate.md` (pinning a
+  revision for a strict CI gate), `docs/reference/cli.md`.
+- **Changelog.** Added, area `validation`: the code table is revisioned, and a
+  validator can pin a revision.
+
+### 02.2 "A later minor" is derived, not "1.2" (PR 1, D20)
+
+- **State at 2.0.2.** "1.2" stands for "a minor this engine does not know" in
+  about 20 places: the `W913-higher-minor-projection` case
+  (`conformance/clinical.rs`), companion fixture T306 (`conformance/companion.rs`),
+  `version.rs`, and Rust and Python tests. A real 1.2 (2.2.0) breaks all of them.
+- **Change.** `version::next_minor(version: &str) -> Option<String>` ("1.1" →
+  "1.2"); a `LATER_MINOR` derived from the newest supported version in
+  `tests/helpers.py` (and a Rust test helper). Every literal "1.2" meaning "later"
+  uses them. No output changes in 2.1.0.
+- **Tests.** `test_S2_2_the_later_minor_is_one_past_the_newest`; the existing
+  projection tests, unchanged in substance.
+- **Done when** `rg '"1\.2"' crates tests medh5` finds no "later minor" literal.
+- **Changelog.** `<!-- no entry: internal -->`.
+
+### 02.3 Accessors for the version and kind tables (PR 1)
+
+- **State at 2.0.2.** `annotations::header::ANNOTATION_KINDS: [&str; 13]`,
+  `GEOMETRIC_KINDS: [&str; 6]` and `version::FORMAT_VERSIONS: [&str; 2]` are
+  arrays: adding a kind (2.2.0's `polylines`) or a version (1.2) changes their
+  type, a semver break.
+- **Change.** `annotations::kinds(version: &str) -> Option<&'static [&'static
+  str]>`, `annotations::geometric_kinds(version: &str) -> Option<&'static
+  [&'static str]>` and `version::format_versions() -> &'static [&'static str]`;
+  the arrays keep 1.1's content and are `#[deprecated(since = "2.1.0", note =
+  "use annotations::kinds / version::format_versions; removed in 3.0")]`; the
+  workspace's own uses move to the functions. Python's constants (if bound from
+  the arrays) bind the functions' answers instead. 3.0 ledger line already
+  present.
+- **Tests.** The functions equal the arrays at 1.0 and 1.1; `kinds("9.9")` is
+  `None`.
+- **Changelog.** Deprecated, area `annotations`.
+
+### 02.4 An undigested dataset under a `content_id`: W915 (PR 2, D6)
+
+- **State at 2.0.2.** 1.0 §13.1: every dataset but `/meta` SHOULD carry a
+  `digest`. An undigested `grids/ct_tp0/extra` validates clean at integrity and
+  strict (`validate/rules/integrity.rs`, `Binding::Undigested => {}`), while
+  `verify` gives `ok=False, unattested=('grids/ct_tp0/extra',)`
+  (`VerifyResult::ok` requires `unattested` empty: deliberate since L-26 in
+  1.4.2). For `clinical/`, 1.1 §8 makes the digest a MUST (E818).
+- **Change.** The `Binding::Undigested` arm reports W915 at the dataset's path
+  for datasets under `grids/`, `images/`, `annotations/`, `transforms/` when
+  the root declares a `content_id` and W901 is not reported. Message: "carries no
+  `digest`, inside an object `content_id` covers: the root does not attest its
+  bytes, so an edit to them changes no line (§13.1, §13.2)". `codes.json` row
+  (warning, integrity, since 1.0, revision 2); the table's revision becomes 2;
+  the §15.2 W9xx row marked (r2); D6's text in §13.1.
+- **Tests.**
+  - `test_S13_1_an_undigested_dataset_under_a_content_id_is_W915`: the L-26
+    mutation (`instance_ids` added with no digest) gives W915 at integrity and
+    nothing at semantic.
+  - `test_S13_1_W915_is_not_reported_without_a_content_id`.
+  - `test_S13_1_an_undigested_clinical_dataset_is_E818_not_W915`.
+  - `test_S13_2_verify_fails_exactly_when_an_attestation_code_is_reported`, over
+    every corpus case that opens: `verify` fails exactly when the validator, at
+    integrity, reports E701, E702, E703, E704, E818 or W915, or W913 for a
+    projection's root. If it finds another discrepancy, that is a finding to
+    report, not a reason to weaken the test.
+  - `test_S15_2_a_pinned_revision_reports_no_later_code`: revision 1 drops W915.
+  - Corpus: `W915-undigested-attested-dataset` (integrity level, mutated, valid,
+    expecting W915, and W912 if its annotation has no ontology binding).
+- **Docs.** 1.0 §13.1, §15.2; `docs/guides/validate.md` (verify and validate now
+  agree).
+- **Changelog.** Behaviour changes, area `validation`: "`--level strict` fails a
+  file that draws a revision-2 warning; pass `--codes-revision 1` to keep 2.0's
+  verdicts." (One entry for W915–W919; later pull requests extend it.)
+
+### 02.5 A digest's hex is canonical (PR 3, D4)
+
+- **State at 2.0.2.** `parse_digest` (`crates/medh5/src/digest.rs`) imitates
+  Python's `int(hex, 16)`: it accepts a sign, `0x`, `_`, whitespace, uppercase
+  and short hex, and its test asserts `parse_digest("sha256:00ff").is_ok()`.
+  Each of those spellings on a dataset digest is reported E701 plus E702, not
+  E703. §13.2 already says the root's `hex` is lowercase; §13.1 says nothing.
+- **Change.** `pub fn is_canonical_digest(value: &str) -> bool` in `digest.rs`
+  (`<algo>:` then lowercase hex of exactly 64 for sha256, 128 for sha512 and
+  blake2b). A non-canonical dataset digest is malformed: it lands in
+  `VerifyResult.malformed` and `Diagnosis.malformed` (so `fix
+  --rewrite-digests` restamps it) and is E703 in the validator
+  (`validate/rules/integrity.rs`); a non-canonical `content_id` at `/` is E703.
+  `parse_digest` stays lenient, and its rustdoc says so and points to
+  `is_canonical_digest`. W21-04's amend refusal (E703) uses the same test. D4's
+  text in §13.1, and a C.1 row.
+- **Tests.**
+  - `test_S13_1_a_digest_not_in_canonical_hex_is_E703`, parametrised over the
+    six spellings (sign, `0x`, `_`, whitespace, uppercase, short): E703 and not
+    E701.
+  - `test_S13_1_fix_restamps_a_non_canonical_digest`.
+  - Rust `s13_1_parse_digest_is_lenient_and_canonical_is_exact`.
+  - Corpus: `E703-digest-not-canonical` (uppercase; invalid; integrity;
+    expecting E703 and E702).
+- **Changelog.** Fixed, area `validation`: "**A digest spelled in uppercase is
+  malformed (E703), not a mismatch (E701).** …"
+
+### 02.6 The algorithm of an index's `source_digest` (PR 3, D5)
+
+- **State at 2.0.2.** 1.0 §13.3 defines `H(concat(sorted("{child_name}\t
+  {child_digest}\n" …)))` "prefixed `"<algo>:"`" and never says what `H` is. The
+  engine always uses sha256: `group_digest(&group, &root, "sha256")`
+  (`sample/writer_annotations.rs`), `stale_index_entries` with `DEFAULT_ALGO`
+  (`integrity/verify.rs`, read by `fresh_indices` in `sample/reader.rs`),
+  `medh5-cli/src/seg.rs`, and `Entry::is_current` compares strings
+  (`storage/index.rs`). A sha512 file whose `source_digest` is sha512 is W905
+  (index ignored, strict fails); the reference writer cannot make a sha512 file.
+- **Change.** `stale_index_entries` parses the entry's prefix with
+  `parse_digest`: unparseable or outside §2.1 is stale; otherwise recompute under
+  the algorithm named. The same in `seg.rs`. The rustdoc and docstring of
+  `Entry::is_current(annotation_digest)` say the caller computes under the
+  entry's prefix (e.g. `group_digest(group, algo=…)`). No new API. D5's text in
+  §13.3 and a C.1 row.
+- **Tests.**
+  - Rust `s13_3_a_source_digest_is_read_under_the_algorithm_it_names`: sha256
+    and sha512 entries are current in a sha512 file; `md5:` and malformed entries
+    are stale.
+  - `test_S13_3_an_index_in_the_files_algorithm_is_current`: `fresh_indices`, and
+    strict clean.
+  - `test_S13_3_an_unknown_source_digest_algorithm_is_W905_not_an_error`.
+  - Corpus: `integrity-index-sha512` (valid at strict): a sha512 file whose index
+    is sha512, made through a crate-private `digest_algo` on the builder's
+    writer.
+- **Docs.** `docs/reference/storage.md` (the index).
+- **Changelog.** Fixed, area `validation`.
+
+### 02.7 A contradiction under implicit closure: W916 (PR 4, D7)
+
+- **State at 2.0.2.** `Classification::state` (`annotations/read_geometric.rs`)
+  answers positive when the class, or under `implicit` an `is_a` descendant in
+  the same scope unit, is asserted above 0 (`asserted_descendants`). Nothing
+  reports stored data that contradicts that inference; `check_classification`
+  (`validate/rules/geometric.rs`) is structural.
+- **Change.** A semantic rule in `validate/rules/geometric.rs`, registered after
+  `check_label_set` in `rules_for` (`validate/rules/mod.rs`), reusing
+  `asserted_descendants` and `value_of` (made `pub(crate)`). Condition and
+  exclusions as D7. Message: "class 'kidney' (1) is asserted negative (0.0) in
+  scope unit 3, where its `is_a` descendant 'left_kidney' (2) is asserted
+  positive: under closure='implicit' readers answer it positive (§5.4, §9)".
+  Skipped when E304 or E306 is reported.
+- **Tests.** `test_S5_4_an_implicit_negative_ancestor_of_a_positive_is_W916`;
+  each without W916: `test_S5_4_W916_needs_implicit_closure`,
+  `test_S5_4_W916_is_per_scope_unit`,
+  `test_S5_4_an_examined_unasserted_ancestor_is_not_W916`,
+  `test_S5_4_a_soft_ancestor_is_not_W916`. Corpus:
+  `W916-implicit-negative-ancestor` (valid, semantic, expecting W916 and W912).
+- **Docs.** 1.0 §5.4, §9, §15.2; `docs/reference/annotations.md` and
+  `docs/guides/classification.md` (what `state()` answers).
+
+### 02.8 A plane and a volume naming one frame: W917 (PR 4, D8)
+
+- **State at 2.0.2.** 1.0 §3.3 rule 4: grids are comparable only with the same
+  `frame_uid`, `coord_system` and S ("Nor does a 2-D grid share a world with a
+  3-D one"); `Grid::comparable_with` enforces it and `compare_instances`
+  refuses unequal S (E414). W910 (`validate/rules/geometry.rs`, semantic) covers
+  one frame across timepoints; nothing reports two grids naming one frame they
+  cannot share.
+- **Change.** In `check_timepoints`, beside W910, group grids by `frame_uid`;
+  report once per pair differing in S or `coord_system`, in any timepoints.
+  Message: "grids 'ct_tp0' (3-D, LPS) and 'key_tp0' (2-D, LPS) name one frame
+  '1.2.3': §3.3 compares neither with the other; give the plane its own frame,
+  or store it as a one-slice 3-D grid where it lies (§3.6)". W910 may also be
+  reported.
+- **Tests.** `test_S3_3_a_plane_and_a_volume_naming_one_frame_are_W917`,
+  `test_S3_3_two_coord_systems_in_one_frame_are_W917`,
+  `test_S3_3_comparable_grids_in_one_frame_are_not_W917`. Corpus:
+  `W917-plane-and-volume-share-a-frame` (valid, semantic).
+- **Docs.** 1.0 §3.3, §15.2; `docs/guides/import-dicom.md` (key images).
+
+### 02.9 A voxel annotation declaring implicit closure: W918 (PR 4, D9)
+
+- **State at 2.0.2.** The writer defaults to `explicit`
+  (`sample/writer_annotations.rs`); since 2.0.2 voxel reads under `implicit` OR
+  descendants into ancestors. Nothing warns.
+- **Change.** One check in `validate/rules/annotations.rs`, reading the closure
+  as `annotations.rs` already does, for `labelmap`, `layers`, `bitmask`,
+  `instances`, `probmap`. Message: "a voxel annotation declares
+  closure='implicit': readers include every `is_a` descendant's voxels in each
+  ancestor's reads (§5.4); writers SHOULD use 'explicit' for voxel annotations".
+- **Tests.** `test_S5_4_a_voxel_annotation_declaring_implicit_is_W918`,
+  parametrised over the five kinds; `test_S5_4_an_implicit_classification_is_not_W918`.
+  Corpus: `W918-implicit-voxel-annotation` (valid, semantic).
+- **Docs.** `docs/reference/annotations.md`, `docs/guides/segmentation.md`, 1.0
+  §5.4 and §15.2.
+
+### 02.10 Annotation pyramids are reserved (PR 4, D11)
+
+- **State at 2.0.2.** 1.0 §4.3: "Voxel annotations MAY be pyramided identically,
+  with `downsample_method = "nearest"` or `"max"` (never `"mean"`), see §7". §7
+  says nothing about pyramids; nothing writes, reads or validates one.
+- **Change.** D11's text in §4.3 and the §16 reserved-names row; a C.1 row. The
+  writer refuses `levels`, `downsample_factors`, `downsample_method` and
+  `grid_levels` as annotation attributes (it writes none today; the refusal
+  keeps a caller's custom attribute from claiming them).
+- **Tests.** A spec-text test that §16's reserved table lists the four names;
+  `test_S16_annotation_pyramid_attributes_are_reserved` (the writer refuses
+  them).
+- **Docs.** One paragraph in `docs/explanation/design-rationale.md` (why
+  reserved, and what a later minor must define).
+- **Changelog.** Fixed, area `specification`.
