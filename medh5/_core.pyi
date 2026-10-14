@@ -31,6 +31,7 @@ __all__ = [
     "AGREEMENT_DEFAULT_IOU",
     "AGREEMENT_OBJECT_KINDS",
     "ANNOTATION_KINDS",
+    "ASSESSMENT_SYSTEM",
     "ATTESTED_GROUPS",
     "AXIS_KINDS",
     "Activity",
@@ -48,8 +49,10 @@ __all__ = [
     "BLOSC_FILTER_ID",
     "BUILTIN_FILTER_IDS",
     "BULK_MIN_BYTES",
+    "CACHE_LEVELS",
     "CACHE_SAFETY",
     "CACHE_SCHEMA",
+    "CACHE_SUFFIX",
     "CHECK_CODES",
     "CHECK_SEVERITIES",
     "CLINICAL_PROFILE",
@@ -116,6 +119,7 @@ __all__ = [
     "LATERALITY_VALUES",
     "LEGACY_BOX_SHIFT",
     "LEGACY_SCHEMA_VERSION",
+    "LESION_PRESENCE",
     "LESION_VALUES",
     "LEVELS",
     "LOCALIZED_BBOX_FRACTION",
@@ -193,6 +197,8 @@ __all__ = [
     "SplitClaim",
     "TARGET_STATUSES",
     "TASKS",
+    "TASK_CENSORING",
+    "TASK_ROI",
     "TASK_SCHEMA",
     "TEMPORAL_TYPES",
     "TIMEPOINT_FIELDS",
@@ -266,6 +272,7 @@ __all__ = [
     "cache_fitted_on",
     "cache_fitted_on_mismatches",
     "cache_open",
+    "cache_owned_documents",
     "cache_schema_text",
     "cache_validate",
     "canonical_attrs",
@@ -530,6 +537,7 @@ AGENT_TYPES: tuple[str, ...]
 AGREEMENT_DEFAULT_IOU: float
 AGREEMENT_OBJECT_KINDS: tuple[str, ...]
 ANNOTATION_KINDS: tuple[str, ...]
+ASSESSMENT_SYSTEM: str
 ATTESTED_GROUPS: tuple[str, ...]
 AXIS_KINDS: tuple[str, ...]
 BACKGROUND_ID: int
@@ -540,8 +548,10 @@ BLOSC2_FILTER_ID: int
 BLOSC_FILTER_ID: int
 BUILTIN_FILTER_IDS: tuple[int, ...]
 BULK_MIN_BYTES: int
+CACHE_LEVELS: tuple[str, ...]
 CACHE_SAFETY: float
 CACHE_SCHEMA: str
+CACHE_SUFFIX: str
 CHECK_CODES: dict[str, str]
 CHECK_SEVERITIES: tuple[str, ...]
 CLINICAL_PROFILE: str
@@ -594,6 +604,7 @@ LAST_ROW_TOL: float
 LATERALITY_VALUES: tuple[str, ...]
 LEGACY_BOX_SHIFT: float
 LEGACY_SCHEMA_VERSION: str
+LESION_PRESENCE: str
 LESION_VALUES: tuple[str, ...]
 LEVELS: tuple[str, ...]
 LOCALIZED_BBOX_FRACTION: float
@@ -655,6 +666,8 @@ STREAM_BYTES: int
 SUPPORTED_ORDERS: tuple[int, ...]
 TARGET_STATUSES: tuple[str, ...]
 TASKS: tuple[str, ...]
+TASK_CENSORING: tuple[str, ...]
+TASK_ROI: tuple[str, ...]
 TASK_SCHEMA: str
 TEMPORAL_TYPES: tuple[str, ...]
 TIMEPOINT_FIELDS: frozenset[str]
@@ -864,6 +877,14 @@ def cache_fitted_on_mismatches(doc: Any, fitted: Mapping[str, Any]) -> list[str]
 
 def cache_open(path: str | os.PathLike[str]) -> FeatureCacheHandle: ...
 def cache_schema_text() -> str: ...
+def cache_owned_documents(
+    source: Any,
+    base: str | os.PathLike[str] | None = None,
+    root: str | os.PathLike[str] | None = None,
+) -> dict[str, list[str]]:
+    """Each event version of a source and the documents it owns."""
+    ...
+
 def cache_validate(
     path: str | os.PathLike[str],
     base: str | os.PathLike[str] | None = None,

@@ -434,6 +434,25 @@ fn source_check<'py>(
     Ok(findings(py, &found)?)
 }
 
+/// Each event version of a source and the documents it owns: the engine's
+/// rule for what an event-level cache files under it.
+#[pyfunction]
+#[pyo3(signature = (source, base=None, root=None))]
+fn cache_owned_documents<'py>(
+    py: Python<'py>,
+    source: &Bound<'py, PyAny>,
+    base: Option<PathBuf>,
+    root: Option<PathBuf>,
+) -> R<Bound<'py, PyDict>> {
+    let src = SourceRef::from_json(&record(source)?)?;
+    let owned = py.detach(move || medh5::companion::cache::owned_documents(&src, &access(base, root)?))?;
+    let out = PyDict::new(py);
+    for (event, documents) in owned {
+        out.set_item(event, documents)?;
+    }
+    Ok(out)
+}
+
 fn header(value: &Value) -> CacheHeader {
     let opt = |k: &str| value.get(k).and_then(Value::as_str).map(str::to_string);
     CacheHeader {
@@ -661,6 +680,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(cache_create, m)?,
         wrap_pyfunction!(cache_open, m)?,
         wrap_pyfunction!(cache_validate, m)?,
+        wrap_pyfunction!(cache_owned_documents, m)?,
         wrap_pyfunction!(cache_fitted_on, m)?,
         wrap_pyfunction!(cache_fitted_on_mismatches, m)?,
         wrap_pyfunction!(cache_event_entry_id, m)?,
@@ -679,6 +699,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CLINICAL_SCHEMA", medh5::clinical::SCHEMA)?;
     m.add("TASK_SCHEMA", medh5::companion::task::SCHEMA)?;
     m.add("CACHE_SCHEMA", medh5::companion::cache::SCHEMA)?;
+    m.add("CACHE_SUFFIX", medh5::companion::cache::SUFFIX)?;
+    m.add("ASSESSMENT_SYSTEM", medh5::clinical::model::ASSESSMENT_SYSTEM)?;
+    m.add("LESION_PRESENCE", medh5::clinical::model::LESION_PRESENCE)?;
     for (name, values) in [
         ("EVENT_KINDS", &medh5::clinical::EVENT_KINDS[..]),
         ("TEMPORAL_TYPES", &medh5::clinical::TEMPORAL_TYPES[..]),

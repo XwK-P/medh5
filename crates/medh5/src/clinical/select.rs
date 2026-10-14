@@ -39,6 +39,13 @@ pub const UNCERTAINTY: [&str; 2] = ["contained", "overlaps"];
 pub const KEEP: [&str; 2] = ["latest", "earliest"];
 /// What an event limit does with the tie group it cuts.
 pub const TIES: [&str; 2] = ["keep_group", "drop_group"];
+/// What a selection's `status` can be, in the order the preflight columns
+/// code them: every word the selection writes there is one of these.
+pub const SELECTION_STATUSES: &[&str] = &[CERTIFIED, UNCERTIFIABLE, PROVABLE];
+
+const CERTIFIED: &str = "certified";
+const UNCERTIFIABLE: &str = "uncertifiable";
+const PROVABLE: &str = "provable";
 
 /// The versions of each record, oldest first, ordered by `supersedes`.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -362,7 +369,7 @@ pub struct Selection {
 
 impl Selection {
     pub fn certified(&self) -> bool {
-        self.status == "certified"
+        self.status == CERTIFIED
     }
 
     /// The admitted versions' ids, in input order; `events` is what was
@@ -510,9 +517,9 @@ impl<'a> Prepared<'a> {
             eligible[i] = true;
         }
         let status = match (policy.selection.as_str(), uncertain_records.is_empty()) {
-            ("latest_provable", _) => "provable",
-            (_, true) => "certified",
-            (_, false) => "uncertifiable",
+            ("latest_provable", _) => PROVABLE,
+            (_, true) => CERTIFIED,
+            (_, false) => UNCERTIFIABLE,
         };
 
         // 3: kinds, plans, static, context.

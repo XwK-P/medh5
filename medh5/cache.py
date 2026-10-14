@@ -48,8 +48,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5.task import RowView, TaskManifest
 
 SCHEMA: str = _core.CACHE_SCHEMA
-SUFFIX = ".medh5cache"
-LEVELS = ("event", "patient")
+SUFFIX: str = _core.CACHE_SUFFIX
+LEVELS: tuple[str, ...] = _core.CACHE_LEVELS
 
 PathLike = str | os.PathLike[str]
 
@@ -523,20 +523,20 @@ def build_document_cache(
                     clinical = sample.clinical
                     if clinical is None:
                         continue
-                    kinds = {e.event_id: e.kind for e in clinical.events}
-                    for link in clinical.links:
-                        if (
-                            link.relation == "describes"
-                            and link.source_type == "event"
-                            and link.target_type == "document"
-                            and kinds.get(link.source_id) == "document"
-                        ):
-                            text = clinical.text(link.target_id)
+                    # What each version owns, by the rule validation holds
+                    # entries to: the engine's.
+                    owned = _core.cache_owned_documents(
+                        source.to_json(),
+                        None if where is None else os.fspath(where),
+                        confined,
+                    )
+                    for event_id, documents in owned.items():
+                        for document_id in documents:
                             writer.add_event(
                                 source,
-                                link.source_id,
-                                encoder.encode(text),
-                                document_id=link.target_id,
+                                event_id,
+                                encoder.encode(clinical.text(document_id)),
+                                document_id=document_id,
                             )
     return validate_cache(
         path, base=where, confine=False if confined is None else confined

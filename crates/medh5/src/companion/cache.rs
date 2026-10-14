@@ -20,6 +20,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use indexmap::IndexMap;
 use serde_json::{json, Value};
 
 use super::source::{SourceAccess, SourceRef};
@@ -655,11 +656,23 @@ struct Ownership(HashMap<String, BTreeSet<String>>);
 /// sealed passes it: what its entries name cannot then be verified.
 fn ownership(source: &SourceRef, access: &SourceAccess) -> std::result::Result<Ownership, String> {
     let sample = source.open_in(access).map_err(|e| format!("{} cannot be opened: {e}", source.locator()))?;
-    let mut owned: HashMap<String, BTreeSet<String>> = HashMap::new();
-    let tables = sample.clinical();
-    if let Some(clinical) =
-        tables.map_err(|e| format!("the clinical tables of {} cannot be read: {e}", source.locator()))?
-    {
+    let owned =
+        owned_by(&sample).map_err(|e| format!("the clinical tables of {} cannot be read: {e}", source.locator()))?;
+    Ok(Ownership(owned.into_iter().map(|(event, documents)| (event, documents.into_iter().collect())).collect()))
+}
+
+/// Each event version of `source`, in the order it holds them, with the
+/// documents its structural `describes` link owns (1.1 §7.3): what an
+/// event-level entry may file under it, and the rule [`validate_cache`]
+/// holds entries to.  The source is not checked against its pin.
+#[doc(hidden)]
+pub fn owned_documents(source: &SourceRef, access: &SourceAccess) -> Result<IndexMap<String, Vec<String>>> {
+    owned_by(&source.open_in(access)?)
+}
+
+fn owned_by(sample: &crate::sample::Sample) -> Result<IndexMap<String, Vec<String>>> {
+    let mut owned: IndexMap<String, Vec<String>> = IndexMap::new();
+    if let Some(clinical) = sample.clinical()? {
         for event in &clinical.events {
             owned.entry(event.event_id.clone()).or_default();
         }
@@ -669,11 +682,14 @@ fn ownership(source: &SourceRef, access: &SourceAccess) -> std::result::Result<O
                 && link.target_type == "document"
                 && clinical.event(&link.source_id).is_some_and(|e| e.kind == "document");
             if structural {
-                owned.entry(link.source_id.clone()).or_default().insert(link.target_id.clone());
+                let documents = owned.entry(link.source_id.clone()).or_default();
+                if !documents.contains(&link.target_id) {
+                    documents.push(link.target_id.clone());
+                }
             }
         }
     }
-    Ok(Ownership(owned))
+    Ok(owned)
 }
 
 impl Ownership {

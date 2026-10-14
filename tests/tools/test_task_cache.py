@@ -518,6 +518,45 @@ class TestManifest:
         assert back.base == task.base
 
 
+class TestVocabularies:
+    def test_constants_are_the_engines(self):
+        """The preflight vocabularies were spelled in the binding while the
+        engine wrote literals, and five more in Python: each is now the
+        engine's table, bound as is."""
+        import medh5.cache
+        import medh5.clinical
+        import medh5.task
+
+        for module, name, core in [
+            (medh5.task, "ROW_STATUSES", "ROW_STATUSES"),
+            (medh5.task, "SELECTION_STATUSES", "SELECTION_STATUSES"),
+            (medh5.task, "TARGET_STATUSES", "TARGET_STATUSES"),
+            (medh5.task, "ROIS", "ROIS"),
+            (medh5.task, "ROI", "TASK_ROI"),
+            (medh5.task, "CENSORING", "TASK_CENSORING"),
+            (medh5.cache, "LEVELS", "CACHE_LEVELS"),
+            (medh5.cache, "SUFFIX", "CACHE_SUFFIX"),
+            (medh5.clinical, "ASSESSMENT_SYSTEM", "ASSESSMENT_SYSTEM"),
+            (medh5.clinical, "LESION_PRESENCE", "LESION_PRESENCE"),
+        ]:
+            assert getattr(module, name) is getattr(_core, core), name
+        # Two ROI vocabularies: what a slot may ask for, and what a fill reports.
+        assert set(medh5.task.ROI) < set(medh5.task.ROIS)
+        assert "center_fallback" in medh5.task.ROIS
+
+    @pytest.mark.parametrize(
+        ("name", "now"), [("STATUSES", "ROW_STATUSES"), ("LABELS", "TARGET_STATUSES")]
+    )
+    def test_the_old_names_warn(self, name: str, now: str):
+        """``task.STATUSES`` and ``clinical.STATUSES`` named two vocabularies."""
+        import medh5.task
+
+        assert name not in medh5.task.__all__
+        with pytest.warns(DeprecationWarning, match=f"use {now}"):
+            old = getattr(medh5.task, name)
+        assert old is getattr(medh5.task, now)
+
+
 class TestConceptToken:
     def test_tokens_escape_their_delimiter_and_keep_the_plain_ones(self):
         from medh5.task import concept_token

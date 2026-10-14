@@ -3559,7 +3559,7 @@ medh5.task.Finding.from_json	classmethod	(doc)
 medh5.task.Finding.location	field
 medh5.task.Finding.message	field
 medh5.task.Finding.summary	property
-medh5.task.LABELS	constant	tuple
+medh5.task.LABELS	deprecated
 medh5.task.LinkTable	class	(columns) bases=
 medh5.task.LinkTable.__getitem__	method	(i)
 medh5.task.LinkTable.__iter__	method	()
@@ -3625,7 +3625,7 @@ medh5.task.RowView.target	property
 medh5.task.RowView.tie_group	property
 medh5.task.SCHEMA	constant	str
 medh5.task.SELECTION_STATUSES	constant	tuple
-medh5.task.STATUSES	constant	tuple
+medh5.task.STATUSES	deprecated
 medh5.task.Slot	class	(name, modality, required=False, patch=None, roi='center', classes=()) bases=
 medh5.task.Slot.classes	field
 medh5.task.Slot.from_json	classmethod	(doc)

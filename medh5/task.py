@@ -45,6 +45,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
+from medh5._deprecation import module_getattr
 from medh5.clinical import (
     SELECTION_POLICIES,
     Event,
@@ -64,10 +65,10 @@ CODES: dict[str, str] = dict(_core.COMPANION_CODES)
 """The companion contract's finding codes (T1xx manifest, T2xx identity and
 splits, T3xx sources, T4xx caches) and what each means."""
 
-ROI = ("center", "eligible_instances")
-CENSORING = ("censor", "exclude")
-STATUSES = ("eligible", "uncertifiable", "excluded", "error")
-LABELS = ("positive", "negative", "censored", "prevalent", "none")
+ROI: tuple[str, ...] = _core.TASK_ROI
+"""What a slot may request its region be centred on (contract §3.5)."""
+CENSORING: tuple[str, ...] = _core.TASK_CENSORING
+"""What a target does with a row it cannot label (contract §5)."""
 
 PathLike = str | os.PathLike[str]
 
@@ -810,10 +811,14 @@ class TaskManifest:
 # so a cohort of millions of selected events is a few NumPy arrays, which
 # also pickle compactly into ``DataLoader`` workers.
 
+# The engine's tables, in the order the columns code them: a word the
+# engine writes is always one of these (the binding refuses one that is not).
 ROW_STATUSES: tuple[str, ...] = _core.ROW_STATUSES
 SELECTION_STATUSES: tuple[str, ...] = _core.SELECTION_STATUSES
 TARGET_STATUSES: tuple[str, ...] = _core.TARGET_STATUSES
 ROIS: tuple[str, ...] = _core.ROIS
+"""How a slot's region was centred: :data:`ROI`, and ``center_fallback``
+when a slot asked for an eligible instance and the row has none."""
 
 
 class Packed:
@@ -1545,13 +1550,11 @@ def preflight(
 __all__ = [
     "CENSORING",
     "CODES",
-    "LABELS",
     "ROI",
     "ROIS",
     "ROW_STATUSES",
     "SCHEMA",
     "SELECTION_STATUSES",
-    "STATUSES",
     "TARGET_STATUSES",
     "Confine",
     "EventTable",
@@ -1575,3 +1578,15 @@ __all__ = [
     "preflight",
     "schema_text",
 ]
+
+_DEPRECATED = {
+    "STATUSES": (
+        ROW_STATUSES,
+        "medh5 3.0 removes medh5.task.STATUSES: use ROW_STATUSES",
+    ),
+    "LABELS": (
+        TARGET_STATUSES,
+        "medh5 3.0 removes medh5.task.LABELS: use TARGET_STATUSES",
+    ),
+}
+__getattr__ = module_getattr(__name__, _DEPRECATED)

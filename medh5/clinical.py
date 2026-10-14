@@ -63,8 +63,8 @@ RELATIONS: tuple[str, ...] = _core.RELATIONS
 CLOCK_REFERENCES: tuple[str, ...] = _core.CLOCK_REFERENCES
 LESION_VALUES: tuple[str, ...] = _core.LESION_VALUES
 SELECTION_POLICIES: tuple[str, ...] = _core.SELECTION_POLICIES
-ASSESSMENT_SYSTEM = "org.medh5.assessment"
-LESION_PRESENCE = "lesion_presence"
+ASSESSMENT_SYSTEM: str = _core.ASSESSMENT_SYSTEM
+LESION_PRESENCE: str = _core.LESION_PRESENCE
 
 
 def hours(value: float) -> int:

@@ -41,6 +41,29 @@ use crate::json::{pretty_at, repr_str};
 use crate::sample::Sample;
 use crate::{Error, Result};
 
+/// What a row's `status` can be, in the order the preflight columns code
+/// them: every word preflight writes there is one of these.
+pub const ROW_STATUSES: &[&str] = &[ELIGIBLE, UNCERTIFIABLE, EXCLUDED, ERROR];
+/// What a row's target `status` can be, in the order the columns code them.
+pub const TARGET_STATUSES: &[&str] = &[POSITIVE, NEGATIVE, CENSORED, PREVALENT, NONE];
+/// How a slot's region was centred: what a slot may request
+/// ([`ROI`](super::task::ROI)), and the centre a slot asking for an
+/// eligible instance falls back to when the row has none.
+pub const ROI_FILLS: &[&str] = &[CENTER, ELIGIBLE_INSTANCES, CENTER_FALLBACK];
+
+const ELIGIBLE: &str = "eligible";
+const UNCERTIFIABLE: &str = "uncertifiable";
+const EXCLUDED: &str = "excluded";
+const ERROR: &str = "error";
+const POSITIVE: &str = "positive";
+const NEGATIVE: &str = "negative";
+const CENSORED: &str = "censored";
+const PREVALENT: &str = "prevalent";
+const NONE: &str = "none";
+const CENTER: &str = super::task::ROI[0];
+const ELIGIBLE_INSTANCES: &str = super::task::ROI[1];
+const CENTER_FALLBACK: &str = "center_fallback";
+
 /// The digest of one event version's logical record: what duplicates across
 /// fragments must agree on.
 pub fn event_digest(event: &Event) -> String {
@@ -585,7 +608,7 @@ pub struct TargetLabel {
 
 impl TargetLabel {
     fn none() -> TargetLabel {
-        TargetLabel { status: "none".into(), value: None, event_id: None, reason: None }
+        TargetLabel { status: NONE.into(), value: None, event_id: None, reason: None }
     }
 
     pub fn observed(&self) -> bool {
@@ -625,7 +648,7 @@ pub struct RowView {
 
 impl RowView {
     pub fn eligible(&self) -> bool {
-        self.status == "eligible"
+        self.status == ELIGIBLE
     }
 
     /// `subject` is the row's history, which its selection indexes.
@@ -774,7 +797,7 @@ impl<'a> Rows<'a> {
                 .collect(),
         };
         let by_id: HashMap<&str, usize> = events.iter().enumerate().map(|(i, e)| (e.event_id.as_str(), i)).collect();
-        let instances = manifest.slots.iter().any(|s| s.roi == "eligible_instances");
+        let instances = manifest.slots.iter().any(|s| s.roi == ELIGIBLE_INSTANCES);
         let (mut candidates, mut unread) = (Vec::new(), Vec::new());
         for (fragment, l) in links {
             if l.relation != "describes" || l.source_type != "event" || l.target_type != "image" {
@@ -855,11 +878,11 @@ impl<'a> Rows<'a> {
                 fill.annotations.push(ann_id.clone());
             }
         }
-        if slot.roi == "eligible_instances" {
+        if slot.roi == ELIGIBLE_INSTANCES {
             // The first eligible instance-bearing annotation, by id.
             match best.instances.iter().find(|(id, _)| eligible.contains(id.as_str())) {
                 Some((_, center)) => fill.center = Some(center.clone()),
-                None => fill.roi = "center_fallback".into(),
+                None => fill.roi = CENTER_FALLBACK.into(),
             }
         }
         fill
@@ -887,7 +910,7 @@ impl<'a> Rows<'a> {
         if t.exclude_prevalent {
             if let Some(e) = positives.iter().find(|e| e.effective_start.is_some_and(|s| s.hi <= cutoff)) {
                 return TargetLabel {
-                    status: "prevalent".into(),
+                    status: PREVALENT.into(),
                     value: None,
                     event_id: Some(e.event_id.clone()),
                     reason: Some("the outcome had occurred by the cutoff".into()),
@@ -900,7 +923,7 @@ impl<'a> Rows<'a> {
         definite.sort_by_key(|e| (e.effective_start.map(|s| (s.lo, s.hi)), e.event_id.clone()));
         if let Some(first) = definite.first() {
             return TargetLabel {
-                status: "positive".into(),
+                status: POSITIVE.into(),
                 value: Some(1.0),
                 event_id: Some(first.event_id.clone()),
                 reason: None,
@@ -911,7 +934,7 @@ impl<'a> Rows<'a> {
         });
         if uncertain {
             return TargetLabel {
-                status: "censored".into(),
+                status: CENSORED.into(),
                 value: None,
                 event_id: None,
                 reason: Some("a positive outcome's time straddles the target window".into()),
@@ -919,7 +942,7 @@ impl<'a> Rows<'a> {
         }
         if planned.iter().any(|e| e.effective_start.is_none_or(|s| s.hi > lo_edge && s.lo <= hi_edge)) {
             return TargetLabel {
-                status: "censored".into(),
+                status: CENSORED.into(),
                 value: None,
                 event_id: None,
                 reason: Some("a positive outcome in the target window is only planned".into()),
@@ -937,14 +960,14 @@ impl<'a> Rows<'a> {
         negatives.sort_by_key(|e| (e.effective_start.map(|s| (s.lo, s.hi)), e.event_id.clone()));
         if let Some(last) = negatives.last() {
             return TargetLabel {
-                status: "negative".into(),
+                status: NEGATIVE.into(),
                 value: Some(0.0),
                 event_id: Some(last.event_id.clone()),
                 reason: None,
             };
         }
         TargetLabel {
-            status: "censored".into(),
+            status: CENSORED.into(),
             value: None,
             event_id: None,
             reason: Some("no observation inside the window, or none late enough to be a negative".into()),
@@ -954,8 +977,8 @@ impl<'a> Rows<'a> {
     /// The view of one row.
     fn view(&self, row: &Row, mut view: RowView) -> Result<RowView> {
         let selection = self.prepared.select(row.cutoff_us, &self.manifest.policy)?;
-        if selection.status == "uncertifiable" {
-            view.status = "uncertifiable".into();
+        if selection.status == UNCERTIFIABLE {
+            view.status = UNCERTIFIABLE.into();
             view.reasons.extend(selection.uncertain_records.iter().map(|r| format!("uncertain_revision:{r}")));
         }
         let mut order = vec![None; self.history.merged.events.len()];
@@ -964,23 +987,21 @@ impl<'a> Rows<'a> {
         }
         for slot in &self.manifest.slots {
             let fill = self.fill(slot, &selection, &order);
-            if slot.required && !fill.available() && view.status == "eligible" {
-                view.status = "excluded".into();
+            if slot.required && !fill.available() && view.status == ELIGIBLE {
+                view.status = EXCLUDED.into();
                 view.reasons.push(format!("missing_required_slot:{}", slot.name));
             }
             view.slots.push(fill);
         }
         view.target = self.label(row.cutoff_us);
-        if view.status == "eligible" {
+        if view.status == ELIGIBLE {
             let exclude = match view.target.status.as_str() {
-                "prevalent" => Some("prevalent_target"),
-                "censored" if self.manifest.target.as_ref().is_some_and(|t| t.censoring == "exclude") => {
-                    Some("censored")
-                }
+                PREVALENT => Some("prevalent_target"),
+                CENSORED if self.manifest.target.as_ref().is_some_and(|t| t.censoring == "exclude") => Some("censored"),
                 _ => None,
             };
             if let Some(reason) = exclude {
-                view.status = "excluded".into();
+                view.status = EXCLUDED.into();
                 view.reasons.push(reason.into());
             }
         }
@@ -1140,7 +1161,7 @@ pub fn preflight_each_in(
         .map(|(row, claimed)| {
             (!claimed).then(|| {
                 let mut view = blank(manifest, &task_fingerprint, row, manifest.subject(&row.subject_id), None);
-                view.status = "error".into();
+                view.status = ERROR.into();
                 view.reasons = vec!["manifest_invalid: the task manifest has findings; see them first".into()];
                 view
             })
@@ -1334,7 +1355,7 @@ impl Admitted {
 
     fn admits(view: &RowView) -> Admits {
         let positions = view.selection.as_ref().map_or_else(Vec::new, |s| s.events.iter().map(|e| e.index).collect());
-        (view.cutoff_us, view.subject, positions, view.fingerprint.clone(), view.status == "error")
+        (view.cutoff_us, view.subject, positions, view.fingerprint.clone(), view.status == ERROR)
     }
 
     fn insert(&mut self, row_id: &str, admits: Admits) {
@@ -1396,7 +1417,7 @@ fn blank(
         partition: subject.and_then(|s| s.partition.clone()),
         cutoff_us: row.cutoff_us,
         fingerprint: manifest.row_fingerprint_with(task_fingerprint, subject, row),
-        status: "eligible".into(),
+        status: ELIGIBLE.into(),
         reasons: Vec::new(),
         subject: index,
         selection: None,
@@ -1425,14 +1446,14 @@ fn subject_part(
         let reasons: Vec<String> = history.findings.iter().map(Finding::line).collect();
         for &r in wanted {
             let mut v = view(r);
-            v.status = "error".into();
+            v.status = ERROR.into();
             v.reasons = reasons.clone();
             rows.push((r, v));
         }
     } else if !history.fragments.iter().any(|f| f.clinical.is_some()) {
         for &r in wanted {
             let mut v = view(r);
-            v.status = "excluded".into();
+            v.status = EXCLUDED.into();
             v.reasons.push(
                 "no_clinical_source: no fragment declares the clinical profile, so nothing is attributable".into(),
             );
@@ -1452,7 +1473,7 @@ fn subject_part(
                 let reasons: Vec<String> = unread.iter().map(Finding::line).collect();
                 for &r in wanted {
                     let mut v = view(r);
-                    v.status = "error".into();
+                    v.status = ERROR.into();
                     v.reasons = reasons.clone();
                     rows.push((r, v));
                 }
@@ -1470,7 +1491,7 @@ fn subject_part(
                 );
                 for &r in wanted {
                     let mut v = view(r);
-                    v.status = "error".into();
+                    v.status = ERROR.into();
                     v.reasons = vec![finding.line()];
                     rows.push((r, v));
                 }
