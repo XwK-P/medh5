@@ -134,6 +134,10 @@ class Transform:
 
     @property
     def is_invertible(self) -> bool:
+        """Whether the mapping is *claimed* invertible: declared
+        (``invertible``, ``inverse_id``), analytic, or true of every step.
+        Whether an inverse can be evaluated is
+        :meth:`InverseTransform.can_invert`."""
         return bool(self._handle.is_invertible)
 
     @property
@@ -151,7 +155,16 @@ class Transform:
         return found
 
     def inverse(self) -> Transform | None:
-        """The stored inverse (``inverse_id``), or ``None``."""
+        """The inverse, or ``None`` when none can be evaluated.
+
+        The stored inverse (``inverse_id``) when the file carries one.  A
+        :class:`ChainTransform`, or a composite without a usable
+        ``inverse_id``, inverts as the chain of its steps' inverses in reverse
+        order, when every step can be inverted (an affine's or identity's
+        analytic inverse, or a stored one).  :attr:`is_invertible` is the
+        claim; :meth:`InverseTransform.can_invert` says whether an inverse can
+        be evaluated.
+        """
         found = self._handle.inverse()
         return None if found is None else wrap_transform(found)
 

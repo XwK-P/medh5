@@ -1221,7 +1221,8 @@ class TestResolution:
         points = np.array([[3.0, 4.0, 5.0]])
         with medh5.open(path) as sample:
             assert sample.transforms["C"].is_invertible, "the file claims it"
-            assert sample.transforms["C"].inverse() is None, "and stores nothing"
+            # it stores nothing: its inverse is its components' (§10.5)
+            assert isinstance(sample.transforms["C"].inverse(), ChainTransform)
             back = sample.transform_between("F2", "F0")
             assert back is not None
             forward = sample.transforms["C"].transform_points(points)
@@ -2221,3 +2222,125 @@ class TestVisitKeys:
             assert s.transform_between("tp0", "tp1") is None
             assert s.transform_between("tp1", "tp0") is None
             assert s.transform_between("F0", "tp1").transform_id == "t"
+
+
+class TestInverseOfAChain:
+    """The inverse of a chain is its steps' inverses, in reverse (§10.5)."""
+
+    @staticmethod
+    def _three_frames(path: Path, *, deformable: bool = False) -> Path:
+        first = np.array(
+            [[0.9, 0.2, 0.0, 3.0], [-0.1, 1.1, 0.3, -2.0], [0.0, 0.05, 1.2, 1.0]]
+        )
+        second = np.array(
+            [[1.0, 0.0, 0.4, -1.5], [0.2, 0.8, 0.0, 4.0], [0.0, -0.3, 1.0, 0.5]]
+        )
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            for index, frame in enumerate(("F0", "F1", "F2")):
+                w.add_grid(
+                    f"g{index}", shape=(8, 8, 8), spacing=(1, 1, 1), frame_uid=frame
+                )
+            w.add_image("CT", np.zeros((8, 8, 8), np.int16), grid="g0", modality="CT")
+            w.add_transform(
+                "a01",
+                kind="affine",
+                from_frame="F0",
+                to_frame="F1",
+                matrix=np.vstack([first, [0, 0, 0, 1]]),
+            )
+            if deformable:
+                w.add_transform(
+                    "a12",
+                    kind="displacement",
+                    from_frame="F1",
+                    to_frame="F2",
+                    field=np.ones((3, 8, 8, 8), np.float32),
+                    field_grid="g1",
+                    invertible=True,
+                )
+            else:
+                w.add_transform(
+                    "a12",
+                    kind="affine",
+                    from_frame="F1",
+                    to_frame="F2",
+                    matrix=np.vstack([second, [0, 0, 0, 1]]),
+                )
+            w.add_transform(
+                "c02",
+                kind="composite",
+                from_frame="F0",
+                to_frame="F2",
+                components=["a01", "a12"],
+            )
+        return path
+
+    POINTS = np.array([[1.0, 2.0, 3.0], [-4.0, 0.5, 2.25], [0.0, 0.0, 0.0]])
+
+    def test_S10_5_the_inverse_of_a_chain_is_its_steps_inverted_in_reverse(
+        self, tmp_path: Path
+    ):
+        path = self._three_frames(tmp_path / "chain.medh5")
+        with medh5.open(path) as s:
+            chain = ChainTransform([s.transforms["a01"], s.transforms["a12"]])
+            assert chain.is_invertible
+            assert InverseTransform.can_invert(chain)
+            back = chain.inverse()
+            assert isinstance(back, ChainTransform)
+            assert (back.from_frame, back.to_frame) == ("F2", "F0")
+            assert [t.from_frame for t in back.steps] == ["F2", "F1"]
+            forward = chain.transform_points(self.POINTS)
+            assert np.allclose(back.transform_points(forward), self.POINTS, atol=1e-9)
+            assert np.allclose(
+                InverseTransform(chain).transform_points(forward),
+                self.POINTS,
+                atol=1e-9,
+            )
+
+    def test_S10_5_a_composite_of_affines_inverts_without_an_inverse_id(
+        self, tmp_path: Path
+    ):
+        path = self._three_frames(tmp_path / "composite.medh5")
+        with medh5.open(path) as s:
+            composite = s.transforms["c02"]
+            assert InverseTransform.can_invert(composite)
+            back = composite.inverse()
+            assert back is not None
+            assert (back.from_frame, back.to_frame) == ("F2", "F0")
+            forward = composite.transform_points(self.POINTS)
+            assert np.allclose(back.transform_points(forward), self.POINTS, atol=1e-9)
+            assert np.allclose(
+                InverseTransform(composite).transform_points(forward),
+                self.POINTS,
+                atol=1e-9,
+            )
+
+    def test_S10_5_a_step_that_cannot_be_inverted_still_refuses(self, tmp_path: Path):
+        """`invertible: true` on a field with no `inverse_id` is a claim only."""
+        path = self._three_frames(tmp_path / "field.medh5", deformable=True)
+        with medh5.open(path) as s:
+            composite = s.transforms["c02"]
+            assert composite.is_invertible, "the claim stands"
+            assert not InverseTransform.can_invert(composite)
+            assert composite.inverse() is None
+            chain = ChainTransform([s.transforms["a01"], s.transforms["a12"]])
+            assert not InverseTransform.can_invert(chain)
+            assert chain.inverse() is None
+
+    def test_S10_1_resolution_is_unchanged_by_invertible_composites(
+        self, tmp_path: Path
+    ):
+        """A composite's inverse is no new edge of the frame graph: F2 -> F0
+        stays the two analytic inverses, not one hop through `c02`."""
+        from medh5.transforms import frame_graph
+
+        path = self._three_frames(tmp_path / "graph.medh5")
+        with medh5.open(path) as s:
+            assert frame_graph(s.transforms)["F2"] == ["F1"]
+            back = s.transform_between("F2", "F0")
+            assert isinstance(back, ChainTransform)
+            assert [t.transform_id for t in back.steps] == [
+                "a12⁻¹",
+                "a01⁻¹",
+            ]
+            assert s.transform_between("F0", "F2").transform_id == "c02"

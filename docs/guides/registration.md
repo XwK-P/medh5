@@ -57,13 +57,33 @@ Kinds: `identity`, `affine`, `displacement`, `bspline`, `composite`.
 t = s.transform_between("tp0", "tp1")
 t.kind, t.from_frame, t.to_frame, t.is_invertible
 t.transform_points(points)         # world -> world, in t.units
-t.inverse()                        # the *stored* inverse, when the file has one
+t.inverse()                        # the stored inverse, or a chain's inverted
 ```
 
-`is_invertible` says the mapping is invertible; `inverse()` returns another
-transform only when the file stores one under `inverse_id`. An affine computes
-its own inverse (`AffineTransform.inverse_matrix()`, `inverse_points()`); a
-displacement field does not, which is why the distinction exists.
+`is_invertible` is the file's *claim* that the mapping is invertible;
+`InverseTransform.can_invert(t)` says whether an inverse can be *evaluated*.
+`inverse()` returns the transform the file stores under `inverse_id`; for a
+chain, or a composite without a usable `inverse_id`, it returns the chain of
+its steps' inverses in reverse order, when every step can be inverted, and
+`None` otherwise. An affine computes its own inverse
+(`AffineTransform.inverse_matrix()`, `inverse_points()`); a displacement field
+does not, which is why the distinction exists: a composite of two affines
+inverts, one holding a displacement field without a stored inverse does not.
+
+```python
+from medh5.transforms import ChainTransform, InverseTransform
+
+with medh5.open("case.medh5") as s:
+    t = s.transforms["tp0_to_tp1"]
+    chain = ChainTransform([t])
+    back = chain.inverse()                     # t's analytic inverse, as a chain
+    assert InverseTransform.can_invert(chain)
+    assert (back.from_frame, back.to_frame) == (t.to_frame, t.from_frame)
+```
+
+A composite's inverse is not an edge of the frame graph: resolving backwards
+across a composite goes through its components' own inverses, as it always
+has, so an answer that resolved before does not change.
 
 `transform_between` searches the frame graph. It composes chains, uses an
 inverse where one can be **evaluated** — not merely where a transform declares

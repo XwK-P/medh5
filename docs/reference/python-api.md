@@ -169,8 +169,9 @@ s.resolve_frames(frame_a, frame_b) # the same, between two frame uids; memoised 
 t.kind                             # "identity" | "affine" | "displacement" |
                                    # "bspline" | "composite"
 t.from_frame, t.to_frame
-t.is_invertible                    # the mapping is invertible
-t.inverse()                        # the *stored* inverse, when the file has one
+t.is_invertible                    # the file claims the mapping is invertible
+t.inverse()                        # the stored inverse; a chain's or composite's
+                                   # steps inverted in reverse; or None
 t.transform_points(points)         # world -> world, in t.units
 
 from medh5.transforms import jacobian_determinant, target_registration_error

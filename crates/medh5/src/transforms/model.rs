@@ -433,7 +433,9 @@ impl Transform {
         }
     }
 
-    /// Whether an inverse is available --- declared, analytic, or neither.
+    /// Whether the mapping is *claimed* invertible: declared (`invertible`,
+    /// `inverse_id`), analytic, or true of every step of a chain.  A claim is
+    /// not an inverse that can be evaluated: that is [`can_invert`].
     pub fn is_invertible(&self) -> bool {
         match &self.body {
             Body::Inverse(_) => true,
@@ -491,8 +493,32 @@ impl Transform {
         self.grids.values().find(|g| g.frame_uid.as_deref() == Some(frame))
     }
 
-    /// The stored inverse transform, when the file carries one.
+    /// The inverse: the stored one, when the file carries one (`inverse_id`);
+    /// for a chain, or a stored composite without a usable `inverse_id`, the
+    /// chain of its steps' inverses in reverse order, when every step can be
+    /// inverted ([`can_invert`]); otherwise `None`.
     pub fn inverse(&self) -> Result<Option<Transform>> {
+        if matches!(self.body, Body::Stored) && !(self.kind() == "composite" && stored_inverse(self)?.is_none()) {
+            return self.named_inverse();
+        }
+        if !self.is_invertible() {
+            return Ok(None);
+        }
+        let Some(steps) = self.steps_to_invert()? else {
+            return Ok(None);
+        };
+        let mut inverted = Vec::with_capacity(steps.len());
+        for step in steps.iter().rev() {
+            match inverse_step(step)? {
+                Some(found) => inverted.push(found),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(Transform::chain(inverted)?))
+    }
+
+    /// The transform `inverse_id` names, when the file carries it.
+    fn named_inverse(&self) -> Result<Option<Transform>> {
         let Some(target) = self.header.inverse_id.as_deref() else {
             return Ok(None);
         };
@@ -502,6 +528,21 @@ impl Transform {
         match self.siblings.get(target) {
             None => Ok(None),
             Some(group) => Ok(Some(Transform::open(target, group.clone(), self.grids.clone(), self.siblings.clone())?)),
+        }
+    }
+
+    /// The steps a chain's or a stored composite's inverse inverts, in
+    /// application order; `None` for any other transform.
+    fn steps_to_invert(&self) -> Result<Option<Vec<Transform>>> {
+        match &self.body {
+            Body::Chain(steps) => Ok(Some(steps.clone())),
+            Body::Stored if self.kind() == "composite" => {
+                if !self.check_chain().is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some(self.components()?))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -524,6 +565,11 @@ impl Transform {
                 }
                 if inner.kind() == "affine" && matches!(inner.body, Body::Stored) {
                     return inner.inverse_points(points);
+                }
+                if inner.steps_to_invert()?.is_some() {
+                    if let Some(steps) = inner.inverse()? {
+                        return steps.transform_points(points);
+                    }
                 }
                 Err(Error::invalid(format!(
                     "transform {} of kind {} has no analytic inverse and declares no `inverse_id`; approximating \
@@ -1449,7 +1495,7 @@ fn cycle_within(start: usize, next: &[Vec<usize>], scc: &[usize]) -> Vec<usize> 
 /// One whose frames are not this transform's reversed is not its inverse
 /// whatever the attribute says (E505).
 pub fn stored_inverse(transform: &Transform) -> Result<Option<Transform>> {
-    let Some(other) = transform.inverse()? else {
+    let Some(other) = transform.named_inverse()? else {
         return Ok(None);
     };
     if other.from_frame() != transform.to_frame() || other.to_frame() != transform.from_frame() {
@@ -1458,8 +1504,35 @@ pub fn stored_inverse(transform: &Transform) -> Result<Option<Transform>> {
     Ok(Some(other))
 }
 
-/// Whether an inverse can be *evaluated*, not merely declared.
+/// Whether an inverse can be *evaluated*, not merely declared: analytic (an
+/// identity or affine), stored (`inverse_id`), or --- for a chain, or a
+/// stored composite without a usable `inverse_id` --- every step's, applied
+/// in reverse ([`Transform::inverse`]).
 pub fn can_invert(inner: &Transform) -> Result<bool> {
+    if has_reverse_edge(inner)? {
+        return Ok(true);
+    }
+    if !inner.is_invertible() {
+        return Ok(false);
+    }
+    match inner.steps_to_invert()? {
+        Some(steps) => {
+            for step in &steps {
+                if !can_invert(step)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Whether the frame graph walks `inner` backwards (§10.1): its inverse is
+/// analytic or stored.  A chain's or composite's inverse through its steps is
+/// no edge of its own --- it would tie with the route through those steps'
+/// own reverse edges (E501), or shorten a route that resolved before.
+pub(crate) fn has_reverse_edge(inner: &Transform) -> Result<bool> {
     if !inner.is_invertible() {
         return Ok(false);
     }
@@ -1467,6 +1540,21 @@ pub fn can_invert(inner: &Transform) -> Result<bool> {
         return Ok(true);
     }
     Ok(stored_inverse(inner)?.is_some())
+}
+
+/// `T⁻¹` of one step of a chain being inverted: the stored inverse, the
+/// analytic one, or the step's own steps inverted; `None` when it has none.
+fn inverse_step(step: &Transform) -> Result<Option<Transform>> {
+    if let Some(stored) = stored_inverse(step)? {
+        return Ok(Some(stored));
+    }
+    if has_reverse_edge(step)? {
+        return Ok(Some(Transform::inverse_of(step.clone())));
+    }
+    if can_invert(step)? {
+        return step.inverse();
+    }
+    Ok(None)
 }
 
 /// Every transform group under `<sample root>/transforms`, by id.  A closed
