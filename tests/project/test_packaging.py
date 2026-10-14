@@ -862,10 +862,11 @@ class TestDistribution:
         assert "cargo semver-checks -p medh5-sys -p medh5 -p medh5-cli" in semver
         assert '--release-type "${{ steps.base.outputs.release_type }}"' in semver
         # The rustdoc JSON formats 0.51.0 reads: Rust 1.97 to 1.99.
-        toolchain = (ROOT / "rust-toolchain.toml").read_text(encoding="utf-8")
-        channel = re.search(r'^channel = "1\.(\d+)\.\d+"$', toolchain, re.M)
-        if channel:  # the sdist carries no pin
-            assert 97 <= int(channel[1]) <= 99, channel[0]
+        pin = ROOT / "rust-toolchain.toml"
+        if pin.is_file():  # the sdist carries no pin
+            toolchain = pin.read_text(encoding="utf-8")
+            channel = re.search(r'^channel = "1\.(\d+)\.\d+"$', toolchain, re.M)
+            assert channel and 97 <= int(channel[1]) <= 99, toolchain
         # The released wheel and this run's, neither read from the checkout.
         assert re.search(r"^    needs: build-linux-x86_64$", python, re.M)
         assert 'cd "$RUNNER_TEMP"' in python
