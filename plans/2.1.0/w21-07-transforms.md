@@ -15,13 +15,13 @@
 > Implement workstream W21-07 (transforms and registration I/O) of medh5 2.1.0
 > in this repository. First read `plans/README.md`, `plans/2.1.0/README.md` and
 > `plans/2.1.0/decisions.md` (D28), then `plans/2.1.0/w21-07-transforms.md` in
-> full. Work from the latest `main` on `w21/transforms`; land the four pull
-> requests in order. Geometry is never invented: where a frame, a vector
+> full. Work from the latest `main` on `w21/transforms`; land the four items in
+> order as one pull request. Geometry is never invented: where a frame, a vector
 > convention or an order cannot be known from the input, the API takes it as a
 > required argument or refuses. PR 4 adds a CI job (SimpleITK): it changes
 > `tests/project/test_packaging.py` too. Write tests first, run the local gate
-> from `CLAUDE.md`, add fragments, open `W21-07: …` pull requests, and do not
-> merge.
+> from `CLAUDE.md`, add a fragment per item, open the `W21-07: …` pull request,
+> and do not merge.
 
 ## Pull requests
 

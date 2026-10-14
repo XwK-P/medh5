@@ -16,16 +16,16 @@
 > repository. First read `plans/README.md`, `plans/2.1.0/README.md` and
 > `plans/2.1.0/decisions.md` (D17, D19, D24, D32, D33), then
 > `plans/2.1.0/w21-11-task-cache.md` in full. Work from the latest `main` on
-> `w21/task-cache`; land the five pull requests in order. PR 1 is a security and
-> correctness fix that may be backported to 2.0.3: keep it small and free of new
-> API. `medh5.task/1` and `medh5.cache/1` take errata that add no field and
-> never change a normal form, a fingerprint or a default under `/1`; an erratum
-> may say what an implementation must refuse to open or must not report, never
-> what a manifest must contain. Rows index, never copy; document text is read
-> on demand. Write
-> tests first, write the decisions' text into task-cache-1 (its Appendix A is
-> created by PR 1) and 1.1 with their rows, run the local gate from `CLAUDE.md`,
-> add fragments, open `W21-11: …` pull requests, and do not merge.
+> `w21/task-cache`; land the five items in order as one pull request. PR 1 is a
+> security and correctness fix that may be backported to 2.0.3: keep it one
+> commit, small and free of new API. `medh5.task/1` and `medh5.cache/1` take
+> errata that add no field and never change a normal form, a fingerprint or a
+> default under `/1`; an erratum may say what an implementation must refuse to
+> open or must not report, never what a manifest must contain. Rows index, never
+> copy; document text is read on demand. Write tests first, write the decisions'
+> text into task-cache-1 (its Appendix A is created by PR 1) and 1.1 with their
+> rows, run the local gate from `CLAUDE.md`, add a fragment per item, open the
+> `W21-11: …` pull request, and do not merge.
 
 ## Pull requests
 

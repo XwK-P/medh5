@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Branch | `w21/documentation-a` (PRs 1 and 3, lane A), `w21/documentation-f` (PRs 2, 4 and 5, lane F) |
+| Branch | `w21/documentation` (one pull request, lane A) |
 | Size | M overall; each pull request S–M |
 | Lands after | W21-00 PR 4, PR 5; PR 2 after W21-09 PR 2 and W21-13 PR 3; PR 4 after W21-11 PR 4; PR 5 after W21-15 PR 2 |
 | Blocks | nothing |
@@ -14,18 +14,18 @@
 
 > Implement workstream W21-16 (documentation) of medh5 2.1.0 in this repository.
 > First read `plans/README.md` and `plans/2.1.0/README.md`, then
-> `plans/2.1.0/w21-16-documentation.md` in full. Two sessions share this
-> workstream, because its pull requests are independent: lane A takes PRs 1
-> and 3 on `w21/documentation-a`, lane F PRs 2, 4 and 5 on
-> `w21/documentation-f` (`plans/2.1.0/README.md`, Lanes); you were told your
-> lane. Work from the latest `main`; open each pull request when its "Lands
-> after" has merged. The docs are tested, not proofread: every `python` block runs
-> against a real sample (fewer than half may be illustrative), every documented
-> flag is checked against the parser, stated corpus counts are compared with the
-> corpus, `---` is refused as a dash (write `—`), and `mkdocs build --strict` must
-> pass. Write only what the code does today on `main`; where a page describes
-> another workstream's feature, wait for it to merge. Run the local gate from
-> `CLAUDE.md`, add fragments, open `W21-16: …` pull requests, and do not merge.
+> `plans/2.1.0/w21-16-documentation.md` in full. Its five items are one pull
+> request on `w21/documentation`, lane A's (`plans/2.1.0/README.md`, Lanes).
+> Work from the latest `main`; write items 1 and 3 first, each other item once
+> its "Lands after" has merged, and open the pull request when every one has.
+> The docs are tested, not proofread: every `python` block runs against a real
+> sample (fewer than half may be illustrative), every documented flag is checked
+> against the parser, stated corpus counts are compared with the corpus, `---`
+> is refused as a dash (write `—`), and `mkdocs build --strict` must pass. Write
+> only what the code does today on `main`; where a page describes another
+> workstream's feature, wait for it to merge. Run the local gate from
+> `CLAUDE.md`, add a fragment per item, open the `W21-16: …` pull request, and
+> do not merge.
 
 ## Pull requests
 

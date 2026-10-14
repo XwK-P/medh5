@@ -13,15 +13,16 @@
 ## Session prompt
 
 > Implement workstream W21-01 (platforms, fuzzing and the supply chain) of medh5
-> 2.1.0 in this repository. First read `plans/README.md`, `plans/2.1.0/README.md`
-> and `plans/2.1.0/decisions.md` (D36, D37), then
-> `plans/2.1.0/w21-01-platform.md` in full. The pull requests are independent
-> except where noted; land them one at a time from the latest `main`, each with
-> its `tests/project/test_packaging.py` change, its fragment, and the local gate
-> from `CLAUDE.md` passing. Several need the maintainer (trusted publishers,
-> secrets, the `windows-11-arm` runner): put what they must do in the pull
-> request description as a checklist, and make the workflow fail with a clear
-> message, never silently skip, when a secret is missing in this repository.
+> 2.1.0 in this repository. First read `plans/README.md`,
+> `plans/2.1.0/README.md` and `plans/2.1.0/decisions.md` (D36, D37), then
+> `plans/2.1.0/w21-01-platform.md` in full. The items are independent except
+> where noted; land them as one pull request from the latest `main`, one commit
+> per item, each with its `tests/project/test_packaging.py` change and its
+> fragment, and the local gate from `CLAUDE.md` passing. Several need the
+> maintainer (trusted publishers, secrets, the `windows-11-arm` runner): put
+> what they must do in the pull request description as a checklist, and make the
+> workflow fail with a clear message, never silently skip, when a secret is
+> missing in this repository.
 
 ## Pull requests
 

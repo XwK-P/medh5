@@ -15,15 +15,16 @@
 > Implement workstream W21-13 (converters) of medh5 2.1.0 in this repository.
 > First read `plans/README.md`, `plans/2.1.0/README.md` and
 > `plans/2.1.0/decisions.md` (D10), then `plans/2.1.0/w21-13-converters.md` in
-> full. Work from the latest `main` on `w21/converters`; land the nine pull
-> requests in order, checking each one's "Lands after" first. Converters refuse
-> rather than resample, guess a grid, invent a code or a designator, or fabricate
-> a transform; every choice they make is a recorded note, and every behaviour
-> change gets a refusal that names the option restoring it. CI's `test-min-deps`
-> job runs the converters at the dependency floors (highdicom 0.23, pydicom
-> 3.0.1, nibabel's floor): reproduce there before pushing a DICOM change. Write
-> tests first, run the local gate from `CLAUDE.md`, add fragments, open
-> `W21-13: …` pull requests, and do not merge.
+> full. Work from the latest `main` on `w21/converters`; land the nine items in
+> order as one pull request, which merges once every item's "Lands after" has.
+> Converters refuse rather than resample, guess a grid, invent a code or a
+> designator, or fabricate a transform; every choice they make is a recorded
+> note, and every behaviour change gets a refusal that names the option
+> restoring it. CI's `test-min-deps` job runs the converters at the dependency
+> floors (highdicom 0.23, pydicom 3.0.1, nibabel's floor): reproduce there
+> before pushing a DICOM change. Write tests first, run the local gate from
+> `CLAUDE.md`, add a fragment per item, open the `W21-13: …` pull request, and
+> do not merge.
 
 ## Pull requests
 

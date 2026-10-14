@@ -48,7 +48,7 @@ workstream follows), then [decisions.md](decisions.md), then your workstream.
 
 | In 2.0.2 | So in 2.1.0 |
 |---|---|
-| 21 workstreams merged into one branch; full CI and the review bot first ran on the release pull request, and found two real bugs and three jobs running for the first time. | Each workstream lands on `main` through its own pull requests, with full CI, merged one at a time (W21-00 PR 1). |
+| 21 workstreams merged into one branch; full CI and the review bot first ran on the release pull request, and found two real bugs and three jobs running for the first time. | Each workstream lands on `main` through its own pull request, with full CI, through the merge queue (W21-00 PR 1, PR 7). |
 | The changelog was drafted at the end, reconciling about twenty claims against the merged code. | Each pull request writes its own fragment while the change is fresh (W21-00 PR 4). |
 | A patch release added fields to three public Rust structs and grew two public arrays, caught by hand. | `cargo semver-checks` and a Python API snapshot gate every pull request (W21-00 PR 8); the API rules in plans/README.md. |
 | Failures appeared only on CI's other platforms and floors: Windows hard links, NumPy 2.2's `bool_`, highdicom 0.23, 28 tests without an optional-dependency guard. | Per-platform builds start each platform's tests sooner (W21-00 PR 7); the local gate section says how to reproduce floors, missing extras and Windows paths. |
@@ -59,7 +59,7 @@ workstream follows), then [decisions.md](decisions.md), then your workstream.
 
 ## Workstreams
 
-| Id | Workstream | Size | Pull requests | Backport |
+| Id | Workstream | Size | Items | Backport |
 |---|---|---|---|---|
 | [W21-00](w21-00-infrastructure.md) | Infrastructure, phase 0 | M | 8 | PR 2, PR 6 |
 | [W21-01](w21-01-platform.md) | Platforms, fuzzing and the supply chain | L | 8 | PR 8 (docs) |
@@ -89,13 +89,17 @@ merges before W21-00 PR 4 (fragments) and PR 5 (deprecations) have; sessions
 may start coding before that. PR 8 (the API gates) compares against the newest
 published release, v2.0.2, on PyPI and crates.io since 2026-10-14.
 
-**Then, in parallel.** Every other workstream, respecting the edges below.
-Merges stay one at a time.
+**Then, in parallel.** Every other workstream, respecting the edges below,
+each as one pull request (four enablers land ahead of theirs; see Lanes),
+merged through the merge queue once W21-00 PR 7 has given CI its
+`merge_group` trigger and the maintainer has turned the queue on.
 
 ### Dependencies
 
-An edge "A → B" means A must be merged before B can merge. Within a workstream,
-pull requests land in the order its file gives.
+An edge "A → B" means A must be merged before B can merge. An item named here
+("W21-05 PR 1") is merged when the pull request holding it is: its
+workstream's one pull request, or the enabler it lands in. Within a
+workstream, items land in the order its file gives.
 
 | Before | After | Why |
 |---|---|---|
@@ -128,23 +132,27 @@ D).
 
 | Lane | Sequence |
 |---|---|
-| A, infrastructure | W21-00 → W21-01 → W21-16 PRs 1 and 3 |
-| B, format core | W21-02 PR 1 → W21-04 PR 1 → W21-05 PR 1 → W21-02 PRs 2–4 → W21-04 PRs 2–4 → W21-03 → W21-05 PRs 2–4 |
+| A, infrastructure | W21-00 → W21-01 → W21-16 |
+| B, format core | W21-02 PR 1 → W21-04 PR 1 → W21-05 PR 1 (the three enablers) → W21-02 → W21-04 → W21-03 → W21-05 |
 | C, clinical | W21-11 → W21-12 → W21-10 |
-| D, converters and registration | W21-13 PRs 1–7 → W21-07 → W21-13 PRs 8–9 |
-| E, Python and cohorts | W21-08 → W21-06 → W21-09 |
-| F, training and concurrency | W21-14 → W21-15 → W21-16 PRs 2, 4 and 5 |
+| D, converters and registration | W21-13 → W21-07 |
+| E, Python and cohorts | W21-08 PR 1 (an enabler) → W21-08 → W21-06 → W21-09 |
+| F, training and concurrency | W21-14 → W21-15 |
 
-Lane B lands three first pull requests before the rest because other lanes
-wait on them: W21-02 PR 1 (lane D's W21-13 PR 2), W21-04 PR 1 (lane C's
-W21-10 PR 3) and W21-05 PR 1 (lane C's W21-11 PR 3, lane D's W21-07 PR 4 and
-W21-13 PR 9, lane F's W21-14 PR 4). Each workstream's own pull requests still
-land in its file's order.
+Each name in a sequence is one pull request: a workstream's whole file, or,
+for an enabler, its first item alone. Four first items land as enablers,
+ahead of the rest of their workstream, because other lanes wait on them:
+W21-02 PR 1 (lane D's W21-13 PR 2), W21-04 PR 1 (lane C's W21-10 PR 3),
+W21-05 PR 1 (lane C's W21-11 PR 3, lane D's W21-07 PR 4 and W21-13 PR 9,
+lane F's W21-14 PR 4) and W21-08 PR 1 (lane C's W21-11 PR 4). The rest of each
+of those workstreams (items 2 on) is its second pull request. So 2.1.0 lands
+as W21-00's eight pull requests, 20 others and the release pull request.
 
-W21-16's pull requests are independent of one another, so two sessions share
-it: each takes the pull requests its lane names, on a branch of its own
-(`w21/documentation-a`, `w21/documentation-f`). Every other workstream belongs
-to one lane and lands its pull requests in its file's order.
+A workstream's pull request merges when every edge into any of its items has
+merged; its session codes ahead from the latest `main` and rebases as the
+edges land. W21-16 is one pull request, lane A's: its items 1 and 3 can be
+written first, and it merges after W21-09, W21-11, W21-13 and W21-15, whose
+features its other pages describe.
 
 ## Corpus and code-table targets
 
