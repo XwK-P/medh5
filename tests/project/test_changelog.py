@@ -127,17 +127,20 @@ def test_the_release_pull_request_passes_the_fragment_step() -> None:
     assert "--diff-filter=AMD HEAD^1 HEAD -- 'changes/*.md'" in step
 
 
-def test_preview_is_what_the_site_shows_under_unreleased(tmp_path) -> None:
-    hooks = _load(ROOT / "hooks/mkdocs_hooks.py", "medh5_hooks_test")
+def test_the_site_shows_the_preview_under_unreleased() -> None:
+    """`splice`, which `hooks/mkdocs_hooks.py` applies to the site's changelog.
+
+    The hook itself imports MkDocs, which only the docs job installs; there
+    `mkdocs build --strict` runs it, and resolves every fragment's links.
+    """
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    preview = changelog.assemble(changelog.collect(ROOT / "changes"))
-    site = hooks.with_unreleased(text, ROOT)
-    if preview:
-        assert site == text.replace(
-            "## [Unreleased]\n\n", f"## [Unreleased]\n\n{preview}\n\n", 1
-        )
-    else:
-        assert site == text
+    preview = "### Fixed\n\n- **A fix.**"
+    assert changelog.splice(text, preview) == text.replace(
+        "## [Unreleased]\n\n", f"## [Unreleased]\n\n{preview}\n\n", 1
+    )
+    assert changelog.splice(text, "") == text
+    hook = (ROOT / "hooks/mkdocs_hooks.py").read_text(encoding="utf-8")
+    assert "script.splice(changelog, preview)" in hook
 
 
 def test_a_release_refuses_fragments_left_in_changes(tmp_path) -> None:
