@@ -274,6 +274,7 @@ pub(super) fn write(
 pub(super) fn mutate(path: &Path, edit: impl FnOnce(&hdf5::Group) -> Result<()>) -> Result<()> {
     crate::h5::init();
     let file = hdf5::File::open_rw(path)?;
+    crate::h5::file::close_on_exec(&file);
     let root = file.as_group()?;
     edit(&root)?;
     drop(root);
