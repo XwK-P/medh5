@@ -18,7 +18,16 @@
 use crate::{Error, Result};
 
 /// The format versions this engine implements, oldest first.
+#[deprecated(since = "2.1.0", note = "use version::format_versions(); removed in 3.0")]
 pub const FORMAT_VERSIONS: [&str; 2] = ["1.0", "1.1"];
+
+/// The format versions this engine implements, oldest first.
+///
+/// A slice, so a later engine implementing another version answers with a
+/// longer one and no caller's type changes.
+pub fn format_versions() -> &'static [&'static str] {
+    &["1.0", "1.1"]
+}
 /// The version an imaging-only sample is written in.
 pub const BASE_VERSION: &str = "1.0";
 /// The newest version this engine implements (`medh5::FORMAT_VERSION`).
@@ -59,6 +68,17 @@ pub fn support(version: &str) -> Support {
         // still major 1, read as what this engine knows.
         _ => Support::Projection,
     }
+}
+
+/// The minor after `version` in its major (`"1.1"` gives `"1.2"`), or `None`
+/// when `version` does not parse.
+///
+/// `next_minor(LATEST_VERSION)` is "a minor this engine does not know": what
+/// the projection tests and corpus cases declare, derived so that an engine
+/// implementing that minor moves them past it without an edit.
+pub fn next_minor(version: &str) -> Option<String> {
+    let (major, minor) = parse(version)?;
+    Some(format!("{major}.{}", minor.checked_add(1)?))
 }
 
 /// Whether a file of `version` is read as a projection (a higher minor).
@@ -128,21 +148,42 @@ pub fn require_amendable(version: &str, profiles: &[String], what: &str) -> Resu
     Ok(())
 }
 
+/// A minor this engine does not implement: the one after the newest it
+/// does.  What a test that needs "a later minor" declares.
+#[cfg(test)]
+pub(crate) fn later_minor() -> String {
+    next_minor(LATEST_VERSION).expect("LATEST_VERSION parses")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn s2_2_the_later_minor_is_one_past_the_newest() {
+        assert_eq!(next_minor("1.1").as_deref(), Some("1.2"));
+        assert_eq!(next_minor("1.9").as_deref(), Some("1.10"));
+        assert_eq!(next_minor("1").as_deref(), Some("1.1"));
+        assert_eq!(next_minor("1.x"), None);
+        assert_eq!(format_versions().last(), Some(&LATEST_VERSION));
+        assert_eq!(support(&later_minor()), Support::Projection);
+        assert!(format_versions().iter().all(|v| support(v) == Support::Full));
+        #[allow(deprecated)] // the deprecated array must keep answering what the function does
+        let array = FORMAT_VERSIONS;
+        assert_eq!(&array[..], format_versions());
+    }
 
     #[test]
     fn s2_2_versions_are_full_projection_or_unsupported() {
         assert_eq!(support("1.0"), Support::Full);
         assert_eq!(support("1.1"), Support::Full);
         assert_eq!(support("1"), Support::Full);
-        assert_eq!(support("1.2"), Support::Projection);
+        assert_eq!(support(&later_minor()), Support::Projection);
         assert_eq!(support("1.10"), Support::Projection);
         assert_eq!(support("1.x"), Support::Projection);
         assert_eq!(support("2.0"), Support::Unsupported);
         assert_eq!(support(""), Support::Unsupported);
-        assert!(at_least("1.1", "1.1") && at_least("1.2", "1.1") && !at_least("1.0", "1.1"));
+        assert!(at_least("1.1", "1.1") && at_least(&later_minor(), "1.1") && !at_least("1.0", "1.1"));
         assert_eq!(later("1.0", "1.1"), "1.1");
         assert_eq!(later("1.1", "1.0"), "1.1");
         assert_eq!(required_for(&["core", "seg"]), "1.0");
@@ -172,7 +213,7 @@ mod tests {
     #[test]
     fn s2_3_a_higher_minor_or_unknown_profile_is_not_amendable() {
         assert!(require_amendable("1.1", &["core".into(), "clinical".into()], "x").is_ok());
-        assert!(matches!(require_amendable("1.2", &["core".into()], "x"), Err(Error::Version(_))));
+        assert!(matches!(require_amendable(&later_minor(), &["core".into()], "x"), Err(Error::Version(_))));
         let err = require_amendable("1.0", &["core".into(), "quantum".into()], "x").unwrap_err();
         assert_eq!(err.code(), Some("E007"));
     }

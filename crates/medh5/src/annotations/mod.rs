@@ -16,6 +16,8 @@ pub mod select;
 
 pub use encode::{encode_masks, transcode_payload, EncodeOptions, InstanceInput};
 pub use encode_geometric::{Assertions, ObjectColumns, Polygon, SCOPES, SPACES};
+pub use header::{geometric_kinds, kinds};
+#[allow(deprecated)] // the arrays stay re-exported where 2.0 put them until 3.0
 pub use header::{AnnotationHeader, ANNOTATION_KINDS, GEOMETRIC_KINDS, RESERVED_KINDS, TASKS, VOXEL_KINDS};
 pub use payload::{Masks, Payload, PayloadData};
 pub use read::{Annotation, GridRef, Grids, Instance};

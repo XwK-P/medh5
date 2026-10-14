@@ -45,6 +45,18 @@ and the label set's codes have dealt with both. Check a new file at
 measurements in
 [Profiles and validation levels](../reference/profiles-and-levels.md).
 
+A `strict` gate in CI should not change its verdict because medh5 was
+upgraded. Each release can add warnings, in a numbered revision of the code
+table, so pin the revision the gate was written against and raise it when you
+choose to:
+
+```
+$ medh5 validate --level strict --codes-revision 1 case.medh5
+```
+
+A revision the table does not have (`0`, or one past the newest) is refused,
+since it would pass any file.
+
 ## Read the output
 
 ```

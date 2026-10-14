@@ -71,13 +71,16 @@ An annotated object listing — `h5ls` with each object's role in the spec.
 ### `medh5 validate`
 
 ```
-medh5 validate PATH... [--level L] [--profile P] [-v] [--json]
+medh5 validate PATH... [--level L] [--profile P] [--codes-revision N] [-v] [--json]
 ```
 
 Check against the specification. `--level` is `structural`, `semantic`
 (default), `integrity` or `strict`; each includes the ones before it.
 `--profile` adds to the profiles the file declares, so you can hold a file to
 `det` even if it does not claim it. Diagnostics carry stable codes (spec §15.2).
+`--codes-revision` reports only the codes that revision of the code table
+allocated, so a `strict` gate keeps its verdict when a later revision adds a
+warning; a revision the table does not have is refused.
 Every diagnostic is printed; `-v` adds, under each, what its code means.
 
 ```

@@ -25,6 +25,17 @@ from medh5.labels import LabelSet
 ROOT = Path(__file__).resolve().parents[1]
 """The repository root."""
 
+
+def _next_minor(version: str) -> str:
+    major, _, minor = version.partition(".")
+    return f"{major}.{int(minor or 0) + 1}"
+
+
+LATER_MINOR = _next_minor(medh5.FORMAT_VERSION)
+"""A minor this engine does not implement: the one after the newest it does
+(the engine's ``version::next_minor``).  What a test needing "a later minor"
+declares, so an engine that implements it moves the tests past it."""
+
 SEED = 20260815
 
 SHAPE = (16, 24, 24)

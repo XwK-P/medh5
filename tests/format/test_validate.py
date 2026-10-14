@@ -24,7 +24,7 @@ from medh5.validate import (
     validate_paths,
     validate_root,
 )
-from tests.helpers import SHAPE, encode_attr, str_dtype, write_sample
+from tests.helpers import LATER_MINOR, SHAPE, encode_attr, str_dtype, write_sample
 from tests.kits import Framed, History, Numbered, Organs
 
 
@@ -174,7 +174,19 @@ class TestRules:
 
     @pytest.mark.parametrize(
         "version",
-        ["1.0", "1", "1.1", "1.2", "1.x", "1.0 ", " 1.0", "01.0", "2.0", "0.9", "x"],
+        [
+            "1.0",
+            "1",
+            "1.1",
+            LATER_MINOR,
+            "1.x",
+            "1.0 ",
+            " 1.0",
+            "01.0",
+            "2.0",
+            "0.9",
+            "x",
+        ],
     )
     def test_S2_1_the_validator_refuses_the_versions_the_reader_refuses(
         self, sample_path, version
@@ -195,7 +207,7 @@ class TestRules:
         [
             ("1.0", "full"),
             ("1", "full"),
-            ("1.2", "projection"),
+            (LATER_MINOR, "projection"),
             ("1.0 ", "projection"),
             ("1. 0", "projection"),
             (" 1.0", None),
@@ -1576,7 +1588,7 @@ class TestProjection:
     @staticmethod
     def _later(path: Path) -> Path:
         with h5py.File(path, "r+") as handle:
-            handle.attrs["medh5_version"] = "1.2"
+            handle.attrs["medh5_version"] = LATER_MINOR
         return path
 
     def test_S2_2_an_unknown_value_leaves_the_document_rules_running(

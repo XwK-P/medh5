@@ -6,7 +6,7 @@ use ndarray::ArrayD;
 
 use super::{grid_shape, loc, read_f64, read_i64, str_attr, sub_dataset, Context};
 use crate::annotations::encode_geometric::{check_slice_index, ROTATION_TOL, SCOPES, SPACES};
-use crate::annotations::header::GEOMETRIC_KINDS;
+use crate::annotations::header::is_geometric_kind;
 use crate::geometry::affine::is_proper_rotation;
 use crate::h5::attrs;
 use crate::h5::ops::{self, Node};
@@ -27,7 +27,7 @@ pub(super) fn check_geometric(
     consistent: bool,
 ) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
-    if !GEOMETRIC_KINDS.contains(&kind) {
+    if !is_geometric_kind(kind) {
         return Ok(out);
     }
     let location = format!("/annotations/{name}");

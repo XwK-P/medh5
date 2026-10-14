@@ -43,7 +43,7 @@ pub(crate) use medh5_sys::hdf5_sys as h5sys;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The newest MEDH5 format version this engine implements.
 ///
-/// It implements every version in [`version::FORMAT_VERSIONS`], and writes the
+/// It implements every version in [`version::format_versions`], and writes the
 /// lowest one a sample's content needs: 1.0 for imaging, 1.1 once a sample
 /// carries the `clinical` profile ([`version`]).
 pub const FORMAT_VERSION: &str = version::LATEST_VERSION;

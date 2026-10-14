@@ -14,6 +14,12 @@ Codes are grouped by domain::
     E6xx  curation       E7xx  integrity    E8xx  clinical (1.1)
     W9xx  warnings
 
+The table is allocated in numbered *revisions* (§15.2): each code names the
+format version whose rules it reports (:attr:`Code.since`) and the revision
+that allocated it (:attr:`Code.revision`), and :data:`CODES_REVISION` is the
+table's own.  A validator pinned to a revision
+(``validate_file(..., codes_revision=1)``) reports no later code.
+
 The package's own exceptions derive from :class:`MEDH5Error`, and two of them
 from a built-in as well: :class:`MEDH5FileError` is an ``OSError`` and
 :class:`MEDH5ValidationError` a ``ValueError``.  Not every error raised is one
@@ -98,24 +104,39 @@ class Code:
     severity: Severity
     domain: Domain
     summary: str
+    since: str = "1.0"
+    """The format version whose rules the code reports."""
+    revision: int = 1
+    """The revision of the table that allocated the code (§15.2)."""
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"{self.code} ({self.severity}): {self.summary}"
 
 
-def _load_table() -> tuple[Code, ...]:
-    """The table the engine embeds (``crates/medh5/data/codes.json``)."""
+def _load_table() -> tuple[int, tuple[Code, ...]]:
+    """The table the engine embeds (``crates/medh5/data/codes.json``), and
+    its revision."""
     import json
 
     from medh5._core import codes_table
 
-    return tuple(
-        Code(c["code"], c["severity"], c["domain"], c["summary"])
-        for c in json.loads(codes_table())["codes"]
+    table = json.loads(codes_table())
+    return int(table["revision"]), tuple(
+        Code(
+            c["code"],
+            c["severity"],
+            c["domain"],
+            c["summary"],
+            c["since"],
+            c["revision"],
+        )
+        for c in table["codes"]
     )
 
 
-_TABLE: tuple[Code, ...] = _load_table()
+CODES_REVISION: int
+"""The revision of the code table this engine implements (§15.2)."""
+CODES_REVISION, _TABLE = _load_table()
 
 CODES: dict[str, Code] = {c.code: c for c in _TABLE}
 """Every diagnostic code, keyed by code string."""
@@ -136,6 +157,7 @@ def codes_for(domain: Domain) -> tuple[Code, ...]:
 
 __all__ = [
     "CODES",
+    "CODES_REVISION",
     "Code",
     "Domain",
     "MEDH5Error",

@@ -14,6 +14,13 @@
 //! E6xx  curation       E7xx  integrity    E8xx  clinical (1.1)
 //! W9xx  warnings
 //! ```
+//!
+//! The table is allocated in numbered *revisions* (§15.2): revision 1 is every
+//! code allocated before revisions were numbered, and each later allocation,
+//! by a minor version or an erratum, is the next number.  Each code names the
+//! version whose rules it reports ([`since`]) and the revision that allocated
+//! it ([`revision`]); a validator pinned to a revision reports no later code
+//! ([`crate::validate::ValidateOptions::codes_revision`]).
 
 use std::sync::OnceLock;
 
@@ -39,6 +46,21 @@ struct Table {
     codes: Vec<Code>,
 }
 
+/// What `Code` does not carry: it is an exhaustive struct, so the members
+/// revisions added are read beside it.
+#[derive(Deserialize)]
+struct Allocation {
+    code: String,
+    since: String,
+    revision: u32,
+}
+
+#[derive(Deserialize)]
+struct Allocations {
+    revision: u32,
+    codes: Vec<Allocation>,
+}
+
 /// The domains, in the order the specification lists them.
 pub const DOMAINS: [&str; 9] =
     ["container", "geometry", "images", "labels", "annotations", "transforms", "curation", "integrity", "clinical"];
@@ -50,6 +72,32 @@ pub fn all() -> &'static [Code] {
         let table: Table = serde_json::from_str(TABLE_JSON).expect("data/codes.json is valid by construction");
         table.codes
     })
+}
+
+fn allocations() -> &'static Allocations {
+    static ALLOCATIONS: OnceLock<Allocations> = OnceLock::new();
+    ALLOCATIONS.get_or_init(|| serde_json::from_str(TABLE_JSON).expect("data/codes.json is valid by construction"))
+}
+
+/// The revision of the table this engine carries (§15.2): the latest
+/// revision any of its codes was allocated in.
+///
+/// A function, not a constant: the number lives in `data/codes.json`, which
+/// a `const` cannot read.
+pub fn table_revision() -> u32 {
+    allocations().revision
+}
+
+/// The format version whose rules `code` reports (`"1.0"` or `"1.1"`), or
+/// `None` for a code the table does not hold.
+pub fn since(code: &str) -> Option<&'static str> {
+    allocations().codes.iter().find(|c| c.code == code).map(|c| c.since.as_str())
+}
+
+/// The revision of the table that allocated `code`, or `None` for a code the
+/// table does not hold.
+pub fn revision(code: &str) -> Option<u32> {
+    allocations().codes.iter().find(|c| c.code == code).map(|c| c.revision)
 }
 
 /// Look up one code.
@@ -87,5 +135,21 @@ mod tests {
         }
         let names: std::collections::BTreeSet<&str> = codes.iter().map(|c| c.code.as_str()).collect();
         assert_eq!(names.len(), codes.len(), "a code is listed twice");
+    }
+
+    #[test]
+    fn s15_2_every_code_has_a_version_and_a_revision() {
+        let mut latest = 0;
+        for c in all() {
+            let version = since(&c.code).unwrap_or_else(|| panic!("{} names no version", c.code));
+            assert!(["1.0", "1.1"].contains(&version), "{}: {version}", c.code);
+            let allocated = revision(&c.code).unwrap_or_else(|| panic!("{} names no revision", c.code));
+            assert!((1..=table_revision()).contains(&allocated), "{}: revision {allocated}", c.code);
+            latest = latest.max(allocated);
+        }
+        // The table's revision is the latest allocation: no number is skipped
+        // at the top, and no code is ahead of the table that holds it.
+        assert_eq!(latest, table_revision());
+        assert_eq!((since("E999"), revision("E999")), (None, None));
     }
 }
