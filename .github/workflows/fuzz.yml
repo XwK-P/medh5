@@ -1,0 +1,90 @@
+name: Fuzz
+
+# The engine's readers, fuzzed: `open_validate` (any file through the
+# strictest validation), `clinical_columns` (a documents table's offsets and
+# bytes, read deferred and scanned), and the Zstandard and Blosc2 filters
+# decoding chunks they did not write.  A report or a refusal is fine; a crash,
+# a sanitizer's report, a timeout or running out of memory fails the run, and
+# the input that did it is uploaded.  A finding becomes a minimised regression
+# test in the crate it hit, never a committed input.
+on:
+  schedule:
+    - cron: "23 3 * * 2,5"
+  workflow_dispatch:
+  # A change to the targets, or to this workflow, is smoke-run on its pull
+  # request.
+  pull_request:
+    paths:
+      - fuzz/**
+      - .github/workflows/fuzz.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # libFuzzer's instrumentation needs a nightly: a dated one, from just after
+  # the stable release rust-toolchain.toml pins, moved with that pin.
+  FUZZ_TOOLCHAIN: nightly-2026-10-02
+  # No filter plugin is ever loaded from the runner's directories, whatever a
+  # fuzzed file names (the engine turns HDF5's plugins off as well).
+  HDF5_PLUGIN_PRELOAD: "::"
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [open_validate, clinical_columns, zstd_filter, blosc2_filter]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The Rust rust-toolchain.toml pins builds cargo-fuzz; the nightly, the
+      # targets.
+      - run: rustup toolchain install --no-self-update
+      - run: rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal --no-self-update
+      - run: cargo install cargo-fuzz --version 0.13.2 --locked
+      # Each run saves the corpus it grew under its own key, and the next
+      # restores the newest of its target's.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      # Built as the targets are, so the run below reuses its build (HDF5's
+      # among it) rather than compiling everything a second time.
+      - name: Seed the corpus from the conformance corpus
+        if: matrix.target == 'open_validate'
+        working-directory: fuzz
+        run: |
+          cargo +"$FUZZ_TOOLCHAIN" fuzz build seed
+          target/x86_64-unknown-linux-gnu/release/seed corpus/open_validate
+      # A pull request's run is a smoke test; the schedule runs 40 minutes.
+      - name: Fuzz
+        working-directory: fuzz
+        env:
+          SECONDS_TO_RUN: ${{ github.event_name == 'pull_request' && 300 || 2400 }}
+          TARGET: ${{ matrix.target }}
+        run: >
+          cargo +"$FUZZ_TOOLCHAIN" fuzz run "$TARGET" --
+          -max_total_time="$SECONDS_TO_RUN" -max_len=262144 -timeout=30
+          -rss_limit_mb=4096 -malloc_limit_mb=2048
+      # Once a week, on Tuesday's run, the corpus is minimised to what adds
+      # coverage, before the cache saves it.
+      - name: Minimise the corpus
+        if: github.event_name == 'schedule'
+        working-directory: fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [ "$(date -u +%u)" = 2 ]; then
+            cargo +"$FUZZ_TOOLCHAIN" fuzz cmin "$TARGET"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          retention-days: 7

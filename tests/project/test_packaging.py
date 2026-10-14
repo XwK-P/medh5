@@ -31,6 +31,7 @@ from tests.helpers import ROOT, write_sample
 PYPROJECT = ROOT / "pyproject.toml"
 CI = ROOT / ".github/workflows/ci.yml"
 BUILD = ROOT / ".github/workflows/build.yml"
+FUZZ = ROOT / ".github/workflows/fuzz.yml"
 RELEASE = ROOT / ".github/workflows/release.yml"
 ADVISORIES = ROOT / ".github/workflows/advisories.yml"
 
@@ -809,6 +810,31 @@ class TestRepositoryGates:
             assert "id: line" in steps[0], name
             for step in steps[1:]:
                 assert "if: steps.line.outputs.exists == 'true'" in step, name
+
+    def test_fuzzing_runs_on_a_dated_nightly(self):
+        """Nothing fuzzed the readers: 2.0.2's denial-of-service bugs were
+        found by hand.  The fuzz targets run twice a week on a nightly named
+        by its date (one that moves would change the instrumentation under
+        the corpus), each job bounded, and a run uploads the input that broke
+        it only when one did."""
+        text = FUZZ.read_text(encoding="utf-8")
+        assert re.search(r"^  FUZZ_TOOLCHAIN: nightly-\d{4}-\d{2}-\d{2}$", text, re.M)
+        assert re.search(r'^    - cron: "[^"]+"$', text, re.M)
+        (job,) = _jobs(text).values()
+        assert re.search(r"^    timeout-minutes: (\d+)$", job, re.M)[1] == "60"  # type: ignore[index]
+        assert "cargo install cargo-fuzz --version 0.13.2 --locked" in job
+        assert 'cargo +"$FUZZ_TOOLCHAIN" fuzz run "$TARGET"' in job
+        upload = job.split("uses: actions/upload-artifact@", 1)[1]
+        assert "        if: failure()\n" in upload and "retention-days: 7" in upload
+        if (ROOT / "PKG-INFO").is_file():
+            return  # the sdist carries no fuzz targets
+        # Every target runs, in a workspace of its own: the root's lock and
+        # notices never see it.
+        fuzz = (ROOT / "fuzz/Cargo.toml").read_text(encoding="utf-8")
+        declared = re.findall(r'^path = "fuzz_targets/(\w+)\.rs"$', fuzz, re.M)
+        targets = re.search(r"^        target: \[(.*)\]$", job, re.M)
+        assert targets and [t.strip() for t in targets[1].split(",")] == declared
+        assert "\n[workspace]\n" in fuzz and "publish = false" in fuzz
 
     def test_the_release_runs_ci_on_the_tagged_commit(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")

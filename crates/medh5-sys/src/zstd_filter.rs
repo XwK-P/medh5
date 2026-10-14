@@ -184,6 +184,26 @@ pub(crate) unsafe fn register() -> bool {
     unsafe { H5Zregister((&raw const class).cast()) >= 0 }
 }
 
+/// The filter run backwards on `frame` as HDF5 runs it: the frame in a
+/// buffer of `buf_size` bytes, or of the frame's own size if larger.  What
+/// the tests and the fuzz target (`fuzz/`) decode through; the caller holds
+/// HDF5's lock where other threads may call into HDF5.
+#[cfg(any(test, fuzzing))]
+pub(crate) fn run_backwards(frame: &[u8], buf_size: usize) -> Option<Vec<u8>> {
+    let mut size = buf_size.max(frame.len()).max(1);
+    // SAFETY: the buffer is HDF5's, as the pipeline's is, and holds the
+    // frame; the filter frees or keeps it and the result is freed here.
+    unsafe {
+        let mut buf = H5allocate_memory(size, 0);
+        assert!(!buf.is_null());
+        std::ptr::copy_nonoverlapping(frame.as_ptr(), buf.cast::<u8>(), frame.len());
+        let n = zstd_filter(H5Z_FLAG_REVERSE, 0, std::ptr::null(), frame.len(), &mut size, &mut buf);
+        let out = (n > 0).then(|| std::slice::from_raw_parts(buf.cast::<u8>(), n).to_vec());
+        H5free_memory(buf);
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,22 +231,9 @@ mod tests {
         frame
     }
 
-    /// The filter run backwards on `frame` as HDF5 runs it: the frame in a
-    /// buffer of `buf_size` bytes, or of the frame's own size if larger.
     fn decompress(frame: &[u8], buf_size: usize) -> Option<Vec<u8>> {
         let _held = crate::HDF5_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut size = buf_size.max(frame.len());
-        // SAFETY: the buffer is HDF5's, as the pipeline's is, and holds the
-        // frame; the filter frees or keeps it and the result is freed here.
-        unsafe {
-            let mut buf = H5allocate_memory(size, 0);
-            assert!(!buf.is_null());
-            std::ptr::copy_nonoverlapping(frame.as_ptr(), buf.cast::<u8>(), frame.len());
-            let n = zstd_filter(H5Z_FLAG_REVERSE, 0, std::ptr::null(), frame.len(), &mut size, &mut buf);
-            let out = (n > 0).then(|| std::slice::from_raw_parts(buf.cast::<u8>(), n).to_vec());
-            H5free_memory(buf);
-            out
-        }
+        run_backwards(frame, buf_size)
     }
 
     /// A frame of 64 MiB from 2 KiB, for a 64 KiB chunk, is refused whether

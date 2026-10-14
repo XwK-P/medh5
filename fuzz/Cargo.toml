@@ -1,0 +1,62 @@
+# The fuzz targets of the engine's readers (`cargo fuzz`, on a nightly Rust;
+# .github/workflows/fuzz.yml runs them).  A workspace of its own, so the root
+# workspace --- its lock, THIRD_PARTY_NOTICES and `cargo package` --- never
+# sees it.  A crash a run finds becomes a minimised regression test in the
+# crate it hit, never a committed input.
+[package]
+name = "medh5-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+arbitrary = { version = "1.5.0", features = ["derive"] }
+# HDF5 through `medh5::hdf5`, the one the engine links.
+medh5 = { path = "../crates/medh5" }
+medh5-sys = { path = "../crates/medh5-sys" }
+
+[profile.release]
+debug = 1
+
+# The corpus seeds: the conformance corpus's small files.
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "open_validate"
+path = "fuzz_targets/open_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clinical_columns"
+path = "fuzz_targets/clinical_columns.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zstd_filter"
+path = "fuzz_targets/zstd_filter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "blosc2_filter"
+path = "fuzz_targets/blosc2_filter.rs"
+test = false
+doc = false
+bench = false
