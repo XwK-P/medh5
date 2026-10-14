@@ -269,7 +269,8 @@ deletes them), and push a `vX.Y.Z` tag on a commit whose CI passed.
    the crates to crates.io (`medh5-sys`, `medh5`, `medh5-cli`, in that order,
    with the `CARGO_REGISTRY_TOKEN` secret — each crate built from its package
    without the token in the environment, then uploaded, and in the index before
-   the next one, which resolves against it);
+   the next one, which resolves against it). Beside these, every archive, wheel
+   and sdist is attested (`gh attestation verify`);
 4. creates the GitHub Release, with the changelog section as its notes (each
    paragraph on one line, since a release page breaks a line wherever its
    source does) and the distributions, the binaries and their `SHA256SUMS`

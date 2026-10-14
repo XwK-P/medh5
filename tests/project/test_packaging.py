@@ -1414,6 +1414,25 @@ class TestDistribution:
         assert not release.in_index("medh5-sys", "2.0.1")
         assert not release.in_index("medh5", "2.0.0")
 
+    def test_every_artifact_is_attested_before_the_release(self):
+        """The binaries' archives on the release page had a checksum file and
+        nothing that said who built them.  One job attests every archive,
+        wheel and sdist, the only one allowed to, and the release waits for
+        it."""
+        jobs = _jobs(RELEASE.read_text(encoding="utf-8"))
+        attest = jobs["attest"]
+        assert re.search(r"^    needs: build$", attest, re.M)
+        assert re.search(r"uses: actions/attest@[0-9a-f]{40} # v4\.", attest)
+        for pattern in ("cli/*.tar.gz", "cli/*.zip", "dist/*.whl", "dist/*.tar.gz"):
+            assert f"            {pattern}\n" in attest, pattern
+        writers = {n for n, j in jobs.items() if "attestations: write" in j}
+        assert writers == {"attest"}
+        needs = re.search(r"^    needs: \[(.*)\]$", jobs["github-release"], re.M)
+        assert needs and "attest" in needs[1].split(", ")
+        install = (ROOT / "docs/install.md").read_text(encoding="utf-8")
+        assert "gh attestation verify" in install
+        assert "--repo medh5-project/medh5" in install
+
     def test_every_publishing_step_can_run_again(self):
         """`cargo publish --workspace` refused a re-run once one crate was up,
         `gh release create` once the release existed, and an unchanged formula

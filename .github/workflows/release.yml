@@ -207,6 +207,38 @@ jobs:
           path: release-notes.md
           if-no-files-found: error
 
+  attest:
+    name: Attest every artifact's build
+    # A signed statement, per file, that this workflow built it from this
+    # commit: the binaries and their archives on the release page, the wheels
+    # and the sdist (which PyPI's own attestations cover too).  `gh
+    # attestation verify` checks one against the repository.  The only job
+    # that may write attestations; the release waits for them.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cli
+          path: cli/
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            cli/*.tar.gz
+            cli/*.zip
+            dist/*.whl
+            dist/*.tar.gz
+
   # Every publishing step below can run again: a re-run after a partial
   # release skips what is already published *and identical* to this run's
   # build, publishes what is missing, and fails on anything published from
@@ -281,7 +313,7 @@ jobs:
     name: Create the GitHub Release
     # After the registries rather than beside them, so a release is never
     # announced for a version that `pip install` or `cargo install` cannot find.
-    needs: [build, publish, crates]
+    needs: [build, attest, publish, crates]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

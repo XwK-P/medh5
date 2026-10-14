@@ -92,6 +92,14 @@ has an archive for Linux (x86_64 or ARM64, glibc 2.28 or later), macOS (Intel
 or Apple silicon) and Windows (x64), and a `SHA256SUMS` file to check it
 against. Unpack it and put `medh5` on your path.
 
+Each archive, like each wheel, also carries a signed attestation that the
+project's release workflow built it from the tagged commit. With the
+[GitHub CLI](https://cli.github.com), check one before you unpack it:
+
+```bash
+gh attestation verify medh5-2.1.0-x86_64-unknown-linux-gnu.tar.gz --repo medh5-project/medh5
+```
+
 **From source**, with Rust 1.85.1 or later, a C compiler and CMake:
 
 ```bash
