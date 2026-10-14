@@ -967,7 +967,7 @@ mod tests {
         assert_eq!(legacy.entries[0].path, "studies/a.medh5");
         assert!(differs, "the temporary directory is not the working directory");
         let based = Manifest::load_with_base(&target, Some(dir.path())).unwrap();
-        assert_eq!(based.entries[0].path, dir.path().join("studies/a.medh5").to_string_lossy());
+        assert_eq!(based.entries[0].path, dir.path().join("studies").join("a.medh5").to_string_lossy());
         // Upgraded, the same manifest reads against its own directory.
         doc["schema"] = json!(MANIFEST_SCHEMA);
         std::fs::write(&target, pretty(&doc)).unwrap();
