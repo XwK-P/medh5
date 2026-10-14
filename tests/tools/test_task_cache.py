@@ -212,6 +212,69 @@ class TestManifest:
         (finding,) = task.validate()
         assert finding.code == "T101"
 
+    def test_S2_colliding_default_ids_are_widened(self):
+        """``a/site-a/P-01.medh5`` and ``b/site-a/P-01.medh5`` both derived
+        ``site-a_P-01``: T204, from ids nobody wrote."""
+        task = TaskManifest.new("t", "1", identity_namespace="n")
+        pin = "sha256:" + "0" * 64
+        refs = [SourceRef(f"{d}/site-a/P-01.medh5", pin) for d in ("a", "b")]
+        task.add_subject("P-09", refs)
+        ids = [s.source_id for s in task.subjects[-1].sources]
+        assert ids == ["site-a_P-01", "b_site-a_P-01"]
+        assert task.validate() == []
+
+    def test_S2_default_ids_widen_then_number(self, setup):
+        task, _ = setup
+        pin = task.subjects[0].sources[0].content_id
+        refs = [SourceRef(f"site-a/P-01.{ext}", pin) for ext in ("medh5", "h5")]
+        task.add_subject("P-09", refs[:1], partition="train")
+        task.add_subject("P-10", refs[1:], partition="train")
+        ids = [s.sources[0].source_id for s in task.subjects[-2:]]
+        assert ids == ["site-a_P-01", "site-a_P-01@2"]
+        # The cut at 128 characters collides too, and is numbered within it.
+        long = [SourceRef(f"{'n' * 200}.{e}", pin) for e in ("medh5", "h5")]
+        task.add_subject("P-11", long, partition="train")
+        assert [s.source_id for s in task.subjects[-1].sources] == [
+            "n" * 128,
+            "n" * 126 + "@2",
+        ]
+
+    def test_S2_an_explicit_colliding_id_is_still_T204(self, setup):
+        task, _ = setup
+        pin = task.subjects[0].sources[0].content_id
+        taken = task.subjects[0].sources[0].source_id
+        task.add_subject(
+            "P-09",
+            [SourceRef("elsewhere.medh5", pin, source_id=taken)],
+            partition="train",
+        )
+        assert "T204" in found(task.validate())
+
+    @pytest.mark.parametrize(
+        ("uri", "key", "expected"),
+        [
+            ("P-01.medh5", None, "P-01"),
+            ("site-a/P-01.medh5", None, "site-a_P-01"),
+            ("data/site-a/P-01.medh5", None, "site-a_P-01"),
+            ("../data/P-01.medh5", None, "data_P-01"),
+            ("../P-01.medh5", None, ".._P-01"),
+            ("/abs/P 01.medh5", None, "abs_P_01"),
+            ("file:///data/site%20b/P-01.medh5", None, "site_b_P-01"),
+            ("file:///C:/data/P-01.medh5", None, "data_P-01"),
+            ("s3://b/x.medh5", None, "b_x"),
+            ("..\\x\\y.medh5c", None, ".._x_y"),
+            ("shard.medh5c", "P-01", "shard:P-01"),
+            ("n" * 200, None, "n" * 128),
+            ("", "k", ":k"),
+        ],
+    )
+    def test_S2_uncolliding_default_ids_are_unchanged(
+        self, uri: str, key: str | None, expected: str
+    ):
+        """What 2.0.2 derived on POSIX, now on every platform: a backslash is
+        no separator, so one script's ids, and fingerprints, are one."""
+        assert SourceRef(uri, "sha256:" + "0" * 64, key).source_id == expected
+
     def test_S3_2_the_task_fingerprint_is_the_definition(self, setup):
         task, _ = setup
         spelled = task.to_json()

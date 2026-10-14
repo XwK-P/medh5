@@ -36,11 +36,10 @@ from __future__ import annotations
 import copy
 import json
 import os
-import re
 import shutil
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import KW_ONLY, dataclass
-from pathlib import Path, PurePath
+from dataclasses import KW_ONLY, dataclass, field, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -104,15 +103,6 @@ def _findings(found: Iterable[Mapping[str, Any]]) -> tuple[Finding, ...]:
     return tuple(Finding.from_json(f) for f in found)
 
 
-def _default_source_id(uri: str, sample_key: str | None) -> str:
-    """A reference's id when none is given (:attr:`SourceRef.source_id`), as id
-    characters."""
-    path = _core.source_resolve(uri) if uri[:5].lower() == "file:" else PurePath(uri)
-    name = f"{path.parent.name}/{path.stem}" if path.parent.name else path.stem
-    key = f":{sample_key}" if sample_key else ""
-    return re.sub(r"[^A-Za-z0-9_.@:-]", "_", f"{name}{key}")[:128]
-
-
 @dataclass(frozen=True, slots=True)
 class SourceRef:
     """One sample --- a file, or a member of a ``.medh5c`` --- at a pinned version.
@@ -130,16 +120,23 @@ class SourceRef:
     sample_key: str | None = None
     source_id: str = ""
     """Default: the file's stem, after the directory holding it when the URI
-    names one (``site-a_P-01``), and ``:<key>`` for a member."""
+    names one (``site-a_P-01``), and ``:<key>`` for a member; the engine's
+    derivation, the same on every platform.  :meth:`TaskManifest.add_subject`
+    widens a derived id another source already holds: by the directories
+    above it, then ``@2``, ``@3``."""
     local_subject_id: str | None = None
+    _derived: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Derived once, here: an empty id failed the schema (T101), and the
         # stem alone gave site-a/P-01.medh5 and site-b/P-01.medh5 one (T204).
         if not self.source_id:
             object.__setattr__(
-                self, "source_id", _default_source_id(self.uri, self.sample_key)
+                self,
+                "source_id",
+                _core.source_default_id(self.uri, self.sample_key),
             )
+            object.__setattr__(self, "_derived", True)
 
     @classmethod
     def pin(
@@ -503,10 +500,32 @@ class TaskManifest:
         partition: str | None = None,
         clock_id: str | None = None,
     ) -> TaskManifest:
-        """Declare a subject, its sources and its partition."""
+        """Declare a subject, its sources and its partition.
+
+        A source whose id was derived (none was given) and that another
+        source already holds is given a wider one: by the directories above
+        it, then ``@2``, ``@3``; the first holder keeps its id.  An id given
+        explicitly is kept, so one that collides is still T204."""
+        taken = [
+            str(s["source_id"])
+            for subject in self._doc.get("subjects", ())
+            for s in subject.get("sources", ())
+            if s.get("source_id")
+        ]
+        taken += [s.source_id for s in sources if not s._derived]
+        placed = []
+        for source in sources:
+            if source._derived and source.source_id in taken:
+                wider = _core.source_default_id(
+                    source.uri, source.sample_key, tuple(taken)
+                )
+                source = replace(source, source_id=wider)
+            if source._derived:
+                taken.append(source.source_id)
+            placed.append(source)
         entry: dict[str, Any] = {
             "subject_id": subject_id,
-            "sources": [s.to_json() for s in sources],
+            "sources": [s.to_json() for s in placed],
         }
         if partition is not None:
             entry["partition"] = partition

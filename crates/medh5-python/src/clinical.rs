@@ -347,6 +347,15 @@ fn source_resolve(uri: &str, base: Option<PathBuf>) -> PathBuf {
     SourceRef::new(uri, None, "").resolve(base.as_deref())
 }
 
+/// The id a source reference gets when none is given, widened past the ids
+/// in `taken` (`SourceRef::default_id_among`).
+#[pyfunction]
+#[pyo3(signature = (uri, sample_key=None, taken=Vec::new()))]
+fn source_default_id(uri: &str, sample_key: Option<&str>, taken: Vec<String>) -> String {
+    let taken: std::collections::HashSet<String> = taken.into_iter().collect();
+    SourceRef::default_id_among(uri, sample_key, &|id| taken.contains(id))
+}
+
 /// The findings of checking a reference against its sample now.
 #[pyfunction]
 #[pyo3(signature = (source, base=None, deep=false))]
@@ -576,6 +585,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(source_pin, m)?,
         wrap_pyfunction!(source_check, m)?,
         wrap_pyfunction!(source_resolve, m)?,
+        wrap_pyfunction!(source_default_id, m)?,
         wrap_pyfunction!(cache_create, m)?,
         wrap_pyfunction!(cache_open, m)?,
         wrap_pyfunction!(cache_validate, m)?,

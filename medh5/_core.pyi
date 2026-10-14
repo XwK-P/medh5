@@ -485,6 +485,7 @@ __all__ = [
     "select_encoding",
     "slices_to_box",
     "source_check",
+    "source_default_id",
     "source_pin",
     "source_resolve",
     "spatial_chunk_for",
@@ -1720,6 +1721,14 @@ def source_check(
     source: Any, base: str | os.PathLike[str] | None = None, deep: bool = False
 ) -> list[dict[str, Any]]:
     """The findings of checking a reference against its sample now."""
+    ...
+
+def source_default_id(
+    uri: str, sample_key: str | None = None, taken: Sequence[str] = ()
+) -> str:
+    """The id a source reference gets when none is given, widened past the ids
+    in `taken` (`SourceRef::default_id_among`).
+    """
     ...
 
 def source_pin(

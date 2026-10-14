@@ -444,6 +444,24 @@ impl TaskManifest {
         fingerprint(&doc)
     }
 
+    /// Declare a subject.  A source without an id gets its default
+    /// ([`SourceRef::default_id`]), widened when another source of the
+    /// manifest already holds it ([`SourceRef::default_id_among`]): the
+    /// first holder keeps its id.  An id given explicitly is kept as given,
+    /// so one that collides is still T204.
+    pub fn add_subject(&mut self, mut subject: Subject) -> &mut Self {
+        let mut taken: BTreeSet<String> =
+            self.subjects.iter().flat_map(|s| &s.sources).map(|s| s.source_id.clone()).collect();
+        taken.extend(subject.sources.iter().filter(|s| !s.source_id.is_empty()).map(|s| s.source_id.clone()));
+        for source in subject.sources.iter_mut().filter(|s| s.source_id.is_empty()) {
+            source.source_id =
+                SourceRef::default_id_among(&source.uri, source.sample_key.as_deref(), &|id| taken.contains(id));
+            taken.insert(source.source_id.clone());
+        }
+        self.subjects.push(subject);
+        self
+    }
+
     pub fn subject(&self, subject_id: &str) -> Option<&Subject> {
         self.subjects.iter().find(|s| s.subject_id == subject_id)
     }

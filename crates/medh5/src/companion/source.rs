@@ -72,6 +72,52 @@ fn percent_decode(text: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// The characters an id may hold: `medh5-task-1.schema.json`'s `$defs/id`,
+/// as a regular-expression class.
+pub const ID_CHARS: &str = "A-Za-z0-9_.@:-";
+/// The most characters an id may have.
+pub const ID_MAX: usize = 128;
+
+fn is_id_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "_.@:-".contains(c)
+}
+
+/// `text` as id characters: each other character is `_`, and it is cut at
+/// `max` characters.
+fn id_of(text: &str, max: usize) -> String {
+    text.chars().map(|c| if is_id_char(c) { c } else { '_' }).take(max).collect()
+}
+
+/// The `/`-separated segments of `uri` --- a `file:` URI's path once decoded
+/// --- that name something: empty and `.` segments are dropped, as a path
+/// drops them.  A backslash is an ordinary character, on every platform, so
+/// one manifest derives one id everywhere.
+fn uri_segments(uri: &str) -> Vec<String> {
+    let path = file_uri_path(uri, false).unwrap_or_else(|| uri.to_string());
+    path.split('/').filter(|s| !s.is_empty() && *s != ".").map(str::to_string).collect()
+}
+
+/// A file name without its last suffix, as Python's `PurePath.stem`: a
+/// leading or trailing dot is no suffix.
+fn stem(name: &str) -> &str {
+    match name.rfind('.') {
+        Some(i) if i > 0 && i < name.len() - 1 => &name[..i],
+        _ => name,
+    }
+}
+
+/// The id `depth` directories deep: the file's stem after the `depth`
+/// directories holding it, and `:key` for a member, as id characters.
+fn id_at_depth(segments: &[String], sample_key: Option<&str>, depth: usize) -> String {
+    let Some((name, dirs)) = segments.split_last() else {
+        return id_of(&sample_key.filter(|k| !k.is_empty()).map(|k| format!(":{k}")).unwrap_or_default(), ID_MAX);
+    };
+    let mut parts: Vec<&str> = dirs[dirs.len().saturating_sub(depth)..].iter().map(String::as_str).collect();
+    parts.push(stem(name));
+    let key = sample_key.filter(|k| !k.is_empty()).map(|k| format!(":{k}")).unwrap_or_default();
+    id_of(&format!("{}{key}", parts.join("/")), ID_MAX)
+}
+
 /// One sample, standalone or a collection member, at a pinned version.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SourceRef {
@@ -92,6 +138,42 @@ impl SourceRef {
     pub fn new(uri: impl Into<String>, sample_key: Option<String>, content_id: impl Into<String>) -> SourceRef {
         let uri = uri.into();
         SourceRef { source_id: String::new(), uri, sample_key, content_id: content_id.into(), local_subject_id: None }
+    }
+
+    /// The id a reference gets when none is given (task-cache-1 §2): the
+    /// file's stem after the directory holding it when the URI names one
+    /// (`site-a_P-01`), and `:<key>` for a member, as id characters within
+    /// 128.  A `file:` URI is read as the path it names; any other URI is
+    /// split on `/` only.
+    pub fn default_id(uri: &str, sample_key: Option<&str>) -> String {
+        id_at_depth(&uri_segments(uri), sample_key, 1)
+    }
+
+    /// [`default_id`](Self::default_id), widened until `taken` refuses it no
+    /// longer: first by the directories above it, then numbered `@2`, `@3`,
+    /// within 128 characters.  What a manifest gives a derived id that
+    /// another source already holds; the holder keeps its id.
+    pub fn default_id_among(uri: &str, sample_key: Option<&str>, taken: &dyn Fn(&str) -> bool) -> String {
+        let segments = uri_segments(uri);
+        let first = id_at_depth(&segments, sample_key, 1);
+        // No id is no id however it is widened: the schema refuses it (T101).
+        if first.is_empty() || !taken(&first) {
+            return first;
+        }
+        for depth in 2..segments.len() {
+            let wider = id_at_depth(&segments, sample_key, depth);
+            if !taken(&wider) {
+                return wider;
+            }
+        }
+        (2usize..)
+            .map(|n| {
+                let suffix = format!("@{n}");
+                let head: String = first.chars().take(ID_MAX - suffix.len()).collect();
+                format!("{head}{suffix}")
+            })
+            .find(|id| !taken(id))
+            .expect("some number is free")
     }
 
     /// A reference pinned to what `sample` is now.
@@ -296,5 +378,55 @@ mod tests {
             assert_eq!(at("file://localhost/data/x.medh5"), PathBuf::from("/data/x.medh5"));
         }
         assert_eq!(at("x.medh5"), PathBuf::from("/base/x.medh5"));
+    }
+
+    /// The ids 2.0.2's Python derived on POSIX, now derived by the engine and
+    /// identical on every platform: a backslash is no separator anywhere.
+    #[test]
+    fn s2_default_ids_are_pythons() {
+        let long = "n".repeat(200);
+        for (uri, key, id) in [
+            ("P-01.medh5", None, "P-01"),
+            ("site-a/P-01.medh5", None, "site-a_P-01"),
+            ("data/site-a/P-01.medh5", None, "site-a_P-01"),
+            ("../data/P-01.medh5", None, "data_P-01"),
+            ("../P-01.medh5", None, ".._P-01"),
+            ("a/./b//P-01.medh5", None, "b_P-01"),
+            ("/abs/P 01.medh5", None, "abs_P_01"),
+            ("file:///data/site%20b/P-01.medh5", None, "site_b_P-01"),
+            ("file:///C:/data/P-01.medh5", None, "data_P-01"),
+            ("s3://b/x.medh5", None, "b_x"),
+            (r"..\x\y.medh5c", None, ".._x_y"),
+            (r"site\P-01.medh5", Some("k"), "site_P-01:k"),
+            ("shard.medh5c", Some("P-01"), "shard:P-01"),
+            ("x.tar.gz", None, "x.tar"),
+            (".hidden", None, ".hidden"),
+            ("x.", None, "x."),
+            ("", None, ""),
+            ("", Some("k"), ":k"),
+        ] {
+            assert_eq!(SourceRef::default_id(uri, key), id, "{uri} {key:?}");
+        }
+        let cut = SourceRef::default_id(&format!("{long}.medh5"), None);
+        assert_eq!(cut, "n".repeat(128));
+        let schema: Value = serde_json::from_str(super::super::task::schema_text()).unwrap();
+        assert_eq!(schema["$defs"]["id"]["pattern"], format!("^[{ID_CHARS}]{{1,{ID_MAX}}}$"));
+    }
+
+    #[test]
+    fn s2_a_derived_id_that_collides_is_widened() {
+        let taken = |ids: &[&str]| {
+            let ids: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
+            move |id: &str| ids.iter().any(|t| t == id)
+        };
+        let among = |uri: &str, ids: &[&str]| SourceRef::default_id_among(uri, None, &taken(ids));
+        assert_eq!(among("b/site-a/P-01.medh5", &[]), "site-a_P-01");
+        assert_eq!(among("b/site-a/P-01.medh5", &["site-a_P-01"]), "b_site-a_P-01");
+        assert_eq!(among("x/b/site-a/P-01.medh5", &["site-a_P-01", "b_site-a_P-01"]), "x_b_site-a_P-01");
+        assert_eq!(among("site-a/P-01.h5", &["site-a_P-01"]), "site-a_P-01@2");
+        assert_eq!(among("site-a/P-01.h5", &["site-a_P-01", "site-a_P-01@2"]), "site-a_P-01@3");
+        let long = format!("{}.medh5", "n".repeat(200));
+        let numbered = among(&long, &[&"n".repeat(128)]);
+        assert_eq!(numbered, format!("{}@2", "n".repeat(126)));
     }
 }
