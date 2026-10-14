@@ -31,7 +31,7 @@ from __future__ import annotations
 import contextlib
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -498,15 +498,31 @@ class Sample:
             )
         return self._transforms
 
-    def transform_between(self, source: str, target: str) -> Transform | None:
+    def transform_between(
+        self,
+        source: str,
+        target: str,
+        *,
+        by: Literal["timepoint", "grid", "frame"] | None = None,
+    ) -> Transform | None:
         """The transform relating two timepoints, grids or frames (spec §10).
 
-        A key is read as a timepoint first, then as a grid, then as a frame
-        uid; one that is none of the three raises ``KeyError``.  Returns
-        ``None`` when the two already share a frame --- or when no transform
-        relates them: geometry is never invented.
+        *by* says how both keys are read; by default a key is read as a
+        timepoint first, then as a grid, then as a frame uid, and one that is
+        none of these raises ``KeyError``.
+
+        A visit has an answer only when its framed grids share one frame of
+        reference.  When either key names a visit holding several (a CT and a
+        PET on frames of their own), no one transform relates the two, and
+        this raises :class:`~medh5.errors.MEDH5ValidationError` naming each
+        visit's grids and frames: ask about two grids (``by="grid"``) or two
+        frames (:meth:`resolve_frames`) instead.
+
+        Returns ``None`` when the two already share a frame, when a side names
+        no frame at all, or when no transform relates them: geometry is never
+        invented, so ``None`` alone does not say the two are aligned.
         """
-        found = self._handle.transform_between(source, target)
+        found = self._handle.transform_between(source, target, by)
         return None if found is None else wrap_transform(found)
 
     def _frames_for(self, key: str) -> tuple[str, ...]:

@@ -1877,8 +1877,10 @@ class TestAmbiguousResolution:
             )
 
         with medh5.open(path) as sample:
+            # `tp0` holds the intermediate frames' grids too, so the question
+            # is the two grids'
             with pytest.raises(MEDH5ValidationError) as exc:
-                sample.transform_between("tp0", "tp1")
+                sample.transform_between("gA", "gT")
             assert exc.value.code == "E501"
 
     def test_a_longer_unambiguous_route_still_resolves(self, tmp_path):
@@ -1922,7 +1924,7 @@ class TestAmbiguousResolution:
                 "bt", kind="affine", matrix=step, from_frame="B", to_frame="T"
             )
         with medh5.open(path) as sample:
-            transform = sample.transform_between("tp0", "tp1")
+            transform = sample.transform_between("gA", "gT")
             assert transform is not None
             assert np.allclose(
                 transform.transform_points([[0.0, 0.0, 0.0]])[0], [2.0, 0.0, 0.0]
@@ -2045,3 +2047,177 @@ class TestFrameGraph:
     def test_the_registration_guide_no_longer_warns_against_linking(self):
         guide = (ROOT / "docs/guides/registration.md").read_text(encoding="utf-8")
         assert "Do not link them with `inverse_id`" not in guide
+
+
+class TestVisitKeys:
+    """A timepoint key answers only for a visit on one frame (1.0 §3.4)."""
+
+    @staticmethod
+    def _two_modalities(path: Path, *, pet: str) -> Path:
+        """Two visits, each a CT grid on its own frame and a PET grid named
+        `{pet}0` / `{pet}1`; both PET grids share one frame, and only the CT
+        frames are registered."""
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            for grid, timepoint, frame in (
+                (f"{pet}0", "tp0", "pseudo:pet"),
+                ("ct0", "tp0", "pseudo:ct0"),
+                (f"{pet}1", "tp1", "pseudo:pet"),
+                ("ct1", "tp1", "pseudo:ct1"),
+            ):
+                w.add_grid(
+                    grid,
+                    shape=(4, 4, 4),
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=timepoint,
+                    frame_uid=frame,
+                )
+            w.add_image("CT", np.zeros((4, 4, 4), np.int16), grid="ct0", modality="CT")
+            w.add_transform(
+                "ct0_to_ct1",
+                kind="affine",
+                from_frame="pseudo:ct0",
+                to_frame="pseudo:ct1",
+                matrix=np.eye(4),
+            )
+        return path
+
+    @pytest.mark.parametrize("pet", ["apet", "pet"])
+    def test_S10_a_visit_of_several_frames_has_no_one_transform(
+        self, tmp_path: Path, pet: str
+    ):
+        """At 2.0.2 `apet*` answered None and `pet*` a transform: the grids'
+        names decided."""
+        path = self._two_modalities(tmp_path / f"{pet}.medh5", pet=pet)
+        with medh5.open(path) as s:
+            for source, target in (("tp0", "tp1"), ("tp1", "tp0"), ("tp0", "ct1")):
+                with pytest.raises(MEDH5ValidationError) as caught:
+                    s.transform_between(source, target)
+                assert caught.value.code is None
+                message = str(caught.value)
+                for named in ("'pseudo:pet'", "'pseudo:ct0'", f"'{pet}0'", "'ct0'"):
+                    assert named in message, (named, message)
+                assert 'by="grid"' in message and "resolve_frames" in message
+            with pytest.raises(MEDH5ValidationError) as caught:
+                s.transform_between("tp0", "tp1")
+            for named in ("'tp0'", "'tp1'", "'ct1'", "'pseudo:ct1'"):
+                assert named in str(caught.value), named
+            # the grids still answer, each pair for itself
+            assert s.transform_between("ct0", "ct1").transform_id == "ct0_to_ct1"
+            assert s.transform_between(f"{pet}0", f"{pet}1") is None
+
+    def test_S10_one_frame_each_answers_as_before(self, tmp_path: Path):
+        def visits(name: str, *transforms: tuple[str, str, str]) -> Path:
+            path = tmp_path / f"{name}.medh5"
+            with medh5.create(path, sample_id=name, codec="portable") as w:
+                w.add_timepoint("tp0", days_from_baseline=0)
+                w.add_timepoint("tp1", days_from_baseline=90)
+                frames = ("F", "F") if name == "shared" else ("F0", "F1")
+                for index, frame in enumerate(frames):
+                    # two grids of one visit on one frame are still one frame
+                    for modality in ("ct", "pet"):
+                        w.add_grid(
+                            f"{modality}{index}",
+                            shape=(4, 4, 4),
+                            spacing=(1.0, 1.0, 1.0),
+                            timepoint=f"tp{index}",
+                            frame_uid=frame,
+                        )
+                w.add_image(
+                    "CT", np.zeros((4, 4, 4), np.int16), grid="ct0", modality="CT"
+                )
+                for tid, source, target in transforms:
+                    w.add_transform(
+                        tid,
+                        kind="affine",
+                        from_frame=source,
+                        to_frame=target,
+                        matrix=np.eye(4),
+                    )
+            return path
+
+        with medh5.open(visits("shared")) as s:
+            assert s.transform_between("tp0", "tp1") is None
+        with medh5.open(visits("path", ("t", "F0", "F1"))) as s:
+            assert s.transform_between("tp0", "tp1").transform_id == "t"
+            found = s.transform_between("tp0", "tp1", by="timepoint")
+            assert found.transform_id == "t"
+        with medh5.open(visits("none", ("t", "F0", "X"))) as s:
+            assert s.transform_between("tp0", "tp1") is None
+        tie = visits("tie", ("aaa", "F0", "F1"), ("zzz", "F0", "F1"))
+        with medh5.open(tie) as s, pytest.raises(MEDH5ValidationError) as caught:
+            s.transform_between("tp0", "tp1")
+        assert caught.value.code == "E501"
+
+    def test_S10_by_grid_reads_a_grid_named_like_a_timepoint(self, tmp_path: Path):
+        """A PET grid named `tp0` beside the visit `tp0` (§2.3: the namespaces
+        are separate); only the PET frames are registered."""
+        path = tmp_path / "named.medh5"
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            for index, tp in enumerate(("tp0", "tp1")):
+                w.add_timepoint(tp, days_from_baseline=index * 90)
+                for grid, frame in (
+                    (f"ct_{tp}", f"pseudo:ct-{tp}"),
+                    (tp, f"pseudo:pet-{tp}"),
+                ):
+                    w.add_grid(
+                        grid,
+                        shape=(4, 4, 4),
+                        spacing=(1.0, 1.0, 1.0),
+                        timepoint=tp,
+                        frame_uid=frame,
+                    )
+            w.add_image(
+                "CT", np.zeros((4, 4, 4), np.int16), grid="ct_tp0", modality="CT"
+            )
+            w.add_transform(
+                "pet_reg",
+                kind="affine",
+                from_frame="pseudo:pet-tp0",
+                to_frame="pseudo:pet-tp1",
+                matrix=np.eye(4),
+            )
+        with medh5.open(path) as s:
+            with pytest.raises(MEDH5ValidationError, match="one frame"):
+                s.transform_between("tp0", "tp1")
+            with pytest.raises(MEDH5ValidationError, match="one frame"):
+                s.transform_between("tp0", "tp1", by="timepoint")
+            by_grid = s.transform_between("tp0", "tp1", by="grid")
+            assert by_grid.transform_id == "pet_reg"
+            assert s.transform_between("ct_tp0", "ct_tp1", by="grid") is None
+            by_frame = s.transform_between(
+                "pseudo:pet-tp0", "pseudo:pet-tp1", by="frame"
+            )
+            assert by_frame.transform_id == "pet_reg"
+            with pytest.raises(KeyError, match="'tp0'"):
+                s.transform_between("tp0", "tp1", by="frame")
+            with pytest.raises(KeyError, match="ct_tp0"):
+                s.transform_between("ct_tp0", "tp1", by="timepoint")
+            with pytest.raises(ValueError, match="'visit'"):
+                s.transform_between("tp0", "tp1", by="visit")  # type: ignore[arg-type]
+
+    def test_S3_4_a_visit_without_framed_grids_is_unrelated(self, tmp_path: Path):
+        """No frame on one side: nothing relates it, and nothing is assumed."""
+        path = tmp_path / "unframed.medh5"
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            w.add_grid("g0", shape=(4, 4, 4), spacing=(1, 1, 1), timepoint="tp0")
+            w.add_grid(
+                "g1",
+                shape=(4, 4, 4),
+                spacing=(1, 1, 1),
+                timepoint="tp1",
+                frame_uid="F1",
+            )
+            # an unframed grid beside a framed one leaves the visit one frame
+            w.add_grid("u1", shape=(4, 4, 4), spacing=(1, 1, 1), timepoint="tp1")
+            w.add_image("CT", np.zeros((4, 4, 4), np.int16), grid="g0", modality="CT")
+            w.add_transform(
+                "t", kind="affine", from_frame="F0", to_frame="F1", matrix=np.eye(4)
+            )
+        with medh5.open(path) as s:
+            assert s.transform_between("tp0", "tp1") is None
+            assert s.transform_between("tp1", "tp0") is None
+            assert s.transform_between("F0", "tp1").transform_id == "t"

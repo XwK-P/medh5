@@ -343,7 +343,7 @@ medh5.Sample.summary	method	()
 medh5.Sample.support	property
 medh5.Sample.timepoints	property
 medh5.Sample.tracks	method	(class_key=None, *, measure=True)
-medh5.Sample.transform_between	method	(source, target)
+medh5.Sample.transform_between	method	(source, target, *, by=None)
 medh5.Sample.transforms	property
 medh5.Sample.valid_region	method	(image_id, roi=None)
 medh5.Sample.verify	method	(partial=None)
@@ -3379,7 +3379,7 @@ medh5.sample.Sample.summary	method	()
 medh5.sample.Sample.support	property
 medh5.sample.Sample.timepoints	property
 medh5.sample.Sample.tracks	method	(class_key=None, *, measure=True)
-medh5.sample.Sample.transform_between	method	(source, target)
+medh5.sample.Sample.transform_between	method	(source, target, *, by=None)
 medh5.sample.Sample.transforms	property
 medh5.sample.Sample.valid_region	method	(image_id, roi=None)
 medh5.sample.Sample.verify	method	(partial=None)

@@ -178,12 +178,13 @@ target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ..
 jacobian_determinant(field, grid)                           # for a displacement field
 ```
 
-`transform_between` accepts a timepoint id, a grid id or a frame uid at either
-end, matched in that order. A timepoint stands for the frames of all its grids:
-their pairs are tried in grid-id order, and the first that is one frame answers
-`None`, the first a path relates answers with that transform — so between two
-visits of several frames, resolve between the frames the images you read are
-on ([why](../guides/longitudinal.md#train-on-the-pairs)). It searches the frame
+`transform_between(source, target, *, by=None)` accepts a timepoint id, a grid
+id or a frame uid at either end, matched in that order unless `by="timepoint"`,
+`"grid"` or `"frame"` says which. A timepoint stands for the frames of all its
+grids, and has an answer only when they are one frame: a visit holding several
+raises `MEDH5ValidationError` naming its grids and frames, so between such
+visits ask by grid (`by="grid"`) or resolve between the frames the images you read are on
+([why](../guides/longitudinal.md#train-on-the-pairs)). It searches the frame
 graph, composing chains and traversing a link backwards only where its inverse
 can be *evaluated* — an affine's or identity's analytic inverse, or a stored
 `inverse_id` — not merely where `invertible=True` is declared. It returns

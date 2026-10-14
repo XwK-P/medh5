@@ -104,13 +104,21 @@ if t is None:
 ```
 
 For timepoints rather than grids, `frames_of_timepoint` gives the frames a visit
-spans, and a visit with several grids may span several.
-`transform_between("tp0", "tp1")` tries their pairs in grid-id order and
-answers for the first pair that is one frame (`None`) or that a path relates
-(that transform), so between visits of several frames its answer depends on
-how the grids are named, not on the images you will read. Resolve between the
-frames of those images instead, as the
-[longitudinal preflight](longitudinal.md#train-on-the-pairs) does.
+spans, and a visit with several grids may span several. Then no one transform
+relates the visit to another, and `transform_between("tp0", "tp1")` raises
+`MEDH5ValidationError` naming each visit's grids and frames, rather than
+answering for whichever pair of grids it met first. Ask about the grids of the
+images you will read (`by="grid"`), or about their frames
+(`resolve_frames`), as the
+[longitudinal preflight](longitudinal.md#train-on-the-pairs) does. A visit
+whose grids carry no `frame_uid` names no frame, and answers `None`.
+
+```python
+with medh5.open("case.medh5") as s:
+    t = s.transform_between("ct_tp0", "ct_tp1", by="grid")   # the grids' frames
+    same = s.resolve_frames(s.grids["pet"].frame_uid, s.grids["ct_tp1"].frame_uid)
+    assert t.transform_id == same.transform_id == "tp0_to_tp1"
+```
 
 What decides whether a path resolves depends on the direction.
 
