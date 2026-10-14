@@ -41,7 +41,8 @@ jobs:
     # skips every other job, and `ci-ok` passes it on this job's word.  A push
     # to `main` and the release's call always test: each is a record of its
     # commit.  The checkout is the pull request's merge commit, whose first
-    # parent is the base, so two commits are all the diff needs.
+    # parent is the base, so two commits are all the diff needs.  Without
+    # rename detection a file moved into `plans/` counts where it left as well.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -57,7 +58,7 @@ jobs:
         run: |
           code=true
           if [ "$EVENT" = pull_request ]; then
-            changed=$(git diff --name-only HEAD^1 HEAD)
+            changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
             printf '%s\n' "$changed"
             if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qv '^plans/'; then
               code=false
