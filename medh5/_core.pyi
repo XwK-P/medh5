@@ -497,6 +497,7 @@ __all__ = [
     "task_fingerprints",
     "task_load_document",
     "task_normalize",
+    "task_notes",
     "task_preflight",
     "task_reconcile",
     "task_row_fingerprint",
@@ -1788,6 +1789,10 @@ def task_fingerprints(doc: Any) -> dict[str, str]:
 
 def task_load_document(path: str | os.PathLike[str]) -> Any:
     """A manifest file's document, unparsed: T101 for anything not JSON."""
+    ...
+
+def task_notes(doc: Any) -> list[dict[str, Any]]:
+    """What the manifest document should state and does not, as written."""
     ...
 
 def task_normalize(doc: Any) -> dict[str, Any]:

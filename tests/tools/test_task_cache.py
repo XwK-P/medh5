@@ -404,7 +404,14 @@ class TestManifest:
 
     def test_S3_4_an_inconsistent_definition_is_T102(self, tmp_path: Path):
         bad = Target(
-            "t", "1", "s", "c", positive=("PD",), negative=("PD",), horizon_us=1
+            "t",
+            "1",
+            "s",
+            "c",
+            positive=("PD",),
+            negative=("PD",),
+            horizon_us=1,
+            min_follow_up_us=1,
         )
         task = TaskManifest.new(
             "t",
@@ -425,8 +432,60 @@ class TestManifest:
         refuses, so a target built without it failed every manifest (T101)."""
         with pytest.raises(TypeError, match="horizon_us"):
             Target("t", "1", "s", "c", ("PD",))
-        target = Target("t", "1", "s", "c", ("PD",), ("SD",), horizon_us=DAY)
+        target = Target(
+            "t", "1", "s", "c", ("PD",), ("SD",), horizon_us=DAY, min_follow_up_us=DAY
+        )
         assert Target.from_json(target.to_json()) == target
+
+    def test_S5_a_target_with_negatives_states_its_follow_up(self, setup, tmp_path):
+        """The default follow-up, the horizon, leaves a negative only an
+        observation at exactly ``c + h``, so nearly every row without a
+        positive is censored.  It cannot change under ``/1``, so a target
+        built without it warns, and a manifest written without it is noted."""
+        with pytest.warns(DeprecationWarning, match="min_follow_up_us: state it"):
+            bare = Target("t", "1", "s", "c", ("PD",), ("SD",), horizon_us=DAY)
+        stated = Target(
+            "t", "1", "s", "c", ("PD",), ("SD",), horizon_us=DAY, min_follow_up_us=1
+        )
+        positives_only = Target("t", "1", "s", "c", ("PD",), horizon_us=DAY)
+        assert Target.from_json(bare.to_json()) == bare, "a document is not warned"
+        built = TaskManifest.new("t", "1", identity_namespace="n", target=bare)
+        assert [str(n) for n in built.notes] == [
+            f"note /target/min_follow_up_us: {built.notes[0].message}"
+        ]
+        assert "nearly every row" in built.notes[0].message
+        assert built.validate() == [], "a note is no finding"
+        for target in (stated, positives_only, None):
+            task = TaskManifest.new("t", "1", identity_namespace="n", target=target)
+            assert task.notes == ()
+        task, _ = setup
+        doc = task.to_json()
+        del doc["target"]["min_follow_up_us"]
+        path = tmp_path / "cohort" / "noted.task.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        loaded = TaskManifest.load(path)
+        assert [n.location for n in loaded.notes] == ["/target/min_follow_up_us"]
+        assert [n.location for n in loaded.reconcile().notes] == [
+            "/target/min_follow_up_us"
+        ], "the document as written, after a reconcile too"
+        assert TaskManifest(loaded.to_json()).notes == (), "the normal form states it"
+
+    def test_S3_2_the_default_follow_up_is_in_the_fingerprint(self, setup):
+        """Leaving ``min_follow_up_us`` out is the task that states the
+        horizon, and not the task that states half of it: the default is in
+        every task fingerprint, which is why ``/1`` cannot move it."""
+        task, _ = setup
+        doc = task.to_json()
+        horizon = doc["target"]["horizon_us"]
+        fingerprints = []
+        for follow_up in (None, horizon, horizon // 2):
+            if follow_up is None:
+                del doc["target"]["min_follow_up_us"]
+            else:
+                doc["target"]["min_follow_up_us"] = follow_up
+            fingerprints.append(TaskManifest(doc).task_fingerprint)
+        omitted, explicit, half = fingerprints
+        assert omitted == explicit != half
 
     def test_S5_a_target_without_negatives_is_the_default(self, setup):
         """`negative` defaults to none: a target that leaves it out is the task
@@ -2550,6 +2609,34 @@ class TestCommandLine:
         assert main(argv) == EXIT_ERROR
         assert "'s.medh5c::P-01', a source" in capsys.readouterr().err
         assert shard.read_bytes() == before
+
+    def test_task_validate_notes_a_defaulted_follow_up(
+        self, setup, tmp_path: Path, capsys
+    ):
+        """``task validate`` and ``task preflight`` print the note after the
+        findings, and ``--json`` carries it; neither ``ok`` nor the exit
+        status changes."""
+        task, _ = setup
+        doc = task.to_json()
+        del doc["target"]["min_follow_up_us"]
+        path = tmp_path / "cohort" / "noted.task.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        capsys.readouterr()
+        note = "note /target/min_follow_up_us: "
+        for command in ("validate", "preflight"):
+            assert main(["task", command, str(path)]) == EXIT_OK
+            out = capsys.readouterr().out
+            assert ": OK (" in out and f"  {note}" in out
+            assert main(["task", command, str(path), "--json"]) == EXIT_OK
+            report = json.loads(capsys.readouterr().out)
+            assert report["ok"] is True
+            expected = TaskManifest.load(path).notes[0]
+            assert report["notes"] == [
+                {"location": expected.location, "message": expected.message}
+            ]
+        stated = task.save(tmp_path / "cohort" / "stated.task.json")
+        assert main(["task", "validate", str(stated), "--json"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["notes"] == []
 
     def test_cutoff_hours_rounds_as_hours_does(self, setup, capsys):
         """1.25e-09 hours is 4.5 us: ``hours`` gives 4 (half to even), and the

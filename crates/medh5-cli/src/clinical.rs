@@ -17,7 +17,8 @@ use medh5::clinical::select::SelectionPolicy;
 use medh5::clinical::ClinicalRecords;
 use medh5::collection::{open_any, AnyFile};
 use medh5::companion::cache::{validate_cache_in, CacheCheck};
-use medh5::companion::{preflight_each_in, write_preflight_in, Admitted, RowView, SourceAccess, TaskManifest};
+use medh5::companion::task::notes_of;
+use medh5::companion::{preflight_each_in, write_preflight_noted, Admitted, Note, RowView, SourceAccess, TaskManifest};
 use medh5::h5::file::same_file;
 use medh5::json::{pretty, repr_str};
 use medh5::sample::Sample;
@@ -309,11 +310,12 @@ fn strip(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     Ok(EXIT_OK)
 }
 
-fn load_task(m: &ArgMatches) -> medh5::Result<(TaskManifest, Option<PathBuf>)> {
+fn load_task(m: &ArgMatches) -> medh5::Result<(TaskManifest, Option<PathBuf>, Vec<Note>)> {
     let file = Path::new(req_str(m, "manifest"));
-    let manifest = TaskManifest::load(file)?;
+    let doc = TaskManifest::read_document(file)?;
+    let manifest = TaskManifest::from_json(&doc)?;
     let base = get_str(m, "base").map(PathBuf::from).or_else(|| file.parent().map(Path::to_path_buf));
-    Ok((manifest, base))
+    Ok((manifest, base, notes_of(&doc)))
 }
 
 /// Where a task's sources may be opened from: confined to `--source-root`,
@@ -353,9 +355,19 @@ fn findings_text(findings: &[medh5::companion::Finding], ctx: &mut Ctx) {
     }
 }
 
+/// What the manifest should state and does not: printed after the findings,
+/// and never a failure.
+fn notes_text(notes: &[Note], ctx: &mut Ctx) {
+    for n in notes {
+        ctx.print(format!("  {}", n.line()));
+    }
+}
+
 fn task_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let file = req_str(m, "manifest");
-    let manifest = match TaskManifest::load(Path::new(file)) {
+    let loaded = TaskManifest::read_document(Path::new(file))
+        .and_then(|doc| Ok((TaskManifest::from_json(&doc)?, notes_of(&doc))));
+    let (manifest, notes) = match loaded {
         Ok(t) => t,
         Err(e) if e.code().is_some() => {
             let finding = medh5::companion::Finding::new(e.code().unwrap_or("T101"), "/", e.message());
@@ -378,6 +390,7 @@ fn task_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 "task_fingerprint": manifest.task_fingerprint(),
                 "manifest_fingerprint": manifest.manifest_fingerprint(),
                 "findings": findings.iter().map(medh5::companion::Finding::to_json).collect::<Vec<_>>(),
+                "notes": notes.iter().map(Note::to_json).collect::<Vec<_>>(),
             }),
             true,
         );
@@ -394,6 +407,7 @@ fn task_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         ctx.print(format!("  task fingerprint      {}", manifest.task_fingerprint()));
         ctx.print(format!("  manifest fingerprint  {}", manifest.manifest_fingerprint()));
         findings_text(&findings, ctx);
+        notes_text(&notes, ctx);
     }
     Ok(if findings.is_empty() { EXIT_OK } else { EXIT_ERROR })
 }
@@ -402,11 +416,11 @@ fn task_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 /// writes each subject's history as soon as it is merged, and the summary
 /// keeps one line per row --- neither holds every subject's records.
 fn task_preflight(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
-    let (manifest, base) = load_task(m)?;
+    let (manifest, base, notes) = load_task(m)?;
     let access = source_access(m, &manifest, base.as_deref(), ctx)?;
     let deep = flag(m, "deep");
     if flag(m, "json") {
-        let ok = write_preflight_in(&manifest, &access, deep, &mut Stdout(ctx))?;
+        let ok = write_preflight_noted(&manifest, &access, deep, &notes, &mut Stdout(ctx))?;
         ctx.print("");
         return Ok(if ok { EXIT_OK } else { EXIT_ERROR });
     }
@@ -436,6 +450,7 @@ fn task_preflight(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         if counts.is_empty() { "none".into() } else { counts.join(", ") }
     ));
     findings_text(&done.findings, ctx);
+    notes_text(&notes, ctx);
     let rows: Vec<Vec<String>> = lines.into_iter().map(|(_, line)| line).collect();
     ctx.print(String::new());
     ctx.print(table(&rows, &["row", "partition", "cutoff_us", "status", "events", "slots", "target", "why"]));
@@ -460,7 +475,7 @@ fn row_line(r: &RowView) -> (String, Vec<String>) {
 }
 
 fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
-    let (mut manifest, base) = load_task(m)?;
+    let (mut manifest, base, _) = load_task(m)?;
     let access = source_access(m, &manifest, base.as_deref(), ctx)?;
     // The save replaces whatever `--out` names: a source sample, named again
     // or through a link, became the manifest that pins it, and exit 0.

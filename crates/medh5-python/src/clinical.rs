@@ -251,6 +251,14 @@ fn task_normalize<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> R<Bound<'py,
     Ok(json_to_py(py, &manifest(doc)?.to_json())?)
 }
 
+/// What the manifest document should state and does not, as written: the
+/// normal form has filled the defaults in.
+#[pyfunction]
+fn task_notes<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
+    let doc = crate::convert::py_to_json_as_parsed(doc)?;
+    Ok(to_list(py, medh5::companion::task::notes_of(&doc).iter().map(medh5::companion::Note::to_json))?)
+}
+
 /// Everything wrong with a manifest that opening no file can find.
 #[pyfunction]
 fn task_validate<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
@@ -636,6 +644,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(clinical_round_micros, m)?,
         wrap_pyfunction!(task_normalize, m)?,
         wrap_pyfunction!(task_validate, m)?,
+        wrap_pyfunction!(task_notes, m)?,
         wrap_pyfunction!(task_fingerprints, m)?,
         wrap_pyfunction!(task_row_fingerprint, m)?,
         wrap_pyfunction!(task_row_fingerprints, m)?,

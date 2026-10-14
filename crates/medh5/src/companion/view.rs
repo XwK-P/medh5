@@ -31,7 +31,7 @@ use serde_json::{json, Value};
 
 use super::source::{SourceAccess, SourceRef};
 use super::task::{Row, Slot, Subject, TaskManifest};
-use super::{fingerprint, Finding};
+use super::{fingerprint, Finding, Note};
 use crate::annotations::Annotation;
 use crate::clinical::model::{Bounds, Event, Link};
 use crate::clinical::select::{names, Prepared, Selection};
@@ -1165,6 +1165,29 @@ pub fn write_preflight_in(
     deep: bool,
     out: &mut dyn Write,
 ) -> Result<bool> {
+    write_preflight_with(manifest, access, deep, None, out)
+}
+
+/// [`write_preflight_in`] with the manifest's notes after its findings
+/// (`"notes"`, from [`notes_of`](super::task::notes_of)): they do not change
+/// whether the task is fit to train on.
+pub fn write_preflight_noted(
+    manifest: &TaskManifest,
+    access: &SourceAccess,
+    deep: bool,
+    notes: &[Note],
+    out: &mut dyn Write,
+) -> Result<bool> {
+    write_preflight_with(manifest, access, deep, Some(notes), out)
+}
+
+fn write_preflight_with(
+    manifest: &TaskManifest,
+    access: &SourceAccess,
+    deep: bool,
+    notes: Option<&[Note]>,
+    out: &mut dyn Write,
+) -> Result<bool> {
     let fingerprints = [manifest.task_fingerprint(), manifest.manifest_fingerprint()];
     write!(out, "{{\n  \"task_fingerprint\": {}", pretty_at(&json!(fingerprints[0]), 1))?;
     write!(out, ",\n  \"manifest_fingerprint\": {},\n  \"subjects\": ", pretty_at(&json!(fingerprints[1]), 1))?;
@@ -1193,7 +1216,12 @@ pub fn write_preflight_in(
     let ok = done.findings.is_empty();
     let findings: Vec<Value> = done.findings.iter().map(Finding::to_json).collect();
     write!(out, ",\n  \"ok\": {ok},\n  \"counts\": {}", pretty_at(&json!(counts), 1))?;
-    write!(out, ",\n  \"findings\": {}\n}}", pretty_at(&json!(findings), 1))?;
+    write!(out, ",\n  \"findings\": {}", pretty_at(&json!(findings), 1))?;
+    if let Some(notes) = notes {
+        let notes: Vec<Value> = notes.iter().map(Note::to_json).collect();
+        write!(out, ",\n  \"notes\": {}", pretty_at(&json!(notes), 1))?;
+    }
+    out.write_all(b"\n}")?;
     Ok(ok)
 }
 

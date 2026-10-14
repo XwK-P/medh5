@@ -32,8 +32,8 @@ pub use cache::{validate_cache, validate_cache_in, CacheCheck, CacheReport, Cach
 pub use source::{SourceAccess, SourceRef};
 pub use task::TaskManifest;
 pub use view::{
-    preflight, preflight_each, preflight_each_in, preflight_in, write_preflight, write_preflight_in, Admitted,
-    Preflight, PreflightDone, RowView, SubjectHistory,
+    preflight, preflight_each, preflight_each_in, preflight_in, write_preflight, write_preflight_in,
+    write_preflight_noted, Admitted, Preflight, PreflightDone, RowView, SubjectHistory,
 };
 
 /// The companion contract's finding codes, and what each means.
@@ -92,6 +92,31 @@ impl Finding {
     /// `CODE location: message`.
     pub fn line(&self) -> String {
         format!("{} {}: {}", self.code, self.location, self.message)
+    }
+}
+
+/// Something a manifest should say and does not: unlike a [`Finding`], a
+/// note never makes a manifest fail.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct Note {
+    /// A JSON pointer into the manifest.
+    pub location: String,
+    pub message: String,
+}
+
+impl Note {
+    pub fn new(location: impl Into<String>, message: impl Into<String>) -> Note {
+        Note { location: location.into(), message: message.into() }
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({"location": self.location, "message": self.message})
+    }
+
+    /// `note location: message`.
+    pub fn line(&self) -> String {
+        format!("note {}: {}", self.location, self.message)
     }
 }
 

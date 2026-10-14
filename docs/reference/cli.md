@@ -609,6 +609,12 @@ Everything wrong with a manifest that opening no file can find: its schema,
 its policy, slots and target, its fingerprint, and its subjects, partitions,
 rows and source ids (T1xx, T2xx). Prints the task and manifest fingerprints.
 
+After the findings come the manifest's notes, `note LOCATION: …`: what it
+should state and does not, such as a target with negatives and no
+`min_follow_up_us` (contract §5). A note changes neither `ok` nor the exit
+status; `--json` lists them under `notes`, and `task preflight` prints them
+too.
+
 ### `medh5 task preflight`
 
 ```

@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 use serde_json::{json, Map, Value};
 
 use super::source::{SourceAccess, SourceRef};
-use super::{fingerprint, Finding};
+use super::{fingerprint, Finding, Note};
 use crate::clinical::select::SelectionPolicy;
 use crate::json::repr_str;
 use crate::{Error, Result};
@@ -194,6 +194,24 @@ fn micros(value: &Value, what: &str) -> Result<i64> {
     value
         .as_i64()
         .ok_or_else(|| Error::coded("T101", format!("{what} is {value}, not a 64-bit integer number of microseconds")))
+}
+
+/// What the manifest `doc` should state and does not (contract §5): a
+/// target with `negative` values and no `min_follow_up_us`.  Read from the
+/// document as written, since the normal form fills the default in.  A note
+/// never fails a manifest; a later version of the contract may require it.
+pub fn notes_of(doc: &Value) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let target = &doc["target"];
+    let negatives = target.get("negative").and_then(Value::as_array).is_some_and(|n| !n.is_empty());
+    if negatives && target.get("min_follow_up_us").is_none_or(Value::is_null) {
+        notes.push(Note::new(
+            "/target/min_follow_up_us",
+            "a target with negatives should state it: the default, horizon_us, leaves a negative only an \
+             observation at exactly the cutoff plus the horizon, so nearly every row without a positive is censored",
+        ));
+    }
+    notes
 }
 
 /// An event version present in several fragments, and the digest they share.
@@ -697,5 +715,37 @@ impl TaskManifest {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(follow_up: Option<Value>, negative: &[&str]) -> Value {
+        let mut t = json!({
+            "id": "t", "version": "1", "event": {"code_system": "s", "code": "c"},
+            "positive": ["PD"], "negative": negative, "horizon_us": 100,
+        });
+        if let Some(f) = follow_up {
+            t["min_follow_up_us"] = f;
+        }
+        json!({"target": t})
+    }
+
+    /// The default stays (it is in every fingerprint); a target with
+    /// negatives that leaves it out, or null, is noted.
+    #[test]
+    fn s5_a_defaulted_follow_up_is_noted() {
+        for doc in [target(None, &["SD"]), target(Some(Value::Null), &["SD"])] {
+            let notes = notes_of(&doc);
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0].location, "/target/min_follow_up_us");
+            assert!(notes[0].line().starts_with("note /target/min_follow_up_us: "));
+        }
+        assert!(notes_of(&target(Some(json!(100)), &["SD"])).is_empty());
+        assert!(notes_of(&target(None, &[])).is_empty());
+        assert!(notes_of(&json!({"target": null})).is_empty());
+        assert!(notes_of(&json!({})).is_empty());
     }
 }

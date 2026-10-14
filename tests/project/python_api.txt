@@ -450,6 +450,7 @@ medh5.TaskManifest.identity_namespace	property
 medh5.TaskManifest.load	classmethod	(path)
 medh5.TaskManifest.manifest_fingerprint	property
 medh5.TaskManifest.new	classmethod	(task_id, version, *, identity_namespace, policy=None, slots=(), target=None, split=None, description=None, base=None)
+medh5.TaskManifest.notes	property
 medh5.TaskManifest.partition_of	method	(subject_id)
 medh5.TaskManifest.policy	property
 medh5.TaskManifest.preflight	method	(base=None, *, deep=False, confine=None)
@@ -3565,6 +3566,10 @@ medh5.task.LinkTable.__iter__	method	()
 medh5.task.LinkTable.__len__	method	()
 medh5.task.LinkTable.column	method	(name)
 medh5.task.LinkTable.fragment	method	(i)
+medh5.task.Note	class	(location, message) bases=
+medh5.task.Note.from_json	classmethod	(doc)
+medh5.task.Note.location	field
+medh5.task.Note.message	field
 medh5.task.Packed	class	(data, offsets, valid=None) bases=
 medh5.task.Packed.__getitem__	method	(i)
 medh5.task.Packed.__iter__	method	()
@@ -3706,6 +3711,7 @@ medh5.task.TaskManifest.identity_namespace	property
 medh5.task.TaskManifest.load	classmethod	(path)
 medh5.task.TaskManifest.manifest_fingerprint	property
 medh5.task.TaskManifest.new	classmethod	(task_id, version, *, identity_namespace, policy=None, slots=(), target=None, split=None, description=None, base=None)
+medh5.task.TaskManifest.notes	property
 medh5.task.TaskManifest.partition_of	method	(subject_id)
 medh5.task.TaskManifest.policy	property
 medh5.task.TaskManifest.preflight	method	(base=None, *, deep=False, confine=None)

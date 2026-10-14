@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import copy
 import os
+import warnings
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field, replace
 from pathlib import Path
@@ -111,6 +112,22 @@ class Finding:
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Finding:
         return cls(str(doc["code"]), str(doc["location"]), str(doc["message"]))
+
+
+@dataclass(frozen=True, slots=True)
+class Note:
+    """Something a manifest should state and does not.  Unlike a
+    :class:`Finding`, a note never makes a manifest fail."""
+
+    location: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"note {self.location}: {self.message}"
+
+    @classmethod
+    def from_json(cls, doc: Mapping[str, Any]) -> Note:
+        return cls(str(doc["location"]), str(doc["message"]))
 
 
 def _findings(found: Iterable[Mapping[str, Any]]) -> tuple[Finding, ...]:
@@ -308,7 +325,11 @@ class Target:
     observation inside the window at least ``min_follow_up_us`` after the
     cutoff.  The default, the horizon, leaves a negative only an observation
     at exactly ``cutoff + horizon_us``, so nearly every row without a positive
-    is censored: give ``min_follow_up_us`` whenever negatives matter.  A row
+    is censored: give ``min_follow_up_us`` whenever negatives matter.  Leaving
+    it out with ``negative`` set warns (``DeprecationWarning``): 3.0 refuses
+    such a target.  The default stays what it is, since it is part of every
+    task fingerprint; a manifest read from a file gets a note instead
+    (:attr:`TaskManifest.notes`).  A row
     it cannot label is censored --- kept with its target unobserved --- or,
     with ``censoring="exclude"``, excluded; a row whose outcome had already
     occurred is excluded as prevalent unless ``exclude_prevalent=False``.
@@ -326,6 +347,16 @@ class Target:
     censoring: str = "censor"
     exclude_prevalent: bool = True
     kind: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.negative and self.min_follow_up_us is None:
+            from medh5._deprecation import warn
+
+            warn(
+                "medh5 3.0 refuses a target with negatives and no "
+                "min_follow_up_us: state it",
+                stacklevel=4,
+            )
 
     def to_json(self) -> dict[str, Any]:
         event: dict[str, Any] = {"code_system": self.code_system, "code": self.code}
@@ -347,7 +378,17 @@ class Target:
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Target:
+        """A target as a document states it.  A missing ``min_follow_up_us``
+        is not warned about here: the manifest notes it."""
         event = doc["event"]
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", "medh5 3.0 refuses a target", DeprecationWarning
+            )
+            return cls._from_json(doc, event)
+
+    @classmethod
+    def _from_json(cls, doc: Mapping[str, Any], event: Mapping[str, Any]) -> Target:
         return cls(
             str(doc["id"]),
             str(doc["version"]),
@@ -575,9 +616,12 @@ class TaskManifest:
         ``confine`` says where sources may be opened (:data:`Confine`).  A
         declared fingerprint is dropped, as ``medh5 task reconcile`` drops
         it: the manifest changed, and :meth:`save` declares the new one."""
-        self._doc = _core.task_reconcile(
+        found = _core.task_reconcile(
             self._doc, self._base(base), self._confined(base, confine)
         )
+        # The document as written, so its notes still read as written.
+        self._doc["subjects"] = found["subjects"]
+        self._doc.pop("fingerprint", None)
         self._changed()
         return self
 
@@ -688,6 +732,13 @@ class TaskManifest:
             if exc.code is None:
                 raise
             return [Finding(exc.code, "/", exc.message)]
+
+    @property
+    def notes(self) -> tuple[Note, ...]:
+        """What the manifest should state and does not, as it was written or
+        built: a target with negatives and no ``min_follow_up_us`` (contract
+        §5).  Notes never make :meth:`validate` or a preflight fail."""
+        return tuple(Note.from_json(n) for n in _core.task_notes(self._doc))
 
     def _base(self, base: PathLike | None) -> str | None:
         found = base if base is not None else self.base
@@ -1506,6 +1557,7 @@ __all__ = [
     "EventTable",
     "Finding",
     "LinkTable",
+    "Note",
     "Packed",
     "Preflight",
     "Reconciled",
