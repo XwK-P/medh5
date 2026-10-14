@@ -2084,7 +2084,7 @@ class TestCuration:
             "no split claims in 1 file(s)\n\n1 file(s) carry no split claim\n"
         )
         (said,) = out.err.splitlines()
-        assert said.startswith("medh5: ") and str(bad) in said
+        assert said.startswith("medh5: ") and repr(str(bad)) in said
         assert "Error:" not in said
 
 

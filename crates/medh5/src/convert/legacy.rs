@@ -36,6 +36,7 @@ use crate::array::NdArray;
 use crate::curation::provenance::is_timestamp;
 use crate::curation::quality::QUALITY_STATUS;
 use crate::h5::attrs::{self, AttrValue};
+use crate::h5::file::same_file;
 use crate::h5::{data, ops};
 use crate::json::repr_str;
 use crate::labels::{ClassKey, LabelClass, LabelSet, MAX_CLASS_ID};
@@ -439,20 +440,6 @@ fn mint_label_set(paths: &[&Path], mut report: Option<&mut ConversionReport>, un
         );
     }
     LabelSet::new("migrated", classes, "1.0.0", Vec::new(), Vec::new(), "inline", None, None)
-}
-
-/// Whether two paths name one existing file: the same device and inode on
-/// POSIX (a symbolic or hard link included), the same canonical path elsewhere.
-fn same_file(a: &Path, b: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if (x.dev(), x.ino()) == (y.dev(), y.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
-    }
 }
 
 /// Migrate one 0.x file into one 1.0 sample.

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 use crate::h5::attrs::{self, AttrValue};
-use crate::h5::file::{open_read, AtomicFile};
+use crate::h5::file::{open_read, same_file, AtomicFile};
 use crate::h5::ops;
 use crate::ids::validate_sample_key;
 use crate::json::{repr_list, repr_str};
@@ -262,20 +262,6 @@ pub(crate) fn copy_root(src: &hdf5::Group, dst: &hdf5::Group) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Whether two paths name one file: the same device and inode on POSIX
-/// (a symbolic or hard link included), the same canonical path elsewhere.
-fn same_file(a: &Path, b: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if (x.dev(), x.ino()) == (y.dev(), y.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
-    }
 }
 
 /// Copy sample files into one collection shard (§2.2); chunks move as raw

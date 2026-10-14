@@ -254,6 +254,51 @@ fn fsync_dir(dir: &Path) {
     let _ = dir;
 }
 
+/// Whether two paths name one existing file: the same path, or one reached
+/// through `..`, a symbolic link or a hard link.  A path naming nothing names
+/// no file.
+///
+/// The file's identity is compared, not its name: the device and inode on
+/// POSIX, the volume serial number and file index on Windows.  A canonical
+/// path resolves symbolic links, but a hard link is a second name with nothing
+/// to resolve, so comparing canonical paths let a command on Windows write
+/// over the file it read.
+#[doc(hidden)]
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((identity(a), identity(b)), (Some(x), Some(y)) if x == y)
+}
+
+#[cfg(unix)]
+fn identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(windows)]
+fn identity(path: &Path) -> Option<(u32, u64)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
+    };
+    // As `fs::metadata` opens it: asking for no access, so a file another
+    // process holds open or locks still answers, and a directory opens too.
+    let file = fs::OpenOptions::new().access_mode(0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(path).ok()?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the handle is `file`'s, open for the call, and `info` is a
+    // writable structure of the type the call fills.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return None;
+    }
+    Some((info.dwVolumeSerialNumber, u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow)))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path).ok()
+}
+
 /// Close `file` and every object opened through it --- what h5py's
 /// `File.close()` does.
 ///
@@ -747,6 +792,36 @@ mod tests {
         fs::write(&path, &payload).unwrap();
         fsync_path(&path).unwrap();
         assert_eq!(fs::read(&path).unwrap(), payload);
+    }
+
+    /// Off POSIX the 2.0.1 checks compared canonical paths, which a hard link
+    /// gets past: on Windows `task reconcile -o` wrote the manifest over its
+    /// source and `clinical export -o` over the sample it read.
+    #[test]
+    fn s14_4_same_file_knows_every_name_of_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.medh5");
+        let twin = dir.path().join("b.medh5");
+        fs::write(&file, b"same bytes").unwrap();
+        fs::write(&twin, b"same bytes").unwrap();
+        let hard = dir.path().join("hard.medh5");
+        fs::hard_link(&file, &hard).unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        let dotted = dir.path().join("sub").join("..").join("a.medh5");
+        let missing = dir.path().join("missing.medh5");
+
+        assert!(same_file(&file, &file));
+        assert!(same_file(&file, &hard));
+        assert!(same_file(&dotted, &file));
+        assert!(!same_file(&file, &twin), "equal bytes are not one file");
+        assert!(!same_file(&file, &missing));
+        assert!(!same_file(&missing, &missing), "a path naming nothing names no file");
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.medh5");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            assert!(same_file(&link, &hard));
+        }
     }
 
     /// The HDF5 file identifiers open on `path` in this process.

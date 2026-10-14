@@ -272,7 +272,9 @@ transcoding, digests, index building and field sampling release the GIL.
   `task reconcile -o` its manifest over a sample the task names, each exiting 0.
   An output that is the file being exported or one of the task's sources — by
   the same path, through `..` or a link, or as the collection a member comes
-  from — is now refused before anything is written.
+  from — is now refused before anything is written. On Windows these checks,
+  and those of `pack` and `migrate`, compared canonical paths, which a hard link
+  gets past; each now compares the file's identity, as on POSIX.
 - **`E805` blames the column whose row count is wrong.** A table's row count was
   its first column's, so a short `event_id` had every other column blamed and
   dropped; it is now the count most columns agree on, and the finding names the

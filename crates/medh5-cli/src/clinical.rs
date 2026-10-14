@@ -17,6 +17,7 @@ use medh5::clinical::select::SelectionPolicy;
 use medh5::clinical::ClinicalRecords;
 use medh5::collection::{open_any, AnyFile};
 use medh5::companion::{preflight_each, validate_cache, write_preflight, Admitted, RowView, TaskManifest};
+use medh5::h5::file::same_file;
 use medh5::json::{pretty, repr_str};
 use medh5::sample::Sample;
 use medh5::Error;
@@ -224,20 +225,6 @@ fn select_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         ctx.print(format!("excluded: {}", listed.join(", ")));
     }
     Ok(EXIT_OK)
-}
-
-/// Whether two paths name one existing file: the same path, or one reached
-/// through `..`, a symbolic link or, where the system says so, a hard link.
-fn same_file(a: &Path, b: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if (x.dev(), x.ino()) == (y.dev(), y.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
-    }
 }
 
 fn export(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {

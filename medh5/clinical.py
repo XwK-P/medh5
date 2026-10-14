@@ -39,6 +39,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from typing import Any
 
+import numpy as np
+
 from medh5 import _core
 
 Bounds = tuple[int, int]
@@ -78,7 +80,12 @@ def days(value: float) -> int:
 def _time(value: Any) -> Any:
     """``value`` as Python's ``int`` when it is an integer --- NumPy's too ---
     and as given otherwise, for the engine to refuse (E811), as it does in a
-    dict: a float or a bool is no time, and truncating one moved it."""
+    dict: a float or a bool is no time, and truncating one moved it.
+
+    A NumPy scalar is read as Python's first, as a dict reads it: before NumPy
+    2.3, ``operator.index`` took ``np.bool_(True)`` for ``1``."""
+    if isinstance(value, np.generic):
+        value = value.item()
     if isinstance(value, bool):
         return value
     try:

@@ -13,6 +13,7 @@ use medh5::collection::{open_collection, pack, unpack};
 use medh5::curation::agreement::{compare, Comparison};
 use medh5::curation::splits::{audit_splits, memberships_of};
 use medh5::error::os_error;
+use medh5::h5::file::same_file;
 use medh5::json::{py_str, repr_str};
 use medh5::Error;
 
@@ -40,20 +41,6 @@ fn medh5_fail(result: CmdResult, ctx: &mut Ctx) -> CmdResult {
 
 fn file_size(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
-}
-
-/// Whether two paths name one existing file: the same path, or one reached
-/// through `./`, a symbolic link or, where the system says so, a hard link.
-fn same_file(a: &Path, b: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if (x.dev(), x.ino()) == (y.dev(), y.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
-    }
 }
 
 fn pack_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {

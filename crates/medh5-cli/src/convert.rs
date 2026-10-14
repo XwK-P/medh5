@@ -12,6 +12,7 @@ use serde_json::{Map, Value};
 
 use medh5::convert::legacy::{build_label_set, load_sidecar, migrate_paths, write_sidecar};
 use medh5::convert::report::ConversionReport;
+use medh5::h5::file::same_file;
 use medh5::json::{pretty, repr_str};
 
 use crate::app;
@@ -73,20 +74,6 @@ pub fn convert(argv: &[String], m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     match host.convert(argv, name, &parsed, out, err) {
         Some(code) => Ok(code),
         None => Ok(ctx.fail(NO_PYTHON)),
-    }
-}
-
-/// Whether two paths name one existing file: the same device and inode on
-/// POSIX (a symbolic or hard link included), the same canonical path elsewhere.
-fn same_file(a: &Path, b: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if (x.dev(), x.ino()) == (y.dev(), y.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
     }
 }
 

@@ -18,6 +18,14 @@ pydicom = pytest.importorskip("pydicom")
 
 
 @pytest.fixture
+def highdicom() -> Any:
+    """highdicom, which writing a SEG takes: a test that writes one skips
+    without it, as on a Python it publishes no wheel for yet, and the tests
+    that only read run all the same."""
+    return pytest.importorskip("highdicom")
+
+
+@pytest.fixture
 def prepared(tmp_path: Path) -> dict[str, Any]:
     """A one-series sample plus two overlapping masks on its grid."""
     from pydicom.uid import generate_uid
@@ -63,6 +71,7 @@ def prepared(tmp_path: Path) -> dict[str, Any]:
 
 
 class TestDicomSeg:
+    @pytest.mark.usefixtures("highdicom")
     def test_S7_overlapping_segments_survive_the_round_trip(self, prepared, tmp_path):
         from medh5.io.dicom_seg import from_dicom_seg, to_dicom_seg
 
@@ -78,6 +87,7 @@ class TestDicomSeg:
             assert overlap.any(), "the lesion is inside the liver and must stay there"
         assert report.of_kind("overlap")
 
+    @pytest.mark.usefixtures("highdicom")
     def test_S5_segments_are_matched_by_label_not_by_number(self, prepared, tmp_path):
         """DICOM numbers segments 1..N; the sample's ids are 1 and 3."""
         from medh5.io.dicom_seg import from_dicom_seg, read_dicom_seg, to_dicom_seg
@@ -92,6 +102,7 @@ class TestDicomSeg:
             assert sample.annotations["matched"].class_ids == (1, 3)
         assert report.of_kind("segment_mapping")
 
+    @pytest.mark.usefixtures("highdicom")
     def test_frames_are_placed_by_geometry(self, prepared, tmp_path):
         from medh5.io.dicom_seg import read_dicom_seg, to_dicom_seg
 
@@ -103,6 +114,7 @@ class TestDicomSeg:
         assert np.isclose(geometry["spacing"][0], 2.5)
         assert np.array_equal(volumes[1], prepared["liver"])
 
+    @pytest.mark.usefixtures("highdicom")
     def test_a_segment_the_label_set_lacks_is_refused(self, prepared, tmp_path):
         import pydicom
 
@@ -123,6 +135,7 @@ class TestDicomSeg:
         with pytest.raises(MEDH5ValidationError, match="not 'SEG'"):
             read_dicom_seg(prepared["series"]["paths"][0])
 
+    @pytest.mark.usefixtures("highdicom")
     def test_a_seg_from_another_reconstruction_is_refused(self, prepared, tmp_path):
         """A SEG only means anything against the grid it was drawn on."""
         from medh5.io.dicom_seg import from_dicom_seg, to_dicom_seg
@@ -139,6 +152,7 @@ class TestDicomSeg:
         with pytest.raises(MEDH5ValidationError, match="different reconstruction"):
             from_dicom_seg(out, other, ann_id="x", grid="g")
 
+    @pytest.mark.usefixtures("highdicom")
     @pytest.mark.parametrize("encoding", ["labelmap", "bitmask"])
     def test_S7_7_an_annotation_with_an_ignore_region_is_refused(
         self, prepared, tmp_path, encoding
@@ -178,6 +192,7 @@ class TestDicomSeg:
             )
             writer.add_mask("fov", prepared["liver"], grid=prepared["grid"])
 
+    @pytest.mark.usefixtures("highdicom")
     @pytest.mark.parametrize(
         ("ann_id", "why"),
         [
@@ -204,6 +219,7 @@ class TestDicomSeg:
         assert "'labelmap', 'layers', 'bitmask', 'instances' or 'probmap'" in message
         assert not out.exists()
 
+    @pytest.mark.usefixtures("highdicom")
     def test_S6_3_the_command_line_refuses_it_by_name(self, prepared, tmp_path, capsys):
         from medh5.cli import EXIT_ERROR, main
 
@@ -334,6 +350,7 @@ class TestDicomSeg:
 
 
 class TestDicomSegExtras:
+    @pytest.mark.usefixtures("highdicom")
     def test_a_seg_into_a_sample_without_a_label_set_mints_one(self, tmp_path):
         from pydicom.uid import generate_uid
 
@@ -564,6 +581,7 @@ def _rewrite_frames(seg: Path, out: Path, change: Any = None) -> Path:
     return out
 
 
+@pytest.mark.usefixtures("highdicom")
 class TestSegGeometryPerFrame:
     """A functional group may sit in the shared item or in each frame's: the
     import took the first orientation it found and the
@@ -632,6 +650,7 @@ class TestSegGeometryPerFrame:
             read_dicom_seg_frames(out)
 
 
+@pytest.mark.usefixtures("highdicom")
 class TestSegExportGeometry:
     """A SEG is written against its source images, frame k with image k's
     geometry, and the export compared the annotation's grid with neither:
@@ -967,6 +986,7 @@ class TestSegmentsOfOneClass:
         assert "maximum" in report.of_kind("segment_union")[0].message
 
 
+@pytest.mark.usefixtures("highdicom")
 class TestSegExportCoverage:
     """A segment's 0 says "examined, absent".  Every class went out, and a
     class nobody examined became an empty segment: a verified negative to
@@ -1110,6 +1130,7 @@ class TestSegFrameIdentity:
             assert np.array_equal(sample.annotations["seg"].dense(["liver"])[0], mask)
 
 
+@pytest.mark.usefixtures("highdicom")
 class TestSegKinds:
     """A SEG is read only as what its frames hold: a LABELMAP frame holds
     every segment by pixel value and names none, and was read as a BINARY
@@ -1173,6 +1194,7 @@ class TestSegKinds:
             assert np.array_equal(back, prepared["liver"])
 
 
+@pytest.mark.usefixtures("highdicom")
 class TestSegCommandLine:
     """`medh5 convert to-dicom-seg` and `from-dicom-seg`."""
 
@@ -1308,11 +1330,15 @@ class TestSparseSegReader:
         mask = np.zeros((6, 16, 20), bool)
         mask[2, 4:8, 5:9] = True
         seg = _highdicom_seg(series["paths"], mask, tmp_path / "one.dcm")
+        dataset = pydicom.dcmread(str(seg))
+        measures = dataset.SharedFunctionalGroupsSequence[0].PixelMeasuresSequence[0]
+        # highdicom 0.23 states no step on one plane, and later releases the
+        # series': stated here, so the test holds the reader, not the writer.
+        measures.SpacingBetweenSlices = 2.5
+        dataset.save_as(str(seg), enforce_file_format=True)
         _, stated = read_dicom_seg(seg)
         assert stated["spacing"][0] == 2.5
 
-        dataset = pydicom.dcmread(str(seg))
-        measures = dataset.SharedFunctionalGroupsSequence[0].PixelMeasuresSequence[0]
         del measures.SpacingBetweenSlices
         dataset.save_as(str(seg), enforce_file_format=True)
         report = ConversionReport()
