@@ -17,6 +17,9 @@ documentation reads ``docs/spec/medh5-1.0.md``; on the site that same page is
 ``spec/medh5-1.0.md``, because the documentation *is* the site root.  The prefix
 is rewritten on the way in, so `CHANGELOG.md` stays correct on GitHub and the
 copy served here resolves too.  `mkdocs build --strict` fails if it does not.
+The entries waiting in `changes/` for the next release are spliced in under
+[Unreleased], as `changelog.py preview` prints them, so a fragment's links are
+resolved on the pull request that adds it.
 
 Then the tables.  The diagnostic codes, the cohort check codes and the
 sample-document schema are all *already* defined precisely somewhere in the
@@ -39,8 +42,10 @@ a test holds that table to the engine's `CODES`.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +114,25 @@ REDIRECTS: tuple[tuple[str, str], ...] = (
 
 # A Markdown link target beginning `docs/`, which is repository-root-relative.
 _DOCS_LINK = re.compile(r"(?<=]\()docs/")
+
+
+def _changelog_script(root: Path) -> Any:
+    """`.github/scripts/changelog.py`, which owns the fragment format."""
+    path = root / ".github" / "scripts" / "changelog.py"
+    spec = importlib.util.spec_from_file_location("medh5_changelog", path)
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise FileNotFoundError(f"the changelog script is not at {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclass looks the module up
+    spec.loader.exec_module(module)
+    return module
+
+
+def with_unreleased(changelog: str, root: Path) -> str:
+    """`changelog` with the entries of `changes/` under [Unreleased]."""
+    script = _changelog_script(root)
+    preview = script.assemble(script.collect(root / "changes"))
+    return script.splice(changelog, preview)
 
 
 def _relocated(markdown: str) -> str:
@@ -584,7 +608,10 @@ def on_files(files: Files, config: Any) -> Files:
                 f"{source} is listed in hooks/mkdocs_hooks.py:INCLUDED but is not in "
                 f"the repository at {origin}"
             )
-        content = _relocated(origin.read_text(encoding="utf-8"))
+        content = origin.read_text(encoding="utf-8")
+        if source == "CHANGELOG.md":
+            content = with_unreleased(content, root)
+        content = _relocated(content)
         files.append(
             File.generated(config, destination, content=content.encode("utf-8"))
         )

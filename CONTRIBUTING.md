@@ -44,6 +44,7 @@ Every change has to pass all of these. CI runs each of them, and more (below).
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings \
   && cargo test --workspace \
   && python .github/scripts/third_party_notices.py --check \
+  && python .github/scripts/changelog.py check \
   && ruff check . && ruff format --check . && mypy medh5 \
   && pytest tests/ --cov=medh5 --cov-fail-under=90 \
   && medh5 conformance run /tmp/corpus \
@@ -182,10 +183,26 @@ Preview with `mkdocs serve`, which live-reloads on port 8000.
 
 ## Changelog and releases
 
-Record user-visible changes under `## [Unreleased]` in `CHANGELOG.md`
-([Keep a Changelog](https://keepachangelog.com/)). A change that can alter what
-existing code produces or accepts goes under **Behaviour changes**, stated so a
-reader can decide whether their pipeline is affected.
+Each pull request records its change in a fragment, `changes/<slug>.md`, and
+leaves `CHANGELOG.md` alone; [`changes/README.md`](changes/README.md) gives
+the format, and CI's `lint` job fails a pull request that adds none. A pull
+request with nothing a user would notice adds a fragment holding only
+`<!-- no entry: <reason> -->`. Each entry opens with a bold sentence stating the
+change as a fact, then one to three sentences, and goes in one section
+([Keep a Changelog](https://keepachangelog.com/)):
+
+- **Security**: closes a way hostile input or a shared file harms the user.
+- **Fixed**: a crash, a refusal of valid input, a silently wrong answer
+  corrected, or data loss prevented (a data-loss fix made by a new refusal
+  stays here).
+- **Behaviour changes**: anything that can alter what existing code produces
+  or accepts, stated so a reader can decide whether their pipeline is
+  affected. An item that is both a fix and a change goes here only.
+- **Added**, **Deprecated**, **Performance** and **Documentation** as usual;
+  **Removed** only in a major release.
+
+`python .github/scripts/changelog.py preview` prints what the next release's
+section will hold, and the documentation site shows it under [Unreleased].
 
 The version lives in `[workspace.package] version` in `Cargo.toml`: every
 crate inherits it, maturin stamps it on the wheel, and the engine writes it into
@@ -193,9 +210,10 @@ every file's `generator`. The crates also name each other at exactly that
 version — the `=X.Y.Z` pins of `medh5-sys`, `medh5` and `medh5-cli` under
 `[workspace.dependencies]`, which crates.io needs because it publishes each
 crate on its own — and a test holds the pins to the version. To release, set
-the version and the three pins (and `Cargo.lock` with `cargo update -w`), move
-the unreleased notes under the new version, dated the day of the release, and
-push a `vX.Y.Z` tag on a commit whose CI passed.
+the version and the three pins (and `Cargo.lock` with `cargo update -w`), write
+the release's bold summary in `changes/lead.md`, assemble the fragments with
+`python .github/scripts/changelog.py build X.Y.Z --date YYYY-MM-DD` (which
+deletes them), and push a `vX.Y.Z` tag on a commit whose CI passed.
 `.github/workflows/release.yml` then:
 
 1. runs the full CI on the tagged commit, which builds every wheel, the sdist
@@ -205,8 +223,8 @@ push a `vX.Y.Z` tag on a commit whose CI passed.
 2. checks the tag against the workspace version, every platform's wheel and
    binary against the tag (each carrying `LICENSE` and `THIRD_PARTY_NOTICES`),
    and extracts the version's section of `CHANGELOG.md` — a tag with no
-   section, or a CHANGELOG with entries still under `[Unreleased]`, fails here,
-   before anything is published;
+   section, a CHANGELOG with entries still under `[Unreleased]`, or a fragment
+   left in `changes/`, fails here, before anything is published;
 3. publishes the wheels and the sdist to PyPI through Trusted Publishing, and
    the crates to crates.io (`medh5-sys`, `medh5`, `medh5-cli`, in that order,
    with the `CARGO_REGISTRY_TOKEN` secret — each crate built from its package

@@ -674,6 +674,7 @@ class TestRepositoryGates:
             "cargo clippy --workspace --all-targets",
             "cargo test --workspace",
             "python .github/scripts/third_party_notices.py --check",
+            "python .github/scripts/changelog.py check",
             "ruff check .",
             "ruff format --check .",
             "mypy medh5",

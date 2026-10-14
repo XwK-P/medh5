@@ -6,13 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### Fixed
-
-- **CI and the advisory audit run on the patch line.** CI ran on pushes and
-  pull requests to `main` only, so a fix on `release/2.0` merged untested, and
-  the weekly audit, which runs on the default branch, saw only `main`'s lock.
-  Both now run on `release/**`, and the weekly audit checks each line.
-
 ## [2.0.3] — 2026-10-14
 
 **A patch release, with no format change.** Four fixes found after 2.0.2, and

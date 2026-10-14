@@ -7,7 +7,9 @@ In the workflow it reads the tag from `GITHUB_REF_NAME` and writes
 `release-notes.md`.  It runs before anything is published, so a tag whose
 version has no section fails there --- and so does a CHANGELOG with entries
 still under [Unreleased]: those are changes the release ships and its notes
-would not describe --- and notes longer than a GitHub release takes.
+would not describe, and so does a fragment still in `changes/`, which
+`changelog.py build` assembles into the CHANGELOG --- and notes longer than a
+GitHub release takes.
 
 Given a tag, it writes the notes of a release already published, for `gh
 release edit vX.Y.Z --notes-file release-notes.md` after its section changed.
@@ -162,6 +164,21 @@ def check_unreleased(text: str) -> None:
         )
 
 
+def check_fragments(directory: pathlib.Path) -> None:
+    """Refuse a release while `directory` holds a changelog fragment: its entry
+    is not in the CHANGELOG, so the notes would not carry it."""
+    left = sorted(
+        path.name
+        for path in directory.glob("*.md")
+        if path.name != "README.md" and path.is_file()
+    )
+    if left:
+        sys.exit(
+            f"changes/ still holds {', '.join(left)}: run "
+            "`python .github/scripts/changelog.py build VERSION --date DATE`"
+        )
+
+
 def notes(text: str, version: str, repository: str, tag: str) -> str:
     """`version`'s section, unwrapped, with relative links pinned to the tag.
 
@@ -189,6 +206,7 @@ def main(argv: list[str]) -> None:
     text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
     if not argv:
         check_unreleased(text)
+        check_fragments(pathlib.Path("changes"))
     repository = os.environ.get("GITHUB_REPOSITORY", REPOSITORY)
     body = notes(text, version, repository, tag)
     pathlib.Path("release-notes.md").write_text(body + "\n", encoding="utf-8")

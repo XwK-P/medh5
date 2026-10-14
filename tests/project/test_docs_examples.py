@@ -631,6 +631,7 @@ def test_a_dash_is_written_as_a_dash() -> None:
         README,
         ROOT / "CHANGELOG.md",
         ROOT / "CONTRIBUTING.md",
+        *sorted(ROOT.glob("changes/*.md")),
         *sorted(ROOT.glob("crates/*/README.md")),
         *sorted(DOCS.rglob("*.md")),
     ]
