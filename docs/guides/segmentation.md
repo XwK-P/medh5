@@ -84,7 +84,7 @@ stitcher.finish()
 A file comes back as soon as its last window has been predicted, in whatever
 order a shuffled or multi-worker loader delivers them, and never with a window
 missing: `finish()` names every file that is still short. See
-[the torch reference](../reference/torch.md#gridpatchdataset-deterministic-tiling-for-inference).
+[the torch reference](../reference/torch.md#gridpatchdataset--deterministic-tiling-for-inference).
 
 ## Overlap you did not expect
 

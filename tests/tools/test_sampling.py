@@ -688,7 +688,7 @@ class TestPatchAggregator:
         weights = blend_weights((32, 32, 32), sigma_scale=0.01)
         assert weights.dtype == np.float32
         assert weights.max() == 1.0
-        assert weights.min() >= 1e-6 * weights.max()
+        assert weights.min() >= np.float32(1e-6) * weights.max()
         assert (blend_weights((3, 4), mode="constant") == 1.0).all()
         with pytest.raises(MEDH5ValidationError, match="blend mode"):
             blend_weights((3, 4), mode="linear")

@@ -294,7 +294,7 @@ class TestWorkedExample:
         vocab.save(path)
         assert other.read_text(encoding="utf-8") == "{}"
         assert ConceptVocabulary.load(path) == vocab
-        assert path.read_bytes().endswith(b"}\n")
+        assert path.read_text(encoding="utf-8").endswith("}\n")
         assert sorted(p.name for p in tmp_path.iterdir()) == [
             "other-name.json",
             "vocab.json",
