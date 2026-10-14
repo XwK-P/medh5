@@ -21,7 +21,7 @@ edition = "2021"
 rust-version = "1.85.1"
 license = "MIT"
 authors = ["Puyang Wang <pauliwang411@gmail.com>"]
-repository = "https://github.com/XwK-P/medh5"
+repository = "https://github.com/medh5-project/medh5"
 homepage = "https://medh5.readthedocs.io/"
 
 [workspace.dependencies]

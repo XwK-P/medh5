@@ -121,10 +121,10 @@ dicomseg = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/XwK-P/medh5"
-Repository = "https://github.com/XwK-P/medh5"
-Issues = "https://github.com/XwK-P/medh5/issues"
-Changelog = "https://github.com/XwK-P/medh5/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/medh5-project/medh5"
+Repository = "https://github.com/medh5-project/medh5"
+Issues = "https://github.com/medh5-project/medh5/issues"
+Changelog = "https://github.com/medh5-project/medh5/blob/main/CHANGELOG.md"
 Documentation = "https://medh5.readthedocs.io/"
 # The released documentation's, not main's: PyPI keeps these with the release.
 "Specification 1.0" = "https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/"

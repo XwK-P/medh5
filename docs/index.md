@@ -123,7 +123,7 @@ Every command is in the [CLI reference](reference/cli.md).
   what was known when, and what the format deliberately is not.
 - **[Changelog](changelog.md)** — every release, with the behaviour changes to
   read before upgrading a pipeline.
-- **[Contributing](https://github.com/XwK-P/medh5/blob/main/CONTRIBUTING.md)** —
+- **[Contributing](https://github.com/medh5-project/medh5/blob/main/CONTRIBUTING.md)** —
   the checks a change has to pass, and how the documentation is kept honest.
 
 ## Versioning

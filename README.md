@@ -2,10 +2,10 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/medh5.svg)](https://pypi.org/project/medh5/)
 [![Python versions](https://img.shields.io/pypi/pyversions/medh5.svg)](https://pypi.org/project/medh5/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/XwK-P/medh5/blob/main/LICENSE)
-[![CI](https://github.com/XwK-P/medh5/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/XwK-P/medh5/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/medh5-project/medh5/blob/main/LICENSE)
+[![CI](https://github.com/medh5-project/medh5/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/medh5-project/medh5/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/readthedocs/medh5/latest.svg)](https://medh5.readthedocs.io/en/latest/)
-[![Typed](https://img.shields.io/badge/typed-mypy%20strict-informational.svg)](https://github.com/XwK-P/medh5/blob/main/medh5/py.typed)
+[![Typed](https://img.shields.io/badge/typed-mypy%20strict-informational.svg)](https://github.com/medh5-project/medh5/blob/main/medh5/py.typed)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 **One medical imaging sample — a subject, at every timepoint, with all of its
@@ -57,8 +57,8 @@ Add an extra for each tool you connect medh5 to:
 
 Extras combine: `pip install "medh5[torch,nifti,dicom]"`.
 
-**Only the command line, without Python?** `brew install XwK-P/medh5/medh5`, or
-download it from the [latest release](https://github.com/XwK-P/medh5/releases/latest).
+**Only the command line, without Python?** `brew install medh5-project/medh5/medh5`, or
+download it from the [latest release](https://github.com/medh5-project/medh5/releases/latest).
 Converting DICOM or NIfTI files still needs the Python package.
 
 **Writing Rust?** `cargo add medh5` adds the format engine itself. The Python
@@ -265,11 +265,11 @@ converts them once. See [Migrate from 0.x](https://medh5.readthedocs.io/en/stabl
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/XwK-P/medh5/blob/main/CONTRIBUTING.md)
+See [CONTRIBUTING.md](https://github.com/medh5-project/medh5/blob/main/CONTRIBUTING.md)
 for the development setup, the checks a change has to pass, and how the
 specification and documentation are kept in step with the code. Release notes
-are in [CHANGELOG.md](https://github.com/XwK-P/medh5/blob/main/CHANGELOG.md).
+are in [CHANGELOG.md](https://github.com/medh5-project/medh5/blob/main/CHANGELOG.md).
 
 ## License
 
-[MIT](https://github.com/XwK-P/medh5/blob/main/LICENSE)
+[MIT](https://github.com/medh5-project/medh5/blob/main/LICENSE)

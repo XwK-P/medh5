@@ -8,7 +8,7 @@ to emit the same code for the same defect. A minor format version may add codes;
 it may not change what an existing one means (spec §16).
 
 The table below is generated from
-[`crates/medh5/data/codes.json`](https://github.com/XwK-P/medh5/blob/main/crates/medh5/data/codes.json)
+[`crates/medh5/data/codes.json`](https://github.com/medh5-project/medh5/blob/main/crates/medh5/data/codes.json)
 at build time — the same table the validator and the conformance corpus read, so
 it cannot drift from what the tool actually emits. Its normative statement is
 [specification §15.2](../spec/medh5-1.0.md#152-error-codes), with the codes

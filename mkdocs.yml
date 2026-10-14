@@ -8,8 +8,8 @@ site_description: >-
 # page's canonical link and the sitemap from `site_url`, so the bare host pointed
 # them at paths the site does not serve. A build elsewhere keeps the bare host.
 site_url: !ENV [READTHEDOCS_CANONICAL_URL, "https://medh5.readthedocs.io/"]
-repo_url: https://github.com/XwK-P/medh5
-repo_name: XwK-P/medh5
+repo_url: https://github.com/medh5-project/medh5
+repo_name: medh5-project/medh5
 edit_uri: edit/main/docs/
 copyright: MIT-licensed. The specification is normative; the code implements it.
 
@@ -184,5 +184,5 @@ extra:
       link: https://pypi.org/project/medh5/
       name: medh5 on PyPI
     - icon: fontawesome/brands/github
-      link: https://github.com/XwK-P/medh5
+      link: https://github.com/medh5-project/medh5
       name: medh5 on GitHub

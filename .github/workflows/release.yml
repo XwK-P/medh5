@@ -257,7 +257,7 @@ jobs:
       - name: cargo publish, each crate not already there
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          CANONICAL: ${{ github.repository == 'XwK-P/medh5' }}
+          CANONICAL: ${{ github.repository == 'medh5-project/medh5' }}
         run: |
           if [[ -z "$CARGO_REGISTRY_TOKEN" ]]; then
             if [[ "$CANONICAL" == true ]]; then
@@ -337,7 +337,7 @@ jobs:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           TAP: ${{ vars.HOMEBREW_TAP || format('{0}/homebrew-medh5', github.repository_owner) }}
           VERSION: ${{ needs.build.outputs.version }}
-          CANONICAL: ${{ github.repository == 'XwK-P/medh5' }}
+          CANONICAL: ${{ github.repository == 'medh5-project/medh5' }}
         run: |
           if [[ -z "$TAP_TOKEN" ]]; then
             if [[ "$CANONICAL" == true ]]; then
@@ -368,7 +368,7 @@ jobs:
     # reported as one, naming what is missing where.  A fork's release, which
     # may lack the tokens, is not checked.
     needs: [build, publish, crates, github-release, homebrew]
-    if: ${{ !cancelled() && needs.build.result == 'success' && github.repository == 'XwK-P/medh5' }}
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.repository == 'medh5-project/medh5' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

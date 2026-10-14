@@ -52,7 +52,7 @@ DISTRIBUTIONS = (".whl", ".tar.gz")
 # Where cargo finds a crates.io token.
 TOKENS = frozenset({"CARGO_REGISTRY_TOKEN", "CARGO_REGISTRIES_CRATES_IO_TOKEN"})
 
-AGENT = "medh5-release (https://github.com/XwK-P/medh5)"
+AGENT = "medh5-release (https://github.com/medh5-project/medh5)"
 
 
 def sha256(data: bytes) -> str:

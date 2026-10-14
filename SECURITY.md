@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Report a suspected vulnerability privately, through the repository's
-[private vulnerability reporting](https://github.com/XwK-P/medh5/security/advisories/new)
+[private vulnerability reporting](https://github.com/medh5-project/medh5/security/advisories/new)
 (**Security**, then **Report a vulnerability**), not in a public issue. If that
 form is unavailable, open an issue that asks for a private contact and leaves
 out the details.
