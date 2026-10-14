@@ -117,6 +117,10 @@ and the CLI are layers over it, and all three read and write the same bytes.
   exports it, or `pickle` cannot find it. `medh5/_core.pyi` types the
   extension; keep it in step with the bindings
   (`tests/project/test_typing.py` runs `stubtest` against the build).
+  `tests/project/python_api.txt` is the public Python API as text: a change
+  to the API regenerates it (`python .github/scripts/public_api.py write`),
+  and CI's `semver` and `python-api` jobs fail a minor or patch that breaks
+  the newest release's API.
 - **`conformance`** — the corpus is a *shipped artifact*, not a test fixture:
   third-party implementations run it. The engine builds it
   (`crates/medh5/src/conformance/build.rs`).

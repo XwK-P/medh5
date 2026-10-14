@@ -459,7 +459,8 @@ class TestRepositoryGates:
                 if "build-dist.sh" not in code:
                     assert install in code[: rust.start()], name
         assert sorted(built) == [
-            "build", "crates", "msvc-from-crates-io", "rust", "rust-platforms", "sdist"
+            "build", "crates", "msvc-from-crates-io", "rust", "rust-platforms",
+            "sdist", "semver",
         ]  # fmt: skip
         # `build` is build.yml's, which the five platform jobs call.
         callers = [
@@ -659,7 +660,7 @@ class TestRepositoryGates:
         jobs = _jobs(text)
         assert "fail-fast: false" in jobs["test"]
         cache = "uses: Swatinem/rust-cache@"
-        for name in ("rust", "rust-platforms"):
+        for name in ("rust", "rust-platforms", "semver"):
             assert cache in jobs[name], name
             assert "save-if: ${{ github.ref == 'refs/heads/main' }}" in jobs[name]
         # Not where the release's artifacts are built, nor where the job is
@@ -846,6 +847,34 @@ class TestDistribution:
         assert '("success", "cancelled")' in gate and "if failed or cancelled:" in gate
         assert "cancelled or superseded: re-run" in gate
 
+    def test_the_api_is_compared_with_the_last_release(self):
+        """2.0.2's "no public API change" was checked by hand, and the patch
+        still changed Rust structs.  The crates go through cargo-semver-checks
+        and the package through public_api.py, each against the newest release
+        at or below the tree, and the gate waits for both."""
+        jobs = _jobs(CI.read_text(encoding="utf-8"))
+        semver, python = jobs["semver"], jobs["python-api"]
+        baseline = "python .github/scripts/release.py api-baseline --registry"
+        assert f"{baseline} crates" in semver and f"{baseline} pypi" in python
+        merge_group = "github.event.merge_group.base_ref"
+        assert merge_group in semver and merge_group in python
+        assert "cargo install cargo-semver-checks --version 0.51.0 --locked" in semver
+        assert "cargo semver-checks -p medh5-sys -p medh5 -p medh5-cli" in semver
+        assert '--release-type "${{ steps.base.outputs.release_type }}"' in semver
+        # The rustdoc JSON formats 0.51.0 reads: Rust 1.97 to 1.99.
+        pin = ROOT / "rust-toolchain.toml"
+        if pin.is_file():  # the sdist carries no pin
+            toolchain = pin.read_text(encoding="utf-8")
+            channel = re.search(r'^channel = "1\.(\d+)\.\d+"$', toolchain, re.M)
+            assert channel and 97 <= int(channel[1]) <= 99, toolchain
+        # The released wheel and this run's, neither read from the checkout.
+        assert re.search(r"^    needs: build-linux-x86_64$", python, re.M)
+        assert 'cd "$RUNNER_TEMP"' in python
+        assert python.count('/bin/python -I "$script" dump --output') == 2
+        assert '--release-type "${{ steps.base.outputs.release_type }}"' in python
+        gate = jobs["ci-ok"].split("steps:")[0]
+        assert "      - semver\n" in gate and "      - python-api\n" in gate
+
     def test_each_platform_waits_only_for_its_own_build(self):
         """Every test job needed the one five-target `build`, so no Python test
         started before the slowest build ended.  A job that downloads a
@@ -870,7 +899,7 @@ class TestDistribution:
             if targets:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
-        assert downloading == 11
+        assert downloading == 12
 
     def test_the_intel_mac_skips_pull_requests_and_nothing_else(self):
         """The Intel Mac build was the slowest job of every run (14 to 23

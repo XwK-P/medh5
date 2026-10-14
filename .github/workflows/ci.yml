@@ -767,6 +767,88 @@ jobs:
       - run: pip install "numpy==1.26.*" "hdf5plugin==4.1.*" ${{ matrix.h5py }}
       - run: python .github/scripts/hdf5_readers.py read cases/ --hdf5 ${{ matrix.hdf5 }} --compare newest.json
 
+  semver:
+    # The crates' public API against the newest release at or below this
+    # tree's version on crates.io (`release.py api-baseline`): a minor may add
+    # to it and not break it, a patch may do neither.  2.0.2's "no public API
+    # change" was checked by hand, and the patch still changed Rust structs.
+    # rustdoc compiles HDF5 once for each side, so the job runs beside the
+    # builds rather than ahead of anything.  cargo-semver-checks reads the
+    # rustdoc JSON of the Rust it runs under: a toolchain bump checks that the
+    # pinned version reads the new format.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: rustup toolchain install --no-self-update
+      # The installed binary is cached with the builds, so `cargo install`
+      # finds it there.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo install cargo-semver-checks --version 0.51.0 --locked
+      - id: base
+        run: python .github/scripts/release.py api-baseline --registry crates >> "$GITHUB_OUTPUT"
+        env:
+          # A merge group's ref is the queue's; its base is the line's.
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.ref_name }}
+          API_RELEASE_TYPE: ${{ vars.API_RELEASE_TYPE }}
+      # The baseline resolves its dependencies anew; one newer than the
+      # crates' `rust-version` allows falls back to an older release.
+      - run: >
+          cargo semver-checks -p medh5-sys -p medh5 -p medh5-cli
+          --baseline-version "${{ steps.base.outputs.version }}"
+          --release-type "${{ steps.base.outputs.release_type }}"
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+
+  python-api:
+    # The Python package's public API against the newest release at or below
+    # this tree's version on PyPI: the released wheel and this run's, each in
+    # a virtual environment of its own, dumped by public_api.py from outside
+    # the checkout (`python -I`, in $RUNNER_TEMP) so that neither reads the
+    # checkout's `medh5/`.  The snapshot, tests/project/python_api.txt, shows
+    # a reviewer the change; this fails one that breaks callers.
+    needs: build-linux-x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-dist-x86_64-unknown-linux-gnu
+          path: dist/
+      - id: base
+        run: python .github/scripts/release.py api-baseline --registry pypi >> "$GITHUB_OUTPUT"
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.ref_name }}
+          API_RELEASE_TYPE: ${{ vars.API_RELEASE_TYPE }}
+      - name: Dump the released API and this run's
+        env:
+          BASE: ${{ steps.base.outputs.version }}
+        run: |
+          script="$PWD/.github/scripts/public_api.py"
+          wheel=$(ls "$PWD"/dist/*.whl)
+          cd "$RUNNER_TEMP"
+          python -m venv released
+          released/bin/pip install --quiet "medh5==$BASE"
+          python -m venv built
+          built/bin/pip install --quiet "$wheel"
+          released/bin/python -I "$script" dump --output released.txt
+          built/bin/python -I "$script" dump --output built.txt
+      - run: >
+          python .github/scripts/public_api.py compare
+          "$RUNNER_TEMP/released.txt" "$RUNNER_TEMP/built.txt"
+          --release-type "${{ steps.base.outputs.release_type }}"
+
   ci-ok:
     # The one check the branch ruleset requires.  A ruleset names checks as
     # they report, and a matrix job reports once per entry --- `rust
@@ -807,6 +889,8 @@ jobs:
       - prototype
       - conformance
       - hdf5-readers
+      - semver
+      - python-api
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
