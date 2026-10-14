@@ -573,7 +573,27 @@ fn convert() -> Vec<Command> {
                     "frame-salt",
                     "the salt `medh5 scrub` pseudonymised the sample's frames with: the source images' frame is \
                      compared as the scrub wrote it",
-                )),
+                ))
+                .arg(
+                    opt(
+                        "segmentation_type",
+                        "segmentation-type",
+                        "binary (default) thresholds a probmap at its stored threshold; fractional writes a \
+                         probmap's probabilities, quantised to 1/255",
+                    )
+                    .value_parser(["binary", "fractional"])
+                    .default_value("binary"),
+                )
+                .arg(
+                    opt(
+                        "fractional_type",
+                        "fractional-type",
+                        "with --segmentation-type fractional, what the values are: PROBABILITY (default) or \
+                         OCCUPANCY",
+                    )
+                    .value_parser(["PROBABILITY", "OCCUPANCY"])
+                    .default_value("PROBABILITY"),
+                ),
         ))
         .subcommand(report_args(
             Command::new("from-rtstruct")

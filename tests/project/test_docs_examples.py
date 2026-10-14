@@ -267,6 +267,13 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
         "fails the next guide's preflight (T302); amend a copy.",
         None,
     ),
+    (
+        "a SEG export called binary only",
+        r"export is binary|fractional data is thresholded on the way out",
+        'to_dicom_seg(segmentation_type="fractional") writes a probmap as a '
+        "FRACTIONAL SEG; only the default, binary export thresholds.",
+        None,
+    ),
 )
 
 

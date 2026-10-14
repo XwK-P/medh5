@@ -34,6 +34,8 @@ import numpy.typing as npt
 
 from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
+from medh5.io import _codes
+from medh5.io._codes import same_concept
 from medh5.io._common import sanitize_key
 from medh5.io._frames import _direction, _frame_placement
 
@@ -355,25 +357,61 @@ def _seg_notes(report: ConversionReport, geometry: Mapping[str, Any]) -> None:
 
 
 def _segments(dataset: Any) -> dict[int, dict[str, Any]]:
-    """Segment number → label, algorithm and coded concept, where given."""
+    """Segment number → label, algorithm, and the coded property type,
+    category and type modifier, where given --- each as the file states it,
+    designator included."""
     out: dict[int, dict[str, Any]] = {}
     for item in getattr(dataset, "SegmentSequence", []):
         number = int(item.SegmentNumber)
-        code = None
-        sequence = getattr(item, "SegmentedPropertyTypeCodeSequence", None)
-        if sequence:
-            entry = sequence[0]
-            code = {
-                "scheme": str(getattr(entry, "CodingSchemeDesignator", "")),
-                "code": str(getattr(entry, "CodeValue", "")),
-                "meaning": str(getattr(entry, "CodeMeaning", "")),
-            }
         out[number] = {
             "label": str(getattr(item, "SegmentLabel", f"segment_{number}")),
             "algorithm": str(getattr(item, "SegmentAlgorithmType", "")),
-            "code": code,
+            "code": _coded(item, "SegmentedPropertyTypeCodeSequence"),
+            "category": _coded(item, "SegmentedPropertyCategoryCodeSequence"),
+            "modifier": _coded(item, "SegmentedPropertyTypeModifierCodeSequence"),
         }
     return out
+
+
+def _coded(item: Any, sequence_name: str) -> dict[str, str] | None:
+    """The first coded concept of *item*'s *sequence_name*, or ``None``."""
+    sequence = getattr(item, sequence_name, None)
+    if not sequence:
+        return None
+    entry = sequence[0]
+    code = {
+        "scheme": str(getattr(entry, "CodingSchemeDesignator", "")),
+        "code": str(getattr(entry, "CodeValue", "")),
+        "meaning": str(getattr(entry, "CodeMeaning", "")),
+    }
+    return code if code["scheme"] and code["code"] else None
+
+
+def _spelled(code: Mapping[str, str] | None) -> str:
+    """A coded concept as the file states it: ``SCT 7771000``, or ``none``."""
+    return f"{code['scheme']} {code['code']}" if code else "none"
+
+
+def _same(first: Mapping[str, str] | None, second: Mapping[str, str] | None) -> bool:
+    """Whether two coded concepts of a file, or their absence, are one."""
+    if first is None or second is None:
+        return first is second
+    return same_concept(
+        (first["scheme"], first["code"]), (second["scheme"], second["code"])
+    )
+
+
+def _binding(code: Mapping[str, str]) -> Any:
+    """A file's coded concept as an ontology binding (§5.2): the system as
+    the label set spells it where the table knows the designator, and the
+    designator the file states where it does not."""
+    from medh5.labels import OntologyCode
+
+    return OntologyCode(
+        system=_codes.system(code["scheme"]) or code["scheme"],
+        code=code["code"],
+        name=code["meaning"] or None,
+    )
 
 
 def _first(dataset: Any, name: str) -> str | None:
@@ -455,7 +493,7 @@ def from_dicom_seg(
             {"mapping": {str(k): v for k, v in mapping.items()}},
         )
     if label_set is None:
-        classes, mapping = _mint(segments)
+        classes, mapping = _mint(segments, log)
         label_set = LabelSet("dicom-seg", version="1.0.0", classes=classes)
         bound = sum(1 for c in classes if c.codes)
         log.decision(
@@ -514,52 +552,118 @@ def from_dicom_seg(
 
 def _mint(
     segments: Mapping[int, dict[str, Any]],
+    log: ConversionReport | None = None,
 ) -> tuple[list[Any], dict[int, int]]:
     """Classes minted from SegmentLabel, and segment number → class id.
 
     Segments whose labels make one key are one class, its id the first one's
     number: one "Lesion" segment per lesion is common, and minted apart, two
     classes keyed ``lesion`` were refused (E302).  Segments of one key that
-    code different concepts are refused: one class cannot be both.
-    """
-    from medh5.labels import LabelClass, OntologyCode
+    code different concepts are refused: one class cannot be both.  Nor can
+    it be two sides: segments of one key whose type modifiers differ (Left
+    and Right Kidney, both labelled "Kidney") are refused, where they became
+    one class.
 
-    classes: dict[str, LabelClass] = {}
+    Each class keeps what its first segment states besides the type: the
+    property category as ``properties["dicom_category"]``, and as
+    ``category`` where the concept stands for one category only (see
+    :data:`medh5.io._codes.CATEGORY_OF`); a laterality modifier as
+    ``laterality``.  *log* records both, and any modifier that is not a
+    laterality, which no field holds.
+    """
+    from medh5.labels import LabelClass
+
+    first: dict[str, int] = {}
+    coded: dict[str, int] = {}
     mapping: dict[int, int] = {}
+
+    def both(a: int, b: int) -> str:
+        key = _key(segments[b]["label"])
+        return (
+            f"segments {a} and {b} make one class {key!r} by SegmentLabel "
+            f"({segments[a]['label']!r}, {segments[b]['label']!r})"
+        )
+
     for number, info in sorted(segments.items()):
         key = _key(info["label"])
-        code = info["code"]
-        codes = (
-            (
-                OntologyCode(
-                    system=code["scheme"],
-                    code=code["code"],
-                    name=code["meaning"] or None,
-                ),
-            )
-            if code and code["scheme"] and code["code"]
-            else ()
-        )
-        found = classes.get(key)
-        if found is None:
-            classes[key] = LabelClass(number, key, info["label"], codes=codes)
-        elif codes and found.codes and _concept(codes[0]) != _concept(found.codes[0]):
+        lead = first.setdefault(key, number)
+        if info["code"] is not None:
+            bound = coded.setdefault(key, number)
+            if not _same(segments[bound]["code"], info["code"]):
+                raise MEDH5ValidationError(
+                    f"{both(bound, number)} but code different concepts "
+                    f"({_spelled(segments[bound]['code'])}, "
+                    f"{_spelled(info['code'])}): one class cannot be both. "
+                    "Import it into a sample whose label set holds both"
+                )
+        if not _same(segments[lead]["modifier"], info["modifier"]):
             raise MEDH5ValidationError(
-                f"segments {found.id} and {number} make one class {key!r} by "
-                f"SegmentLabel ({segments[found.id]['label']!r}, "
-                f"{info['label']!r}) but code different concepts "
-                f"({' '.join(_concept(found.codes[0]))}, "
-                f"{' '.join(_concept(codes[0]))}): one class cannot be both. "
-                "Import it into a sample whose label set holds both"
+                f"{both(lead, number)} but carry different type modifiers "
+                f"({_spelled(segments[lead]['modifier'])}, "
+                f"{_spelled(info['modifier'])}): one class cannot be both. "
+                "Give the segments their own labels, or import it into a "
+                "sample whose label set holds both"
             )
-        elif codes and not found.codes:
-            classes[key] = LabelClass(found.id, key, found.name, codes=codes)
-        mapping[number] = classes[key].id
-    return list(classes.values()), mapping
+        mapping[number] = lead
+
+    classes: list[Any] = []
+    categories: dict[str, str] = {}
+    sides: dict[str, str] = {}
+    other: dict[str, str] = {}
+    for key, number in first.items():
+        info = segments[number]
+        code = segments[coded[key]]["code"] if key in coded else None
+        properties: dict[str, Any] = {}
+        category = None
+        if info["category"] is not None:
+            properties["dicom_category"] = _binding(info["category"]).to_json()
+            category = _codes.CATEGORY_OF.get(_normal(info["category"]))
+            if category is not None:
+                categories[key] = category
+        laterality = None
+        if info["modifier"] is not None:
+            laterality = _codes.LATERALITY_OF.get(_normal(info["modifier"]))
+            if laterality is None:
+                other[key] = _spelled(info["modifier"])
+            else:
+                sides[key] = laterality
+        classes.append(
+            LabelClass(
+                number,
+                key,
+                info["label"],
+                category=category,
+                codes=(_binding(code),) if code else (),
+                laterality=laterality,
+                properties=properties,
+            )
+        )
+    if log is not None and (categories or sides):
+        log.decision(
+            "concepts",
+            f"{len(categories)} minted class(es) took a category from the "
+            f"SEG's property category and {len(sides)} a laterality from its "
+            "type modifier; every class keeps its property category as "
+            "properties['dicom_category']",
+            {"categories": categories, "laterality": sides},
+        )
+    if log is not None and other:
+        log.decision(
+            "modifier",
+            f"{len(other)} segment(s) carry a type modifier that is not a "
+            "laterality, which no field of a class holds; it was not carried",
+            {"modifiers": other},
+        )
+    return classes, mapping
 
 
-def _concept(code: Any) -> tuple[str, str]:
-    return str(code.system), str(code.code)
+def _normal(code: Mapping[str, str]) -> tuple[str, str]:
+    """A file's coded concept as ``(designator, code)``, its designator
+    normalised through the table."""
+    return (
+        _codes.designator(code["scheme"]) or code["scheme"],
+        code["code"],
+    )
 
 
 def _by_class(
@@ -721,6 +825,8 @@ def to_dicom_seg(
     series_description: str = "medh5 segmentation",
     frame_salt: str | None = None,
     report: ConversionReport | None = None,
+    segmentation_type: str = "binary",
+    fractional_type: str = "PROBABILITY",
 ) -> Path:
     """Export one voxel annotation as a DICOM SEG against its source slices.
 
@@ -729,6 +835,26 @@ def to_dicom_seg(
     refused (E401) before anything is read --- a ``mask`` too, having no
     classes.
 
+    *segmentation_type* ``"binary"`` writes a ``BINARY`` SEG from
+    ``dense()``, which thresholds a ``probmap`` at its stored ``threshold``
+    (recorded as a ``threshold`` decision).  ``"fractional"`` writes a
+    ``probmap``'s probabilities as a ``FRACTIONAL`` SEG of *fractional_type*
+    (``PROBABILITY`` or ``OCCUPANCY``), quantised to 1/255 --- within 1/510
+    of each value --- and any other kind is refused; the report states the
+    error, how many voxels the quantisation moved across the stored
+    threshold, and that ``threshold`` and ``normalized`` are not carried.
+
+    Each segment carries its class's concepts: the property type is the
+    class's first code whose system :mod:`medh5.io._codes` designates, the
+    property category ``properties["dicom_category"]`` or the one its
+    ``category`` stands for, a ``laterality`` the type modifier, and the
+    algorithm type the annotation's provenance says (``predict`` →
+    ``AUTOMATIC``, naming its software).  DICOM requires a type, a category
+    and an algorithm type, so where the sample states none the generic one
+    is written --- SCT 91723000 "Anatomical Structure", ``MANUAL`` --- and
+    the report records a guess naming each class it was written for.  A
+    designator is never invented.
+
     *source_images* are the DICOM files the segmentation was drawn on: a SEG is
     defined by reference to them, and one written without them is orphaned in
     every PACS that receives it.  They must be the annotation grid's slices,
@@ -736,9 +862,9 @@ def to_dicom_seg(
     *frame_salt* compares a frame ``medh5 scrub`` pseudonymised, as
     :func:`frames_agree` does) and on its lattice (E405 otherwise).
 
-    The SEG is ``BINARY``, so an annotation with an ignore region (§7.7) is
-    refused: a segment's 0 says a voxel was examined and found absent, and it
-    has no value for one nobody examined.  For the same reason a segment is
+    An annotation with an ignore region (§7.7) is refused: a segment's 0
+    says a voxel was examined and found absent, and it has no value for one
+    nobody examined.  For the same reason a segment is
     written only for a class the annotation examined (``annotated_class_ids``):
     by default the others are left out, and *classes* naming one is refused.
     Every class went out, and one nobody looked for became an empty segment ---
@@ -751,10 +877,19 @@ def to_dicom_seg(
 
     log = report or ConversionReport(converter="to-dicom-seg")
     log.source = os.fspath(sample)
+    fractional = _segmentation_type(segmentation_type, fractional_type)
 
     with medh5.open(sample) as opened:
         annotation = opened.annotations[ann_id]
         _require_segments(annotation, ann_id)
+        if fractional and annotation.kind != "probmap":
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r} is a {annotation.kind!r}, which holds no "
+                "fractional values; a FRACTIONAL SEG is written from a 'probmap'. "
+                "Export it with segmentation_type='binary' "
+                "(`--segmentation-type binary`, the default)",
+                code="E401",
+            )
         datasets = [_dcmread(p) for p in source_images]
         if not datasets:
             raise MEDH5ValidationError("to_dicom_seg needs the source DICOM images")
@@ -766,34 +901,43 @@ def to_dicom_seg(
         if ignored:
             raise MEDH5ValidationError(
                 f"annotation {ann_id!r} ignores {ignored} voxel(s) (§7.7), "
-                "which a BINARY SEG cannot mark --- a segment's 0 would say "
+                "which a SEG cannot mark --- a segment's 0 would say "
                 "they were examined and found absent; export it to NIfTI "
                 "instead (`to_nifti` with annotation=, `medh5 convert "
                 "to-nifti --annotation`), whose labelmap writes them as its "
                 f"ignore id {annotation.ignore_id}"
             )
-        planes = np.asarray(annotation.dense(list(ids)), dtype=bool)
-        descriptions = [
-            hd.seg.SegmentDescription(
-                segment_number=i + 1,
-                segment_label=annotation.class_key(class_id),
-                segmented_property_category=hd.sr.CodedConcept(
-                    "91723000", "SCT", "Anatomical Structure"
-                ),
-                segmented_property_type=hd.sr.CodedConcept(
-                    "91723000", "SCT", "Anatomical Structure"
-                ),
-                algorithm_type=hd.seg.SegmentAlgorithmTypeValues.MANUAL,
-            )
-            for i, class_id in enumerate(ids)
-        ]
+        contains = np.asarray(annotation.dense(list(ids)), dtype=bool)
+        if fractional:
+            values = np.asarray(annotation.probabilities(list(ids)), np.float32)
+            _quantisation(values, contains, float(annotation.threshold), log)
+            options: dict[str, Any] = {
+                "segmentation_type": hd.seg.SegmentationTypeValues.FRACTIONAL,
+                "fractional_type": fractional_type,
+                "max_fractional_value": MAX_FRACTIONAL_VALUE,
+            }
+        else:
+            values = contains
+            if annotation.kind == "probmap":
+                log.decision(
+                    "threshold",
+                    f"the probmap was thresholded at {annotation.threshold:g}, "
+                    "its stored threshold, into a BINARY SEG; its probabilities "
+                    "are not written (segmentation_type='fractional' writes "
+                    "them)",
+                    {"threshold": float(annotation.threshold)},
+                )
+            options = {"segmentation_type": hd.seg.SegmentationTypeValues.BINARY}
+        algorithm_type, algorithm = _algorithm(hd, opened, annotation, ann_id, log)
+        descriptions = _descriptions(
+            hd, opened.label_set, annotation, ids, algorithm_type, algorithm, log
+        )
         # highdicom wants (frames, rows, columns, segments), a frame per
         # source image in the order given; `dense` returns (segments, z, y, x).
-        pixels = np.transpose(planes, (1, 2, 3, 0))[slices]
+        pixels = np.transpose(values, (1, 2, 3, 0))[slices]
         segmentation = hd.seg.Segmentation(
             source_images=datasets,
             pixel_array=pixels,
-            segmentation_type=hd.seg.SegmentationTypeValues.BINARY,
             segment_descriptions=descriptions,
             series_instance_uid=hd.UID(),
             series_number=1,
@@ -805,6 +949,7 @@ def to_dicom_seg(
             device_serial_number="0",
             series_description=series_description,
             omit_empty_frames=False,
+            **options,
         )
     target = Path(os.fspath(out))
     segmentation.save_as(str(target))
@@ -814,15 +959,279 @@ def to_dicom_seg(
         "survives the export",
         {"classes": [str(i) for i in ids]},
     )
-    log.guess(
-        "coded_concepts",
-        "segments were given a generic 'Anatomical Structure' concept; MEDH5 "
-        "ontology bindings are not automatically translated into DICOM codes, "
-        "and inventing one would be worse than leaving it generic",
-        {},
-    )
     log.outputs.append(str(target))
     return target
+
+
+SEGMENTATION_TYPES = ("binary", "fractional")
+"""What :func:`to_dicom_seg`'s *segmentation_type* takes."""
+
+FRACTIONAL_TYPES = ("PROBABILITY", "OCCUPANCY")
+"""What :func:`to_dicom_seg`'s *fractional_type* takes (DICOM's
+``SegmentationFractionalType``)."""
+
+MAX_FRACTIONAL_VALUE = 255
+"""The stored value of a probability of 1 in a FRACTIONAL SEG this package
+writes: values are quantised to 1/255, so within 1/510 of what was given."""
+
+
+def _segmentation_type(segmentation_type: str, fractional_type: str) -> bool:
+    """Whether the export is FRACTIONAL; an unknown type is refused."""
+    if segmentation_type not in SEGMENTATION_TYPES:
+        raise MEDH5ValidationError(
+            f"segmentation_type is {segmentation_type!r}; it is one of "
+            f"{', '.join(map(repr, SEGMENTATION_TYPES))}"
+        )
+    if fractional_type not in FRACTIONAL_TYPES:
+        raise MEDH5ValidationError(
+            f"fractional_type is {fractional_type!r}; it is one of "
+            f"{', '.join(map(repr, FRACTIONAL_TYPES))}"
+        )
+    return segmentation_type == "fractional"
+
+
+def _quantisation(
+    values: npt.NDArray[np.float32],
+    contains: npt.NDArray[np.bool_],
+    threshold: float,
+    log: ConversionReport,
+) -> None:
+    """Record what writing *values* at 1/255 does to them.
+
+    The stored values are ``round(p * 255)``, as highdicom writes them, so
+    each comes back within 1/510.  A voxel whose class the annotation
+    *contains* (``p >= threshold``, decided at its stored precision) may come
+    back on the other side of that threshold; how many do is the measure of
+    what a reader who thresholds the SEG at the same value would see change.
+    """
+    stored = np.around(values * float(MAX_FRACTIONAL_VALUE))
+    back = stored.astype(np.float64) / MAX_FRACTIONAL_VALUE
+    error = float(np.max(np.abs(back - values))) if values.size else 0.0
+    changed = int(np.count_nonzero((back >= threshold) != contains))
+    log.decision(
+        "fractional",
+        "the probabilities were written as a FRACTIONAL SEG, quantised to "
+        f"1/{MAX_FRACTIONAL_VALUE}: each value is within 1/"
+        f"{2 * MAX_FRACTIONAL_VALUE} of the stored one (at most {error:.3g} "
+        f"here), and {changed} voxel(s) moved across the stored threshold "
+        f"({threshold:g}). A SEG has no field for the probmap's threshold or "
+        "normalized flag, so neither is carried",
+        {
+            "bound": 1 / (2 * MAX_FRACTIONAL_VALUE),
+            "max_error": error,
+            "changed_side": changed,
+            "threshold": threshold,
+            "max_fractional_value": MAX_FRACTIONAL_VALUE,
+        },
+    )
+
+
+def _algorithm(
+    hd: Any, sample: Any, annotation: Any, ann_id: str, log: ConversionReport
+) -> tuple[Any, Any]:
+    """The SEG's algorithm type and identification, from the annotation's
+    provenance (§11.1).
+
+    A ``predict`` activity whose agent is software of a stated version is
+    ``AUTOMATIC``, identified by that software, family DCM 123110
+    "Artificial Intelligence"; ``annotate`` and ``review`` are ``MANUAL``.
+    Anything else is ``MANUAL`` too --- DICOM requires a value --- and
+    recorded as a guess.
+    """
+    manual = hd.seg.SegmentAlgorithmTypeValues.MANUAL
+    provenance = sample.document.provenance
+    prov = annotation.prov
+    activity = (
+        provenance.activity(prov) if prov and provenance.has_activity(prov) else None
+    )
+
+    def generic(why: str) -> tuple[Any, Any]:
+        log.guess(
+            "algorithm_type",
+            f"{why}; SegmentAlgorithmType MANUAL was written, the generic "
+            "value, because DICOM requires one",
+            {"algorithm_type": "MANUAL", "prov": prov},
+        )
+        return manual, None
+
+    if activity is None:
+        return generic(
+            f"annotation {ann_id!r} has no prov"
+            if not prov
+            else f"annotation {ann_id!r}'s prov {prov!r} names no activity"
+        )
+    if activity.type == "predict":
+        agent = (
+            provenance.agent(activity.agent)
+            if activity.agent and any(a.id == activity.agent for a in provenance.agents)
+            else None
+        )
+        if agent is None or agent.type != "software" or not agent.version:
+            return generic(
+                f"annotation {ann_id!r} was predicted (activity "
+                f"{activity.id!r}), but the activity names no software agent "
+                "with a version, which an AUTOMATIC segment's algorithm "
+                "identification requires"
+            )
+        family = _codes.ARTIFICIAL_INTELLIGENCE
+        identification = hd.AlgorithmIdentificationSequence(
+            name=agent.name,
+            version=agent.version,
+            family=hd.sr.CodedConcept(*family),
+        )
+        log.decision(
+            "algorithm_type",
+            f"annotation {ann_id!r} was predicted by {agent.name} "
+            f"{agent.version} (activity {activity.id!r}), so its segments are "
+            "AUTOMATIC, identified by that software",
+            {
+                "algorithm_type": "AUTOMATIC",
+                "activity": activity.id,
+                "name": agent.name,
+                "version": agent.version,
+            },
+        )
+        return hd.seg.SegmentAlgorithmTypeValues.AUTOMATIC, identification
+    if activity.type in ("annotate", "review"):
+        log.decision(
+            "algorithm_type",
+            f"annotation {ann_id!r} comes from an {activity.type!r} activity "
+            f"({activity.id!r}), so its segments are MANUAL",
+            {"algorithm_type": "MANUAL", "activity": activity.id},
+        )
+        return manual, None
+    return generic(
+        f"annotation {ann_id!r} comes from a {activity.type!r} activity "
+        f"({activity.id!r}), which says neither that a person drew it nor "
+        "that a model predicted it"
+    )
+
+
+def _descriptions(
+    hd: Any,
+    label_set: Any,
+    annotation: Any,
+    ids: Sequence[int],
+    algorithm_type: Any,
+    algorithm: Any,
+    log: ConversionReport,
+) -> list[Any]:
+    """One segment description per class, carrying its concepts (§5.2).
+
+    The property type is the class's first code whose system the table
+    designates; the category its ``properties["dicom_category"]``, else the
+    concept its ``category`` stands for; its ``laterality`` the type modifier
+    (0062,0011), which highdicom takes no parameter for.  A type or category
+    the class does not state is the generic concept, as a guess naming each
+    class.
+    """
+    generic = hd.sr.CodedConcept(*_codes.GENERIC)
+    untyped: list[str] = []
+    unknown: dict[str, list[str]] = {}
+    passed_over: dict[str, list[str]] = {}
+    meanings: list[str] = []
+    uncategorised: dict[str, str | None] = {}
+    lateral: dict[str, str] = {}
+    descriptions = []
+    for number, class_id in enumerate(ids, start=1):
+        key = annotation.class_key(class_id)
+        entry = label_set[class_id] if label_set is not None else None
+        codes = tuple(entry.codes) if entry is not None else ()
+        named = [c for c in codes if _codes.designator(c.system)]
+        strange = [str(c.system) for c in codes if not _codes.designator(c.system)]
+        if named and entry is not None:
+            code = named[0]
+            if code is not codes[0]:
+                passed_over[key] = strange
+            if not code.name:
+                meanings.append(key)
+            kind = hd.sr.CodedConcept(
+                str(code.code),
+                str(_codes.designator(code.system)),
+                str(code.name or entry.name),
+            )
+        else:
+            untyped.append(key)
+            if strange:
+                unknown[key] = strange
+            kind = generic
+        category = _category(hd, entry)
+        if category is None:
+            uncategorised[key] = None if entry is None else entry.category
+            category = generic
+        description = hd.seg.SegmentDescription(
+            segment_number=number,
+            segment_label=key,
+            segmented_property_category=category,
+            segmented_property_type=kind,
+            algorithm_type=algorithm_type,
+            algorithm_identification=algorithm,
+        )
+        side = None if entry is None else entry.laterality
+        if side in _codes.LATERALITY:
+            description.SegmentedPropertyTypeModifierCodeSequence = [
+                hd.sr.CodedConcept(*_codes.LATERALITY[side])
+            ]
+            lateral[key] = side
+        descriptions.append(description)
+    if untyped:
+        log.guess(
+            "property_type",
+            f"{len(untyped)} class(es) state no code a DICOM designator names "
+            f"({', '.join(untyped)}), so their segments' property type is the "
+            "generic SCT 91723000 'Anatomical Structure'; DICOM requires one, "
+            "and a designator is never invented"
+            + (f" (systems the table does not know: {unknown})" if unknown else ""),
+            {"classes": untyped, "unknown_systems": unknown},
+        )
+    if passed_over:
+        log.decision(
+            "property_type_system",
+            f"{len(passed_over)} class(es) took their property type from a "
+            "later code, their first naming a system no DICOM designator "
+            "names",
+            {"passed_over": passed_over},
+        )
+    if meanings:
+        log.decision(
+            "code_meaning",
+            f"{len(meanings)} class(es)' code states no name, so the class's "
+            "display name is its CodeMeaning",
+            {"classes": meanings},
+        )
+    if uncategorised:
+        log.guess(
+            "property_category",
+            f"{len(uncategorised)} class(es) state no category a SEG property "
+            f"category stands for ({', '.join(uncategorised)}), so their "
+            "segments' category is the generic SCT 91723000 'Anatomical "
+            "Structure'; DICOM requires one",
+            {"classes": list(uncategorised), "categories": uncategorised},
+        )
+    if lateral:
+        log.decision(
+            "laterality",
+            f"{len(lateral)} class(es)' laterality was written as the "
+            "segment's property type modifier",
+            {"laterality": lateral},
+        )
+    return descriptions
+
+
+def _category(hd: Any, entry: Any) -> Any:
+    """A class's SEG property category, or ``None`` where it states none: its
+    ``properties["dicom_category"]`` (an import's), else the concept its
+    ``category`` stands for (:data:`medh5.io._codes.CATEGORIES`)."""
+    if entry is None:
+        return None
+    stated = entry.properties.get("dicom_category")
+    if isinstance(stated, Mapping):
+        scheme = _codes.designator(str(stated.get("system") or ""))
+        code, meaning = stated.get("code"), stated.get("name")
+        if scheme and code and meaning:
+            return hd.sr.CodedConcept(str(code), scheme, str(meaning))
+    concept = _codes.CATEGORIES.get(str(entry.category or ""))
+    return None if concept is None else hd.sr.CodedConcept(*concept)
 
 
 def _examined(
@@ -1000,6 +1409,9 @@ def _ipp(dataset: Any) -> npt.NDArray[np.float64]:
 __all__ = [
     "BINARY",
     "FRACTIONAL",
+    "FRACTIONAL_TYPES",
+    "MAX_FRACTIONAL_VALUE",
+    "SEGMENTATION_TYPES",
     "SLICE_TOLERANCE",
     "frames_agree",
     "from_dicom_seg",

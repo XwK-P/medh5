@@ -3052,6 +3052,9 @@ medh5.io.dicom.select_series	function	(series, *, thinnest=True)
 medh5.io.dicom_seg	module
 medh5.io.dicom_seg.BINARY	constant	str
 medh5.io.dicom_seg.FRACTIONAL	constant	str
+medh5.io.dicom_seg.FRACTIONAL_TYPES	constant	tuple
+medh5.io.dicom_seg.MAX_FRACTIONAL_VALUE	constant	int
+medh5.io.dicom_seg.SEGMENTATION_TYPES	constant	tuple
 medh5.io.dicom_seg.SLICE_TOLERANCE	constant	float
 medh5.io.dicom_seg.frames_agree	function	(seg_frame, grid_frame, salt=None)
 medh5.io.dicom_seg.from_dicom_seg	function	(path, sample, *, ann_id='seg', grid=None, annotated_classes='all_given', frame_salt=None, report=None)
@@ -3059,7 +3062,7 @@ medh5.io.dicom_seg.place_frames	function	(frames, geometry, grid, *, frame_salt=
 medh5.io.dicom_seg.read_dicom_seg	function	(path, *, report=None)
 medh5.io.dicom_seg.read_dicom_seg_frames	function	(path)
 medh5.io.dicom_seg.require_highdicom	function	()
-medh5.io.dicom_seg.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None)
+medh5.io.dicom_seg.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None, segmentation_type='binary', fractional_type='PROBABILITY')
 medh5.io.from_dicom	function	(root, out, *, group_by='subject', modalities=None, series_uids=None, codec='balanced', report=None)
 medh5.io.from_dicom_seg	function	(path, sample, *, ann_id='seg', grid=None, annotated_classes='all_given', frame_salt=None, report=None)
 medh5.io.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None)
@@ -3175,7 +3178,7 @@ medh5.io.rtstruct.from_rtstruct	function	(path, sample, *, ann_id='contours', gr
 medh5.io.rtstruct.read_rtstruct	function	(path)
 medh5.io.rtstruct.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None, points=None)
 medh5.io.scan_dicom	function	(root, *, report=None)
-medh5.io.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None)
+medh5.io.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None, segmentation_type='binary', fractional_type='PROBABILITY')
 medh5.io.to_nifti	function	(path, image_id, out, *, physical=True, annotation=None, class_key=None, report=None)
 medh5.io.to_nnunetv2	function	(paths, out, *, dataset_name='Dataset001_medh5', file_ending='.nii.gz', annotation='seg', classes=None, unlabeled='refuse', report=None)
 medh5.io.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None, points=None)

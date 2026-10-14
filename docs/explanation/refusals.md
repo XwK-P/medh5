@@ -190,6 +190,12 @@ lesion but the last was lost without a word. A class records where it is, not
 which segment drew it, so the segments of one class are combined — their union,
 or for `FRACTIONAL` their maximum — and the report records it.
 
+**One label with two modifiers is refused.** Two segments labelled "Kidney",
+one modified Left and the other Right, are two structures; combined by their
+label, the left and right kidney became one class with one side. Minting
+refuses segments of one label whose type modifiers differ, and names both
+modifiers, as it refuses segments of one label that code different concepts.
+
 **Frames go only where they were drawn.** Each frame is placed by its own
 position, and must be one of the grid's slices, starting at its first voxel,
 with the grid's row and column directions and pixel spacing; a SEG drawn on
@@ -235,8 +241,23 @@ default such a class is left out, recorded as a decision, and naming one is
 refused. Every class used to go out, and one nobody looked for became an empty
 segment — a verified negative to whoever read it back.
 
-**Export refuses an ignore region.** A binary segment has no value for "not
-examined": its 0 says examined and absent. Written from `dense()`, every voxel
+**A FRACTIONAL export takes a `probmap` only.** A fractional SEG
+(`segmentation_type="fractional"`) holds probabilities; a `labelmap`, `layers`, `bitmask` or
+`instances` annotation holds none, and writing its 0s and 1s as fractions
+would claim a certainty nobody measured. It is refused (`E401`) before
+anything is read, naming the default binary export, which writes it.
+
+**Export writes the generic concept only where DICOM leaves no choice.** A
+segment must carry a property type, a property category and an algorithm
+type. Each is taken from the sample where it states one — a code, a category,
+the provenance. Where it does not, a more specific concept would be invented,
+and a wrong one is undetectable downstream; so the export writes the generic
+SCT 91723000 "Anatomical Structure" (or `MANUAL`) and records a guess naming
+each class. A code whose system has no DICOM designator is treated as no code:
+the designator is never made up.
+
+**Export refuses an ignore region.** A segment has no value for "not
+examined", binary or fractional: its 0 says examined and absent. Written from `dense()`, every voxel
 the annotation ignores (§7.7) went out as that 0 — unexamined tissue
 exported as verified negative — so an annotation with an ignore region is
 refused. A NIfTI labelmap keeps the region, as the annotation's ignore id.

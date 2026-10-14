@@ -449,6 +449,8 @@ def _to_dicom_seg(args: Any) -> int:
         # `--frame-salt`, where the grammar gives this command one.
         frame_salt=getattr(args, "frame_salt", None),
         report=report,
+        segmentation_type=getattr(args, "segmentation_type", None) or "binary",
+        fractional_type=getattr(args, "fractional_type", None) or "PROBABILITY",
     )
     return _finish(report, args)
 

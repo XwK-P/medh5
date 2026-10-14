@@ -57,11 +57,12 @@ Overlapping segments survive.
 such a class is left out, and the report records it (`unexamined`);
 `classes=` naming one is refused, and so is an annotation that examined none.
 
-**Export is binary, and it thresholds.** `to-dicom-seg` writes
-`SegmentationTypeValues.BINARY` from `annotation.dense()`, and for a `probmap`
-`dense()` already applies the annotation's stored `threshold` (default `0.5`).
-So a probability of 0.49 does not become 1 — it becomes **background**, and is
-gone from the exported SEG:
+**A `probmap` goes out binary, unless you ask for fractional.** By default
+(`--segmentation-type binary`) `to-dicom-seg` writes a `BINARY` SEG from
+`annotation.dense()`, and for a `probmap` `dense()` applies the annotation's
+stored `threshold` (default `0.5`). So a probability of 0.49 does not become
+1 — it becomes **background**, and is gone from the exported SEG; the report
+says where it cut (`threshold`):
 
 <!-- illustrative -->
 ```python
@@ -70,13 +71,46 @@ ann.threshold                    # 0.5 unless the file says otherwise
 # exported       0    0    0    0     1    1    1    1
 ```
 
-Fractional values survive the *import* direction, not this one. Check
-`ann.threshold` before exporting, and set it deliberately if the default is not
-the operating point you want — or keep the probabilities in the `.medh5` and
-export something else.
+`--segmentation-type fractional` writes the probabilities themselves, as a
+`FRACTIONAL` SEG (`--fractional-type PROBABILITY`, the default, or
+`OCCUPANCY`). It takes a `probmap` only; any other kind is refused, since it
+has no fractional values to write. DICOM stores each value as an integer out
+of 255, so every probability comes back within 1/510 of what it was. The
+report's `fractional` note gives the largest error, and how many voxels the
+rounding moved across the annotation's threshold. A SEG has no field for
+`threshold` or `normalized`, so neither goes with it: read back, the map has
+the default threshold of 0.5.
 
-**An ignore region is refused.** A binary segment has two values, and its 0
-says the voxel was examined and the structure is absent. The voxels an
+```bash
+medh5 convert to-dicom-seg case.medh5 probs probs.dcm "${args[@]}" \
+    --segmentation-type fractional --report probs.json
+```
+
+In Python it is `to_dicom_seg(..., segmentation_type="fractional")`, with
+`fractional_type=` beside it.
+
+**Each segment says what it is.** A SEG segment must carry a property type, a
+property category and an algorithm type, and each comes from the sample:
+
+| DICOM | From |
+|---|---|
+| property type | the class's first code whose system has a DICOM designator: `SNOMED-CT` (`SCT`), `RadLex` (`RADLEX`), `FMA`, `UBERON`, `LOINC` (`LN`), `ICD-10` (`I10`), `DCM` |
+| property category | `properties["dicom_category"]` (an import writes it), else `category`: `organ`, `vessel`, `bone` → SCT 91723000 "Anatomical Structure"; `lesion` → SCT 49755003 "Morphologically Abnormal Structure"; `device` → SCT 260787004 "Physical object"; `region` → SCT 309825002 "Spatial and Relational Concept" |
+| type modifier | `laterality`: `left` → SCT 7771000, `right` → SCT 24028007, `bilateral` → SCT 51440002 |
+| algorithm type | the annotation's provenance: `predict` by a software agent with a version → `AUTOMATIC`, naming that software, family DCM 123110 "Artificial Intelligence"; `annotate` or `review` → `MANUAL` |
+
+DICOM allows none of the three to be left out. So where the sample states one
+the table cannot carry — no code, a system with no designator, no category, no
+provenance — the export writes the generic value (SCT 91723000 "Anatomical
+Structure", `MANUAL`) and records a guess (`property_type`,
+`property_category`, `algorithm_type`) naming each class it did so for. It
+never writes a more specific concept than the sample states, and never invents
+a designator. Give the classes codes, categories and laterality before
+exporting, and the guesses go away.
+
+**An ignore region is refused.** A segment's 0 says the voxel was examined
+and the structure is absent — binary or fractional, a SEG has no value for "not
+looked at". The voxels an
 annotation ignores (§7.7), in band or through its `ignore_mask`, would go out
 as that 0, so `to-dicom-seg` refuses an annotation with any, and says how many.
 `to-nifti --annotation` writes the labelmap, with each ignored voxel as the

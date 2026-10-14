@@ -226,9 +226,23 @@ another convention is refused (`E414`). **Segments match by label, not by
 number**, and segments that share a label — one `Lesion` segment per lesion is
 common — are one class: a `BINARY` SEG's are combined as their union and a
 `FRACTIONAL` one's as their maximum, recorded as a `segment_union` decision.
-Two segments whose labels make one class but code different concepts are
-refused. A `BINARY` or `FRACTIONAL` SEG is read; a `LABELMAP` one, whose frames
-hold every segment by pixel value, is refused by name.
+Two segments whose labels make one class but code different concepts, or
+carry different type modifiers (Left and Right Kidney, both labelled
+`Kidney`), are refused. A `BINARY` or `FRACTIONAL` SEG is read; a `LABELMAP`
+one, whose frames hold every segment by pixel value, is refused by name.
+
+**Concepts come in with the segments.** A class minted from a SEG takes its
+property type as an ontology binding, with the system spelled as §5.2 spells
+it where the designator is one the converters know (`SCT` → `SNOMED-CT`,
+`RADLEX` → `RadLex`, `FMA`, `UBERON`, `LN` → `LOINC`, `I10` → `ICD-10`,
+`DCM`) and as the file states it where it is not. Its property category is
+kept as `properties["dicom_category"]`, and becomes `category` where the
+concept stands for one: SCT 49755003 is `lesion`, SCT 260787004 `device`, SCT
+309825002 `region`; "Anatomical Structure" is an organ's, a vessel's and a
+bone's alike, so it sets none. A laterality modifier becomes `laterality`
+(the report's `concepts` decision lists both); a modifier that is not a
+laterality has no field to go in, and the report's `modifier` decision names
+it.
 
 **Frames of reference come first.** A SEG is matched to the grid that shares
 its `FrameOfReferenceUID`, and a grid — matched or named with `--grid` — whose
@@ -275,10 +289,39 @@ from_dicom_seg("seg.dcm", "case.medh5", ann_id="organs")
 to_dicom_seg("case.medh5", "organs", ["ct/1.dcm", "ct/2.dcm"], "out.dcm")
 ```
 
-Import preserves overlapping segments and `FRACTIONAL` values. **Export does
-not**: `to_dicom_seg` writes `BINARY` from `dense()`, which for a `probmap`
-applies the stored threshold, so fractional data is thresholded on the way out.
-A binary segment cannot mark an ignore region either — its 0 says examined
+Import preserves overlapping segments and `FRACTIONAL` values. Export writes
+`BINARY` by default (`segmentation_type="binary"`), from `dense()`, which for
+a `probmap` applies the stored threshold — recorded as a `threshold`
+decision. `segmentation_type="fractional"`
+(`--segmentation-type fractional`) writes a `probmap`'s probabilities as a
+`FRACTIONAL` SEG of `fractional_type` `"PROBABILITY"` (the default) or
+`"OCCUPANCY"` (`--fractional-type`), each value stored out of 255 and so
+within 1/510; any other kind is refused (`E401`). Its `fractional` decision
+gives the largest error, how many voxels moved across the stored threshold,
+and says that `threshold` and `normalized` are not carried, a SEG having no
+field for either.
+
+| `to_dicom_seg` keyword | Values | Default |
+|---|---|---|
+| `segmentation_type` | `"binary"`, `"fractional"` | `"binary"` |
+| `fractional_type` | `"PROBABILITY"`, `"OCCUPANCY"` | `"PROBABILITY"` |
+
+**Each segment carries its class's concepts.** The property type is the
+class's first code whose system has a designator; the property category
+`properties["dicom_category"]`, else the concept its `category` stands for
+(`organ`, `vessel`, `bone` → SCT 91723000 "Anatomical Structure", `lesion` →
+SCT 49755003, `device` → SCT 260787004, `region` → SCT 309825002); its
+`laterality` the type modifier (SCT 7771000, 24028007, 51440002). The
+algorithm type follows the annotation's `prov`: a `predict` activity by a
+software agent of stated version is `AUTOMATIC`, identified by that software
+with family DCM 123110 "Artificial Intelligence"; `annotate` and `review` are
+`MANUAL`. DICOM requires all three, so where the sample states none the
+export writes the generic one — SCT 91723000, `MANUAL` — and records a guess
+(`property_type`, `property_category`, `algorithm_type`) naming the classes.
+A more specific concept than the sample states is never written, and a
+designator is never invented.
+
+A segment cannot mark an ignore region either — its 0 says examined
 and absent — so an annotation that ignores any voxel (§7.7) is refused;
 `to_nifti` with `annotation=` writes its labelmap, ignore id included. A SEG
 holds one segment per class: the export takes a `labelmap`, `layers`,
