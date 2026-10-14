@@ -46,7 +46,9 @@ and the DICOM extras declare the pydicom floor highdicom requires.
   Windows too. On every platform a file is opened and marked in one hold of
   HDF5's lock, and the programs medh5 starts itself (the Python commands of
   the standalone `medh5`, the interpreter probe) start only outside it, so none
-  can catch a file between the two.
+  can catch a file between the two; on Linux, where a starting child shares
+  every open file for an instant after the parent resumes, medh5 also waits
+  for that instant to pass before another file is closed or opened.
 - **The DICOM extras require pydicom 3.0.1.** highdicom 0.23 requires it, so
   the declared 3.0 floor was one no install of `medh5[dicomseg]` could resolve;
   `medh5[dicom]` and `medh5[dicomseg]` now say `pydicom>=3.0.1`, and CI installs

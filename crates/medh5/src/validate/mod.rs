@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn s15_2_a_rule_that_stops_reports_its_own_code_and_the_rest_still_run() {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("x.medh5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("x.medh5"))).unwrap();
         let mut ctx = rules::Context::new(file.as_group().unwrap(), "x.medh5", "semantic", Vec::new(), false);
         let rules: [(&'static str, rules::Rule); 3] =
             [("check_a", stops_on_a_defect), ("check_b", cannot_read), ("check_c", finds_one)];
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn s15_2_an_object_that_cannot_be_read_is_e001_where_it_is() {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("x.medh5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("x.medh5"))).unwrap();
         let ctx = rules::Context::new(file.as_group().unwrap(), "x.medh5", "semantic", Vec::new(), false);
         let defect = ctx.failed("/grids/g", &Error::coded("E104", "spacing (0.0, 1.0) must be finite and > 0"));
         assert_eq!((defect.code.as_str(), defect.location.as_str()), ("E104", "/grids/g"));

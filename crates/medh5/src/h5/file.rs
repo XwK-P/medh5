@@ -702,7 +702,7 @@ mod tests {
         close_everything(file, false).unwrap();
         assert!(!kept.is_valid() && !group.is_valid());
         assert!(super::super::alive(&kept).is_err());
-        let again = hdf5::File::open_rw(&path).unwrap();
+        let again = crate::h5::file::marked(|| hdf5::File::open_rw(&path)).unwrap();
         assert_eq!(again.dataset("d").unwrap().read_raw::<i32>().unwrap(), vec![1, 2, 3]);
         drop((kept, group));
     }
