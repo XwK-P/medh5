@@ -35,9 +35,42 @@ env:
 # stable had added since the pull request failed `clippy -D warnings`.
 
 jobs:
+  changes:
+    # Whether this run has anything to test.  A pull request that changes only
+    # `plans/` --- release plans, which nothing builds, tests or publishes ---
+    # skips every other job, and `ci-ok` passes it on this job's word.  A push
+    # to `main` and the release's call always test: each is a record of its
+    # commit.  The checkout is the pull request's merge commit, whose first
+    # parent is the base, so two commits are all the diff needs.  Without
+    # rename detection a file moved into `plans/` counts where it left as well.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          code=true
+          if [ "$EVENT" = pull_request ]; then
+            changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
+            printf '%s\n' "$changed"
+            if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -qv '^plans/'; then
+              code=false
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   rust:
     # The engine and the native command line: formatting, lints, and every
     # Rust test --- unit tests, the conformance corpus, the README doctest.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -71,6 +104,8 @@ jobs:
     # Windows fsync needs, the rename over a file --- is compiled and run at
     # all.  The Python suite reaches the engine on these platforms only through
     # the wheel.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: rust (${{ matrix.runner }})
     strategy:
       fail-fast: false
@@ -92,6 +127,8 @@ jobs:
   msrv:
     # `rust-version` in Cargo.toml is a promise to everyone who depends on the
     # crates; this is where it is kept.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -111,6 +148,8 @@ jobs:
           cargo +"$msrv" check --workspace --all-targets --locked
 
   lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -130,6 +169,8 @@ jobs:
       - run: pre-commit run --all-files --show-diff-on-failure
 
   typecheck:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -143,6 +184,8 @@ jobs:
       - run: mypy medh5
 
   docs:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -166,6 +209,8 @@ jobs:
     # these artifacts as they are, so each is checked here: the binary runs the
     # conformance corpus and hands a converter to the wheel's Python, and the
     # wheel imports and runs the corpus too.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: build (${{ matrix.target }})
     strategy:
       fail-fast: false
@@ -267,6 +312,8 @@ jobs:
     # with the oldest maturin `pyproject.toml` accepts, so the floor it states
     # is one that builds, and writes the licence as PEP 639 says.  `build`
     # runs the one build-dist.sh pins.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -341,6 +388,8 @@ jobs:
     # A copy of the workspace without the file is that build.  medh5-sys must
     # stop it, naming the variable to set, and the binary built with that
     # variable must report damaged files rather than abort on them.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     timeout-minutes: 60
     defaults:
@@ -749,9 +798,11 @@ jobs:
     # added after it was written.  This needs every other job and passes only
     # when each of them passed: `if: always()` makes it run, and fail, when
     # one failed or was skipped, where a skipped required check counts as
-    # passing.
+    # passing.  The one skip it accepts is the one `changes` asked for: when
+    # that job passed and found nothing to test, the rest skipped on its word.
     if: always()
     needs:
+      - changes
       - rust
       - rust-platforms
       - msrv
@@ -779,9 +830,13 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, sys
-          results = {job: needed["result"] for job, needed in json.loads(os.environ["NEEDS"]).items()}
+          needs = json.loads(os.environ["NEEDS"])
+          results = {job: needed["result"] for job, needed in needs.items()}
           for job, result in sorted(results.items()):
               print(f"{job}: {result}")
+          changes = needs["changes"]
+          if changes["result"] == "success" and changes["outputs"]["code"] == "false":
+              sys.exit(0)
           failed = sorted(job for job, result in results.items() if result != "success")
           if failed:
               sys.exit(f"not every job passed: {', '.join(failed)}")
