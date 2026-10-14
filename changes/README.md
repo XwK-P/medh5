@@ -6,6 +6,8 @@ pull request assembles the fragments into the release's section with
 `python .github/scripts/changelog.py build VERSION --date YYYY-MM-DD`, which
 deletes them. Until then the documentation site shows them under
 [Unreleased], and `python .github/scripts/changelog.py preview` prints them.
+A pull request that changes only `plans/` needs no fragment: nothing in it
+ships, and CI skips its checks.
 
 ## The format
 

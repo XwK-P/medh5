@@ -251,8 +251,9 @@ def build(
     version: str, date: str, directory: Path = CHANGES, changelog: Path = CHANGELOG
 ) -> None:
     """Write `version`'s section into `changelog` and delete the fragments."""
-    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
-        raise FragmentError(f"version {version!r} is not X.Y.Z")
+    # As tagged, in Cargo's spelling: a pre-release is `2.1.0-rc.1`.
+    if not re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?", version):
+        raise FragmentError(f"version {version!r} is not X.Y.Z or X.Y.Z-PRE")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
         raise FragmentError(f"date {date!r} is not YYYY-MM-DD")
     check(directory, changelog)

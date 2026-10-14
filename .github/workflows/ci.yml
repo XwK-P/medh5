@@ -165,7 +165,9 @@ jobs:
       # or says it has none; a push to `main` only checks them.  The `if:` is
       # on the step, so the job never skips.  Dependabot's updates and the
       # lock refresh write none; the release pull request deletes them all
-      # (`changelog.py build`), so a deleted fragment counts too.
+      # (`changelog.py build`), so a deleted fragment counts too.  A pull
+      # request that changes only `plans/` skips this job, and needs none:
+      # nothing it changes ships (changes/README.md).
       - name: Every pull request records its change
         if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.head_ref != 'deps/cargo-lock'
         run: |

@@ -88,6 +88,17 @@ def test_build_assembles_sections_in_order_and_entries_by_area(tmp_path) -> None
     assert sorted(p.name for p in changes.iterdir()) == ["README.md"]
 
 
+def test_build_takes_a_pre_release_as_tagged(tmp_path) -> None:
+    changes, log = _tree(tmp_path)
+    _fragment(changes, "lead.md", "**A candidate.**\n")
+    changelog.build("1.1.0-rc.1", "2026-02-03", changes, log)
+    assert "## [1.1.0-rc.1] — 2026-02-03\n\n**A candidate.**\n" in log.read_text(
+        encoding="utf-8"
+    )
+    with pytest.raises(changelog.FragmentError, match="X.Y.Z"):
+        changelog.build("1.1.0rc1", "2026-02-03", changes, log)
+
+
 def test_build_needs_a_lead(tmp_path) -> None:
     changes, log = _tree(tmp_path)
     _fragment(changes, "x.md", "<!-- area: cli -->\n### Fixed\n\n- **Fix.**\n")
