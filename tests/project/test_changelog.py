@@ -154,7 +154,10 @@ def test_a_release_refuses_fragments_left_in_changes(tmp_path) -> None:
 
 def test_check_refuses_entries_under_unreleased(tmp_path) -> None:
     changes, log = _tree(tmp_path)
-    log.write_text(CHANGELOG.replace("[Unreleased]\n\n", "[Unreleased]\n\n- x\n\n"))
+    log.write_text(
+        CHANGELOG.replace("[Unreleased]\n\n", "[Unreleased]\n\n- x\n\n"),
+        encoding="utf-8",
+    )
     with pytest.raises(changelog.FragmentError, match="Unreleased"):
         changelog.check(changes, log)
 

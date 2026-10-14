@@ -276,7 +276,10 @@ def build(
     # would leave the changelog unchanged and the fragments gone.
     if heading not in text:
         raise FragmentError("CHANGELOG.md has no `## [Unreleased]` line, blank after")
-    changelog.write_text(text.replace(heading, heading + section + "\n", 1), "utf-8")
+    # `\n` on every platform: Windows would otherwise write the file as CRLF.
+    changelog.write_text(
+        text.replace(heading, heading + section + "\n", 1), "utf-8", newline="\n"
+    )
     for path in [*paths, lead_path]:
         path.unlink()
 
