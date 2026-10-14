@@ -47,12 +47,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ matrix.ref }}
+        # Only "not found" means the line is not cut; any other failure of the
+        # lookup fails the job rather than skip the audit.
         run: |
-          if [ -z "$REF" ] || gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$REF" --silent; then
+          if [ -z "$REF" ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
+          elif out=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$REF" --silent 2>&1); then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$out" | grep -q 'HTTP 404'; then
             echo "::notice::$REF does not exist yet; nothing to audit"
             echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$out" >&2
+            exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.line.outputs.exists == 'true'
@@ -85,12 +92,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ matrix.ref }}
+        # Only "not found" means the line is not cut; any other failure of the
+        # lookup fails the job rather than skip the audit.
         run: |
-          if [ -z "$REF" ] || gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$REF" --silent; then
+          if [ -z "$REF" ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
+          elif out=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$REF" --silent 2>&1); then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$out" | grep -q 'HTTP 404'; then
             echo "::notice::$REF does not exist yet; nothing to audit"
             echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$out" >&2
+            exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.line.outputs.exists == 'true'

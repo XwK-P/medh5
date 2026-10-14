@@ -771,6 +771,8 @@ class TestRepositoryGates:
             assert 'fromJSON(\'["main", "release/2.0"]\')' in job, name
             assert "ref: ${{ matrix.ref }}" in job, name
             assert 'gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$REF"' in job, name
+            # Only a missing line skips; a failed lookup fails the job.
+            assert "grep -q 'HTTP 404'" in job and "exit 1" in job, name
             # The check comes first, and every step after it waits on it.
             steps = job.split("\n      - ")[1:]
             assert "id: line" in steps[0], name
