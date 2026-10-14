@@ -480,7 +480,14 @@ unsafe fn release_all(fid: crate::h5sys::h5i::hid_t) -> Option<String> {
 
 /// What a test runs on the target just before a commit's rename.
 #[cfg(test)]
-type RenameHook = Box<dyn FnMut(&Path)>;
+pub(crate) type RenameHook = Box<dyn FnMut(&Path)>;
+
+/// Run `hook` on the target just before every commit's rename on this
+/// thread, or no longer with `None`.
+#[cfg(test)]
+pub(crate) fn before_rename(hook: Option<RenameHook>) {
+    BEFORE_RENAME.with(|slot| *slot.borrow_mut() = hook);
+}
 
 #[cfg(test)]
 thread_local! {
@@ -488,6 +495,99 @@ thread_local! {
     /// Set by a test to have the next close report the failure HDF5 reports
     /// of a close it could not finish.
     static CLOSE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// What a writer saw of the file it read: its identity and the
+/// `content_id` it declared.  A commit that would replace the file, or that
+/// reads it again, refuses one that changed since (§14.4): two amendments,
+/// or an amendment and a `repack`, both renamed over the file, and the first
+/// one's work was lost without an error.
+///
+/// This detects a lost update; it does not exclude one.  The last check and
+/// the rename are two calls, and no portable rename compares before it
+/// replaces, so two commits that both pass the last check can still both
+/// rename.  Closing that window needs the exclusive access §14.4 asks of
+/// writers.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Snapshot {
+    /// On POSIX the identity of the file HDF5 read through (device, inode,
+    /// size, modification and change times); on Windows its size and
+    /// last-write time --- not its creation time, which Windows carries over
+    /// when a file is replaced by a rename.
+    identity: Option<Identity>,
+    content_id: Option<String>,
+    /// What read it, as the refusal names it: "amendment", "rewrite".
+    reader: &'static str,
+}
+
+/// A file's identity, as [`Snapshot`] compares it.
+#[cfg(unix)]
+type Identity = super::ops::FileIdentity;
+#[cfg(not(unix))]
+type Identity = (u64, u64);
+
+#[cfg(unix)]
+fn identity_of(meta: &fs::Metadata) -> Option<Identity> {
+    super::ops::identity(meta)
+}
+
+#[cfg(windows)]
+fn identity_of(meta: &fs::Metadata) -> Option<Identity> {
+    use std::os::windows::fs::MetadataExt;
+    Some((meta.file_size(), meta.last_write_time()))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity_of(meta: &fs::Metadata) -> Option<Identity> {
+    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some((meta.len(), modified.as_nanos() as u64))
+}
+
+/// The `content_id` the root of `file` declares, as text.
+fn declared_content_id(file: &hdf5::File) -> Result<Option<String>> {
+    Ok(match super::attrs::read(file, "content_id")? {
+        None => None,
+        Some(super::attrs::AttrValue::Str(s)) => Some(s),
+        Some(other) => Some(super::attrs::stringify_value(&other)),
+    })
+}
+
+impl Snapshot {
+    /// What `reader` sees of `file`, open read-only from `path`.
+    pub(crate) fn of(file: &hdf5::File, path: &Path, reader: &'static str) -> Result<Snapshot> {
+        #[cfg(unix)]
+        let identity = super::ops::opened_identity(file, Some(path)).or_else(|| identity_of(&fs::metadata(path).ok()?));
+        #[cfg(not(unix))]
+        let identity = fs::metadata(path).ok().and_then(|meta| identity_of(&meta));
+        Ok(Snapshot { identity, content_id: declared_content_id(file)?, reader })
+    }
+
+    /// Refuse `path` if it is no longer the file this snapshot saw (§14.4).
+    /// The file is opened, to read its `content_id`, and closed again before
+    /// this returns: Windows cannot replace a file that is open.
+    pub(crate) fn check(&self, path: &Path) -> Result<()> {
+        let changed = || {
+            Error::File(format!(
+                "{} changed after this {} read it; nothing was written: {} it again",
+                repr_str(&path.to_string_lossy()),
+                self.reader,
+                if self.reader == "amendment" { "amend" } else { "run" },
+            ))
+        };
+        let Some(identity) = fs::metadata(path).ok().and_then(|meta| identity_of(&meta)) else {
+            return Err(changed());
+        };
+        if self.identity.is_some_and(|seen| seen != identity) {
+            return Err(changed());
+        }
+        let file = open_read(path).map_err(|_| changed())?;
+        let declared = declared_content_id(&file);
+        close_everything(file, false)?;
+        if declared? != self.content_id {
+            return Err(changed());
+        }
+        Ok(())
+    }
 }
 
 /// An HDF5 file being written to a temporary sibling of its target.
@@ -500,6 +600,9 @@ pub struct AtomicFile {
     tmp: PathBuf,
     mode: Option<u32>,
     handle: Option<hdf5::File>,
+    /// A file the commit refuses to replace the target over if it changed
+    /// since it was read: the source of an amendment or a rewrite.
+    unchanged: Option<(PathBuf, Snapshot)>,
 }
 
 impl AtomicFile {
@@ -516,7 +619,7 @@ impl AtomicFile {
         let mode = existing_mode(&target);
         precreate(&tmp, mode)?;
         match create_truncate(&tmp) {
-            Ok(handle) => Ok(AtomicFile { target, tmp, mode, handle: Some(handle) }),
+            Ok(handle) => Ok(AtomicFile { target, tmp, mode, handle: Some(handle), unchanged: None }),
             Err(err) => {
                 let _ = fs::remove_file(&tmp);
                 Err(err)
@@ -540,10 +643,19 @@ impl AtomicFile {
         &self.tmp
     }
 
+    /// Have [`commit`](AtomicFile::commit) refuse, just before it replaces
+    /// the target, if `source` is no longer the file `seen` saw (§14.4).
+    pub(crate) fn expect_unchanged(&mut self, source: PathBuf, seen: Snapshot) {
+        self.unchanged = Some((source, seen));
+    }
+
     /// Close and atomically move the file into place.
     ///
     /// Everything opened through the file is closed with it, so nothing a
-    /// caller kept can hold the written file open across the rename.
+    /// caller kept can hold the written file open across the rename.  A
+    /// source named by [`expect_unchanged`](AtomicFile::expect_unchanged)
+    /// that changed is refused as the last thing before the rename, and the
+    /// target is left as it was.
     pub fn commit(mut self) -> Result<()> {
         if let Some(handle) = self.handle.take() {
             close_everything(handle, true)?;
@@ -561,6 +673,9 @@ impl AtomicFile {
                     hook(&self.target)
                 }
             });
+            if let Some((source, seen)) = &self.unchanged {
+                seen.check(source)?;
+            }
             replace(&self.tmp, &self.target)?;
             if let Some(parent) = self.target.parent() {
                 fsync_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent });
@@ -642,7 +757,9 @@ pub fn atomic_rewrite<T>(
 ) -> Result<T> {
     let dst_path = target.unwrap_or(source);
     let src = open_read(source)?;
-    let out = AtomicFile::create(dst_path)?;
+    let seen = Snapshot::of(&src, source, "rewrite")?;
+    let mut out = AtomicFile::create(dst_path)?;
+    out.expect_unchanged(source.to_path_buf(), seen);
     let value = build(&src, out.handle())?;
     // Everything the build opened in the source, closed with it: a source
     // still open cannot be replaced on Windows.
@@ -1101,5 +1218,64 @@ mod tests {
         assert!(!kept.into_inner().unwrap().is_valid());
         let again = open_read(&path).unwrap();
         assert_eq!(again.dataset("d").unwrap().read_raw::<i32>().unwrap(), vec![1, 2, 3]);
+    }
+
+    /// A copy of `path` holding `value`, renamed over it: what another
+    /// writer's commit does.
+    fn replaced_by_another(path: &Path, value: i32) {
+        let other = path.with_extension("other");
+        fs::copy(path, &other).unwrap();
+        open_rw(&other).unwrap().dataset("v").unwrap().write(&[value]).unwrap();
+        fs::rename(&other, path).unwrap();
+    }
+
+    /// A rewrite in place refuses a source that another writer replaced, or
+    /// changed in place, after it was read: renamed over it, the other
+    /// writer's work was lost without an error.  The check is the last thing
+    /// before the rename, and leaves no temporary file behind.
+    #[test]
+    fn s14_4_a_repack_refuses_a_source_that_changed() {
+        for in_place in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("rw.h5");
+            write_value(&path, 1).unwrap();
+            before_rename(Some(Box::new(move |target: &Path| {
+                if in_place {
+                    open_rw(target).unwrap().dataset("v").unwrap().write(&[2]).unwrap();
+                } else {
+                    replaced_by_another(target, 2);
+                }
+            })));
+            let rewritten = atomic_rewrite(&path, None, |src, dst| {
+                let value = src.dataset("v")?.read_raw::<i32>()?;
+                dst.new_dataset::<i32>().shape([1]).create("v")?.write(&value)?;
+                Ok(())
+            });
+            before_rename(None);
+            let err = rewritten.unwrap_err();
+            assert!(matches!(err, Error::File(_)), "{err:?}");
+            let shown = repr_str(&path.to_string_lossy());
+            assert_eq!(
+                err.to_string(),
+                format!("{shown} changed after this rewrite read it; nothing was written: run it again")
+            );
+            assert_eq!(read_value(&path), 2, "in place: {in_place}");
+            assert!(no_temporaries(dir.path()));
+        }
+    }
+
+    /// An unchanged source is replaced as before.
+    #[test]
+    fn s14_4_a_rewrite_of_an_unchanged_source_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rw.h5");
+        write_value(&path, 1).unwrap();
+        atomic_rewrite(&path, None, |src, dst| {
+            let value = src.dataset("v")?.read_raw::<i32>()?;
+            dst.new_dataset::<i32>().shape([1]).create("v")?.write(&[value[0] + 1])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(read_value(&path), 2);
     }
 }

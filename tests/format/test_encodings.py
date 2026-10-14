@@ -36,7 +36,7 @@ from medh5.annotations.voxel import (
 from medh5.errors import MEDH5ValidationError
 from medh5.labels import LabelClass, LabelSet
 from medh5.validate import validate_file
-from tests.helpers import block
+from tests.helpers import attested_as_written, block
 from tests.kits import Framed, Numbered
 
 SHAPE = (12, 16, 16)
@@ -690,6 +690,7 @@ class TestTranscodingRefusesWhatItCannotCarry:
             data[data == 65535] = 200
             group["data"][...] = data
             group.attrs["ignore_id"] = np.int64(200)
+        attested_as_written(path)
 
         with medh5.amend(path) as writer:
             writer.transcode_annotation("seg", "layers")

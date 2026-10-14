@@ -337,6 +337,23 @@ built on not telling one.
 A 2-D-native path can be added in a minor version if a concrete need appears —
 §3.6 already supports 2-D grids.
 
+## Amending refuses what it cannot attest
+
+Every command that changes a sample amends it: a scrub, a split claim, a
+clinical augmentation, `seg`, `medh5.amend`. An amendment refuses, before it
+writes anything, a file whose `content_id` no longer recomputes from what it
+stores (`E702`) or that holds a digest, or declares a `digest_algo`, it cannot
+read (`E703`). Its commit recomputes every digest and the `content_id` from
+whatever is stored, so amending such a file would attest an edit nobody
+verified, and the only record that the file had changed would be gone.
+`medh5 fix --rewrite-digests --reason` is the one way to re-attest it, and it
+writes the reason into the file's provenance.
+
+An amendment also refuses to replace a file that changed after it read it:
+another writer's commit renamed over it, or an edit in place. Both commits
+used to succeed, and the first one's work disappeared. This is detection, not
+a lock — see [the design rationale](design-rationale.md#amendments-detect-a-lost-update-rather-than-lock-it-out).
+
 ## Related
 
 - **[Converters](../reference/converters.md)** — the commands and their options.

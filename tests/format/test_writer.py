@@ -27,7 +27,7 @@ from medh5.annotations.voxel import InstanceInput
 from medh5.errors import MEDH5FileError, MEDH5ValidationError, MEDH5VersionError
 from medh5.labels import LabelClass, LabelSet
 from medh5.validate import validate_file
-from tests.helpers import LATER_MINOR
+from tests.helpers import LATER_MINOR, attested_as_written
 from tests.kits import Flat, Framed, Numbered, Organs
 
 # Each door a boolean volume comes in by, writing it into annotation `a`, and
@@ -513,6 +513,7 @@ class TestRewriteGate:
         with h5py.File(path, "r+") as handle:
             handle.attrs["medh5_version"] = "1.1"
             handle.create_group("x_future")
+        attested_as_written(path)
         with medh5.amend(path):
             pass
         with h5py.File(path, "r") as handle:
@@ -528,6 +529,7 @@ class TestRewriteGate:
         path = Numbered.plain(tmp_path / "v11.medh5")
         with h5py.File(path, "r+") as handle:
             handle.attrs["medh5_version"] = "1.1"
+        attested_as_written(path)
         with medh5.amend(path) as w:
             w.drop_clinical()
         with h5py.File(path, "r") as handle:
@@ -762,6 +764,76 @@ def _fix(path: Path) -> None:
     with h5py.File(path, "r+") as handle:  # an edit behind the writer's back
         handle["images/CT"][0, 0, 0] = 7
     assert fix(path, rewrite_digests=True, reason="edited by another tool").changed
+
+
+class TestLostUpdates:
+    """§14.4: an amendment refuses to replace a file that changed after it read
+    it.  Two amendments, or an amendment and an edit, both went through, and
+    the first one's work was lost without an error."""
+
+    def _sample(self, path: Path) -> Path:
+        with Organs.writer(path) as w:
+            w.add_segmentation("seg", grid="g", masks=Organs.blocks())
+        return path
+
+    @staticmethod
+    def _refused(writer: Any, path: Path) -> None:
+        with pytest.raises(MEDH5FileError) as err:
+            writer.commit()
+        assert str(err.value) == (
+            f"{str(path)!r} changed after this amendment read it; nothing was "
+            "written: amend it again"
+        )
+        assert writer.closed
+
+    @staticmethod
+    def _note(path: Path, note: str) -> None:
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["x_note"] = note
+
+    def test_S14_4_a_commit_refuses_a_source_another_writer_replaced(
+        self, tmp_path: Path
+    ):
+        path = self._sample(tmp_path / "case.medh5")
+        writer = medh5.amend(path)
+        writer.set_quality("seg", status="approved")
+        other = tmp_path / "other.medh5"
+        other.write_bytes(path.read_bytes())
+        self._note(other, "another writer")
+        os.replace(other, path)
+        self._refused(writer, path)
+        with h5py.File(path, "r") as handle:
+            assert handle.attrs["x_note"] == "another writer"
+        assert [p.name for p in tmp_path.iterdir()] == [path.name]
+
+    def test_S14_4_a_commit_refuses_a_source_modified_in_place(self, tmp_path: Path):
+        path = self._sample(tmp_path / "case.medh5")
+        writer = medh5.amend(path)
+        writer.set_quality("seg", status="approved")
+        self._note(path, "edited in place")
+        self._refused(writer, path)
+        with h5py.File(path, "r") as handle:
+            assert handle.attrs["x_note"] == "edited in place"
+        with medh5.open(path) as sample:
+            assert "seg" not in sample.document.quality
+        assert [p.name for p in tmp_path.iterdir()] == [path.name]
+
+    def test_S14_4_an_amendment_that_read_before_another_committed_is_refused(
+        self, tmp_path: Path
+    ):
+        path = self._sample(tmp_path / "case.medh5")
+        first = medh5.amend(path)
+        first.set_quality("seg", status="approved")
+        with medh5.amend(path) as second:
+            second.set_quality("seg", status="rejected")
+        self._refused(first, path)
+        with medh5.open(path) as sample:
+            assert sample.document.quality["seg"].status == "rejected"
+        # Amended again, from what is there now, it commits.
+        with medh5.amend(path) as again:
+            again.set_quality("seg", status="approved")
+        with medh5.open(path) as sample:
+            assert sample.document.quality["seg"].status == "approved"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privilege")
@@ -1072,8 +1144,10 @@ class TestWriterEqualsValidator:
         validator there is one list --- which this checks from the outside, over
         the conformance corpus: a no-op amend of each of its files either
         refuses the file or writes one the validator passes, and a valid case
-        comes back valid.  A valid higher-minor file is the one valid sample
-        that must be refused: 1.1 §2.3 forbids amending a projection.
+        comes back valid.  A valid higher-minor file is one valid sample that
+        must be refused: 1.1 §2.3 forbids amending a projection.  A case valid
+        at its level whose `content_id` the integrity level fails (E702) is
+        another: §14.4 forbids carrying attestation past a break.
         """
         from medh5.conformance import CASES
         from medh5.errors import MEDH5Error
@@ -1085,12 +1159,15 @@ class TestWriterEqualsValidator:
             try:
                 with medh5.amend(path):
                     pass
-            except (MEDH5Error, OSError):
+            except (MEDH5Error, OSError) as err:
                 refused += 1
                 projection = "W913" in case.warnings
-                assert not case.valid or case.suffix == ".medh5c" or projection, (
-                    case.name
+                broken = getattr(err, "code", None) == "E702" and "E702" in (
+                    validate_file(path, level="integrity").codes
                 )
+                assert (
+                    not case.valid or case.suffix == ".medh5c" or projection or broken
+                ), case.name
                 continue
             written += 1
             errors = [c for c in validate_file(path).codes if c.startswith("E")]
@@ -1113,6 +1190,7 @@ class TestDuplicateIds:
             handle.create_dataset(
                 "meta", data=json.dumps(doc), dtype=h5py.string_dtype()
             )
+        attested_as_written(path)
         return path
 
     @pytest.mark.parametrize("section", ["agents", "activities"])

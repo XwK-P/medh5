@@ -99,6 +99,17 @@ digest that no longer matches is *evidence that the bytes changed*, and
 recomputing it destroys the evidence. That is why it needs a reason it can
 record — see [`medh5 fix`](../reference/cli.md#medh5-fix).
 
+A file reporting `E702` at `/` was changed outside medh5 after its
+`content_id` was written; one reporting `E703` holds a digest, or declares a
+`digest_algo`, nothing can check. No command amends either — a scrub, a split
+claim and an added annotation each refuse it, naming the repair — because the
+commit would restamp the change with no record of it. Restore the file from a
+copy you trust, or re-attest it deliberately:
+
+```bash
+medh5 fix case.medh5 --rewrite-digests --reason "spacing corrected by hand, checked against the DICOM"
+```
+
 ## Check the cohort too
 
 Every file can be valid while the cohort is unusable — two label sets, or a

@@ -288,9 +288,10 @@ refuses (below) changes nothing and leaves the writer open, so the defect can
 be mended and `commit()` called again; in a `with` block the refusal aborts.
 Committing an aborted writer raises. An amendment stamps what it writes, in
 the file's own digest algorithm, and never restamps a digest its source
-already failed: a file edited behind the library's back is refused (`E701`)
-until its bytes are restored or `medh5 fix --rewrite-digests` restamps them
-with a recorded reason.
+already failed: a file edited behind the library's back is refused (`E701`,
+or `E702` when the edit changed what its `content_id` covers) until its bytes
+are restored or `medh5 fix --rewrite-digests` restamps them with a recorded
+reason.
 
 ### Document
 
@@ -443,7 +444,18 @@ are copied through untouched, so amending never silently drops what it cannot
 read. A file it cannot preserve is refused before anything is written: a later
 minor version (read as a projection, `MEDH5VersionError`), a profile this
 package does not implement (`E007`), or one holding HDF5 references — addresses
-in the old file, which no copy preserves (`MEDH5FileError`).
+in the old file, which no copy preserves (`MEDH5FileError`). So is a file
+whose attestation no longer holds: a `content_id` that does not recompute from
+what the file stores (`E702`, an edit made outside medh5), or a digest or
+`digest_algo` this package cannot read (`E703`). An amendment would restamp
+either, attesting bytes nobody verified; `medh5 fix --rewrite-digests --reason`
+re-attests the file deliberately, and records that it did.
+
+An amendment that finds its source changed after it read it — replaced by
+another writer's commit, or edited in place — refuses to commit
+(`MEDH5FileError`, "changed after this amendment read it; nothing was
+written"), and so does a `repack` or `recompress` in place: renamed over the
+file, the other writer's work was lost without an error. Amend it again.
 
 On POSIX, anything holding the file open across an amend keeps reading the old
 version; Windows cannot replace a file that is open, so close every reader of

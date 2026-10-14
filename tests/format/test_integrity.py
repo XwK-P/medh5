@@ -583,6 +583,138 @@ class TestAmendStamping:
             assert sample.verify().ok
 
 
+class TestAttestationCarriedForward:
+    """§14.4, §2.1: an amendment carries attestation forward, never past a
+    break.  A commit recomputes the `content_id` from whatever is stored, so a
+    no-op amendment of a file edited outside medh5 made it validate, with no
+    record of the edit; and an algorithm it could not compute gave way to
+    `sha256`."""
+
+    def _sample(self, path: Path) -> Path:
+        with Organs.writer(path) as w:
+            w.add_segmentation("seg", grid="g", masks=Organs.blocks())
+        return path
+
+    @staticmethod
+    def _stale(path: Path) -> None:
+        """An edit of a covered attribute, made outside medh5 (E702 at /)."""
+        with h5py.File(path, "r+") as handle:
+            handle["grids/g"].attrs["spacing"] = np.array([2.0, 2.0, 2.0])
+        assert at_location(validate_file(path, level="integrity"), "/") == ["E702"]
+
+    def test_S14_4_an_amendment_does_not_reattest_a_stale_root(self, tmp_path: Path):
+        from medh5.curation import scrub
+        from medh5.dataset.manifest import scan
+        from medh5.dataset.split import make_splits, write_claims
+
+        cohort = tmp_path / "cohort"
+        cohort.mkdir()
+        path = self._sample(cohort / "case.medh5")
+        self._stale(path)
+        before = path.read_bytes()
+
+        def amended() -> None:
+            with medh5.amend(path) as w:
+                w.set_quality("seg", status="approved")
+
+        def scrubbed() -> None:
+            scrub.apply(path)
+
+        def claimed() -> None:
+            manifest, failures = scan(cohort)
+            assert not failures
+            write_claims(make_splits(manifest), manifest)
+
+        for amend in (amended, scrubbed, claimed):
+            with pytest.raises(MEDH5ValidationError) as err:
+                amend()
+            assert err.value.code == "E702", amend.__name__
+            assert "medh5 fix --rewrite-digests --reason" in str(err.value)
+            assert path.read_bytes() == before, amend.__name__
+            assert sorted(p.name for p in cohort.iterdir()) == ["case.medh5"]
+
+    def test_S14_4_fix_reattests_a_stale_root_deliberately(self, tmp_path: Path):
+        from medh5.integrity import diagnose, fix
+
+        path = self._sample(tmp_path / "case.medh5")
+        self._stale(path)
+        assert diagnose(path).content_id_ok is False
+        repair = fix(path, rewrite_digests=True, reason="spacing corrected by hand")
+        assert repair.rewrote_digests
+        assert validate_file(path, level="integrity").ok
+        with medh5.open(path) as sample:
+            (activity,) = sample.document.provenance.activities
+            assert activity.params["reason"] == "spacing corrected by hand"
+            assert activity.params["verified_content"] is False
+            assert "digest_algo" not in activity.params
+        # Re-attested, it amends as any file does.
+        with medh5.amend(path) as w:
+            w.set_quality("seg", status="approved")
+        assert validate_file(path, level="integrity").ok
+
+    @staticmethod
+    def _unknown_algo(path: Path) -> None:
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["digest_algo"] = "blake3"
+
+    def test_S2_1_an_amendment_refuses_an_algorithm_it_cannot_compute(
+        self, tmp_path: Path
+    ):
+        path = self._sample(tmp_path / "case.medh5")
+        self._unknown_algo(path)
+        before = path.read_bytes()
+        for digests in (True, False):
+            with pytest.raises(MEDH5ValidationError) as err:
+                w = medh5.amend(path)
+                w.set_quality("seg", status="approved")
+                w.commit(digests=digests)
+            assert err.value.code == "E703"
+            assert "'blake3'" in str(err.value)
+            assert "medh5 fix --rewrite-digests --reason" in str(err.value)
+            assert path.read_bytes() == before
+        assert [p.name for p in tmp_path.iterdir()] == ["case.medh5"]
+
+    def test_S2_1_fix_restamps_an_unknown_algorithm_and_records_it(
+        self, tmp_path: Path
+    ):
+        from medh5.integrity import diagnose, fix
+
+        path = self._sample(tmp_path / "case.medh5")
+        self._unknown_algo(path)
+
+        def verified() -> None:
+            with medh5.open(path) as sample:
+                sample.verify()
+
+        for refused in (lambda: diagnose(path), lambda: fix(path), verified):
+            with pytest.raises(MEDH5ValidationError, match="--rewrite-digests") as err:
+                refused()
+            assert err.value.code == "E703"
+        repair = fix(path, rewrite_digests=True, reason="imported from a blake3 tool")
+        assert repair.rewrote_digests
+        assert any("'blake3'" in note and "sha256" in note for note in repair.notes)
+        assert validate_file(path, level="integrity").ok
+        with h5py.File(path, "r") as handle:
+            assert handle.attrs["digest_algo"] == "sha256"
+        with medh5.open(path) as sample:
+            (activity,) = sample.document.provenance.activities
+            assert activity.params["digest_algo"] == {"from": "blake3", "to": "sha256"}
+            assert activity.params["verified_content"] is False
+
+    def test_S13_1_an_unreadable_digest_refuses_an_amendment_as_E703(
+        self, tmp_path: Path
+    ):
+        path = self._sample(tmp_path / "case.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["images/CT"].attrs["digest"] = encode_attr("sha256:not-hex")
+        before = path.read_bytes()
+        with pytest.raises(MEDH5ValidationError) as err, medh5.amend(path):
+            pass
+        assert err.value.code == "E703"
+        assert "/images/CT" in str(err.value)
+        assert path.read_bytes() == before
+
+
 class TestDigestedTypes:
     """What each stored type hashes as (§13.1), as 1.x hashed it through h5py."""
 

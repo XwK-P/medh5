@@ -188,6 +188,27 @@ honestly** — coverage, provenance, geometry and integrity.
 | Converter grouping | **By subject, falling back to study — loudly** | Subject grouping is the point of the model. But de-identification often destroys cross-study identity, and guessing it from dates, filenames or accession numbers would fabricate exactly the linkage the format exists to make trustworthy (Appendix B). |
 | Is `timepoints` always required? | **Yes, at least one** | One code path: every grid can resolve its visit and no reader branches on presence. A cross-sectional sample pays one two-field object (§3.7). |
 
+### Amendments detect a lost update rather than lock it out
+
+§14.4 asks writers to hold exclusive access, and amend builds a new file and
+renames it over the old. The engine does not hold the source open or locked
+for the life of an amendment: a lock is unreliable on NFS, Lustre and GPFS
+(§14.4), and Windows cannot replace a file that is open. Instead an amendment,
+and a `repack` or `recompress` in place, records the source's identity when it
+reads it — on POSIX the file HDF5 read through, by device, inode, size and
+modification and change times; on Windows its size and last-write time — and
+the `content_id` it declares, and refuses to commit if either changed: at the
+commit's start, before it reads the source again, and as the last thing
+before the rename. `content_id` alone would miss `index/`, uncovered
+attributes and extensions.
+
+This is detection, not exclusion. The last check and the rename are two
+calls, and no portable rename compares before it replaces, so two commits
+that both pass the last check can still both rename. Closing that window needs
+the exclusive access §14.4 already asks of writers; what the check removes is
+the common case, an amendment whose source another writer replaced while it
+was being built.
+
 ## The costs accepted
 
 | Cost | Why it was worth paying |

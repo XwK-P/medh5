@@ -828,6 +828,30 @@ class TestHeldVersions:
         assert caught.value.code == "E809"
         assert "transform 'tp1_to_tp0'" in str(caught.value)
 
+    @pytest.mark.parametrize("attr", ["rescale_slope", "modality"])
+    def test_S7_3_an_attested_image_s_attributes_are_immutable(
+        self, tmp_path: Path, attr: str
+    ):
+        """What 1.0 §13.2 covers of an attested image is held with its pixels:
+        a slope rescales every voxel read, and an edit to it passed while the
+        pixels were unchanged."""
+        path = tmp_path / "ct.medh5"
+        History.write(path)
+        before = path.read_bytes()
+        value = {"rescale_slope": 2.0, "modality": "MR"}[attr]
+        with pytest.raises(MEDH5ValidationError) as caught, medh5.amend(path) as w:
+            w.handle["images/CT_tp0"].attrs[attr] = value
+        assert caught.value.code == "E809"
+        assert "image 'CT_tp0', which event 'ct0' attests" in str(caught.value)
+        assert path.read_bytes() == before
+        # An image no version attests is the amendment's to change.
+        with medh5.amend(path) as w:
+            pet = np.ones(History.SHAPE, dtype=np.float32)
+            w.add_image("PT_tp0", pet, grid="ct_tp0", modality="PT")
+        with medh5.amend(path) as w:
+            w.handle["images/PT_tp0"].attrs[attr] = value
+        assert not validate_file(path, level="integrity").errors
+
     def _note(self, path: Path) -> ClinicalRecords:
         History.write(path, events=[self.NOTE])
         with medh5.open(path) as s:
