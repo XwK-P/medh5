@@ -1587,6 +1587,52 @@ class TestCohortCheck:
         legacy = Manifest(entries=[replace(e, class_keys={}) for e in built])
         assert "C102" in {f.code for f in check(legacy).errors}
 
+    def test_D25_labels_check_groups_as_C101_does(self, tmp_path, label_set, capsys):
+        """Two empty label sets with different ids are two vocabularies, a file
+        without one is none, and two equal label sets are one --- the same from
+        ``medh5 labels check``, ``medh5.labels.check`` and C101/C103."""
+        root = tmp_path / "d25"
+        root.mkdir()
+        empty = [LabelSet(name, version="1.0.0", classes=[]) for name in ("e1", "e2")]
+        paths = [
+            write_sample(root / "e1.medh5", label_set=empty[0], masks={}),
+            write_sample(root / "e2.medh5", label_set=empty[1], masks={}),
+            write_sample(root / "none.medh5", masks={}),
+            write_sample(root / "s1.medh5", label_set=label_set, masks={}),
+            write_sample(root / "s2.medh5", label_set=label_set, masks={}),
+        ]
+        names = [str(p) for p in paths]
+
+        def grouping(vocabularies: dict[str, list[str]]) -> set[frozenset[str]]:
+            return {
+                frozenset(Path(f).stem for f in files)
+                for files in vocabularies.values()
+            }
+
+        expected = {
+            frozenset({"e1"}),
+            frozenset({"e2"}),
+            frozenset({"none"}),
+            frozenset({"s1", "s2"}),
+        }
+        found = medh5.labels.check(names)
+        assert grouping(found["vocabularies"]) == expected
+        assert not found["ok"] and not found["unreadable"]
+        assert found["vocabularies"]["<none>"] == [str(paths[2])]
+        assert [f["path"] for f in found["files"]] == names
+
+        assert main(["labels", "check", "--json", *names]) == 1
+        printed = json.loads(capsys.readouterr().out)
+        assert printed["vocabularies"] == found["vocabularies"]
+        assert printed["files"] == found["files"]
+
+        built, _ = scan(root)
+        report = check(built)
+        c101 = next(f for f in report.findings if f.code == "C101")
+        c103 = next(f for f in report.findings if f.code == "C103")
+        assert c101.message.startswith("3 distinct label sets")
+        assert {Path(w).stem for w in c103.where} == {"none"}
+
     def test_C103_a_sample_without_a_label_set_is_flagged(self, cohort):
         write_sample(cohort / "bare.medh5", sample_id="bare")
         built, _ = scan(cohort)

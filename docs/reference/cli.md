@@ -234,7 +234,11 @@ Inspect a file's label set, check a cohort's label sets against each other, and
 list the bundled vocabularies. With `--json`, `check` gives every file an entry
 under `files` — its vocabulary key, or why it could not be read — beside the
 files grouped by vocabulary (`vocabularies`) and the failures by path
-(`unreadable`).
+(`unreadable`). Files share a vocabulary when their label sets have one digest,
+the rule `dataset check` applies for `C101`: an empty label set is a vocabulary
+of its own (`id@version#` and 16 hex digits, as any other), and `<none>` holds
+only the files that declare no label set. `medh5.labels.check(paths)` returns
+the same document.
 
 ## Curation
 

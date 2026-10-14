@@ -421,6 +421,7 @@ __all__ = [
     "is_proper_rotation",
     "jacobian_determinant",
     "label_dtype_size",
+    "labels_check",
     "layers_from_colouring",
     "legacy_build_label_set",
     "legacy_is",
@@ -1473,6 +1474,7 @@ def is_proper_rotation(matrix: npt.ArrayLike, tol: float = ...) -> bool: ...
 def jacobian_determinant(
     field: npt.NDArray[Any], grid: Grid, *, vector_space: str = "world"
 ) -> npt.NDArray[np.float64]: ...
+def labels_check(paths: Sequence[str | os.PathLike[str]]) -> dict[str, Any]: ...
 def label_dtype_size(class_ids: Sequence[int], *, ignore: bool = False) -> int: ...
 def layers_from_colouring(
     colouring: Mapping[int, int],

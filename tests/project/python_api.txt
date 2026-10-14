@@ -3240,6 +3240,7 @@ medh5.labels.Skeleton.keypoints	field
 medh5.labels.Skeleton.to_json	method	()
 medh5.labels.available	function	()
 medh5.labels.canonical_json	function	(doc)
+medh5.labels.check	function	(paths)
 medh5.labels.check_class_id	function	(class_id)
 medh5.labels.describe	function	()
 medh5.labels.from_keys	function	(keys, *, id, version='1.0.0', start=1)
