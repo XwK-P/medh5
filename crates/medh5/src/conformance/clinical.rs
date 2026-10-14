@@ -507,10 +507,11 @@ fn tempdir_beside(path: &Path) -> Result<std::path::PathBuf> {
 /// A later minor as 1.1 reads it: an unknown profile, `/meta` member, image
 /// value type, event kind, column and attribute --- each W913, none an error.
 fn higher_minor(path: &Path) -> Result<()> {
+    let later = crate::version::next_minor(crate::version::LATEST_VERSION).expect("LATEST_VERSION parses");
     worked_example(path)?;
     mutate(path, |root| {
         rewrite_clinical(root, |r| event_mut(r, "lab0").kind = "genomic_result".into())?;
-        set_str(root, "", "medh5_version", "1.2")?;
+        set_str(root, "", "medh5_version", &later)?;
         set_attr(
             root,
             "",
@@ -518,16 +519,17 @@ fn higher_minor(path: &Path) -> Result<()> {
             AttrValue::strs(&["clinical", "core", "future_profile", "longitudinal", "reg", "seg"]),
         )?;
         set_meta(root, |d| {
-            d.insert("future_member".into(), json!({"defined_by": "MEDH5 1.2"}));
+            d.insert("future_member".into(), json!({"defined_by": format!("MEDH5 {later}")}));
         })?;
         set_str(root, "images/CT_tp0", "value_type", "photon_counting")?;
         let events = root.group("clinical/events")?;
         let n = Clinical::open(root, true)?.map(|c| c.events.len()).unwrap_or(0);
         data::create(&events, "future_column", &NdArray::from_vec(&[n], vec![0i64; n])?, &Layout::contiguous())?;
-        attrs::write(&events, "future_attribute", &AttrValue::Str("defined by 1.2".into()))
+        attrs::write(&events, "future_attribute", &AttrValue::Str(format!("defined by {later}")))
     })?;
-    // Digests as a 1.2 writer covering nothing new would stamp them: the file
-    // verifies, so what a reader reports about it is the version alone.
+    // Digests as a later minor's writer covering nothing new would stamp
+    // them: the file verifies, so what a reader reports about it is the
+    // version alone.
     restamp(path)
 }
 
@@ -582,8 +584,13 @@ pub(super) fn cases() -> Vec<Case> {
         .collection(),
         case(
             "W913-higher-minor-projection",
-            "A 1.2 file with a profile, `/meta` member, value type, event kind, column and attribute a 1.1 validator \
-             does not know: the supported projection is validated and each unknown is reported, not rejected.",
+            &format!(
+                "A {} file with a profile, `/meta` member, value type, event kind, column and attribute a {} \
+                 validator does not know: the supported projection is validated and each unknown is reported, not \
+                 rejected.",
+                crate::version::next_minor(crate::version::LATEST_VERSION).expect("LATEST_VERSION parses"),
+                crate::version::LATEST_VERSION,
+            ),
             "§2 (1.1)",
             higher_minor,
         )

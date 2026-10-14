@@ -522,8 +522,8 @@ item in a higher minor is W913 (§2.2).
 
 ### 11.2 Diagnostic codes
 
-1.1 adds these codes to the 1.0 §15.2 table, which they extend without redefining any code. The
-complete table, generated from the engine's registry, is
+1.1 adds these codes to the 1.0 §15.2 table, which they extend without redefining any code. They
+belong to revision 1 of the table (1.0 §15.2). The complete table, generated from the engine's registry, is
 [Diagnostic codes](../reference/diagnostic-codes.md).
 
 | Range | Domain | Codes |

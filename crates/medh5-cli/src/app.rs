@@ -152,6 +152,15 @@ fn inspect() -> Vec<Command> {
                 .value_name("PROFILE")
                 .value_parser(PROFILES),
             )
+            .arg(
+                int(
+                    "codes_revision",
+                    "codes-revision",
+                    "report only the codes this revision of the code table allocated (§15.2), so a strict verdict \
+                     does not move when a later revision adds a warning",
+                )
+                .value_name("N"),
+            )
             .arg(flag("verbose", "verbose", "also print what each diagnostic's code means").short('v'))
             .arg(json()),
         Command::new("verify")

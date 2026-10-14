@@ -20,6 +20,7 @@ from medh5.annotations.voxel import InstanceInput
 from medh5.cli import EXIT_ERROR, EXIT_OK, EXIT_USAGE, main
 from medh5.labels import LabelClass, LabelSet
 from tests.helpers import (
+    LATER_MINOR,
     block,
     encode_attr,
     write_legacy_sample,
@@ -494,7 +495,7 @@ class TestInfo:
         with h5py.File(path, "r+") as handle:
             kinds = ["depth", "spatial", "spatial"]
             handle["grids/g"].attrs["axis_kinds"] = encode_attr(kinds)
-            handle.attrs["medh5_version"] = encode_attr("1.2")
+            handle.attrs["medh5_version"] = encode_attr(LATER_MINOR)
         code, out = run(capsys, "info", str(path))
         assert code == EXIT_OK
         assert "MR" in out.out

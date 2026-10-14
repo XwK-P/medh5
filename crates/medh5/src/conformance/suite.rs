@@ -49,9 +49,19 @@ pub fn publish(outdir: &Path, names: Option<&[String]>) -> Result<PathBuf> {
     let chosen: Vec<&Case> = selected(names);
     let table = json!({
         "format": FORMAT_VERSION,
+        "revision": codes::table_revision(),
         "codes": codes::all()
             .iter()
-            .map(|c| json!({"code": c.code, "severity": c.severity, "domain": c.domain, "summary": c.summary}))
+            .map(|c| {
+                json!({
+                    "code": c.code,
+                    "severity": c.severity,
+                    "domain": c.domain,
+                    "summary": c.summary,
+                    "since": codes::since(&c.code),
+                    "revision": codes::revision(&c.code),
+                })
+            })
             .collect::<Vec<Value>>(),
     });
     fs::write(outdir.join("codes.json"), pretty(&table) + "\n")?;
@@ -241,6 +251,7 @@ fn readme(cases: &[&Case]) -> String {
     let invalid = total - valid;
     let n_covered = covered.len();
     let n_codes = codes::all().len();
+    let revision = codes::table_revision();
     let (task_schema, cache_schema) = (COMPANION_SCHEMAS[0], COMPANION_SCHEMAS[1]);
     format!(
         r#"# MEDH5 {FORMAT_VERSION} conformance suite
@@ -256,7 +267,7 @@ the specification's tables (1.0 §15.2 and 1.1 §11.2) appear here.
 |---|---|
 | `*.medh5`, `*.medh5c` | {kinds} |
 | `expected.json` | per case, the exact codes a conforming validator must emit |
-| `codes.json` | the diagnostic code table as data (1.0 §15.2 and 1.1 §11.2) |
+| `codes.json` | the diagnostic code table as data (1.0 §15.2 and 1.1 §11.2), at revision {revision}: each code's `since` version and the `revision` that allocated it |
 | `{SCHEMA}` | the JSON Schema for the `/meta` document |
 | `{CLINICAL_SCHEMA}` | the JSON Schema for `clinical/meta` and clinical records (format 1.1) |
 | `{task_schema}`, `{cache_schema}` | the task-and-cache contract's schemas (not part of the corpus) |

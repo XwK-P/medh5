@@ -251,9 +251,14 @@ fn s10_stripping_is_a_reported_loss() {
     assert!(strip(&path, &path).is_err(), "never in place");
 }
 
+/// A minor this engine does not implement: the one after the newest it does.
+fn later_minor() -> String {
+    medh5::version::next_minor(medh5::version::LATEST_VERSION).unwrap()
+}
+
 fn bump_minor(path: &Path) {
     let file = hdf5::File::open_rw(path).unwrap();
-    medh5::h5::attrs::write(&file, "medh5_version", &medh5::h5::AttrValue::Str("1.2".into())).unwrap();
+    medh5::h5::attrs::write(&file, "medh5_version", &medh5::h5::AttrValue::Str(later_minor())).unwrap();
 }
 
 #[test]

@@ -57,6 +57,13 @@ Use `strict` in CI, where a stale sampling index or an unbound class id should
 stop a build; use `semantic` interactively, where the same warnings are
 information.
 
+A later medh5 can add a warning: codes are allocated in numbered *revisions* of
+the table (spec §15.2), and a warning a new revision allocates fails a file
+under `strict` that passed before. A gate that must not move with an upgrade
+pins the revision it was written against: `--codes-revision 1` (Python:
+`validate_file(..., codes_revision=1)`) reports only the codes revision 1
+allocated. Each code's revision is in [the table](diagnostic-codes.md).
+
 A validation pass never raises on a bad file — it reports. Curation needs to see
 everything wrong with a file at once, and a validator that stops at the first
 problem turns one review cycle into ten.

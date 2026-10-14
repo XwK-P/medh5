@@ -8,8 +8,10 @@ use crate::{Error, Result};
 /// Voxel annotation kinds (§7).
 pub const VOXEL_KINDS: [&str; 6] = ["labelmap", "layers", "bitmask", "instances", "probmap", "mask"];
 /// Geometric annotation kinds (§8).
+#[deprecated(since = "2.1.0", note = "use annotations::geometric_kinds(version); removed in 3.0")]
 pub const GEOMETRIC_KINDS: [&str; 6] = ["boxes", "obb", "keypoints", "points", "contours", "mesh"];
 /// Every annotation kind 1.0 defines (§6.3).
+#[deprecated(since = "2.1.0", note = "use annotations::kinds(version); removed in 3.0")]
 pub const ANNOTATION_KINDS: [&str; 13] = [
     "labelmap",
     "layers",
@@ -25,6 +27,46 @@ pub const ANNOTATION_KINDS: [&str; 13] = [
     "mesh",
     "classification",
 ];
+
+/// The kinds 1.0 defines (§6.3), which 1.1 keeps.
+const KINDS_1_0: &[&str] = &[
+    "labelmap",
+    "layers",
+    "bitmask",
+    "instances",
+    "probmap",
+    "mask",
+    "boxes",
+    "obb",
+    "keypoints",
+    "points",
+    "contours",
+    "mesh",
+    "classification",
+];
+/// The geometric kinds 1.0 defines (§8), which 1.1 keeps.
+const GEOMETRIC_1_0: &[&str] = &["boxes", "obb", "keypoints", "points", "contours", "mesh"];
+
+/// Every annotation kind `version` defines (§6.3), or `None` for a version
+/// this engine does not implement ([`crate::version::format_versions`]).
+///
+/// A slice, so a later minor that adds a kind answers with a longer one and
+/// no caller's type changes.
+pub fn kinds(version: &str) -> Option<&'static [&'static str]> {
+    crate::version::format_versions().contains(&version).then_some(KINDS_1_0)
+}
+
+/// The geometric annotation kinds `version` defines (§8), or `None` for a
+/// version this engine does not implement.
+pub fn geometric_kinds(version: &str) -> Option<&'static [&'static str]> {
+    crate::version::format_versions().contains(&version).then_some(GEOMETRIC_1_0)
+}
+
+/// Whether `kind` is one the newest version this engine implements defines.
+pub(crate) fn is_known_kind(kind: &str) -> bool {
+    KINDS_1_0.contains(&kind)
+}
+
 /// Names reserved by spec §16.  A 1.0 writer MUST NOT emit them.
 pub const RESERVED_KINDS: [&str; 1] = ["rle"];
 /// `task` values (§6.2).
@@ -73,7 +115,7 @@ pub fn is_voxel_kind(kind: &str) -> bool {
 
 /// Whether a kind is a geometric kind.
 pub fn is_geometric_kind(kind: &str) -> bool {
-    GEOMETRIC_KINDS.contains(&kind)
+    GEOMETRIC_1_0.contains(&kind)
 }
 
 /// The fixed attribute header every annotation carries (spec §6.2).
@@ -130,7 +172,7 @@ impl AnnotationHeader {
                 ),
             ));
         }
-        if !ANNOTATION_KINDS.contains(&self.kind.as_str()) {
+        if !is_known_kind(&self.kind) {
             return Err(Error::coded("E401", format!("unknown annotation kind {}", repr_str(&self.kind))));
         }
         if !TASKS.contains(&self.task.as_str()) {
@@ -317,4 +359,26 @@ pub fn list_attr(values: &[String]) -> AttrValue {
 
 fn text(value: &AttrValue) -> String {
     value.as_str().unwrap_or_else(|| attrs::stringify_value(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The functions answer what the deprecated arrays hold, at every
+    /// version this engine implements, and nothing for one it does not.
+    #[test]
+    #[allow(deprecated)] // the arrays are what the functions must still agree with
+    fn s6_3_the_kind_tables_are_answered_per_version() {
+        for version in ["1.0", "1.1"] {
+            assert_eq!(kinds(version), Some(&ANNOTATION_KINDS[..]), "{version}");
+            assert_eq!(geometric_kinds(version), Some(&GEOMETRIC_KINDS[..]), "{version}");
+        }
+        assert_eq!(kinds("9.9"), None);
+        assert_eq!(geometric_kinds("9.9"), None);
+        assert_eq!(kinds(&crate::version::later_minor()), None);
+        let geometric = geometric_kinds("1.1").unwrap();
+        assert!(geometric.iter().all(|k| kinds("1.1").unwrap().contains(k)));
+        assert!(geometric.iter().all(|k| is_geometric_kind(k)));
+    }
 }

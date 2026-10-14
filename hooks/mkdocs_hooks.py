@@ -149,7 +149,7 @@ CODES_SOURCE = "crates/medh5/data/codes.json"
 CHECK_SOURCE = "crates/medh5/src/dataset/check.rs"
 
 
-def _load_codes(root: Path) -> list[dict[str, str]]:
+def _load_codes(root: Path) -> list[dict[str, Any]]:
     """The §15.2 diagnostic code table, in table order.
 
     The engine embeds this file (`include_str!`), so what the page renders is
@@ -160,7 +160,9 @@ def _load_codes(root: Path) -> list[dict[str, str]]:
         raise FileNotFoundError(f"the diagnostic code table is not at {path}")
     codes = json.loads(path.read_text(encoding="utf-8"))["codes"]
     for row in codes:
-        missing = {"code", "severity", "domain", "summary"} - set(row)
+        missing = {"code", "severity", "domain", "summary", "since", "revision"} - set(
+            row
+        )
         if missing:  # pragma: no cover - defensive
             raise ValueError(f"{path}: {row.get('code', row)} lacks {sorted(missing)}")
     return list(codes)
@@ -252,9 +254,12 @@ def _codes_markdown(root: Path) -> str:
     """The §15.2 diagnostic code table, grouped by domain."""
     codes = _load_codes(root)
     warnings = sum(c["severity"] == "warning" for c in codes)
+    revision = json.loads((root / CODES_SOURCE).read_text(encoding="utf-8"))["revision"]
     out: list[str] = [
         f"{len(codes)} codes: **{len(codes) - warnings} errors** and "
-        f"**{warnings} warnings**. Every one has a conformance case.",
+        f"**{warnings} warnings**, at revision {revision} of the table. "
+        "Every one has a conformance case. *Since* is the format version whose "
+        "rules a code reports; *rev.* the revision of the table that allocated it.",
         "",
     ]
     seen = 0
@@ -266,12 +271,12 @@ def _codes_markdown(root: Path) -> str:
         out += [
             f"### {title}",
             "",
-            "| Code | Severity | Meaning |",
-            "|---|---|---|",
+            "| Code | Severity | Since / rev. | Meaning |",
+            "|---|---|---|---|",
         ]
         out += [
             f"| `{c['code']}`{{ #{c['code'].lower()} }} | {c['severity']} "
-            f"| {_cell(c['summary'])} |"
+            f"| {c['since']} / {c['revision']} | {_cell(c['summary'])} |"
             for c in rows
         ]
         out.append("")
