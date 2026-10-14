@@ -1827,13 +1827,18 @@ def unpack(
 ) -> list[str]: ...
 def validate_against_schema(doc: Any) -> list[str]: ...
 def validate_file(
-    path: str | os.PathLike[str], *, level: str = "semantic", profiles: Any = None
+    path: str | os.PathLike[str],
+    *,
+    level: str = "semantic",
+    profiles: Any = None,
+    codes_revision: int | None = None,
 ) -> Any: ...
 def validate_paths(
     paths: Sequence[str | os.PathLike[str]],
     *,
     level: str = "semantic",
     profiles: Any = None,
+    codes_revision: int | None = None,
 ) -> list[Any]: ...
 def validate_root(
     sample: Any,

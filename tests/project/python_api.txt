@@ -2775,10 +2775,13 @@ medh5.document.schema_text	function	()
 medh5.document.validate_against_schema	function	(doc)
 medh5.errors	module
 medh5.errors.CODES	constant	dict
-medh5.errors.Code	class	(code, severity, domain, summary) bases=
+medh5.errors.CODES_REVISION	constant	int
+medh5.errors.Code	class	(code, severity, domain, summary, since='1.0', revision=1) bases=
 medh5.errors.Code.code	field
 medh5.errors.Code.domain	field
+medh5.errors.Code.revision	field
 medh5.errors.Code.severity	field
+medh5.errors.Code.since	field
 medh5.errors.Code.summary	field
 medh5.errors.Domain	alias
 medh5.errors.MEDH5Error	class	(?) bases=Exception
@@ -4142,7 +4145,7 @@ medh5.validate.Report.to_json	method	()
 medh5.validate.Report.warnings	property
 medh5.validate.merge	function	(reports, path='<multiple>')
 medh5.validate.rules_for	function	(level)
-medh5.validate.validate_file	function	(path, *, level='semantic', profiles=None)
-medh5.validate.validate_paths	function	(paths, *, level='semantic', profiles=None)
+medh5.validate.validate_file	function	(path, *, level='semantic', profiles=None, codes_revision=None)
+medh5.validate.validate_paths	function	(paths, *, level='semantic', profiles=None, codes_revision=None)
 medh5.validate.validate_root	function	(sample, *, path=None, level='semantic', profiles=None, errors_only=False)
 medh5.validate_cache	function	(path, *, base=None, task=None, task_base=None, check_rows=True)

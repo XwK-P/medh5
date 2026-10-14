@@ -30,14 +30,20 @@ from medh5.conformance import (
     score,
     summarize,
 )
-from medh5.errors import CODES, MEDH5Error, MEDH5ValidationError
-from medh5.validate import validate_file
-from tests.helpers import ROOT
+from medh5.errors import CODES, CODES_REVISION, MEDH5Error, MEDH5ValidationError
+from medh5.validate import validate_file, validate_paths
+from tests.helpers import ROOT, write_sample
 
 
 @pytest.fixture(scope="module")
-def corpus(tmp_path_factory) -> list:
-    return run_corpus(tmp_path_factory.mktemp("corpus"))
+def corpus_root(tmp_path_factory) -> Path:
+    """Where `corpus` builds the cases."""
+    return tmp_path_factory.mktemp("corpus")
+
+
+@pytest.fixture(scope="module")
+def corpus(corpus_root) -> list:
+    return run_corpus(corpus_root)
 
 
 @contextmanager
@@ -193,6 +199,188 @@ class TestPublishedSchema:
 
         assert schema()["$schema"].endswith("2020-12/schema")
         assert set(schema()["required"]) == {"identity", "timepoints"}
+
+
+# The codes revision 1 of the table holds, with their severities, frozen: a
+# later revision only adds (1.0 §15.2), so no change may alter this list.
+_REVISION_1 = [
+    "E001",
+    "E002",
+    "E003",
+    "E004",
+    "E005",
+    "E006",
+    "E007",
+    "E008",
+    "E009",
+    "E010",
+    "E011",
+    "E101",
+    "E102",
+    "E103",
+    "E104",
+    "E105",
+    "E106",
+    "E107",
+    "E108",
+    "E109",
+    "E110",
+    "E111",
+    "E201",
+    "E202",
+    "E203",
+    "E204",
+    "E205",
+    "E301",
+    "E302",
+    "E303",
+    "E304",
+    "E305",
+    "E306",
+    "E401",
+    "E402",
+    "E403",
+    "E404",
+    "E405",
+    "E406",
+    "E407",
+    "E408",
+    "E409",
+    "E410",
+    "E411",
+    "E412",
+    "E413",
+    "E414",
+    "E501",
+    "E502",
+    "E503",
+    "E504",
+    "E505",
+    "E506",
+    "E601",
+    "E602",
+    "E603",
+    "E604",
+    "E605",
+    "E701",
+    "E702",
+    "E703",
+    "E704",
+    "E801",
+    "E802",
+    "E803",
+    "E804",
+    "E805",
+    "E806",
+    "E807",
+    "E808",
+    "E809",
+    "E810",
+    "E811",
+    "E812",
+    "E813",
+    "E814",
+    "E815",
+    "E816",
+    "E817",
+    "E818",
+    "E819",
+    "W901",
+    "W902",
+    "W903",
+    "W904",
+    "W905",
+    "W906",
+    "W907",
+    "W908",
+    "W909",
+    "W910",
+    "W911",
+    "W912",
+    "W913",
+    "W914",
+]
+
+
+class TestCodeRevisions:
+    """1.0 §15.2: codes are allocated in numbered revisions of the table, each
+    code naming the version whose rules it reports and its revision."""
+
+    @staticmethod
+    def _minor_codes() -> set[str]:
+        minor = (ROOT / "docs" / "spec" / "medh5-1.1.md").read_text(encoding="utf-8")
+        added = minor[
+            minor.index("### 11.2 Diagnostic codes") : minor.index("### 11.3")
+        ]
+        return set(re.findall(r"`([EW]\d{3})`", added))
+
+    def test_S15_2_every_code_names_its_version_and_revision(self):
+        assert max(c.revision for c in CODES.values()) == CODES_REVISION
+        for code in CODES.values():
+            assert code.since in ("1.0", "1.1"), code.code
+            assert 1 <= code.revision <= CODES_REVISION, code.code
+        # 1.1 §11.2's codes report 1.1's rules and belong to revision 1; every
+        # other code of revision 1 reports 1.0's.
+        first = {c.code for c in CODES.values() if c.revision == 1}
+        from_1_1 = {c.code for c in CODES.values() if c.since == "1.1"}
+        assert from_1_1 & first == self._minor_codes()
+        published = json.loads((ROOT / "crates/medh5/data/codes.json").read_text())
+        assert published["revision"] == CODES_REVISION
+
+    def test_S15_2_a_revision_keeps_every_earlier_code(self):
+        """No later revision narrows, renumbers, removes or re-severs a code."""
+        first = {c.code: c.severity for c in CODES.values() if c.revision == 1}
+        assert first == {
+            code: "warning" if code.startswith("W") else "error" for code in _REVISION_1
+        }
+        assert len(_REVISION_1) == 95
+
+    def test_S15_2_a_pinned_revision_reports_no_later_code(self, corpus, corpus_root):
+        """Pinned to revision *r*, the validator reports exactly what it
+        reports unpinned, less the codes a later revision allocated --- over
+        every case of the corpus, at every revision the table has."""
+        cases = load_manifest(corpus_root)["cases"]
+        for case in cases:
+            path = corpus_root / case["file"]
+            unpinned = validate_file(path, level=case["level"])
+            for revision in range(1, CODES_REVISION + 1):
+                pinned = validate_file(
+                    path, level=case["level"], codes_revision=revision
+                )
+                kept = [
+                    (d.code, d.location)
+                    for d in unpinned.diagnostics
+                    if CODES[d.code].revision <= revision
+                ]
+                found = [(d.code, d.location) for d in pinned.diagnostics]
+                assert found == kept, (case["name"], revision)
+
+    def test_S15_2_a_revision_outside_the_table_is_refused(self, tmp_path, capsys):
+        """Revision 0 would drop every code and pass any file; one past the
+        table's would promise codes this engine cannot report."""
+        path = tmp_path / "s.medh5"
+        write_sample(path)
+        for revision in (0, -1, CODES_REVISION + 1):
+            with pytest.raises(ValueError, match=f"codes revision {revision} "):
+                validate_file(path, codes_revision=revision)
+            with pytest.raises(ValueError, match=f"codes revision {revision} "):
+                validate_paths([path], codes_revision=revision)
+            code = main(["validate", str(path), f"--codes-revision={revision}"])
+            assert code != 0
+            assert f"codes revision {revision} " in capsys.readouterr().err
+        assert main(["validate", str(path), "--codes-revision", "1"]) == 0
+
+    def test_S16_an_erratum_code_changes_no_written_version(self, tmp_path):
+        """A code is allocated without a format version: every code reports
+        the rules of a version this engine implements, and a sample is still
+        written at the lowest version its content needs."""
+        assert {c.since for c in CODES.values()} <= {"1.0", medh5.FORMAT_VERSION}
+        path = tmp_path / "s.medh5"
+        write_sample(path)
+        with h5py.File(path, "r") as handle:
+            assert handle.attrs["medh5_version"] == "1.0"
+        report = validate_file(path, level="strict", codes_revision=CODES_REVISION)
+        assert report.ok, report.codes
 
 
 class TestSpecSync:

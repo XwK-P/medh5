@@ -20,33 +20,53 @@ fn codes_table() -> &'static str {
     medh5::codes::table_json()
 }
 
+/// The engine's options for `level`, `profiles` and `codes_revision`; a
+/// revision below 0 is refused here (it is no `u32`), the rest by the engine.
+fn options(level: &str, profiles: Option<Vec<String>>, codes_revision: Option<i64>) -> R<engine::ValidateOptions> {
+    let mut options = engine::ValidateOptions::default().level(level);
+    if let Some(profiles) = profiles {
+        options = options.profiles(&profiles);
+    }
+    if let Some(n) = codes_revision {
+        let revision = u32::try_from(n).map_err(|_| {
+            medh5::Error::invalid(format!(
+                "codes revision {n} is not a revision of the code table; this engine implements revisions 1 to {} \
+                 (§15.2)",
+                medh5::codes::table_revision()
+            ))
+        })?;
+        options = options.codes_revision(revision);
+    }
+    Ok(options)
+}
+
 #[pyfunction]
-#[pyo3(signature = (path, *, level="semantic", profiles=None))]
+#[pyo3(signature = (path, *, level="semantic", profiles=None, codes_revision=None))]
 fn validate_file<'py>(
     py: Python<'py>,
     path: PathBuf,
     level: &str,
     profiles: Option<&Bound<'py, PyAny>>,
+    codes_revision: Option<i64>,
 ) -> R<Bound<'py, PyAny>> {
-    let profiles = opt_strings(profiles)?;
-    let level = level.to_string();
-    let report = py.detach(move || engine::validate_file(&path, &level, profiles.as_deref()))?;
+    let options = options(level, opt_strings(profiles)?, codes_revision)?;
+    let report = py.detach(move || engine::validate_file_with(&path, &options))?;
     Ok(json_to_py(py, &report.to_json())?)
 }
 
 #[pyfunction]
-#[pyo3(signature = (paths, *, level="semantic", profiles=None))]
+#[pyo3(signature = (paths, *, level="semantic", profiles=None, codes_revision=None))]
 fn validate_paths<'py>(
     py: Python<'py>,
     paths: Vec<PathBuf>,
     level: &str,
     profiles: Option<&Bound<'py, PyAny>>,
+    codes_revision: Option<i64>,
 ) -> R<Bound<'py, PyList>> {
-    let profiles = opt_strings(profiles)?;
-    let level = level.to_string();
+    let options = options(level, opt_strings(profiles)?, codes_revision)?;
     let reports = py.detach(move || {
         let refs: Vec<&std::path::Path> = paths.iter().map(PathBuf::as_path).collect();
-        engine::validate_paths(&refs, &level, profiles.as_deref())
+        engine::validate_paths_with(&refs, &options)
     })?;
     let out = PyList::empty(py);
     for r in reports {
