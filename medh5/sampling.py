@@ -18,6 +18,7 @@ silent 20× slowdown in a dataloader is indistinguishable from a slow disk.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
+from medh5.errors import MEDH5ValidationError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5.sample import Sample
@@ -404,15 +406,185 @@ def grid_patches(
     ]
 
 
+BLEND_MODES: tuple[str, ...] = ("constant", "gaussian")
+"""How overlapping patch predictions are weighted when stitched back:
+``constant`` averages them, ``gaussian`` trusts each patch most at its centre,
+where its model saw the most context."""
+
+_FLOOR = 1e-6
+"""The least weight, relative to the largest: a covered voxel is never divided
+by zero, however far into a patch's corner it lies."""
+
+
+def blend_weights(
+    patch_size: Sequence[int],
+    *,
+    mode: str = "gaussian",
+    sigma_scale: float = 0.125,
+) -> npt.NDArray[np.float32]:
+    """The weight of each voxel of a patch when patches are stitched back.
+
+    ``gaussian`` is a separable Gaussian centred on the patch, with a standard
+    deviation of ``sigma_scale`` times each axis's extent, scaled so its
+    largest weight is 1; ``constant`` is 1 everywhere.  Every weight is at
+    least ``1e-6`` of the largest.
+    """
+    size = tuple(int(n) for n in patch_size)
+    if any(n < 1 for n in size):
+        raise MEDH5ValidationError(f"a patch has at least one voxel per axis: {size}")
+    if mode not in BLEND_MODES:
+        raise MEDH5ValidationError(
+            f"unknown blend mode {mode!r}; expected one of {list(BLEND_MODES)}"
+        )
+    if mode == "constant":
+        return np.ones(size, dtype=np.float32)
+    if not (math.isfinite(sigma_scale) and sigma_scale > 0):
+        raise MEDH5ValidationError(
+            f"sigma_scale is a positive fraction of the patch, not {sigma_scale!r}"
+        )
+    weights = np.ones((), dtype=np.float64)
+    for n in size:
+        x = np.arange(n, dtype=np.float64) - (n - 1) / 2.0
+        axis = np.exp(-0.5 * (x / (sigma_scale * n)) ** 2)
+        weights = np.multiply.outer(weights, axis / axis.max())
+    weights /= weights.max()
+    return np.maximum(weights, _FLOOR).astype(np.float32)
+
+
+class PatchAggregator:
+    """Stitch patch predictions back into one volume.
+
+    One dense accumulator over the volume's spatial shape (times
+    ``channels``, when the predictions have a channel axis before the spatial
+    ones), and one of weights: :meth:`add` weights a prediction by
+    :func:`blend_weights`, cuts off the padding a patch carries past the
+    volume, and adds it in; :meth:`result` divides.  The accumulator holds
+    ``channels`` volumes of ``dtype`` plus one of weights, whatever the number
+    of patches.
+
+    A patch from another grid (``grid_id``, taken from the first patch when
+    not given) is refused: its slices index other voxels.  ``count`` is the
+    number of patches added, and ``coverage`` marks the voxels one covered.
+    """
+
+    __slots__ = (
+        "_sum",
+        "_weight",
+        "_weights",
+        "channels",
+        "count",
+        "coverage",
+        "dtype",
+        "grid_id",
+        "mode",
+        "sigma_scale",
+        "spatial_shape",
+    )
+
+    def __init__(
+        self,
+        spatial_shape: Sequence[int],
+        *,
+        channels: int | None = None,
+        mode: str = "gaussian",
+        sigma_scale: float = 0.125,
+        dtype: npt.DTypeLike = np.float32,
+        grid_id: str | None = None,
+    ) -> None:
+        self.spatial_shape = tuple(int(n) for n in spatial_shape)
+        self.channels = None if channels is None else int(channels)
+        if self.channels is not None and self.channels < 1:
+            raise MEDH5ValidationError("channels is at least 1, or None")
+        blend_weights(
+            (1,) * len(self.spatial_shape), mode=mode, sigma_scale=sigma_scale
+        )
+        self.mode = mode
+        self.sigma_scale = float(sigma_scale)
+        self.dtype = np.dtype(dtype)
+        self.grid_id = grid_id
+        lead = () if self.channels is None else (self.channels,)
+        self._sum: npt.NDArray[Any] = np.zeros(
+            (*lead, *self.spatial_shape), dtype=self.dtype
+        )
+        self._weight = np.zeros(self.spatial_shape, dtype=self.dtype)
+        self._weights: dict[tuple[int, ...], npt.NDArray[np.float32]] = {}
+        self.count = 0
+        self.coverage = np.zeros(self.spatial_shape, dtype=bool)
+
+    def _blend(self, size: tuple[int, ...]) -> npt.NDArray[np.float32]:
+        found = self._weights.get(size)
+        if found is None:
+            found = blend_weights(size, mode=self.mode, sigma_scale=self.sigma_scale)
+            self._weights[size] = found
+        return found
+
+    def add(self, prediction: npt.ArrayLike, patch: Patch) -> None:
+        """Add one patch's prediction: shaped as the patch, padding included,
+        after ``channels`` when there are channels."""
+        if patch.grid_id is not None:
+            if self.grid_id is None:
+                self.grid_id = patch.grid_id
+            elif patch.grid_id != self.grid_id:
+                raise MEDH5ValidationError(
+                    f"a patch on grid {patch.grid_id!r} cannot be stitched into "
+                    f"a volume on grid {self.grid_id!r}: its slices index other "
+                    "voxels"
+                )
+        if len(patch.slices) != len(self.spatial_shape):
+            raise MEDH5ValidationError(
+                f"a {len(patch.slices)}-D patch cannot be stitched into a "
+                f"{len(self.spatial_shape)}-D volume"
+            )
+        array = np.asarray(prediction)
+        lead = () if self.channels is None else (self.channels,)
+        expected = (*lead, *patch.shape)
+        if array.shape != expected:
+            raise MEDH5ValidationError(
+                f"a prediction for {patch!r} is shaped {expected}"
+                + ("" if self.channels is None else " (channels first)")
+                + f", not {array.shape}"
+            )
+        if any(
+            s.start < 0 or s.stop > n
+            for s, n in zip(patch.slices, self.spatial_shape, strict=True)
+        ):
+            raise MEDH5ValidationError(
+                f"{patch!r} reaches outside the volume {self.spatial_shape}"
+            )
+        inner = tuple(
+            slice(before, before + (s.stop - s.start))
+            for s, (before, _) in zip(patch.slices, patch.padding, strict=True)
+        )
+        weights = self._blend(patch.shape)[inner]
+        region = tuple(patch.slices)
+        lead_axes = (slice(None),) * (array.ndim - len(region))
+        cut = np.asarray(array[(*lead_axes, *inner)], dtype=np.float64) * weights
+        self._sum[(*lead_axes, *region)] += cut.astype(self.dtype, copy=False)
+        self._weight[region] += weights
+        self.coverage[region] = True
+        self.count += 1
+
+    def result(self, *, uncovered: float = float("nan")) -> npt.NDArray[Any]:
+        """The stitched volume; voxels no patch covered are *uncovered*."""
+        out = np.full(self._sum.shape, uncovered, dtype=self.dtype)
+        covered = np.broadcast_to(self.coverage, self._sum.shape)
+        weight = np.broadcast_to(self._weight, self._sum.shape)
+        np.divide(self._sum, weight, out=out, where=covered)
+        return out
+
+
 __all__ = [
+    "BLEND_MODES",
     "PAIR_MODES",
     "STRATEGIES",
     "Seed",
     "PairReport",
     "Patch",
+    "PatchAggregator",
     "PatchSampler",
     "TimepointPair",
     "TimepointPairSampler",
+    "blend_weights",
     "coerce_patch_size",
     "grid_patches",
     "iter_patches",

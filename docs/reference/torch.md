@@ -75,10 +75,48 @@ ds = GridPatchDataset(paths, patch_size=(96, 96, 96), overlap=16,
                       images=["CT"])
 ```
 
-Every patch position, in order, with a recorded pad — so you can stitch the
-output back together. The tiling itself is `medh5.sampling.grid_patches(shape,
-patch_size, overlap=...)`, which needs no torch, for an inference loop of your
-own.
+Every patch position, in order, with a recorded pad, and each item's
+`meta["cover"]` — `{"file": i, "index": k, "of": n}`, the *k*-th of the *n*
+patches covering `paths[i]`. `GridStitcher` stitches the predictions back,
+in whatever order the loader delivers them, and hands back each file's volume
+as soon as its last patch arrives:
+
+```python
+from medh5.torch import GridPatchDataset, GridStitcher
+
+ds = GridPatchDataset(paths, patch_size=(8, 8, 8), overlap=2, images=["CT"])
+stitcher = GridStitcher(ds, mode="gaussian")      # or "constant": a plain mean
+loader = DataLoader(ds, batch_size=4, collate_fn=collate)
+for batch in loader:
+    predictions = batch["images"]["CT"]           # your model's output here
+    for path, volume in stitcher.add(predictions, batch["meta"]):
+        print(path, volume.shape)                 # one file, stitched
+stitcher.finish()
+```
+
+A prediction is shaped as its patch, after `channels` when the model returns
+channels (`GridStitcher(ds, channels=3)`); the padding a patch carries past the
+volume is cut off. Overlaps are blended with Gaussian weights, highest at a
+patch's centre, or averaged (`mode="constant"`). `stitcher.pending` maps each
+file not yet returned to the patches it is missing, and `finish()` refuses,
+naming every such file, rather than return a volume with holes —
+`finish(partial=True)` returns what arrived, `NaN` where nothing did. One
+accumulator is open per file in flight: a float32 volume per channel, and one
+of weights.
+
+The tiling itself is `medh5.sampling.grid_patches(shape, patch_size,
+overlap=...)`, and the stitching `medh5.sampling.PatchAggregator`, which need no
+torch, for an inference loop of your own:
+
+```python
+from medh5.sampling import PatchAggregator, grid_patches
+
+volume = s.images["CT"].read(physical=True)
+aggregator = PatchAggregator(volume.shape, mode="gaussian")
+for patch in grid_patches(volume.shape, (8, 8, 8), overlap=2):
+    aggregator.add(patch.apply_padding(volume[patch.slices]), patch)
+assert np.allclose(aggregator.result(), volume, atol=1e-3)
+```
 
 ### PairedPatchDataset — the same place at two visits
 

@@ -151,6 +151,15 @@ the same sampler gives each rank a contiguous share of the files
 (`num_replicas`, `rank`), where `DistributedSampler` would have every rank
 open every file.
 
+Stitching sliding-window predictions back (`GridStitcher`) keeps one
+accumulator per file in flight: `channels` volumes of the output `dtype`
+(float32 unless you say otherwise) and one of weights. A 512 × 512 × 300
+volume with 14 output channels is 15 × 300 MB = 4.4 GB while its windows are
+outstanding. Iterate files in order — `shuffle=False`, or `FileGroupedSampler`
+— so a file completes, and its accumulator is released, before the next is
+begun; a fully shuffled loader keeps every file open until its last window
+arrives.
+
 ## On a network filesystem
 
 HDF5's file locking is unreliable on NFS, Lustre and GPFS, where training

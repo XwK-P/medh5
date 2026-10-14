@@ -522,6 +522,59 @@ class TestGridPatchDataset:
         assert per_file > 1
         assert tuple(ds[0]["images"]["CT_tp0"].shape) == (8, 8, 8)
         assert ds[0]["meta"]["patch"]["strategy"] == "grid"
+        assert ds[0]["meta"]["cover"] == {"file": 0, "index": 0, "of": per_file}
+        last = ds[len(ds) - 1]["meta"]["cover"]
+        assert last == {"file": 2, "index": per_file - 1, "of": per_file}
+
+    def test_a_cover_stitches_back_into_each_volume(self, indexed_cohort):
+        """An identity model, two workers, shuffled: every file comes back
+        as its image, once its last patch arrives."""
+        from medh5.torch import GridStitcher
+
+        paths = [*indexed_cohort, indexed_cohort[0]]  # one file listed twice
+        ds = GridPatchDataset(paths, (8, 10, 10), overlap=3, images=["CT_tp0"])
+        stitcher = GridStitcher(ds, mode="gaussian")
+        assert set(stitcher.pending.values()) == {len(ds) // 4, 2 * len(ds) // 4}
+        loader = DataLoader(
+            ds,
+            batch_size=3,
+            shuffle=True,
+            num_workers=2,
+            worker_init_fn=worker_init_fn,
+            collate_fn=collate,
+            generator=torch.Generator().manual_seed(0),
+        )
+        volumes: list[tuple[str, Any]] = []
+        for batch in loader:
+            volumes += stitcher.add(batch["images"]["CT_tp0"], batch["meta"])
+        assert stitcher.finish() == []
+        assert sorted(path for path, _ in volumes) == sorted(map(str, paths))
+        assert stitcher.pending == {}
+        for path, volume in volumes:
+            with medh5.open(path) as sample:
+                image = sample.images["CT_tp0"].read(physical=True, dtype=np.float32)
+            assert np.allclose(volume, image, atol=1e-3), path
+
+    def test_finish_names_a_file_missing_patches(self, indexed_cohort):
+        from medh5.torch import GridStitcher
+
+        ds = GridPatchDataset(indexed_cohort[:2], 8, images=["CT_tp0"])
+        stitcher = GridStitcher(ds, channels=1, mode="constant")
+        items = [ds[i] for i in range(len(ds) - 1)]
+        done = []
+        for item in items:
+            prediction = item["images"]["CT_tp0"][None, None]
+            done += stitcher.add(prediction, [item["meta"]])
+        assert [path for path, _ in done] == [str(indexed_cohort[0])]
+        assert stitcher.pending == {str(indexed_cohort[1]): 1}
+        with pytest.raises(MEDH5ValidationError, match=r"case1\.medh5: 1 missing"):
+            stitcher.finish()
+        with pytest.raises(MEDH5ValidationError, match="arrived twice"):
+            stitcher.add(items[-1]["images"]["CT_tp0"][None, None], [items[-1]["meta"]])
+        (partial,) = stitcher.finish(partial=True)
+        assert partial[0] == str(indexed_cohort[1])
+        assert partial[1].shape == (1, *SHAPE)
+        assert np.isnan(partial[1]).any()
 
 
 class TestPairedPatchDataset:

@@ -632,3 +632,88 @@ class TestWeightedPicks:
         foreground one picked without the weights."""
         draws = self._draws(self._variant(indexed, which), {1: 0.0, 2: 0.0})
         assert {(d.strategy, d.class_id) for d in draws} == {("uniform", None)}
+
+
+class TestPatchAggregator:
+    """Patch predictions stitched back into one volume."""
+
+    @staticmethod
+    def _volume(shape: tuple[int, ...] = (9, 14, 11)) -> Any:
+        rng = np.random.default_rng(3)
+        return rng.integers(-50, 50, shape).astype(np.float32)
+
+    def _stitch(self, volume: Any, patch: Any, overlap: int, **kwargs: Any) -> Any:
+        from medh5.sampling import PatchAggregator
+
+        aggregator = PatchAggregator(volume.shape, grid_id="g", **kwargs)
+        patches = grid_patches(volume.shape, patch, overlap=overlap, grid_id="g")
+        for p in patches:
+            aggregator.add(p.apply_padding(volume[p.slices]), p)
+        assert aggregator.count == len(patches)
+        assert aggregator.coverage.all()
+        return aggregator.result()
+
+    def test_constant_blend_reassembles_the_volume_exactly(self):
+        volume = self._volume()
+        for patch, overlap in (((4, 6, 5), 0), ((4, 6, 5), 2), ((5, 5, 5), 3)):
+            out = self._stitch(volume, patch, overlap, mode="constant")
+            assert np.array_equal(out, volume), (patch, overlap)
+
+    def test_gaussian_blend_of_a_constant_is_that_constant(self):
+        volume = np.full((9, 14, 11), 7.0, dtype=np.float32)
+        out = self._stitch(volume, (4, 6, 5), 2)
+        assert np.allclose(out, 7.0, rtol=1e-6)
+
+    def test_padding_is_cut_off(self):
+        """A patch larger than the volume is padded; the padding is not
+        stitched in."""
+        from medh5.sampling import PatchAggregator
+
+        volume = self._volume((3, 4, 5))
+        (patch,) = grid_patches(volume.shape, (6, 6, 6), grid_id="g")
+        assert patch.needs_padding
+        aggregator = PatchAggregator(volume.shape, channels=2, mode="constant")
+        padded = patch.apply_padding(volume[patch.slices], value=1e9)
+        aggregator.add(np.stack([padded, -padded]), patch)
+        out = aggregator.result()
+        assert out.shape == (2, 3, 4, 5)
+        assert np.array_equal(out[0], volume) and np.array_equal(out[1], -volume)
+        with pytest.raises(MEDH5ValidationError, match=r"shaped \(2, 6, 6, 6\)"):
+            aggregator.add(padded, patch)
+
+    def test_weights_are_never_zero(self):
+        from medh5.sampling import BLEND_MODES, blend_weights
+
+        assert BLEND_MODES == ("constant", "gaussian")
+        weights = blend_weights((32, 32, 32), sigma_scale=0.01)
+        assert weights.dtype == np.float32
+        assert weights.max() == 1.0
+        assert weights.min() >= 1e-6 * weights.max()
+        assert (blend_weights((3, 4), mode="constant") == 1.0).all()
+        with pytest.raises(MEDH5ValidationError, match="blend mode"):
+            blend_weights((3, 4), mode="linear")
+        with pytest.raises(MEDH5ValidationError, match="sigma_scale"):
+            blend_weights((3, 4), sigma_scale=0.0)
+
+    def test_an_uncovered_voxel_is_said_so(self):
+        from medh5.sampling import PatchAggregator
+
+        aggregator = PatchAggregator((4, 4))
+        aggregator.add(np.ones((2, 2)), Patch((slice(0, 2), slice(0, 2))))
+        out = aggregator.result()
+        assert np.isnan(out[3, 3]) and out[0, 0] == 1.0
+        assert aggregator.result(uncovered=-1.0)[3, 3] == -1.0
+        with pytest.raises(MEDH5ValidationError, match="outside the volume"):
+            aggregator.add(np.ones((2, 2)), Patch((slice(3, 5), slice(0, 2))))
+
+    def test_another_grid_is_refused(self):
+        from medh5.sampling import PatchAggregator
+
+        aggregator = PatchAggregator((4, 4))
+        aggregator.add(np.ones((2, 2)), Patch((slice(0, 2), slice(0, 2)), grid_id="a"))
+        assert aggregator.grid_id == "a"
+        with pytest.raises(MEDH5ValidationError, match="on grid 'b'"):
+            aggregator.add(
+                np.ones((2, 2)), Patch((slice(2, 4), slice(0, 2)), grid_id="b")
+            )
+        assert aggregator.count == 1

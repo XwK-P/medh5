@@ -60,6 +60,7 @@ from medh5.torch.handles import (
     worker_init_fn,
 )
 from medh5.torch.samplers import FileGroupedSampler
+from medh5.torch.stitch import GridStitcher
 
 __all__ = [
     "ALIGNMENTS",
@@ -70,6 +71,7 @@ __all__ = [
     "ConceptVocabulary",
     "FileGroupedSampler",
     "GridPatchDataset",
+    "GridStitcher",
     "HandleCache",
     "PairReport",
     "PairedPatchDataset",

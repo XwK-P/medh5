@@ -61,6 +61,31 @@ roi = (slice(10, 42),) * 3
 organs.dense(["liver"], roi=roi)       # only the chunks that ROI touches
 ```
 
+## Predict a whole volume
+
+A model trained on patches predicts on patches too: cover each volume with a
+sliding window, run the model, and stitch the predictions back. Overlapping
+windows are blended, each trusted most at its centre, where the model saw the
+most context:
+
+```python
+from torch.utils.data import DataLoader
+from medh5.torch import GridPatchDataset, GridStitcher, collate
+
+ds = GridPatchDataset(paths, patch_size=(8, 8, 8), overlap=2, images=["CT"])
+stitcher = GridStitcher(ds, channels=2)            # two classes per voxel
+for batch in DataLoader(ds, batch_size=4, collate_fn=collate):
+    logits = torch.zeros((len(batch["images"]["CT"]), 2, 8, 8, 8))   # model(batch)
+    for path, probabilities in stitcher.add(logits, batch["meta"]):
+        prediction = probabilities.argmax(axis=0)  # this file's labelmap
+stitcher.finish()
+```
+
+A file comes back as soon as its last window has been predicted, in whatever
+order a shuffled or multi-worker loader delivers them, and never with a window
+missing: `finish()` names every file that is still short. See
+[the torch reference](../reference/torch.md#gridpatchdataset-deterministic-tiling-for-inference).
+
 ## Overlap you did not expect
 
 ```bash
