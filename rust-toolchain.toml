@@ -3,7 +3,9 @@
 # release re-runs CI on its tag, and a lint that a new stable adds fails
 # `clippy -D warnings` there, after the pull request passed. `rust-version` in
 # Cargo.toml is the oldest Rust the crates promise, and the `msrv` job holds it.
+# A bump also checks that the cargo-semver-checks release the API gate pins reads
+# this compiler's rustdoc JSON format (0.51.0 reads Rust 1.97 to 1.99).
 [toolchain]
-channel = "1.97.0"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
