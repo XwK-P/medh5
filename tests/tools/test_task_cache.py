@@ -579,6 +579,58 @@ class TestDigestsFromTheText:
         assert validate_cache(rows, task=task).ok
 
 
+def hostile_task(root: Path) -> tuple[TaskManifest, str]:
+    """task-cache-1 Appendix A's probe: subject ``S-01``'s first reference
+    pins one version but names a file that is another, holding a secret
+    identity, clock, lab value and document; its second, pinned correctly,
+    holds the same event id at another value."""
+    root.mkdir(parents=True, exist_ok=True)
+
+    def lab(value: float) -> Event:
+        return Event(
+            "ev-secret", "ev-secret", "observation", "point", "final",
+            effective_start_us=-48 * HOUR, available_us=-47 * HOUR,
+            code_system="http://loinc.org", code="2160-0", value_num=value,
+            unit="mg/dL",
+        )  # fmt: skip
+
+    secret = History.write(
+        root / "secret.medh5",
+        subject_id="MRN-0042-SECRET",
+        clock=Clock.relative("clk-secret", "baseline CT acquisition"),
+        events=[
+            lab(42.0),
+            Event(
+                "ev-doc-secret",
+                "ev-doc-secret",
+                "document",
+                "point",
+                "final",
+                effective_start_us=-HOUR,
+                available_us=-HOUR,
+            ),
+        ],
+        documents=[Document("doc-secret", "The secret note.")],
+        links=[
+            Link.between(
+                ("event", "ev-doc-secret"), "describes", ("document", "doc-secret")
+            )
+        ],
+    )
+    History.write(
+        root / "good.medh5",
+        subject_id="S-01",
+        clock=Clock.relative("clk-01", "baseline CT acquisition"),
+        events=[lab(7.0)],
+    )
+    good = SourceRef.pin(root / "good.medh5", uri="good.medh5", source_id="s-good")
+    hostile = SourceRef("secret.medh5", good.content_id, source_id="s-hostile")
+    task = TaskManifest.new("hostile", "1", identity_namespace="site", base=root)
+    task.add_subject("S-01", [hostile, good])
+    task.add_row("S-01@0h", "S-01", 0)
+    return task, secret
+
+
 class TestSources:
     def test_S2_a_pin_holds_until_the_sample_changes(self, setup):
         task, paths = setup
@@ -623,6 +675,29 @@ class TestSources:
         assert after.events == before.events and after.slots == before.slots
         assert after.target == before.target
         assert after.fingerprint != before.fingerprint  # it pins other bytes
+
+    def test_S2_a_hostile_manifest_reads_nothing_it_does_not_pin(
+        self, tmp_path: Path, capsys
+    ):
+        """A source off its pin was read on: its subject id (T303), its clock
+        (T304), its events (T305) and, under ``--json``, its whole event
+        table were reported, and T302 printed the content_id it stores
+        (task-cache-1 Appendix A)."""
+        task, stored = hostile_task(tmp_path / "probe")
+        pre = task.preflight()
+        assert [(f.code, f.location) for f in pre.findings] == [("T302", "s-hostile")]
+        manifest = task.save(tmp_path / "probe" / "t.task.json")
+        assert main(["task", "preflight", str(manifest), "--json"]) == EXIT_ERROR
+        as_json = capsys.readouterr().out
+        assert main(["task", "preflight", str(manifest)]) == EXIT_ERROR
+        as_text = capsys.readouterr().out
+        reported = "\n".join([repr(pre.findings), as_json, as_text])
+        for secret in ("MRN-0042-SECRET", "clk-secret", "doc-secret", "42.0", stored):
+            assert secret not in reported, secret
+        assert "ev-secret" in as_json and "7.0" in as_json  # the pinned source
+        with pytest.raises(MEDH5ValidationError) as refused:
+            task.reconcile()
+        assert stored not in str(refused.value)
 
     def test_S2_edited_clinical_bytes_fail_under_an_unchanged_root(self, setup):
         task, paths = setup
@@ -1101,8 +1176,9 @@ class TestPreflight:
         task.add_subject("P-01", [SourceRef.pin(a, uri="a.medh5"), pinned_b])
         # Two clocks (T304), and the shared events not yet reconciled (T305).
         assert found(task.preflight().findings) == ["T304", "T305"]
+        pinned_a = SourceRef.pin(a, uri="a.medh5")
         wrong = SourceRef(
-            "a.medh5", pinned_b.content_id, source_id="x", local_subject_id="P-9"
+            "a.medh5", pinned_a.content_id, source_id="x", local_subject_id="P-9"
         )
         other = TaskManifest.new("t", "1", identity_namespace="n", base=root)
         other.add_subject("P-01", [wrong])
@@ -1442,7 +1518,9 @@ class TestPreflightAtScale:
             data.id.write_direct_chunk((0,), b"\x00" * 16)
         report = task.preflight()
         assert not report.ok
-        assert {f.code for f in report.findings} == {"T302", "T306"}
+        # The bytes fail their digests, so the source is read no further: no
+        # T306 for the table it would have read (task-cache-1 Appendix A).
+        assert {f.code for f in report.findings} == {"T302"}
         assert report.row("r").status == "error"
 
     def test_S4_packed_columns_carry_64_bit_offsets(self, tmp_path: Path):

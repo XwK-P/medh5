@@ -166,10 +166,11 @@ impl SourceRef {
             out.push(Finding::new(
                 "T302",
                 &at,
+                // Only the pin: what a file off its pin stores is nothing the
+                // manifest's author named (task-cache-1 Appendix A).
                 format!(
-                    "{} is now {}; the reference pins {} --- repin it explicitly if the change is meant",
+                    "{} is not the version the reference pins ({}) --- repin it explicitly if the change is meant",
                     self.locator(),
-                    stored.as_deref().unwrap_or("unaddressed"),
                     self.content_id
                 ),
             ));

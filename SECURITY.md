@@ -34,6 +34,20 @@ A finding that does not apply is passed over in the workflow by its id, and
 recorded under [Advisories](#advisories) with the reason. A release ships no
 finding that has neither a fix nor a disposition here.
 
+## Running a task manifest you did not write
+
+A task manifest names its sources by path, so whoever wrote it chooses what
+`medh5 task preflight`, `task reconcile` and `cache validate` open: any path
+the running user can read, relative to the manifest's directory or absolute.
+What medh5 guarantees is what the pins cover. A source that is not a regular
+file — a named pipe, a device — is refused before it is opened, and a source
+that is not the version its reference pins is read no further: its finding
+(`T302`) names the pin and nothing the file holds, and the file adds no
+identity, clock, event or document to the report. A file that matches its pin
+is reported in full, and whether a path exists can still be told from its
+finding (`T301`), so run a manifest from someone else only over files you are
+willing to have it name.
+
 ## Native inventory
 
 What every wheel and every `medh5` binary links statically. The crate column is

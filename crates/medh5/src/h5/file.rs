@@ -34,6 +34,9 @@ pub fn open_read(path: &Path) -> Result<hdf5::File> {
     // from run to run is no report to compare (`validate --json`).
     match fs::metadata(path) {
         Ok(meta) if meta.is_dir() => return Err(failed(&"it is a directory, not a file")),
+        // A named pipe or a device would block or stream inside `H5Fopen`:
+        // a sample is a regular file (task-cache-1 Appendix A).
+        Ok(meta) if !meta.is_file() => return Err(failed(&"it is not a regular file")),
         Ok(_) => {}
         Err(err) => return Err(failed(&os_reason(&err))),
     }
@@ -688,6 +691,24 @@ mod tests {
         let err = open_read(dir.path()).unwrap_err();
         assert!(matches!(err, Error::File(_)));
         assert!(err.to_string().ends_with(": it is a directory, not a file"), "{err}");
+    }
+
+    /// A named pipe given as a sample is refused before HDF5 opens it: the
+    /// open blocked inside `H5Fopen` until something wrote to the pipe, so a
+    /// task manifest naming one hung `task preflight`.
+    #[cfg(unix)]
+    #[test]
+    fn s2_a_fifo_is_refused_before_hdf5_opens_it() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe.medh5");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let opening = fifo.clone();
+        std::thread::spawn(move || tx.send(open_read(&opening).map(drop).map_err(|e| e.to_string())).unwrap());
+        let err = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the open blocked").unwrap_err();
+        assert!(err.ends_with(": it is not a regular file"), "{err}");
     }
 
     /// A replace through a symbolic link replaces the file the link names
