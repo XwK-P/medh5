@@ -467,6 +467,26 @@ fn raw_moments(m: &stats::Moments) -> RawMoments {
     (m.count, m.mean, m.m2, m.minimum, m.maximum, m.nonfinite)
 }
 
+/// The engine's `ClassStats` from a Python `ClassStats`' attributes.
+fn class_stats_of(v: &Bound<'_, PyAny>) -> PyResult<stats::ClassStats> {
+    Ok(stats::ClassStats {
+        class_id: v.getattr("class_id")?.extract()?,
+        key: match v.getattr("key") {
+            Ok(key) => key.extract()?,
+            Err(_) => None,
+        },
+        voxels: v.getattr("voxels")?.extract()?,
+        present_in: v.getattr("present_in")?.extract()?,
+        examined_in: v.getattr("examined_in")?.extract()?,
+    })
+}
+
+/// `ClassStats.to_json`: the engine's JSON for one class.
+#[pyfunction]
+fn dataset_class_stats_json<'py>(py: Python<'py>, s: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    Ok(json_to_py(py, &class_stats_of(s)?.to_json())?)
+}
+
 fn stats_of(obj: &Bound<'_, PyAny>) -> PyResult<stats::DatasetStats> {
     let mut images = IndexMap::new();
     for item in obj.getattr("images")?.call_method0("items")?.try_iter()? {
@@ -476,19 +496,7 @@ fn stats_of(obj: &Bound<'_, PyAny>) -> PyResult<stats::DatasetStats> {
     let mut classes = IndexMap::new();
     for item in obj.getattr("classes")?.call_method0("items")?.try_iter()? {
         let (k, v): (i64, Bound<'_, PyAny>) = item?.extract()?;
-        classes.insert(
-            k,
-            stats::ClassStats {
-                class_id: v.getattr("class_id")?.extract()?,
-                key: match v.getattr("key") {
-                    Ok(key) => key.extract()?,
-                    Err(_) => None,
-                },
-                voxels: v.getattr("voxels")?.extract()?,
-                present_in: v.getattr("present_in")?.extract()?,
-                examined_in: v.getattr("examined_in")?.extract()?,
-            },
-        );
+        classes.insert(k, class_stats_of(&v)?);
     }
     Ok(stats::DatasetStats {
         samples: obj.getattr("samples")?.extract()?,
@@ -727,6 +735,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(dataset_stats_from_json, m)?,
         wrap_pyfunction!(dataset_stats_merge, m)?,
         wrap_pyfunction!(dataset_stats_json, m)?,
+        wrap_pyfunction!(dataset_class_stats_json, m)?,
         wrap_pyfunction!(dataset_stats_normalization, m)?,
         wrap_pyfunction!(dataset_stats_class_weights, m)?,
         wrap_pyfunction!(dataset_stats_for, m)?,

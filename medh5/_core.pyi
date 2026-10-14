@@ -311,6 +311,7 @@ __all__ = [
     "dataset_check",
     "dataset_check_format",
     "dataset_check_json",
+    "dataset_class_stats_json",
     "dataset_compute_stats",
     "dataset_counts",
     "dataset_default_ratios",
@@ -1016,6 +1017,10 @@ def dataset_check(
 ) -> Any: ...
 def dataset_check_format(report: Any) -> str: ...
 def dataset_check_json(report: Any) -> Any: ...
+def dataset_class_stats_json(s: Any) -> Any:
+    """`ClassStats.to_json`: the engine's JSON for one class."""
+    ...
+
 def dataset_compute_stats(
     paths: Sequence[str | os.PathLike[str]],
     *,

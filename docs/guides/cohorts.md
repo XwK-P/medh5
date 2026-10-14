@@ -207,7 +207,7 @@ ct = stats.images["CT"]
 ct.mean, ct.std, ct.minimum, ct.maximum
 
 lesion = stats.classes[3]
-lesion.voxels, lesion.present_in, lesion.examined_in, lesion.prevalence
+lesion.voxels, lesion.present_in, lesion.examined_in, lesion.examined_prevalence
 
 stats.failures
 ```
@@ -228,12 +228,15 @@ Two things it deliberately does not do.
 **It does not average per-file means.** That weights a 40-slice scan the same
 as a 900-slice one. The merge weights by voxel count.
 
-**It does not treat an unexamined class as a zero.** `prevalence` is over the
-samples that actually examined the class, so a class annotated in a tenth of
-the cohort does not look ten times rarer than it is. `present_in` counts the
-same samples — those that examined the class and found it — so a class drawn
-where nobody looked for it adds to `voxels` but not to its prevalence, which
-stays at most 1.
+**It does not treat an unexamined class as a zero.** `examined_prevalence` is
+over the samples that actually examined the class, so a class annotated in a
+tenth of the cohort does not look ten times rarer than it is. `present_in`
+counts the same samples — those that examined the class and found it — so a
+class drawn where nobody looked for it adds to `voxels` but not to its
+prevalence, which stays at most 1. A class no sample examined has no
+prevalence: `examined_prevalence` is `None`, the JSON writes `null` and
+`medh5 dataset stats` prints `-`. (`prevalence` still answers 0.0 there, with
+a `FutureWarning`; medh5 3.0 answers `None`.)
 
 Class counts come from the §14.3 sampling index when it is current — a few
 hundred bytes per annotation instead of decompressing every mask. A stale index

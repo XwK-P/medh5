@@ -1023,6 +1023,105 @@ class TestStats:
         assert spleen.prevalence == 0.0
         assert spleen.voxels == 3 * 4**3
 
+    @staticmethod
+    def _drawn_not_examined(tmp_path: Path, label_set: LabelSet) -> DatasetStats:
+        """Spleen drawn with 27 voxels in a sample that looked only for liver."""
+        path = write_sample(
+            tmp_path / "drawn.medh5",
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2), 4), 2: block(SHAPE, (2, 14, 2), 3)},
+            annotated=["liver"],
+        )
+        return compute_stats([path])
+
+    def test_S11_3_prevalence_of_a_class_nobody_examined_is_undefined(
+        self, tmp_path, label_set
+    ):
+        """It was 0.0, which reads as "looked for and never found"."""
+        spleen = self._drawn_not_examined(tmp_path, label_set).classes[2]
+        assert (spleen.voxels, spleen.examined_in) == (27, 0)
+        assert spleen.examined_prevalence is None
+        assert spleen.to_json()["prevalence"] is None
+        with pytest.warns(FutureWarning, match=r"^medh5 3\.0 returns None"):
+            assert spleen.prevalence == 0.0
+
+    def test_S11_3_examined_prevalence_counts_only_examining_samples(
+        self, tmp_path, label_set
+    ):
+        found = write_sample(
+            tmp_path / "found.medh5",
+            label_set=label_set,
+            masks={2: block(SHAPE, (2, 2, 2), 4)},
+            annotated=["spleen"],
+        )
+        absent = write_sample(
+            tmp_path / "absent.medh5",
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2), 4)},
+            annotated=["liver", "spleen"],
+        )
+        unlooked = write_sample(
+            tmp_path / "unlooked.medh5",
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2), 4)},
+            annotated=["liver"],
+        )
+        spleen = compute_stats([found, absent, unlooked]).classes[2]
+        assert (spleen.present_in, spleen.examined_in) == (1, 2)
+        assert spleen.examined_prevalence == 0.5
+
+    def test_S11_3_prevalence_warns_only_when_undefined(self, tmp_path, label_set):
+        import warnings
+
+        liver = self._drawn_not_examined(tmp_path, label_set).classes[1]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert liver.prevalence == liver.examined_prevalence == 1.0
+
+    def test_S11_3_stats_round_trip_keeps_null_prevalence(self, tmp_path, label_set):
+        stats = self._drawn_not_examined(tmp_path, label_set)
+        doc = stats.to_json()
+        (spleen,) = [c for c in doc["classes"] if c["class_id"] == 2]
+        assert spleen["prevalence"] is None
+        assert DatasetStats.from_json(doc).to_json() == doc
+
+    def test_class_stats_json_is_the_engines(self, tmp_path, label_set):
+        """`ClassStats.to_json` re-implemented the engine's; it delegates."""
+        stats = self._drawn_not_examined(tmp_path, label_set)
+        engine = {c["class_id"]: c for c in stats.to_json()["classes"]}
+        for class_id, found in stats.classes.items():
+            assert found.to_json() == engine[class_id]
+        rebuilt = DatasetStats.from_json(stats.to_json()).classes
+        assert {k: v.to_json() for k, v in rebuilt.items()} == engine
+
+    def test_the_command_line_prints_no_prevalence_for_an_unexamined_class(
+        self, tmp_path, label_set, capsys
+    ):
+        (tmp_path / "c").mkdir()
+        write_sample(
+            tmp_path / "c" / "drawn.medh5",
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2), 4), 2: block(SHAPE, (2, 14, 2), 3)},
+            annotated=["liver"],
+        )
+        assert (
+            main(
+                [
+                    "dataset",
+                    "index",
+                    str(tmp_path / "c"),
+                    "-o",
+                    str(tmp_path / "m.json"),
+                ]
+            )
+            == 0
+        )
+        capsys.readouterr()
+        assert main(["dataset", "stats", str(tmp_path / "m.json")]) == 0
+        rows = [line.split() for line in capsys.readouterr().out.splitlines()]
+        (spleen,) = [r for r in rows if r[:2] == ["2", "spleen"]]
+        assert spleen[-2:] == ["0/0", "-"]
+
     def test_a_collection_member_is_measured_by_its_locator(
         self, cohort, tmp_path, capsys
     ):

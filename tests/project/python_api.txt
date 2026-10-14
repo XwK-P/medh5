@@ -2466,6 +2466,7 @@ medh5.dataset.CHECK_CODES	constant	dict
 medh5.dataset.ClassStats	class	(class_id, voxels=0, present_in=0, examined_in=0, key=None) bases=
 medh5.dataset.ClassStats.class_id	field
 medh5.dataset.ClassStats.examined_in	field
+medh5.dataset.ClassStats.examined_prevalence	property
 medh5.dataset.ClassStats.key	field
 medh5.dataset.ClassStats.present_in	field
 medh5.dataset.ClassStats.prevalence	property
@@ -2715,6 +2716,7 @@ medh5.dataset.stats	module
 medh5.dataset.stats.ClassStats	class	(class_id, voxels=0, present_in=0, examined_in=0, key=None) bases=
 medh5.dataset.stats.ClassStats.class_id	field
 medh5.dataset.stats.ClassStats.examined_in	field
+medh5.dataset.stats.ClassStats.examined_prevalence	property
 medh5.dataset.stats.ClassStats.key	field
 medh5.dataset.stats.ClassStats.present_in	field
 medh5.dataset.stats.ClassStats.prevalence	property

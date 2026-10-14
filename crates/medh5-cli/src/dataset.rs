@@ -312,7 +312,8 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                         s.key.clone().unwrap_or_else(|| "-".into()),
                         thousands(i128::from(s.voxels)),
                         format!("{}/{}", s.present_in, s.examined_in),
-                        percent(s.prevalence(), 0, false),
+                        // A class nobody examined has no prevalence to print.
+                        s.examined_prevalence().map(|p| percent(p, 0, false)).unwrap_or_else(|| "-".into()),
                     ]
                 })
                 .collect();
