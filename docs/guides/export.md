@@ -177,14 +177,39 @@ any value that is not its own (`medh5_class_ids`), so `from-nnunet` restores it.
 Every case is checked before any file is written, so a refused case leaves no
 half-written dataset behind.
 
+**Test cases follow a split.** `--split SET_ID` places each case by its
+claim in that split set (§12.3): a case claiming `test` is written to
+`imagesTs`, its labels to `labelsTs`, and one claiming `train` or `val` to
+`imagesTr`, where nnU-Net cross-validates. A case the set does not place, or
+holds out (`holdout`, `unassigned`), is refused: a mistyped set id would
+otherwise train on every test case. `from-nnunet --include-test` writes these
+claims (set `nnunetv2:<dataset>`), so a dataset comes back with its test
+cases where they were:
+
+```bash
+medh5 convert from-nnunet /Dataset001_Liver cases/ --include-test
+medh5 convert to-nnunet /out cases/*.medh5 --dataset-name Dataset001_Liver \
+    --split nnunetv2:Dataset001_Liver
+```
+
 **An existing dataset directory must hold only what the export writes.** An
 identical re-export replaces its own files and `dataset.json`, and files that
-are not NIfTI are left alone. A NIfTI file in `imagesTr`, `labelsTr` or
-`imagesTs` that the export would not write — a case or a channel since
-dropped, a case moved between `imagesTr` and `imagesTs`, the other file
-ending — refuses the export with nothing written: nnU-Net trains on every case
-file it finds there, whatever `dataset.json` says. Export to a new directory,
-or remove those files first.
+are not NIfTI are left alone. A NIfTI file in `imagesTr`, `labelsTr`,
+`imagesTs` or `labelsTs` that the export would not write — a case or a
+channel since dropped, a case moved between `imagesTr` and `imagesTs`, the
+other file ending — refuses the export with nothing written: nnU-Net trains on
+every case file it finds there, whatever `dataset.json` says. Export to a new
+directory, remove those files first, or replace the dataset.
+
+**`--replace` swaps a dataset whole.** The directory must be an nnU-Net
+dataset — a directory, not a link, holding a `dataset.json` — or the export
+is refused. The new dataset is built in a hidden sibling directory on the
+same file system, with every file that is not the export's copied in
+(`splits_final.json`, notes, anything outside the case folders); two renames
+then swap it in, the old dataset aside and the new one into its place, and
+if the second fails the first is undone, so the directory always holds one
+whole dataset. The old tree is deleted last. The report's `replace` note
+lists the NIfTI files removed and the files carried over.
 
 nnU-Net normalises a channel by its name in `dataset.json`: `CT` selects its CT
 scheme, and any other name z-scoring. A stashed `dataset.json` keeps its own

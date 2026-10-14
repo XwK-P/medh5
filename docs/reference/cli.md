@@ -483,9 +483,10 @@ medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G] [--rasterize]
 medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
                                               [--frame-salt S]
 
-medh5 convert from-nnunet ROOT OUT [--case ID ...]
+medh5 convert from-nnunet ROOT OUT [--case ID ...] [--include-test]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
                                     [--class K ...] [--unlabeled refuse|test]
+                                    [--split SET_ID] [--replace]
 ```
 
 All but `to-nifti` also take `[--report FILE] [--json]`. A report never
@@ -534,6 +535,14 @@ unless `--id` names another; `to-nnunet` exports annotation `seg` unless
 `--dataset-name` does, with every class the cases carry unless `--class` names
 the ones to export — each of them examined by every case. A case without the
 annotation is refused unless `--unlabeled test` writes it to `imagesTs`.
+`--split SET_ID` places each case by its claim in that split set — `test` in
+`imagesTs` and `labelsTs`, `train` or `val` in `imagesTr` — and refuses a case
+the set does not place. `--replace` replaces an existing dataset (a
+directory holding a `dataset.json`, not a link): the new one is built beside
+it and swapped in, files that are not the export's carried over. `from-nnunet
+--include-test` imports `imagesTs`'s cases too, each case claiming its
+partition in split `nnunetv2:<dataset>`; without it the cases left out are a
+warning.
 
 See [Converters](converters.md).
 

@@ -491,6 +491,15 @@ An image is named for its channel; nnU-Net reads `channel_names` as
 normalisation schemes, so two channels may share a name (`zscore`), and those
 images are named for their channel index as well (`zscore_0000`).
 
+**Test cases are imported on request.** By default the cases are
+`imagesTr`'s, and the `imagesTs` cases left out are counted in a warning
+(`test_cases`). With `include_test=True` (`--include-test`) they are
+imported too, labeled from `labelsTs` where it has their labels, and every
+case records its folder as a §12.3 split claim: set `nnunetv2:<dataset>` (the
+dataset directory's name), partition `train` or `test`, `assigned_by` "nnU-Net
+v2 dataset layout" and the SHA-256 of `dataset.json` as `manifest_sha256`. A
+case in both folders is refused.
+
 **nnU-Net's class ids are kept**, so a model trained against the original
 dataset still means the same thing. A file's `scl_slope`/`scl_inter` mean what
 they mean to nnU-Net: an image keeps them as its rescale, and label ids are read
@@ -519,11 +528,27 @@ classes, one name per id. **Every case must have examined every class
 exported** (`annotated_class_ids`): a class one case never looked for would be
 written as its background, a negative nobody observed; `classes=` exports a
 subset all of them examined. **A dataset directory that already exists may
-hold only what the export writes**: a NIfTI file in `imagesTr`, `labelsTr` or
-`imagesTs` the export would not write — an earlier export's dropped case or
-channel, a case since moved between `imagesTr` and `imagesTs`, the other file
-ending — refuses it, since nnU-Net trains on every case file it finds. An
-identical re-export replaces its own files, and other files are left alone.
+hold only what the export writes**: a NIfTI file in `imagesTr`, `labelsTr`,
+`imagesTs` or `labelsTs` the export would not write — an earlier export's
+dropped case or channel, a case since moved between `imagesTr` and
+`imagesTs`, the other file ending — refuses it, since nnU-Net trains on every
+case file it finds. An identical re-export replaces its own files, and other
+files are left alone. **`replace=True` (`--replace`) replaces a dataset
+instead**: the directory must be a directory, not a link, holding a
+`dataset.json`; the new dataset is built in a hidden sibling
+(`.<name>.medh5-staging-…`) with every file that is not the export's copied
+in, the old one is renamed aside (`.<name>.medh5-old-…`) and the new one into
+its place — the first rename undone if the second fails — and the old tree is
+deleted. The `replace` note lists the files removed and carried over.
+
+**A split places the cases.** With `split="SET_ID"` (`--split SET_ID`) each
+case goes where its claim in that set says (§12.3): `test` to `imagesTs`, its
+labels to `labelsTs`; `train` or `val` to `imagesTr`, where nnU-Net
+cross-validates. A case the set does not place, places twice, or holds out
+(`holdout`, `unassigned`) is refused. Test cases are not counted in
+`numTraining`, and an unlabeled case claiming `test` needs no `--unlabeled
+test`; an unlabeled case claiming `train` or `val` is refused, even with
+`--unlabeled test`, which would move it out of the partition it claims.
 
 **Every file is a name under the dataset.** A case's files are named by its
 `sample_id`, which must be a sample key (`[A-Za-z0-9_.-]`, not `.` or `..`),

@@ -672,7 +672,13 @@ fn convert() -> Vec<Command> {
                 .about("an nnU-Net v2 dataset -> samples")
                 .arg(positional("root", "the nnU-Net v2 dataset directory"))
                 .arg(positional("out", "directory to write the samples into"))
-                .arg(append("case_ids", "case", "only import these case ids; repeatable").value_name("CASE")),
+                .arg(append("case_ids", "case", "only import these case ids; repeatable").value_name("CASE"))
+                .arg(flag(
+                    "include_test",
+                    "include-test",
+                    "also import imagesTs's test cases, labeled from labelsTs where present; every case then \
+                     claims its partition in split nnunetv2:<dataset>",
+                )),
         ))
         .subcommand(report_args(
             Command::new("to-nnunet")
@@ -700,7 +706,22 @@ fn convert() -> Vec<Command> {
                     )
                     .value_parser(["refuse", "test"])
                     .default_value("refuse"),
-                ),
+                )
+                .arg(
+                    opt(
+                        "split",
+                        "split",
+                        "place each case by its claim in this split set: test to imagesTs and labelsTs, train or \
+                         val to imagesTr",
+                    )
+                    .value_name("SET_ID"),
+                )
+                .arg(flag(
+                    "replace",
+                    "replace",
+                    "replace an existing dataset: build the new one beside it and swap it in, removing the NIfTI \
+                     files it no longer writes and carrying every other file over",
+                )),
         ));
     let migrate = report_args(
         Command::new("migrate")

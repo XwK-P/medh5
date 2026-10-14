@@ -224,7 +224,10 @@ def _files(
     elif command == "from-nnunet" and (root := given("root")) is not None:
         trees.append(("the nnU-Net dataset this command reads", root))
         if out is not None:
-            for case in _nnunet_cases(root, args.get("case_ids")):
+            cases = _nnunet_cases(
+                root, args.get("case_ids"), include_test=bool(args.get("include_test"))
+            )
+            for case in cases:
                 writes.append(
                     (
                         f"case {case!r}'s sample, which this command writes",
@@ -275,7 +278,9 @@ def _is_dicom(path: Path) -> bool:
         return False
 
 
-def _nnunet_cases(root: Path, case_ids: Sequence[str] | None) -> list[str]:
+def _nnunet_cases(
+    root: Path, case_ids: Sequence[str] | None, *, include_test: bool = False
+) -> list[str]:
     """The cases ``from-nnunet`` would write, or none where the dataset is
     one the converter refuses itself."""
     if case_ids:
@@ -283,7 +288,7 @@ def _nnunet_cases(root: Path, case_ids: Sequence[str] | None) -> list[str]:
     from medh5.io.nnunetv2 import cases, read_dataset_json
 
     try:
-        return cases(root, read_dataset_json(root))
+        return cases(root, read_dataset_json(root), include_test=include_test)
     except (MEDH5Error, OSError, ValueError, KeyError, TypeError):
         return []
 
@@ -495,7 +500,9 @@ def _to_rtstruct(args: Any) -> int:
 def _from_nnunet(args: Any) -> int:
     from medh5.io.nnunetv2 import from_nnunetv2
 
-    report = from_nnunetv2(args.root, args.out, case_ids=args.case_ids)
+    report = from_nnunetv2(
+        args.root, args.out, case_ids=args.case_ids, include_test=args.include_test
+    )
     return _finish(report, args)
 
 
@@ -509,6 +516,8 @@ def _to_nnunet(args: Any) -> int:
         annotation=args.annotation,
         classes=args.classes,
         unlabeled=args.unlabeled,
+        split=args.split,
+        replace=args.replace,
     )
     return _finish(report, args)
 
