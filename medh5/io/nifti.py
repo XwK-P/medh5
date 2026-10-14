@@ -543,6 +543,7 @@ def read_nifti(
     transpose: bool = True,
     fourth_axis: str = "auto",
     assume_geometry: bool = False,
+    plane_as_volume: bool = False,
 ) -> tuple[npt.NDArray[Any], dict[str, Any]]:
     """One NIfTI file as ``(array, geometry)`` in MEDH5 conventions.
 
@@ -556,6 +557,15 @@ def read_nifti(
     fallback from ``pixdim``.  It is off by default because that fallback is an
     invented grid, and a grid this library invented is indistinguishable
     downstream from one a scanner measured (§3.3).
+
+    A 2-D file is a 2-D grid (§3.6), which only a plane at z = 0 in the
+    world's x-y plane can be; any other is refused.  *plane_as_volume* reads
+    every 2-D file as ``(x, y, 1)`` instead --- the one-slice 3-D grid §3.6
+    makes of a plane that lies elsewhere --- keeping the full affine, whose
+    third column becomes the third axis: it must be non-zero and orthogonal
+    to the first two, since no normal or thickness is invented.  The
+    geometry's ``plane_as_volume`` then records the plane's ``z`` and
+    ``normal``, and is ``None`` for a file that was not reshaped.
 
     The returned geometry carries ``notes``: what the reader had to decide from
     ambiguous headers, for the caller to put in its conversion report.
@@ -610,6 +620,11 @@ def read_nifti(
     for axis in squeezed:
         data = np.squeeze(data, axis=axis)
     affine = convert_world(_affine(image, path), source="RAS", target=coord_system)
+    plane: dict[str, Any] | None = None
+    if plane_as_volume and data.ndim == 2:
+        # What the file would be saved as (x, y, 1), before anything reads it.
+        plane = _plane_volume(affine, path, units)
+        data = data[:, :, np.newaxis]
     spacing, origin, direction = decompose_affine(affine)
     order = tuple(range(data.ndim))
     if transpose and data.ndim >= 3:
@@ -674,6 +689,7 @@ def read_nifti(
         "units": units,
         "dtype": str(data.dtype),
         "rescale": rescale,
+        "plane_as_volume": plane,
         "header": {
             "descrip": _text(image.header.get("descrip")),
             "scl_slope": _number(image.header.get("scl_slope")),
@@ -922,6 +938,64 @@ is float32: a plane written at z = 0 stores exactly 0, and an offset anyone
 meant is orders of magnitude larger."""
 
 
+def _plane_volume(
+    affine: npt.NDArray[np.float64], path: str | os.PathLike[str], units: str
+) -> dict[str, Any]:
+    """Where a 2-D plane read as ``(x, y, 1)`` lies, or a refusal.
+
+    The third index axis is the affine's third column: a NIfTI plane carries
+    one, and it is the only normal and thickness the file states.  A zero
+    column, or one not orthogonal to the in-plane axes, states neither, and
+    none is invented.
+    """
+    name = os.fspath(path)
+    matrix = np.asarray(affine, dtype=np.float64)
+    third = matrix[:3, 2]
+    length = float(np.linalg.norm(third))
+    if not (math.isfinite(length) and length > 0.0):
+        raise MEDH5ValidationError(
+            f"{name} is a 2-D plane whose affine's third column is "
+            f"{[float(v) for v in third]}: read as (x, y, 1), that column is "
+            "the third axis, and a zero one gives the slice no normal and no "
+            "thickness, which are not invented; write them into the file's "
+            "affine, or import the plane without plane_as_volume"
+        )
+    normal = third / length
+    for k in (0, 1):
+        axis = matrix[:3, k]
+        size = float(np.linalg.norm(axis))
+        if size > 0.0 and abs(float(normal @ axis) / size) > ORTHONORMAL_TOL:
+            raise MEDH5ValidationError(
+                f"{name} is a 2-D plane whose affine's third column "
+                f"{[float(v) for v in third]} is not orthogonal to its in-plane "
+                "axes: read as (x, y, 1), the grid would be sheared, and no "
+                "other normal is invented; correct the file's affine, or import "
+                "the plane without plane_as_volume"
+            )
+    return {
+        "z": float(matrix[2, 3]),
+        "normal": [float(v) for v in normal],
+        "thickness": length,
+        "units": units,
+    }
+
+
+def _note_plane(log: ConversionReport, name: str, geo: Mapping[str, Any]) -> bool:
+    """Record a plane `read_nifti` read as ``(x, y, 1)``; whether it did."""
+    plane = geo.get("plane_as_volume")
+    if plane is None:
+        return False
+    log.decision(
+        "plane_as_volume",
+        f"{name}: the 2-D plane was imported as a one-slice 3-D grid, "
+        f"(x, y, 1), at z = {plane['z']:g} {plane['units']}, its third axis "
+        f"the affine's third column (normal {plane['normal']}, "
+        f"{plane['thickness']:g} {plane['units']} thick) (§3.6)",
+        {"file": name, **plane},
+    )
+    return True
+
+
 def _reduce_plane(
     spacing: npt.NDArray[np.float64],
     origin: npt.NDArray[np.float64],
@@ -948,16 +1022,18 @@ def _reduce_plane(
         raise MEDH5ValidationError(
             f"{name} is a 2-D plane not parallel to the x-y world plane, and "
             "§3.6 gives a 2-D grid a 2x2 direction on the first two world axes "
-            "--- no 2-D grid describes it; save it as (x, y, 1) to import it as "
-            "a single-slice 3-D volume"
+            "--- no 2-D grid describes it; save it as (x, y, 1), or pass "
+            "plane_as_volume=True (--plane-as-volume), to import it as a "
+            "single-slice 3-D volume"
         )
     offset = float(origin[2]) * MM_PER_UNIT.get(units, 1.0)
     if abs(offset) > PLANE_TOL_MM:
         raise MEDH5ValidationError(
             f"{name} is a 2-D plane at world z = {offset:g} mm, and a 2-D grid "
             "(§3.6) has no z to keep it at: imported, it would lie at z = 0, on "
-            "one grid with planes from any other slice; save it as (x, y, 1) to "
-            "import it as a single-slice 3-D volume, which keeps its z"
+            "one grid with planes from any other slice; save it as (x, y, 1), "
+            "or pass plane_as_volume=True (--plane-as-volume), to import it as "
+            "a single-slice 3-D volume, which keeps its z"
         )
     return spacing[:2], origin[:2], direction[:2, :2]
 
@@ -1133,6 +1209,7 @@ def from_nifti(
     annotated_classes: Sequence[str] | str = "all_given",
     assume_geometry: bool = False,
     report: ConversionReport | None = None,
+    plane_as_volume: bool = False,
 ) -> ConversionReport:
     """Write one sample from a set of co-registered NIfTI volumes.
 
@@ -1140,6 +1217,10 @@ def from_nifti(
     resampled: resampling changes the data, and a converter that does it
     silently produces a file whose labels no longer sit on the voxels they were
     drawn on.  Resample first, deliberately, with a tool that records it.
+
+    *plane_as_volume* imports every 2-D image and mask as a one-slice 3-D
+    grid, ``(x, y, 1)``, where it lies (:func:`read_nifti`); each is a
+    ``plane_as_volume`` decision in the report.
     """
     import medh5
 
@@ -1155,6 +1236,7 @@ def from_nifti(
     # in the set the first one's gradients without noticing.
     per_image: dict[str, dict[str, Any]] = {}
     geometry: dict[str, Any] | None = None
+    reshaped = False
     for name, path in images.items():
         data, geo = read_nifti(
             path,
@@ -1162,8 +1244,10 @@ def from_nifti(
             transpose=transpose,
             fourth_axis=fourth_axis,
             assume_geometry=assume_geometry,
+            plane_as_volume=plane_as_volume,
         )
         _replay_notes(log, name, geo)
+        reshaped = _note_plane(log, name, geo) or reshaped
         geometry = _same_grid(geometry, geo, name, log) if geometry else geo
         per_image[name] = geo
         arrays[name] = data
@@ -1177,8 +1261,10 @@ def from_nifti(
             coord_system=coord_system,
             transpose=transpose,
             assume_geometry=assume_geometry,
+            plane_as_volume=plane_as_volume,
         )
         _replay_notes(log, name, geo)
+        reshaped = _note_plane(log, name, geo) or reshaped
         _same_grid(geometry, geo, name, log)
         mask_arrays[name] = _as_mask(data, geo)
 
@@ -1278,6 +1364,12 @@ def from_nifti(
     if mask_arrays:
         label_set = _mint_label_set(sorted(mask_arrays), log)
 
+    params: dict[str, Any] = {
+        "coord_system": coord_system,
+        "transpose": bool(transpose),
+    }
+    if reshaped:
+        params["plane_as_volume"] = True
     with medh5.create(
         target, sample_id=stem, subject_id=subject, codec=codec
     ) as writer:
@@ -1289,7 +1381,7 @@ def from_nifti(
             # The files' names, not their paths: a local path often holds a
             # patient's name or MRN, and the sample's content_id followed it.
             inputs=[f"nifti:{Path(os.fspath(p)).name}" for p in images.values()],
-            params={"coord_system": coord_system, "transpose": bool(transpose)},
+            params=params,
         )
         if label_set is not None:
             writer.label_set(label_set)
@@ -1669,6 +1761,7 @@ def import_seg_nifti(
     assume_aligned: bool = False,
     assume_geometry: bool = False,
     report: ConversionReport | None = None,
+    plane_as_volume: bool = False,
 ) -> ConversionReport:
     """Add NIfTI masks to an existing sample, checking they sit on its grid.
 
@@ -1684,6 +1777,8 @@ def import_seg_nifti(
     *assume_geometry* and the report's guesses are :func:`from_nifti`'s: a
     mask declaring no spatial mapping is refused unless the fallback is
     taken on purpose, and what the reader assumed is in the report.
+    *plane_as_volume* reads a 2-D mask as ``(x, y, 1)``, so it can sit on
+    the one-slice 3-D grid a plane off z = 0 was imported as.
     """
     import medh5
 
@@ -1707,14 +1802,17 @@ def import_seg_nifti(
         )
 
     arrays: dict[str, npt.NDArray[np.bool_]] = {}
+    reshaped = False
     for name, mask_path in masks.items():
         data, geo = read_nifti(
             mask_path,
             coord_system=system,
             transpose=transpose,
             assume_geometry=assume_geometry,
+            plane_as_volume=plane_as_volume,
         )
         _replay_notes(log, name, geo)
+        reshaped = _note_plane(log, name, geo) or reshaped
         if tuple(geo["shape"]) != tuple(target_grid.spatial_shape):
             raise MEDH5ValidationError(
                 f"mask {name!r} has shape {geo['shape']}, but grid {grid_id!r} is "
@@ -1759,8 +1857,13 @@ def import_seg_nifti(
         if existing is None:
             writer.label_set(label_set)
         tool = writer.software("medh5", medh5.__version__)
+        # Params only when a plane was reshaped: an import that reshaped none
+        # records the activity it always did.
+        fields: dict[str, Any] = (
+            {"params": {"plane_as_volume": True}} if reshaped else {}
+        )
         activity = writer.activity(
-            "import", agent=tool, tool="medh5.io.nifti.import_seg_nifti"
+            "import", agent=tool, tool="medh5.io.nifti.import_seg_nifti", **fields
         )
         kind, _ = writer.add_segmentation(
             ann_id,

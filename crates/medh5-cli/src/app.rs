@@ -512,6 +512,12 @@ fn convert() -> Vec<Command> {
                     "import a NIfTI that declares no spatial mapping (sform_code = qform_code = 0) by taking the \
                      pixdim fallback. Off by default: that grid is assumed, not measured. Recorded as a guess.",
                 ))
+                .arg(flag(
+                    "plane_as_volume",
+                    "plane-as-volume",
+                    "import every 2-D input as a one-slice 3-D grid, (x, y, 1), keeping its full affine: a plane off \
+                     z = 0 or not parallel to x-y is imported where it lies instead of refused",
+                ))
                 .arg(opt("sample_id", "sample-id", "sample id to write; defaults to the output filename"))
                 .arg(opt("subject_id", "subject-id", "subject id to write")),
         ))

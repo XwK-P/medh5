@@ -389,6 +389,7 @@ def _from_nifti(args: Any) -> int:
         coord_system=args.coord_system,
         fourth_axis=args.fourth_axis,
         assume_geometry=args.assume_geometry,
+        plane_as_volume=args.plane_as_volume,
         sample_id=args.sample_id,
         subject_id=args.subject_id,
     )

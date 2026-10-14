@@ -467,7 +467,7 @@ prints it; without either, guesses and warnings still print.
 medh5 convert from-nifti OUT --image NAME=PATH [--image ...] [--mask NAME=PATH ...]
                              [--modality NAME=CODE ...] [--coord-system LPS|RAS]
                              [--fourth-axis auto|time|channel] [--assume-geometry]
-                             [--sample-id ID] [--subject-id ID]
+                             [--plane-as-volume] [--sample-id ID] [--subject-id ID]
 medh5 convert to-nifti PATH IMAGE OUT [--annotation A --class K] [--stored]
 
 medh5 convert from-dicom ROOT OUT [--group-by subject|study]
@@ -501,7 +501,10 @@ files: a collection is refused before anything is converted, and
 cine, DCE and 4-D CT, `channel` for multi-b-value DWI and multi-echo; `auto`
 (the default) reads the file's sidecars and header and records a guess when they
 do not say. `--assume-geometry` imports a file that declares no spatial mapping,
-recorded as a guess; without it such a file is refused.
+recorded as a guess; without it such a file is refused. `--plane-as-volume`
+imports every 2-D file as a one-slice 3-D grid, `(x, y, 1)`, keeping its
+affine, so a plane off z = 0 or not parallel to x-y is imported where it lies
+rather than refused.
 
 `to-nifti` writes `OUT`, a `.nii` or `.nii.gz` file. With `--annotation` it
 writes that annotation's labelmap, each ignored voxel as its ignore id; with

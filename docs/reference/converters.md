@@ -73,7 +73,20 @@ stored voxels and the scale, as the file had them.
 axes and has no z, so a 2-D NIfTI must lie in the x-y world plane at z = 0
 (to 10⁻³ mm), which is where `to_nifti` writes one back. A plane off it, or not
 parallel to it, is refused rather than moved; saved as `(x, y, 1)` it imports
-as a one-slice volume that keeps its z.
+as a one-slice volume that keeps its z, and the refusal names the option that
+does this for you.
+
+**`plane_as_volume=True` imports a plane where it lies** (`--plane-as-volume`;
+`read_nifti`, `from_nifti` and `import_seg_nifti` all take it). Every 2-D
+image and mask — planes at z = 0 too, so a cohort comes out uniform — is read
+as `(x, y, 1)` before the transpose and keeps its full 4×4 affine, giving a
+`(1, y, x)` grid: byte for byte the import of the plane re-saved as
+`(x, y, 1)`. The third axis is the affine's third column, which must be
+non-zero and orthogonal to the first two (within `ORTHONORMAL_TOL`), or the
+file is refused: no normal or thickness is invented. A `plane_as_volume`
+decision records each plane's z and normal, and the import activity's params
+gain `"plane_as_volume": true` when a plane was reshaped. A 3-D or 4-D file is
+read the same with or without it.
 
 **An export says what its numbers are in.** Lengths are written in millimetres
 — a grid in `m` or `um` is scaled to them, and an uncalibrated `px` grid gets
