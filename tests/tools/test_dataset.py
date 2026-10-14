@@ -399,7 +399,8 @@ class TestManifestPaths:
         monkeypatch.chdir(tmp_path / "elsewhere")
         with pytest.warns(FutureWarning, match=r"^medh5 3\.0 reads the paths of"):
             legacy = Manifest.load(target)
-        assert legacy.entries[0].path == "cohort/case-0.medh5"
+        # Kept as stored: 2.0 wrote the separator of the system it ran on.
+        assert legacy.entries[0].path == os.path.join("cohort", "case-0.medh5")
         based = Manifest.load(target, base=tmp_path)
         assert based.stale() == ()
         # A manifest in the working directory reads alike both ways: no warning.
