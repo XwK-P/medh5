@@ -28,11 +28,12 @@ pub mod view;
 
 use serde_json::{json, Value};
 
-pub use cache::{validate_cache, CacheReport, CacheWriter, FeatureCache};
-pub use source::SourceRef;
+pub use cache::{validate_cache, validate_cache_in, CacheCheck, CacheReport, CacheWriter, FeatureCache};
+pub use source::{SourceAccess, SourceRef};
 pub use task::TaskManifest;
 pub use view::{
-    preflight, preflight_each, write_preflight, Admitted, Preflight, PreflightDone, RowView, SubjectHistory,
+    preflight, preflight_each, preflight_each_in, preflight_in, write_preflight, write_preflight_in, Admitted,
+    Preflight, PreflightDone, RowView, SubjectHistory,
 };
 
 /// The companion contract's finding codes, and what each means.

@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 
 use serde_json::{json, Map, Value};
 
-use super::source::SourceRef;
+use super::source::{SourceAccess, SourceRef};
 use super::{fingerprint, Finding};
 use crate::clinical::select::SelectionPolicy;
 use crate::json::repr_str;
@@ -503,6 +503,12 @@ impl TaskManifest {
             .collect();
         members.sort_unstable();
         fingerprint(&json!(members))
+    }
+
+    /// The sources a confined `access` refuses, in manifest order: what a
+    /// runner confining to its root could not open.  No file is examined.
+    pub fn sources_outside(&self, access: &SourceAccess) -> Vec<&SourceRef> {
+        self.subjects.iter().flat_map(|s| &s.sources).filter(|s| access.locate(s).is_err()).collect()
     }
 
     /// The rows of one partition, in manifest order.

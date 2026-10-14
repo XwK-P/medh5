@@ -29,7 +29,7 @@ use std::sync::Arc;
 use ndarray::Axis;
 use serde_json::{json, Value};
 
-use super::source::SourceRef;
+use super::source::{SourceAccess, SourceRef};
 use super::task::{Row, Slot, Subject, TaskManifest};
 use super::{fingerprint, Finding};
 use crate::annotations::Annotation;
@@ -104,13 +104,24 @@ pub struct History {
 
 /// Open, check and reconcile one subject's sources.
 pub fn load_subject(subject: &Subject, base: Option<&Path>, deep: bool) -> Result<History> {
+    load_subject_in(subject, &SourceAccess::new(base), deep)
+}
+
+/// [`load_subject`], opening sources where `access` lets them be opened.
+pub fn load_subject_in(subject: &Subject, access: &SourceAccess, deep: bool) -> Result<History> {
     let mut history = History::default();
     history.merged.subject_id = subject.subject_id.clone();
     history.merged.partition = subject.partition.clone();
     let at = |src: &SourceRef| if src.source_id.is_empty() { src.locator() } else { src.source_id.clone() };
     for source in &subject.sources {
-        let sample = match source.open(base) {
+        let sample = match source.open_in(access) {
             Ok(s) => s,
+            // Refused where the runner confined it: the message names the
+            // URI and nothing about the path.
+            Err(e) if e.code() == Some("T301") => {
+                history.findings.push(Finding::new("T301", at(source), e.message()));
+                continue;
+            }
             Err(e) => {
                 history.findings.push(Finding::new(
                     "T301",
@@ -459,9 +470,14 @@ fn merge(history: &mut History, subject: &Subject) -> Result<Vec<Finding>> {
 /// The reconciliation records a subject's fragments need (what a manifest
 /// writer stores in `subjects[].reconciled`).
 pub fn reconcile(subject: &Subject, base: Option<&Path>) -> Result<Vec<super::task::Reconciled>> {
+    reconcile_in(subject, &SourceAccess::new(base))
+}
+
+/// [`reconcile`], opening sources where `access` lets them be opened.
+pub fn reconcile_in(subject: &Subject, access: &SourceAccess) -> Result<Vec<super::task::Reconciled>> {
     let mut samples = Vec::new();
     for source in &subject.sources {
-        let sample = source.open(base)?;
+        let sample = source.open_in(access)?;
         // Nothing is reconciled from a source off its pin (task-cache-1
         // Appendix A): its events are not the ones the task names.
         if let Some(finding) = source.check(&sample, false)?.into_iter().next() {
@@ -1042,9 +1058,14 @@ impl Preflight {
 /// help: every HDF5 call holds the library's one lock, and the work is
 /// mostly HDF5's.)
 pub fn preflight(manifest: &TaskManifest, base: Option<&Path>, deep: bool) -> Result<Preflight> {
+    preflight_in(manifest, &SourceAccess::new(base), deep)
+}
+
+/// [`preflight`], opening sources where `access` lets them be opened.
+pub fn preflight_in(manifest: &TaskManifest, access: &SourceAccess, deep: bool) -> Result<Preflight> {
     let mut subjects = Vec::new();
     let mut views: Vec<Option<RowView>> = vec![None; manifest.rows.len()];
-    let done = preflight_each(manifest, base, deep, &mut |history, rows| {
+    let done = preflight_each_in(manifest, access, deep, &mut |history, rows| {
         for (r, view) in rows {
             views[r] = Some(view);
         }
@@ -1083,6 +1104,16 @@ pub fn preflight_each(
     deep: bool,
     sink: &mut dyn FnMut(SubjectHistory, Vec<(usize, RowView)>) -> Result<()>,
 ) -> Result<PreflightDone> {
+    preflight_each_in(manifest, &SourceAccess::new(base), deep, sink)
+}
+
+/// [`preflight_each`], opening sources where `access` lets them be opened.
+pub fn preflight_each_in(
+    manifest: &TaskManifest,
+    access: &SourceAccess,
+    deep: bool,
+    sink: &mut dyn FnMut(SubjectHistory, Vec<(usize, RowView)>) -> Result<()>,
+) -> Result<PreflightDone> {
     let mut findings = manifest.validate();
     let task_fingerprint = manifest.task_fingerprint();
     let mut rows_of: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -1093,7 +1124,8 @@ pub fn preflight_each(
     if findings.is_empty() {
         for (index, subject) in manifest.subjects.iter().enumerate() {
             let wanted = rows_of.get(subject.subject_id.as_str()).map(Vec::as_slice).unwrap_or(&[]);
-            let (history, found, rows) = subject_part(manifest, &task_fingerprint, subject, index, wanted, base, deep)?;
+            let (history, found, rows) =
+                subject_part(manifest, &task_fingerprint, subject, index, wanted, access, deep)?;
             findings.extend(found);
             for (r, _) in &rows {
                 claimed[*r] = true;
@@ -1123,13 +1155,23 @@ pub fn preflight_each(
 /// rows need: their views, which index the histories, and the names of the
 /// versions they admit.  Returns whether the task is fit to train on.
 pub fn write_preflight(manifest: &TaskManifest, base: Option<&Path>, deep: bool, out: &mut dyn Write) -> Result<bool> {
+    write_preflight_in(manifest, &SourceAccess::new(base), deep, out)
+}
+
+/// [`write_preflight`], opening sources where `access` lets them be opened.
+pub fn write_preflight_in(
+    manifest: &TaskManifest,
+    access: &SourceAccess,
+    deep: bool,
+    out: &mut dyn Write,
+) -> Result<bool> {
     let fingerprints = [manifest.task_fingerprint(), manifest.manifest_fingerprint()];
     write!(out, "{{\n  \"task_fingerprint\": {}", pretty_at(&json!(fingerprints[0]), 1))?;
     write!(out, ",\n  \"manifest_fingerprint\": {},\n  \"subjects\": ", pretty_at(&json!(fingerprints[1]), 1))?;
     let mut items = Items::default();
     let mut names: Vec<Names> = Vec::new();
     let mut views: Vec<Option<RowView>> = vec![None; manifest.rows.len()];
-    let done = preflight_each(manifest, base, deep, &mut |history, rows| {
+    let done = preflight_each_in(manifest, access, deep, &mut |history, rows| {
         items.next(out, &history.to_json())?;
         names.push(Names::of(&history.events));
         for (r, view) in rows {
@@ -1238,10 +1280,16 @@ impl Admitted {
 
     /// Preflight `manifest` a subject at a time, keeping only this.
     pub fn preflight(manifest: &TaskManifest, base: Option<&Path>, deep: bool) -> Result<Admitted> {
+        Admitted::preflight_in(manifest, &SourceAccess::new(base), deep)
+    }
+
+    /// [`Admitted::preflight`], opening sources where `access` lets them be
+    /// opened.
+    pub fn preflight_in(manifest: &TaskManifest, access: &SourceAccess, deep: bool) -> Result<Admitted> {
         let mut names = Vec::new();
         let mut pins = Vec::new();
         let mut found: Vec<Option<Admits>> = vec![None; manifest.rows.len()];
-        let done = preflight_each(manifest, base, deep, &mut |history, rows| {
+        let done = preflight_each_in(manifest, access, deep, &mut |history, rows| {
             names.push(Names::of(&history.events));
             pins.push(pins_of(&history));
             for (r, view) in rows {
@@ -1338,10 +1386,10 @@ fn subject_part(
     subject: &Subject,
     index: usize,
     wanted: &[usize],
-    base: Option<&Path>,
+    access: &SourceAccess,
     deep: bool,
 ) -> Result<SubjectPart> {
-    let history = load_subject(subject, base, deep)?;
+    let history = load_subject_in(subject, access, deep)?;
     let view = |r: usize| blank(manifest, task_fingerprint, &manifest.rows[r], Some(subject), Some(index));
     let mut rows = Vec::with_capacity(wanted.len());
     let mut findings = history.findings.clone();

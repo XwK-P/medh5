@@ -16,7 +16,6 @@
 //! without a copy.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use ndarray::Array2;
 use numpy::PyArray1;
@@ -26,8 +25,9 @@ use serde_json::Value;
 
 use medh5::clinical::model::{Bounds, Event, Link, COMPARATORS, EVENT_KINDS, STATUSES, TEMPORAL_TYPES};
 use medh5::clinical::select::POLICIES;
+use medh5::companion::source::SourceAccess;
 use medh5::companion::task::TaskManifest;
-use medh5::companion::view::{preflight_each, RowView, SlotFill, SubjectHistory, TargetLabel};
+use medh5::companion::view::{preflight_each_in, RowView, SlotFill, SubjectHistory, TargetLabel};
 use medh5::companion::Finding;
 
 use crate::convert::json_to_py;
@@ -550,15 +550,14 @@ fn slots_to_py<'py>(py: Python<'py>, names: &[String], rows: &[RowColumns]) -> P
 pub fn preflight_to_py<'py>(
     py: Python<'py>,
     manifest: TaskManifest,
-    base: Option<&Path>,
+    access: SourceAccess,
     deep: bool,
 ) -> R<Bound<'py, PyDict>> {
     let slot_names: Vec<String> = manifest.slots.iter().map(|s| s.name.clone()).collect();
-    let base = base.map(Path::to_path_buf);
     let (builder, done) = py.detach(move || -> medh5::Result<_> {
         let mut builder = Builder { slot_names, subjects: Vec::new(), rows: Vec::new() };
         builder.rows.resize_with(manifest.rows.len(), || None);
-        let done = preflight_each(&manifest, base.as_deref(), deep, &mut |history, rows| {
+        let done = preflight_each_in(&manifest, &access, deep, &mut |history, rows| {
             builder.subject(history, rows);
             Ok(())
         })?;

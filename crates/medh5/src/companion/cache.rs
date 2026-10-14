@@ -22,7 +22,7 @@ use std::sync::OnceLock;
 
 use serde_json::{json, Value};
 
-use super::source::SourceRef;
+use super::source::{SourceAccess, SourceRef};
 use super::task::TaskManifest;
 use super::view::Admitted;
 use super::{sha256, Finding};
@@ -653,8 +653,8 @@ struct Ownership(HashMap<String, BTreeSet<String>>);
 /// What a source's event versions own, or why it cannot be read.  A pin
 /// checks digests only, so a source whose clinical tables are malformed but
 /// sealed passes it: what its entries name cannot then be verified.
-fn ownership(source: &SourceRef, base: Option<&Path>) -> std::result::Result<Ownership, String> {
-    let sample = source.open(base).map_err(|e| format!("{} cannot be opened: {e}", source.locator()))?;
+fn ownership(source: &SourceRef, access: &SourceAccess) -> std::result::Result<Ownership, String> {
+    let sample = source.open_in(access).map_err(|e| format!("{} cannot be opened: {e}", source.locator()))?;
     let mut owned: HashMap<String, BTreeSet<String>> = HashMap::new();
     let tables = sample.clinical();
     if let Some(clinical) =
@@ -726,6 +726,54 @@ pub fn validate_cache(
     task: Option<&TaskManifest>,
     admitted: Option<&Admitted>,
 ) -> Result<CacheReport> {
+    let entries = SourceAccess::new(base.or_else(|| path.parent()));
+    let unconfined = SourceAccess::new(None);
+    let mut check = CacheCheck::new(entries);
+    if let Some(task) = task {
+        check = check.with_task(task, &unconfined);
+    }
+    if let Some(admitted) = admitted {
+        check = check.with_admitted(admitted);
+    }
+    validate_cache_in(path, &check)
+}
+
+/// What [`validate_cache_in`] checks a cache against, and where it may open
+/// sources.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct CacheCheck<'a> {
+    /// Where the entries' own URIs resolve, and what they may open.
+    pub entries: SourceAccess,
+    /// The task the cache was built for, and where its sources are opened.
+    pub task: Option<(&'a TaskManifest, &'a SourceAccess)>,
+    /// What the task's preflight admits per row.
+    pub admitted: Option<&'a Admitted>,
+}
+
+impl<'a> CacheCheck<'a> {
+    /// Check the cache alone, its entries' sources opened through `entries`.
+    pub fn new(entries: SourceAccess) -> CacheCheck<'a> {
+        CacheCheck { entries, task: None, admitted: None }
+    }
+
+    /// Also against `task`, whose sources `access` opens.
+    pub fn with_task(mut self, task: &'a TaskManifest, access: &'a SourceAccess) -> CacheCheck<'a> {
+        self.task = Some((task, access));
+        self
+    }
+
+    /// Also against what the task's preflight admits.
+    pub fn with_admitted(mut self, admitted: &'a Admitted) -> CacheCheck<'a> {
+        self.admitted = Some(admitted);
+        self
+    }
+}
+
+/// [`validate_cache`], with where sources may be opened given by `check`.
+pub fn validate_cache_in(path: &Path, check: &CacheCheck<'_>) -> Result<CacheReport> {
+    let task = check.task.map(|(t, _)| t);
+    let admitted = check.admitted;
     let mut report = CacheReport { path: path.to_string_lossy().into_owned(), ..Default::default() };
     let cache = match FeatureCache::open(path) {
         Ok(c) => c,
@@ -744,14 +792,14 @@ pub fn validate_cache(
             report.findings.push(Finding::new(e.code().unwrap_or("T402"), &entry.entry_id, e.message()));
         }
     }
-    let base = base.map(Path::to_path_buf).or_else(|| path.parent().map(Path::to_path_buf));
+    let access = &check.entries;
     let mut checked: HashMap<(String, Option<String>, String), Option<String>> = HashMap::new();
     for entry in &cache.entries {
         for source in &entry.sources {
             let key = (source.uri.clone(), source.sample_key.clone(), source.content_id.clone());
             let problem = checked
                 .entry(key)
-                .or_insert_with(|| match source.open(base.as_deref()) {
+                .or_insert_with(|| match source.open_in(access) {
                     Err(e) => Some(format!("{} cannot be reached: {e}", source.locator())),
                     Ok(sample) => match source.check(&sample, false) {
                         Ok(f) if f.is_empty() => None,
@@ -779,7 +827,7 @@ pub fn validate_cache(
             if checked.get(&key).is_some_and(Option::is_some) {
                 continue; // its pin failed: stale (T403), not judged here
             }
-            let why = match owners.entry(key).or_insert_with(|| ownership(source, base.as_deref())) {
+            let why = match owners.entry(key).or_insert_with(|| ownership(source, access)) {
                 Ok(owned) => owned.mismatch(source, event_id, entry.document_id.as_deref()),
                 // Unverifiable: rejected, never skipped.
                 Err(e) => {

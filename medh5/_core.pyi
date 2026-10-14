@@ -501,6 +501,7 @@ __all__ = [
     "task_row_fingerprint",
     "task_row_fingerprints",
     "task_schema_text",
+    "task_sources_outside",
     "task_subjects_digest",
     "task_validate",
     "to_world_vectors",
@@ -866,6 +867,7 @@ def cache_validate(
     task: Any = None,
     task_base: str | os.PathLike[str] | None = None,
     check_rows: bool = True,
+    root: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """Validate a cache; with a task, also against that task (and, with
     ``check_rows``, against what its preflight admits)."""
@@ -1718,13 +1720,16 @@ def select_encoding(
 
 def slices_to_box(slices: Sequence[slice]) -> npt.NDArray[np.float32]: ...
 def source_check(
-    source: Any, base: str | os.PathLike[str] | None = None, deep: bool = False
+    source: Any,
+    base: str | os.PathLike[str] | None = None,
+    deep: bool = False,
+    root: str | os.PathLike[str] | None = None,
 ) -> list[dict[str, Any]]:
     """The findings of checking a reference against its sample now."""
     ...
 
 def source_default_id(
-    uri: str, sample_key: str | None = None, taken: Sequence[str] = ()
+    uri: str, sample_key: str | None = None, taken: Sequence[str] = ...
 ) -> str:
     """The id a source reference gets when none is given, widened past the ids
     in `taken` (`SourceRef::default_id_among`).
@@ -1740,7 +1745,11 @@ def source_pin(
     """A source reference pinned to what the sample is now."""
     ...
 
-def source_resolve(uri: str, base: str | os.PathLike[str] | None = None) -> Path:
+def source_resolve(
+    uri: str,
+    base: str | os.PathLike[str] | None = None,
+    root: str | os.PathLike[str] | None = None,
+) -> Path:
     """The file a source URI names, relative to `base` when it is relative: a
     `file:` URI decoded as the engine decodes it.
     """
@@ -1780,18 +1789,32 @@ def task_normalize(doc: Any) -> dict[str, Any]:
     ...
 
 def task_preflight(
-    doc: Any, base: str | os.PathLike[str] | None = None, deep: bool = False
+    doc: Any,
+    base: str | os.PathLike[str] | None = None,
+    deep: bool = False,
+    root: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """The preflight of a task, as columns (`crate::preflight`)."""
     ...
 
 def task_reconcile(
-    doc: Any, base: str | os.PathLike[str] | None = None
+    doc: Any,
+    base: str | os.PathLike[str] | None = None,
+    root: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """The manifest with every subject's duplicated events recorded."""
     ...
 
 def task_row_fingerprint(doc: Any, row_id: str) -> str: ...
+def task_sources_outside(
+    doc: Any, base: str | os.PathLike[str] | None = None
+) -> list[str]:
+    """The URIs of the sources that confining to `base` would refuse, in
+    manifest order; no file is examined.  Empty when `base` cannot be
+    canonicalized: its sources fail to open whatever confinement does.
+    """
+    ...
+
 def task_row_fingerprints(doc: Any) -> dict[str, str]:
     """Every row's fingerprint by row id --- the first row of an id, as
     `task_row_fingerprint` finds it --- from one parse of the manifest: a

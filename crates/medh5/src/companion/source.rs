@@ -7,7 +7,7 @@
 //! re-verifies the clinical datasets' actual bytes --- a stored root alone
 //! would miss an edit under unchanged digests (1.1 §8).
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::{json, Value};
 
@@ -118,6 +118,102 @@ fn id_at_depth(segments: &[String], sample_key: Option<&str>, depth: usize) -> S
     id_of(&format!("{}{key}", parts.join("/")), ID_MAX)
 }
 
+/// `path` with its `.` and `..` segments resolved lexically, as text: no
+/// file is examined, so a symbolic link does not move where `..` leads.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let climbed = matches!(out.components().next_back(), Some(Component::Normal(_))) && out.pop();
+                if !climbed && !out.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// A directory the runner names, made absolute and canonical once.  On
+/// Windows a drive path keeps its plain form (`C:\x`, not `\\?\C:\x`), as
+/// a source URI would spell it.
+fn runner_dir(path: &Path) -> Result<PathBuf> {
+    let found = std::fs::canonicalize(path).map_err(|e| crate::error::os_error(&e, path))?;
+    if cfg!(windows) {
+        if let Some(plain) = found.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+            if plain.as_bytes().get(1) == Some(&b':') {
+                return Ok(PathBuf::from(plain));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Where a runner lets a task's sources be opened from (task-cache-1 §2):
+/// the base relative URIs resolve against and, when confined, the one
+/// directory a source must lie in.
+///
+/// A manifest's author chooses its URIs; whoever runs it chooses what may be
+/// opened.  Confined, a URI is joined to the base and its `.` and `..`
+/// segments resolved lexically --- no file is examined --- and a path outside
+/// the root is refused (T301) naming the URI and nothing about the path, the
+/// same whether or not it exists; the path so resolved is what is opened.
+/// Lexically, so the symbolic links data directories are full of stay
+/// usable: `link/../x` is `root/x`, wherever `link` points.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SourceAccess {
+    /// What relative URIs resolve against; `None` is the current directory.
+    pub base: Option<PathBuf>,
+    /// The directory every source must lie in; `None` confines nothing.
+    pub root: Option<PathBuf>,
+}
+
+impl SourceAccess {
+    /// Unconfined: relative URIs resolve against `base`, and any path opens.
+    pub fn new(base: Option<&Path>) -> SourceAccess {
+        SourceAccess { base: base.map(Path::to_path_buf), root: None }
+    }
+
+    /// Confined to `root`, by default the base (itself by default the
+    /// current directory).  Both are canonicalized here, once: what the
+    /// runner names may be a link; what a URI names is judged as text.
+    pub fn confined(base: Option<&Path>, root: Option<&Path>) -> Result<SourceAccess> {
+        let base = runner_dir(base.unwrap_or(Path::new(".")))?;
+        let root = match root {
+            Some(r) => runner_dir(r)?,
+            None => base.clone(),
+        };
+        Ok(SourceAccess { base: Some(base), root: Some(root) })
+    }
+
+    /// Whether sources are confined.
+    pub fn is_confined(&self) -> bool {
+        self.root.is_some()
+    }
+
+    /// The file `source` names, or T301 when it lies outside the root.
+    pub fn locate(&self, source: &SourceRef) -> Result<PathBuf> {
+        let joined = source.resolve(self.base.as_deref());
+        let Some(root) = &self.root else { return Ok(joined) };
+        let path = lexical(&joined);
+        if path.starts_with(root) {
+            return Ok(path);
+        }
+        Err(Error::coded(
+            "T301",
+            format!(
+                "{} is outside the directory this task's sources are confined to; a runner that trusts the manifest \
+                 can widen it (--source-root, or confine=) or lift it (--any-source-path, or confine=False)",
+                repr_str(&source.uri)
+            ),
+        ))
+    }
+}
+
 /// One sample, standalone or a collection member, at a pinned version.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SourceRef {
@@ -222,8 +318,18 @@ impl SourceRef {
 
     /// Open the sample the reference names (not yet checking the pin).
     pub fn open(&self, base: Option<&Path>) -> Result<Sample> {
-        let path = self.resolve(base);
-        match open_any(&path, self.sample_key.as_deref())? {
+        self.open_at(&self.resolve(base))
+    }
+
+    /// Open the sample the reference names where `access` lets it be
+    /// opened: T301, without examining the path, when it lies outside a
+    /// confined runner's root.
+    pub fn open_in(&self, access: &SourceAccess) -> Result<Sample> {
+        self.open_at(&access.locate(self)?)
+    }
+
+    fn open_at(&self, path: &Path) -> Result<Sample> {
+        match open_any(path, self.sample_key.as_deref())? {
             AnyFile::Sample(s) => Ok(s),
             AnyFile::Collection(_) => Err(Error::invalid(format!(
                 "{} is a collection; a source names one of its members with `sample_key`",
@@ -411,6 +517,45 @@ mod tests {
         assert_eq!(cut, "n".repeat(128));
         let schema: Value = serde_json::from_str(super::super::task::schema_text()).unwrap();
         assert_eq!(schema["$defs"]["id"]["pattern"], format!("^[{ID_CHARS}]{{1,{ID_MAX}}}$"));
+    }
+
+    /// Confined, a URI is judged as text: `.` and `..` resolved, nothing
+    /// examined.  A path that climbs out, an absolute one and a `file:` URI
+    /// elsewhere are refused alike, whether or not they exist; a link inside
+    /// the root is followed as text, so `link/../x` is `root/x`.
+    #[test]
+    fn s2_confinement_is_lexical() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(root.join("b")).unwrap();
+        std::fs::create_dir_all(dir.path().join("elsewhere/deep")).unwrap();
+        let access = SourceAccess::confined(Some(&root), None).unwrap();
+        let canonical = std::fs::canonicalize(&root).unwrap();
+        let at = |uri: &str| access.locate(&SourceRef::new(uri, None, ""));
+        assert_eq!(at("a/../b/x.medh5").unwrap(), canonical.join("b").join("x.medh5"));
+        assert_eq!(at("./x.medh5").unwrap(), canonical.join("x.medh5"));
+        let outside = format!("{}", dir.path().join("elsewhere").join("x.medh5").display());
+        let file_uri = format!("file://{}", if cfg!(windows) { format!("/{outside}") } else { outside.clone() });
+        let mut messages = Vec::new();
+        for uri in ["../x.medh5", "b/../../x.medh5", "../elsewhere/x.medh5", &outside, &file_uri, "/abs/x.medh5"] {
+            let err = at(uri).unwrap_err();
+            assert_eq!(err.code(), Some("T301"), "{uri}: {err}");
+            assert!(err.message().starts_with(&repr_str(uri)), "{err}");
+            messages.push(err.message().replacen(&repr_str(uri), "URI", 1));
+        }
+        // One message, naming the URI only: nothing says whether it exists.
+        messages.dedup();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path().join("elsewhere/deep"), root.join("link")).unwrap();
+            assert_eq!(at("link/../x.medh5").unwrap(), canonical.join("x.medh5"));
+            assert!(at("link/../../x.medh5").is_err());
+        }
+        // Unconfined, the path is the URI joined to the base, as in 2.0.
+        let open = SourceAccess::new(Some(&root));
+        assert_eq!(open.locate(&SourceRef::new("../x.medh5", None, "")).unwrap(), root.join("../x.medh5"));
+        assert!(!open.is_confined() && access.is_confined());
     }
 
     #[test]

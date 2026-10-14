@@ -694,6 +694,64 @@ def hostile_task(root: Path) -> tuple[TaskManifest, str]:
     return task, secret
 
 
+def outside_task(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
+    """A manifest in ``tmp_path/tasks`` whose sources are in ``../cohort``:
+    outside its directory, as most manifests' are."""
+    paths = cohort(tmp_path / "cohort")
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    refs = {s: SourceRef.pin(p, uri=f"../cohort/{p.name}") for s, p in paths.items()}
+    task = task_for(tmp_path / "cohort", paths, refs=refs)
+    return task.save(tasks / "t.task.json"), paths
+
+
+class TestConfinement:
+    """Contract §2: whoever runs a manifest chooses what may be opened."""
+
+    def test_S2_confine_refuses_a_path_outside_the_root(self, tmp_path: Path):
+        manifest, _ = outside_task(tmp_path)
+        task = TaskManifest.load(manifest)
+        report = task.preflight(confine=True)
+        assert found(report.findings) == ["T301"]
+        assert all("outside the directory" in f.message for f in report.findings)
+        # Absent or present, one message: confinement answers nothing about
+        # a path it refuses.
+        doc = task.to_json()
+        doc["subjects"][0]["sources"][0]["uri"] = "../cohort/absent.medh5"
+        doc.pop("fingerprint")
+        absent = TaskManifest(doc, base=manifest.parent).preflight(confine=True)
+        first = [f.message for f in absent.findings][0]
+        present = [f.message for f in report.findings][0]
+        assert first.replace("absent", "P-01") == present
+        # A root wide enough admits them; so does lifting it.
+        assert task.preflight(confine=tmp_path).ok
+        assert task.preflight(confine=False).ok
+        source = task.subjects[0].sources[0]
+        with pytest.raises(MEDH5ValidationError, match="outside the directory"):
+            source.open(manifest.parent, root=manifest.parent)
+        inside = source.resolve(manifest.parent, root=tmp_path)
+        assert inside == (tmp_path / "cohort" / "P-01.medh5").resolve()
+        with pytest.raises(MEDH5ValidationError) as refused:
+            task.reconcile(confine=True)
+        assert refused.value.code == "T301"
+
+    def test_S2_an_outside_source_warns_until_3_0(self, tmp_path: Path):
+        manifest, paths = outside_task(tmp_path)
+        task = TaskManifest.load(manifest)
+        with pytest.warns(FutureWarning, match="^medh5 3.0 confines") as caught:
+            assert task.preflight().ok
+        assert caught[0].filename == __file__
+        with pytest.warns(FutureWarning, match="^medh5 3.0 confines"):
+            preflight(manifest)
+        # Said which way, it is silent; so is a manifest built in memory.
+        assert task.preflight(confine=False).ok
+        assert task_for(tmp_path / "cohort", paths).preflight().ok
+        inside = task_for(tmp_path / "cohort", paths).save(
+            tmp_path / "cohort" / "t.json"
+        )
+        assert TaskManifest.load(inside).preflight().ok
+
+
 class TestSources:
     def test_S2_a_pin_holds_until_the_sample_changes(self, setup):
         task, paths = setup
@@ -2414,6 +2472,29 @@ class TestCommandLine:
         argv = ["clinical", "select", str(paths["P-01"]), "--json"]
         assert main([*argv, "--cutoff-hours=1.25e-09"]) == EXIT_OK
         assert json.loads(capsys.readouterr().out)["cutoff_us"] == hours(1.25e-09) == 4
+
+    def test_task_preflight_source_root_and_any_source_path(
+        self, tmp_path: Path, capsys
+    ):
+        manifest, _ = outside_task(tmp_path)
+        argv = ["task", "preflight", str(manifest)]
+        assert main(argv) == EXIT_OK
+        assert "note: 3 source(s) lie outside" in capsys.readouterr().err
+        assert main([*argv, "--any-source-path"]) == EXIT_OK
+        assert capsys.readouterr().err == ""
+        assert main([*argv, "--source-root", str(tmp_path)]) == EXIT_OK
+        assert capsys.readouterr().err == ""
+        assert main([*argv, "--source-root", str(manifest.parent), "--json"]) == (
+            EXIT_ERROR
+        )
+        report = json.loads(capsys.readouterr().out)
+        assert {f["code"] for f in report["findings"]} == {"T301"}
+        both = [*argv, "--source-root", str(tmp_path), "--any-source-path"]
+        assert main(both) == EXIT_USAGE
+        capsys.readouterr()
+        reconcile = ["task", "reconcile", str(manifest)]
+        assert main([*reconcile, "--source-root", str(manifest.parent)]) == (EXIT_ERROR)
+        assert "outside the directory" in capsys.readouterr().err
 
     def test_clinical_commands(self, setup, tmp_path: Path, capsys):
         _, paths = setup

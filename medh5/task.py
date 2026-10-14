@@ -73,6 +73,23 @@ LABELS = ("positive", "negative", "censored", "prevalent", "none")
 
 PathLike = str | os.PathLike[str]
 
+Confine = bool | os.PathLike[str] | None
+"""Where a runner lets a task's sources be opened from (contract §2):
+``True`` confines them to the base relative URIs resolve against, a path to
+that directory, ``False`` opens wherever the URIs point.  ``None``, 2.1's
+default, opens wherever they point, and warns (``FutureWarning``) when a
+manifest loaded from a file names a source outside its directory: 3.0
+confines to it by default."""
+
+
+def _root(confine: Confine, base: PathLike | None) -> str | None:
+    """The directory ``confine`` confines sources to, or ``None``."""
+    if confine is None or confine is False:
+        return None
+    if confine is True:
+        return os.fspath(base if base is not None else ".")
+    return os.fspath(confine)
+
 
 def schema_text() -> str:
     """The ``medh5.task/1`` JSON Schema."""
@@ -161,25 +178,36 @@ class SourceRef:
         """``uri`` or ``uri::sample_key``."""
         return self.uri if self.sample_key is None else f"{self.uri}::{self.sample_key}"
 
-    def resolve(self, base: PathLike | None = None) -> Path:
+    def resolve(
+        self, base: PathLike | None = None, *, root: PathLike | None = None
+    ) -> Path:
         """The file the URI names, relative to ``base`` when it is relative.
 
         A ``file:`` URI is decoded as the engine decodes it --- its host empty
         or ``localhost``, percent-escapes decoded, a Windows drive kept ---
         so what :meth:`pathlib.Path.as_uri` writes names the path it was made
-        from.
+        from.  With ``root``, the path's ``.`` and ``..`` are resolved as
+        text, and one outside ``root`` is refused (T301) without being
+        examined (contract §2).
         """
         return Path(
-            _core.source_resolve(self.uri, None if base is None else os.fspath(base))
+            _core.source_resolve(
+                self.uri,
+                None if base is None else os.fspath(base),
+                None if root is None else os.fspath(root),
+            )
         )
 
-    def open(self, base: PathLike | None = None) -> Sample:
-        """Open the sample (the pin is not checked; see :meth:`check`)."""
+    def open(
+        self, base: PathLike | None = None, *, root: PathLike | None = None
+    ) -> Sample:
+        """Open the sample (the pin is not checked; see :meth:`check`); with
+        ``root``, only inside it (:meth:`resolve`)."""
         from medh5.collection import open_any
         from medh5.errors import MEDH5ValidationError
         from medh5.sample import Sample
 
-        found = open_any(self.resolve(base), key=self.sample_key)
+        found = open_any(self.resolve(base, root=root), key=self.sample_key)
         if not isinstance(found, Sample):
             found.close()
             raise MEDH5ValidationError(
@@ -189,13 +217,21 @@ class SourceRef:
         return found
 
     def check(
-        self, base: PathLike | None = None, *, deep: bool = False
+        self,
+        base: PathLike | None = None,
+        *,
+        deep: bool = False,
+        root: PathLike | None = None,
     ) -> list[Finding]:
         """Whether the sample is still the pinned version: its stored
         ``content_id`` is the pin, the root recomputes to it, and the clinical
-        datasets' bytes match their digests (every dataset's with ``deep``)."""
+        datasets' bytes match their digests (every dataset's with ``deep``).
+        With ``root``, a path outside it is T301 (:meth:`resolve`)."""
         found = _core.source_check(
-            self.to_json(), None if base is None else os.fspath(base), deep
+            self.to_json(),
+            None if base is None else os.fspath(base),
+            deep,
+            None if root is None else os.fspath(root),
         )
         return list(_findings(found))
 
@@ -391,12 +427,13 @@ class TaskManifest:
     manifest's directory when it was loaded from a file.
     """
 
-    __slots__ = ("_doc", "_ids", "_normal", "base")
+    __slots__ = ("_doc", "_ids", "_loaded", "_normal", "base")
 
     def __init__(self, doc: Mapping[str, Any], *, base: PathLike | None = None) -> None:
         self._doc: dict[str, Any] = copy.deepcopy(dict(doc))
         self._normal: dict[str, Any] | None = None
         self._ids: dict[str, Any] = {}
+        self._loaded = False
         self.base: Path | None = None if base is None else Path(base)
         self._normalised()
 
@@ -447,7 +484,9 @@ class TaskManifest:
             from medh5.errors import MEDH5ValidationError
 
             raise MEDH5ValidationError(f"{path} is not JSON: {exc}", "T101") from None
-        return cls(doc, base=path.parent)
+        out = cls(doc, base=path.parent)
+        out._loaded = True
+        return out
 
     def save(self, path: PathLike) -> Path:
         """Write the manifest, pretty-printed, with its fingerprint.
@@ -543,10 +582,15 @@ class TaskManifest:
         self._changed()
         return self
 
-    def reconcile(self, base: PathLike | None = None) -> TaskManifest:
+    def reconcile(
+        self, base: PathLike | None = None, *, confine: Confine = None
+    ) -> TaskManifest:
         """Record, per subject, the event versions several fragments hold and
-        the digest they agree on --- what preflight checks duplicates against."""
-        found = _core.task_reconcile(self._doc, self._base(base))
+        the digest they agree on --- what preflight checks duplicates against.
+        ``confine`` says where sources may be opened (:data:`Confine`)."""
+        found = _core.task_reconcile(
+            self._doc, self._base(base), self._confined(base, confine)
+        )
         self._doc["subjects"] = found["subjects"]
         self._changed()
         return self
@@ -663,24 +707,52 @@ class TaskManifest:
         found = base if base is not None else self.base
         return None if found is None else os.fspath(found)
 
+    def _confined(self, base: PathLike | None, confine: Confine) -> str | None:
+        """The root ``confine`` names (:data:`Confine`), warning under the
+        default when a loaded manifest names a source outside its directory."""
+        found = self._base(base)
+        if confine is None and self._loaded:
+            outside = _core.task_sources_outside(self._doc, found)
+            if outside:
+                from medh5._deprecation import warn
+
+                more = f" and {len(outside) - 1} other(s)" if len(outside) > 1 else ""
+                warn(
+                    "medh5 3.0 confines a task's sources to its directory: pass "
+                    f"confine=False to keep reading {outside[0]!r}{more}, or "
+                    "confine=<a directory> to confine them there",
+                    category=FutureWarning,
+                    stacklevel=4,
+                )
+        return _root(confine, found)
+
     def preflight(
-        self, base: PathLike | None = None, *, deep: bool = False
+        self,
+        base: PathLike | None = None,
+        *,
+        deep: bool = False,
+        confine: Confine = None,
     ) -> Preflight:
-        """Open and check every source, and build every row's view."""
+        """Open and check every source, and build every row's view.
+        ``confine`` says where sources may be opened (:data:`Confine`)."""
         return Preflight.from_core(
-            _core.task_preflight(self._doc, self._base(base), deep)
+            _core.task_preflight(
+                self._doc, self._base(base), deep, self._confined(base, confine)
+            )
         )
 
     def __getstate__(self) -> dict[str, Any]:
         return {
             "doc": self._doc,
             "base": None if self.base is None else os.fspath(self.base),
+            "loaded": self._loaded,
         }
 
     def __setstate__(self, state: Mapping[str, Any]) -> None:
         self._doc = state["doc"]
         self._normal = None
         self._ids = {}
+        self._loaded = bool(state.get("loaded", False))
         self.base = None if state["base"] is None else Path(state["base"])
 
     def __repr__(self) -> str:
@@ -1425,10 +1497,12 @@ def preflight(
     base: PathLike | None = None,
     *,
     deep: bool = False,
+    confine: Confine = None,
 ) -> Preflight:
-    """Preflight a task (a manifest, or the path of one)."""
+    """Preflight a task (a manifest, or the path of one); ``confine`` says
+    where sources may be opened (:data:`Confine`)."""
     manifest = task if isinstance(task, TaskManifest) else TaskManifest.load(task)
-    return manifest.preflight(base, deep=deep)
+    return manifest.preflight(base, deep=deep, confine=confine)
 
 
 __all__ = [
@@ -1442,6 +1516,7 @@ __all__ = [
     "SELECTION_STATUSES",
     "STATUSES",
     "TARGET_STATUSES",
+    "Confine",
     "EventTable",
     "Finding",
     "LinkTable",

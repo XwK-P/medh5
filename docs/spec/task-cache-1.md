@@ -59,11 +59,16 @@ a damaged chunk — does not match. A failure of any step is **T302**; a source 
 or names a member that does not exist, **T301**. Re-pinning is explicit: a changed source is never
 silently accepted (`SourceRef.pin`), and a sample that fails step 2 cannot be pinned at all.
 
-**Opening a source.** An implementation **MUST NOT** open a source that is not a regular file: a
-pipe or a device is no sample, and opening one can block. A source that fails any of steps 1–4 is
-read no further: it adds no identity, clock, event, document or link to its subject (§3.3), and no
-finding but its own T301 or T302 speaks of its content — T302 names the pin, not what the file
-stores. `reconcile` refuses a source that fails them (Appendix A).
+**Opening is the runner's choice.** A manifest's author chooses its URIs; whoever runs it chooses
+what may be opened. An implementation **SHOULD** let the runner confine sources to one directory,
+by default the base relative URIs resolve against, and, confined, **MUST** refuse a URI naming a
+path outside it once its `.` and `..` segments are resolved lexically (an absolute path, a `file:`
+URI, a relative path that climbs out) without opening or examining that path (**T301**, naming the
+URI and nothing about the path), and open the path so resolved. It **MUST NOT** open a source that
+is not a regular file: a pipe or a device is no sample, and opening one can block. A source that
+fails any of steps 1–4 is read no further: it adds no identity, clock, event, document or link to
+its subject (§3.3), and no finding but its own T301 or T302 speaks of its content — T302 names the
+pin, not what the file stores. `reconcile` refuses a source that fails them (Appendix A).
 
 ## 3. The task manifest
 
@@ -490,4 +495,5 @@ never what a manifest must contain.
 | Clause | Change | Why |
 |---|---|---|
 | §2 | A source that is not a regular file is not opened; a source that fails any of steps 1–4 is read no further, and T302 names only the pin. `reconcile` refuses such a source. | Found after 2.0.2: once a source failed its pin, preflight kept reading the file — T303 printed its subject id, T305 its event ids, `--json` its whole event table — and T302 printed the `content_id` it stores, so a manifest naming a file its author does not hold reported that file's contents; `reconcile` checked no pin; and a named pipe given as a source blocked `task preflight`, `task reconcile` and `cache validate` inside `H5Fopen`. |
+| §2 | An implementation should let the runner confine sources to one directory and, confined, must refuse a URI outside it, its `.` and `..` resolved lexically, without examining the path (T301), and open the path so resolved. | Found after 2.0.2: a manifest's author chose every path its runner opened, any path the running user could read, and T301 telling an absent path from an unreadable one answered whether it exists. Confinement by default would break every manifest naming `../data/…`, so it is the runner's choice; confining by canonical path would refuse the symbolic links data directories are full of, so it is lexical. |
 | §3.5 | A mask its own eligible procedure asserts it describes is an eligible annotation (1.1 §7.3). | 1.1 §7.3 required the asserter to be admitted when it was also the link's endpoint, so under `order_by = effective` a procedure of unknown time never attested its mask, and `roi = eligible_instances` fell back to `center_fallback`. |

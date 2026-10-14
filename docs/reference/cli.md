@@ -613,6 +613,7 @@ rows and source ids (T1xx, T2xx). Prints the task and manifest fingerprints.
 
 ```
 medh5 task preflight MANIFEST [--base DIR] [--deep] [--json]
+                     [--source-root DIR | --any-source-path]
 ```
 
 Open and check every source — pins, identities, clocks, duplicated events
@@ -620,6 +621,13 @@ Open and check every source — pins, identities, clocks, duplicated events
 with the reason, the event count, the image filling each slot and the target
 label. Exits 1 when anything was found. `--deep` re-verifies every dataset of
 every source, not only the clinical ones.
+
+`--source-root DIR` confines the sources to `DIR`: a URI naming a path outside
+it, once its `.` and `..` are resolved as text, is `T301`, without the path
+being examined (contract §2). `--any-source-path` opens wherever the URIs
+point. With neither, sources open wherever they point and a note on stderr
+names those outside the manifest's directory, which 3.0 confines to by
+default. The same two flags apply to `task reconcile` and `cache validate`.
 
 With `--json`, each subject's merged history is listed once, under
 `subjects` (its sources, event versions, links and owned documents), and each
@@ -638,6 +646,7 @@ rows, not the cohort.
 
 ```
 medh5 task reconcile MANIFEST [--base DIR] [--out OUT]
+                     [--source-root DIR | --any-source-path]
 ```
 
 Record, per subject, the event versions several of its fragments hold and the
@@ -649,6 +658,7 @@ sources, by any path or link, is refused before anything is written.
 
 ```
 medh5 cache validate CACHE [--task MANIFEST] [--base DIR] [--json]
+                     [--source-root DIR | --any-source-path]
 ```
 
 Check a feature cache's checksums and every source pin it records: *stale*

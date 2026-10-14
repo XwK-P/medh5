@@ -16,7 +16,8 @@ use medh5::clinical::model::{Event, Link, HOUR};
 use medh5::clinical::select::SelectionPolicy;
 use medh5::clinical::ClinicalRecords;
 use medh5::collection::{open_any, AnyFile};
-use medh5::companion::{preflight_each, validate_cache, write_preflight, Admitted, RowView, TaskManifest};
+use medh5::companion::cache::{validate_cache_in, CacheCheck};
+use medh5::companion::{preflight_each_in, write_preflight_in, Admitted, RowView, SourceAccess, TaskManifest};
 use medh5::h5::file::same_file;
 use medh5::json::{pretty, repr_str};
 use medh5::sample::Sample;
@@ -315,6 +316,37 @@ fn load_task(m: &ArgMatches) -> medh5::Result<(TaskManifest, Option<PathBuf>)> {
     Ok((manifest, base))
 }
 
+/// Where a task's sources may be opened from: confined to `--source-root`,
+/// unconfined with `--any-source-path`, and otherwise unconfined with a note
+/// on stderr naming the sources 3.0 will refuse (task-cache-1 §2).
+fn source_access(
+    m: &ArgMatches,
+    manifest: &TaskManifest,
+    base: Option<&Path>,
+    ctx: &mut Ctx,
+) -> medh5::Result<SourceAccess> {
+    if let Some(root) = get_str(m, "source_root") {
+        return SourceAccess::confined(base, Some(Path::new(root)));
+    }
+    if !flag(m, "any_source_path") {
+        // A base that does not exist confines nothing to note: its sources
+        // fail to open (T301) whatever 3.0 does.
+        if let Ok(confined) = SourceAccess::confined(base, None) {
+            let outside = manifest.sources_outside(&confined);
+            if let Some(first) = outside.first() {
+                ctx.eprint(format!(
+                    "note: {} source(s) lie outside the manifest's directory ({}{}): medh5 3.0 confines a task's \
+                     sources to its directory; pass --any-source-path to keep reading them, or --source-root DIR",
+                    outside.len(),
+                    repr_str(&first.uri),
+                    if outside.len() > 1 { ", ..." } else { "" }
+                ));
+            }
+        }
+    }
+    Ok(SourceAccess::new(base))
+}
+
 fn findings_text(findings: &[medh5::companion::Finding], ctx: &mut Ctx) {
     for f in findings {
         ctx.print(format!("  {}", f.line()));
@@ -371,14 +403,15 @@ fn task_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 /// keeps one line per row --- neither holds every subject's records.
 fn task_preflight(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let (manifest, base) = load_task(m)?;
+    let access = source_access(m, &manifest, base.as_deref(), ctx)?;
     let deep = flag(m, "deep");
     if flag(m, "json") {
-        let ok = write_preflight(&manifest, base.as_deref(), deep, &mut Stdout(ctx))?;
+        let ok = write_preflight_in(&manifest, &access, deep, &mut Stdout(ctx))?;
         ctx.print("");
         return Ok(if ok { EXIT_OK } else { EXIT_ERROR });
     }
     let mut lines: Vec<Option<(String, Vec<String>)>> = vec![None; manifest.rows.len()];
-    let done = preflight_each(&manifest, base.as_deref(), deep, &mut |_, rows| {
+    let done = preflight_each_in(&manifest, &access, deep, &mut |_, rows| {
         for (r, view) in rows {
             lines[r] = Some(row_line(&view));
         }
@@ -428,12 +461,13 @@ fn row_line(r: &RowView) -> (String, Vec<String>) {
 
 fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let (mut manifest, base) = load_task(m)?;
+    let access = source_access(m, &manifest, base.as_deref(), ctx)?;
     // The save replaces whatever `--out` names: a source sample, named again
     // or through a link, became the manifest that pins it, and exit 0.
     if let Some(out) = get_str(m, "out") {
         for subject in &manifest.subjects {
             if let Some(source) =
-                subject.sources.iter().find(|s| same_file(&s.resolve(base.as_deref()), Path::new(out)))
+                subject.sources.iter().find(|s| access.locate(s).is_ok_and(|p| same_file(&p, Path::new(out))))
             {
                 return Err(Error::invalid(format!(
                     "--out {} is {}, a source of subject {}; write the manifest to another file",
@@ -446,7 +480,7 @@ fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     }
     let mut recorded = 0;
     for i in 0..manifest.subjects.len() {
-        let found = medh5::companion::view::reconcile(&manifest.subjects[i], base.as_deref())?;
+        let found = medh5::companion::view::reconcile_in(&manifest.subjects[i], &access)?;
         recorded += found.len();
         manifest.subjects[i].reconciled = found;
     }
@@ -460,20 +494,31 @@ fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 fn cache_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = Path::new(req_str(m, "path"));
     let mut base = get_str(m, "base").map(PathBuf::from);
-    let (task, admitted) = match get_str(m, "task") {
+    let task = match get_str(m, "task") {
         Some(file) => {
             let file = Path::new(file);
             let manifest = TaskManifest::load(file)?;
-            let admitted = Admitted::preflight(&manifest, file.parent(), false)?;
+            let task_base = file.parent().map(Path::to_path_buf);
+            let access = source_access(m, &manifest, task_base.as_deref(), ctx)?;
+            let admitted = Admitted::preflight_in(&manifest, &access, false)?;
             // The entries copy the task's references, relative to its
             // directory (task-cache-1 §7.1): resolved against the cache's,
             // a cache kept anywhere else was all stale.
-            base = base.or_else(|| file.parent().map(Path::to_path_buf));
-            (Some(manifest), Some(admitted))
+            base = base.or(task_base);
+            Some((manifest, access, admitted))
         }
-        None => (None, None),
+        None => None,
     };
-    let report = validate_cache(path, base.as_deref(), task.as_ref(), admitted.as_ref())?;
+    let base = base.or_else(|| path.parent().map(Path::to_path_buf));
+    let entries = match get_str(m, "source_root") {
+        Some(root) => SourceAccess::confined(base.as_deref(), Some(Path::new(root)))?,
+        None => SourceAccess::new(base.as_deref()),
+    };
+    let mut check = CacheCheck::new(entries);
+    if let Some((manifest, access, admitted)) = &task {
+        check = check.with_task(manifest, access).with_admitted(admitted);
+    }
+    let report = validate_cache_in(path, &check)?;
     if flag(m, "json") {
         ctx.emit(&report.to_json(), true);
     } else {

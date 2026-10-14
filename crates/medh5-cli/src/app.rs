@@ -750,6 +750,24 @@ fn clinical() -> Command {
         )
 }
 
+/// `--source-root DIR` and `--any-source-path`: where a task's sources may be
+/// opened from (task-cache-1 §2).
+fn confinement(cmd: Command) -> Command {
+    cmd.arg(
+        opt(
+            "source_root",
+            "source-root",
+            "open sources only inside this directory: a URI outside it, its . and .. resolved as text, is T301",
+        )
+        .conflicts_with("any_source_path"),
+    )
+    .arg(flag(
+        "any_source_path",
+        "any-source-path",
+        "open sources wherever the manifest's URIs point, without the note on those outside its directory",
+    ))
+}
+
 fn task() -> Command {
     let manifest = || positional("manifest", "a medh5.task/1 manifest (JSON)");
     group("task", "task manifests: rows, cutoffs, sources and what they admit (medh5.task/1)")
@@ -759,25 +777,25 @@ fn task() -> Command {
                 .arg(manifest())
                 .arg(json()),
         )
-        .subcommand(
+        .subcommand(confinement(
             Command::new("preflight")
                 .about("open and check every source, and report each row: eligible, uncertifiable, excluded or error")
                 .arg(manifest())
                 .arg(opt("base", "base", "resolve relative source URIs here (default: the manifest's directory)"))
                 .arg(flag("deep", "deep", "re-verify every dataset of every source, not only the clinical ones"))
                 .arg(json()),
-        )
-        .subcommand(
+        ))
+        .subcommand(confinement(
             Command::new("reconcile")
                 .about("record the events several fragments of a subject share, and their digests")
                 .arg(manifest())
                 .arg(opt("base", "base", "resolve relative source URIs here (default: the manifest's directory)"))
                 .arg(opt("out", "out", "write the reconciled manifest here (default: in place)").short('o')),
-        )
+        ))
 }
 
 fn cache() -> Command {
-    group("cache", "feature caches derived from MEDH5 sources (medh5.cache/1)").subcommand(
+    group("cache", "feature caches derived from MEDH5 sources (medh5.cache/1)").subcommand(confinement(
         Command::new("validate")
             .about("check a cache's checksums and pins, and --- given a task --- its admissibility (T4xx)")
             .arg(positional("path", "a .medh5cache file"))
@@ -789,7 +807,7 @@ fn cache() -> Command {
                  the cache's)",
             ))
             .arg(json()),
-    )
+    ))
 }
 
 #[cfg(test)]

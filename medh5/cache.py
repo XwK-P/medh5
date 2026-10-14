@@ -42,7 +42,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
-from medh5.task import Finding, SourceRef
+from medh5.task import Confine, Finding, SourceRef, _root
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5.task import RowView, TaskManifest
@@ -399,6 +399,7 @@ def validate_cache(
     task: TaskManifest | None = None,
     task_base: PathLike | None = None,
     check_rows: bool = True,
+    confine: Confine = None,
 ) -> CacheReport:
     """Validate a cache: its checksums, every source pin, and --- given a task
     --- that it was built for this task, fitted on this task's training
@@ -412,15 +413,23 @@ def validate_cache(
     preflight; an event-level cache has no row entries, so
     ``check_rows=False`` spares it that.  A path naming no file raises
     :class:`~medh5.errors.MEDH5FileError`: there is no cache to report on.
+    ``confine`` says where the task's and the entries' sources may be opened
+    (:data:`medh5.task.Confine`): ``True`` the task's base, or without a task
+    the entries'.
     """
     if task is not None and task_base is None:
         task_base = task.base
+    if task is not None:
+        root = task._confined(task_base, confine)
+    else:
+        root = _root(confine, base if base is not None else Path(path).parent)
     found = _core.cache_validate(
         os.fspath(path),
         None if base is None else os.fspath(base),
         None if task is None else task.to_json(),
         None if task_base is None else os.fspath(task_base),
         check_rows,
+        root,
     )
     return CacheReport.from_json(found)
 
@@ -482,6 +491,7 @@ def build_document_cache(
     encoder: HashingTextEncoder | Any,
     *,
     base: PathLike | None = None,
+    confine: Confine = None,
 ) -> CacheReport:
     """An event-level cache of every document event of the task's sources.
 
@@ -490,15 +500,17 @@ def build_document_cache(
     is immutable, so its feature is reused by every row --- and each row's
     selection decides which of them it may read.  Returns the new cache's
     validation report.  A source that is no longer the version the task
-    pins is refused (T302) and nothing is written.
+    pins is refused (T302) and nothing is written.  ``confine`` says where
+    sources may be opened (:data:`medh5.task.Confine`).
     """
     from medh5.errors import MEDH5ValidationError
 
-    root = base if base is not None else task.base
+    where = base if base is not None else task.base
+    confined = task._confined(where, confine)
     with CacheWriter(path, level="event", **encoder.header()) as writer:
         for subject in task.subjects:
             for source in subject.sources:
-                with source.open(root) as sample:
+                with source.open(where, root=confined) as sample:
                     # What is encoded is filed under the pin: a source changed
                     # since gave its new text the old version's entries.
                     if sample.content_id != source.content_id:
@@ -526,7 +538,9 @@ def build_document_cache(
                                 encoder.encode(text),
                                 document_id=link.target_id,
                             )
-    return validate_cache(path, base=root)
+    return validate_cache(
+        path, base=where, confine=False if confined is None else confined
+    )
 
 
 __all__ = [

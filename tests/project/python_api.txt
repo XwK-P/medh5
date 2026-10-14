@@ -452,8 +452,8 @@ medh5.TaskManifest.manifest_fingerprint	property
 medh5.TaskManifest.new	classmethod	(task_id, version, *, identity_namespace, policy=None, slots=(), target=None, split=None, description=None, base=None)
 medh5.TaskManifest.partition_of	method	(subject_id)
 medh5.TaskManifest.policy	property
-medh5.TaskManifest.preflight	method	(base=None, *, deep=False)
-medh5.TaskManifest.reconcile	method	(base=None)
+medh5.TaskManifest.preflight	method	(base=None, *, deep=False, confine=None)
+medh5.TaskManifest.reconcile	method	(base=None, *, confine=None)
 medh5.TaskManifest.row_fingerprint	method	(row_id)
 medh5.TaskManifest.rows	property
 medh5.TaskManifest.save	method	(path)
@@ -1877,13 +1877,13 @@ medh5.cache.HashingTextEncoder.header	method	()
 medh5.cache.LEVELS	constant	tuple
 medh5.cache.SCHEMA	constant	str
 medh5.cache.SUFFIX	constant	str
-medh5.cache.build_document_cache	function	(task, path, encoder, *, base=None)
+medh5.cache.build_document_cache	function	(task, path, encoder, *, base=None, confine=None)
 medh5.cache.event_entry_id	function	(content_id, event_id)
 medh5.cache.fitted_on	function	(task, partition=None)
 medh5.cache.fitted_on_mismatches	function	(task, fitted)
 medh5.cache.open_cache	function	(path)
 medh5.cache.schema_text	function	()
-medh5.cache.validate_cache	function	(path, *, base=None, task=None, task_base=None, check_rows=True)
+medh5.cache.validate_cache	function	(path, *, base=None, task=None, task_base=None, check_rows=True, confine=None)
 medh5.cli	module
 medh5.cli.EXIT_ERROR	constant	int
 medh5.cli.EXIT_OK	constant	int
@@ -3544,6 +3544,7 @@ medh5.storage.spatial_chunk_for	function	(spatial_shape, patch=None, *, itemsize
 medh5.task	module
 medh5.task.CENSORING	constant	tuple
 medh5.task.CODES	constant	dict
+medh5.task.Confine	alias
 medh5.task.EventTable	class	(columns) bases=
 medh5.task.EventTable.__getitem__	method	(i)
 medh5.task.EventTable.__iter__	method	()
@@ -3641,14 +3642,14 @@ medh5.task.SlotFill.label_annotations	field
 medh5.task.SlotFill.roi	field
 medh5.task.SlotFill.slot	field
 medh5.task.SourceRef	class	(uri, content_id, sample_key=None, source_id='', local_subject_id=None) bases=
-medh5.task.SourceRef.check	method	(base=None, *, deep=False)
+medh5.task.SourceRef.check	method	(base=None, *, deep=False, root=None)
 medh5.task.SourceRef.content_id	field
 medh5.task.SourceRef.from_json	classmethod	(doc)
 medh5.task.SourceRef.local_subject_id	field
 medh5.task.SourceRef.locator	property
-medh5.task.SourceRef.open	method	(base=None)
+medh5.task.SourceRef.open	method	(base=None, *, root=None)
 medh5.task.SourceRef.pin	classmethod	(path, *, sample_key=None, source_id=None, uri=None)
-medh5.task.SourceRef.resolve	method	(base=None)
+medh5.task.SourceRef.resolve	method	(base=None, *, root=None)
 medh5.task.SourceRef.sample_key	field
 medh5.task.SourceRef.source_id	field
 medh5.task.SourceRef.to_json	method	()
@@ -3707,8 +3708,8 @@ medh5.task.TaskManifest.manifest_fingerprint	property
 medh5.task.TaskManifest.new	classmethod	(task_id, version, *, identity_namespace, policy=None, slots=(), target=None, split=None, description=None, base=None)
 medh5.task.TaskManifest.partition_of	method	(subject_id)
 medh5.task.TaskManifest.policy	property
-medh5.task.TaskManifest.preflight	method	(base=None, *, deep=False)
-medh5.task.TaskManifest.reconcile	method	(base=None)
+medh5.task.TaskManifest.preflight	method	(base=None, *, deep=False, confine=None)
+medh5.task.TaskManifest.reconcile	method	(base=None, *, confine=None)
 medh5.task.TaskManifest.row_fingerprint	method	(row_id)
 medh5.task.TaskManifest.rows	property
 medh5.task.TaskManifest.save	method	(path)
@@ -3724,13 +3725,13 @@ medh5.task.TaskManifest.to_json	method	()
 medh5.task.TaskManifest.training_partition	property
 medh5.task.TaskManifest.validate	method	()
 medh5.task.concept_token	function	(kind, code_system, code)
-medh5.task.preflight	function	(task, base=None, *, deep=False)
+medh5.task.preflight	function	(task, base=None, *, deep=False, confine=None)
 medh5.task.schema_text	function	()
 medh5.torch	module
 medh5.torch.ALIGNMENTS	constant	tuple
 medh5.torch.AVAILABLE	constant	bool
 medh5.torch.CACHE	constant	medh5.torch.handles.HandleCache
-medh5.torch.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None) bases=
+medh5.torch.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, confine=None) bases=
 medh5.torch.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.ClinicalTaskDataset.__len__	method	()
 medh5.torch.ConceptVocabulary	class	(concepts, stats=<factory>, fitted_on=None, units=<factory>, categories=<factory>) bases=
@@ -3825,7 +3826,7 @@ medh5.torch.VolumeDataset.__getitem__	method	(index)
 medh5.torch.VolumeDataset.__len__	method	()
 medh5.torch.VolumeDataset.file_groups	method	()
 medh5.torch.clinical	module
-medh5.torch.clinical.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None) bases=
+medh5.torch.clinical.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, confine=None) bases=
 medh5.torch.clinical.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.clinical.ClinicalTaskDataset.__len__	method	()
 medh5.torch.clinical.ConceptVocabulary	class	(concepts, stats=<factory>, fitted_on=None, units=<factory>, categories=<factory>) bases=
@@ -4145,4 +4146,4 @@ medh5.validate.rules_for	function	(level)
 medh5.validate.validate_file	function	(path, *, level='semantic', profiles=None)
 medh5.validate.validate_paths	function	(paths, *, level='semantic', profiles=None)
 medh5.validate.validate_root	function	(sample, *, path=None, level='semantic', profiles=None, errors_only=False)
-medh5.validate_cache	function	(path, *, base=None, task=None, task_base=None, check_rows=True)
+medh5.validate_cache	function	(path, *, base=None, task=None, task_base=None, check_rows=True, confine=None)
