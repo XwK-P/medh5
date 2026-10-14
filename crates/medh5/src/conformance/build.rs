@@ -272,9 +272,7 @@ pub(super) fn write(
 
 /// Open `path` read-write, edit it, close it.
 pub(super) fn mutate(path: &Path, edit: impl FnOnce(&hdf5::Group) -> Result<()>) -> Result<()> {
-    crate::h5::init();
-    let file = hdf5::File::open_rw(path)?;
-    crate::h5::file::close_on_exec(&file);
+    let file = crate::h5::file::open_rw(path)?;
     let root = file.as_group()?;
     edit(&root)?;
     drop(root);

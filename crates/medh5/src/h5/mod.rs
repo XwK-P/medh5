@@ -163,6 +163,15 @@ pub(crate) fn locked<T>(f: impl FnOnce() -> T) -> T {
     hdf5::sync::sync(f)
 }
 
+/// Start `command` while no file is between HDF5's open and the mark that
+/// keeps it out of children ([`file::close_on_exec`]): under HDF5's lock,
+/// which every open through medh5 holds until its file is marked.  Only the
+/// start is held; the child runs, and is waited on, outside it.
+#[doc(hidden)]
+pub fn spawn(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    locked(|| command.spawn())
+}
+
 /// An object's path relative to a sample root (`/samples/x/images/CT` with
 /// root `/samples/x` gives `images/CT`).
 pub fn relative_name(name: &str, root: &str) -> String {
@@ -226,13 +235,16 @@ mod tests {
             return;
         }
         let name = "h5::tests::s14_2_plugins_asked_for_load_from_the_standard_directory_only";
-        let run = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
             .args(["--exact", name, "--test-threads=1"])
             .env(CHILD, "1")
             .env(plugins::ALLOW, "1")
             .env_remove(plugins::SEARCH_PATH)
-            .output()
-            .unwrap();
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        // Through `spawn`, so the child catches no other test's file mid-open.
+        let run = super::spawn(&mut command).unwrap().wait_with_output().unwrap();
         let out = String::from_utf8_lossy(&run.stdout);
         assert!(run.status.success() && out.contains("1 passed"), "{out}{}", String::from_utf8_lossy(&run.stderr));
     }

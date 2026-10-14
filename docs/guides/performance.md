@@ -164,6 +164,17 @@ worker inherits it. medh5 never sets it for you (§14.4): it also disables the
 lock that keeps two writers apart, and whether that is safe is a fact about your
 cluster, not about the file.
 
+## Starting programs while files are open
+
+A file medh5 opens is kept out of every program the process starts, on every
+platform: a child does not inherit it, so it neither keeps the file locked nor
+blocks the rename an amendment ends with. Two cases stay open. A program
+started by *other* code on another thread in the instant between HDF5's open
+and medh5 marking the file can still inherit it; medh5's own children wait for
+that instant to pass. And a `fork` without `exec` shares every open file, which
+is why a forked `DataLoader` worker drops the handles it inherited rather than
+using them (§14.4).
+
 ## The numbers
 
 Measured with 2.0.0 on one four-core machine, on a 192×256×256 synthetic CT

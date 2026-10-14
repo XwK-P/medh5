@@ -40,50 +40,99 @@ pub fn open_read(path: &Path) -> Result<hdf5::File> {
         Ok(_) => {}
         Err(err) => return Err(failed(&os_reason(&err))),
     }
-    let handle = hdf5::File::open(path).map_err(|e| failed(&e))?;
-    close_on_exec(&handle);
+    let handle = marked(|| hdf5::File::open(path)).map_err(|e| failed(&e))?;
     check_self_contained(&handle, Some(path))?;
     Ok(handle)
+}
+
+/// Open a file through `open` and mark its descriptor, in one hold of HDF5's
+/// lock: a child [`spawn`](super::spawn)ed by another thread starts before the
+/// open or after the mark, never between them.
+pub(crate) fn marked(open: impl FnOnce() -> hdf5::Result<hdf5::File>) -> hdf5::Result<hdf5::File> {
+    super::locked(|| {
+        let file = open()?;
+        close_on_exec(&file);
+        Ok(file)
+    })
+}
+
+/// Open an existing file for reading and writing, its descriptor marked as
+/// [`open_read`]'s is.
+pub(crate) fn open_rw(path: &Path) -> Result<hdf5::File> {
+    super::init();
+    Ok(marked(|| hdf5::File::open_rw(path))?)
+}
+
+/// The C runtime descriptor HDF5 opened `file` through, when its driver is
+/// `sec2`, the default: another driver hands back no descriptor.
+pub(crate) fn descriptor(file: &hdf5::File) -> Option<std::os::raw::c_int> {
+    use hdf5::file::FileDriver;
+
+    use crate::h5sys::{h5f, h5p};
+
+    if !matches!(file.access_plist().and_then(|fapl| fapl.get_driver()), Ok(FileDriver::Sec2)) {
+        return None;
+    }
+    super::locked(|| {
+        let mut handle: *mut std::ffi::c_void = std::ptr::null_mut();
+        // SAFETY: under HDF5's lock, for a file that stays open for the
+        // call; `sec2` hands back a pointer to the descriptor it holds.
+        unsafe {
+            if h5f::H5Fget_vfd_handle(file.id(), h5p::H5P_DEFAULT, &mut handle) < 0 || handle.is_null() {
+                return None;
+            }
+            Some(*(handle as *const std::os::raw::c_int))
+        }
+    })
+}
+
+/// The Windows handle behind a C runtime descriptor.  HDF5 and medh5 are one
+/// module on one C runtime (HDF5 is built with CMake's default dynamic
+/// runtime, and Rust links the same UCRT), so HDF5's descriptor is valid here.
+#[cfg(windows)]
+pub(crate) fn os_handle(fd: std::os::raw::c_int) -> Option<windows_sys::Win32::Foundation::HANDLE> {
+    extern "C" {
+        fn _get_osfhandle(fd: std::os::raw::c_int) -> isize;
+    }
+    // SAFETY: `_get_osfhandle` validates the descriptor and returns -1 (or
+    // -2, for one with no stream) for one that names nothing.
+    let os = unsafe { _get_osfhandle(fd) };
+    (os != -1 && os != -2).then_some(os as windows_sys::Win32::Foundation::HANDLE)
 }
 
 /// Keep the descriptor HDF5 opened `file` through out of every program this
 /// process starts.
 ///
-/// HDF5 opens a file without `O_CLOEXEC`, so a child started while it was
-/// open, by any thread, inherited the descriptor: it could write a file opened
-/// for writing, and it held the lock HDF5 takes through the descriptor after
-/// the file was closed, so the next open of the file failed "unable to lock
-/// file" for as long as the child ran.  Only the `sec2` driver, the default,
-/// hands back a descriptor; another is left as it is, and so is a Windows
-/// handle.
+/// HDF5 opens a file without `O_CLOEXEC`, and on Windows its handle is
+/// inheritable, so a child started while it was open inherited it: it could
+/// write a file opened for writing, and it held the lock HDF5 takes through it
+/// after the file was closed, so the next open of the file failed "unable to
+/// lock file" --- and on Windows every rename over it "Access is denied", so
+/// every amendment --- for as long as the child ran.  Only the `sec2` driver,
+/// the default, hands back a descriptor; another is left as it is.
+///
+/// What stays open: a child started by *other* code, not through
+/// [`spawn`](super::spawn), on another thread between HDF5's open and this
+/// mark; and a `fork` without `exec`, whose child shares every descriptor
+/// (1.0 §14.4: handles are not inherited across `fork`).
 pub(crate) fn close_on_exec(file: &hdf5::File) {
+    let Some(fd) = descriptor(file) else { return };
     #[cfg(unix)]
-    {
-        use hdf5::file::FileDriver;
-
-        use crate::h5sys::{h5f, h5p};
-
-        if !matches!(file.access_plist().and_then(|fapl| fapl.get_driver()), Ok(FileDriver::Sec2)) {
-            return;
+    // SAFETY: `fd` is HDF5's open descriptor for `file`.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
         }
-        super::locked(|| {
-            let mut handle: *mut std::ffi::c_void = std::ptr::null_mut();
-            // SAFETY: under HDF5's lock, for a file that stays open for the
-            // call; `sec2` hands back a pointer to the descriptor it holds.
-            unsafe {
-                if h5f::H5Fget_vfd_handle(file.id(), h5p::H5P_DEFAULT, &mut handle) < 0 || handle.is_null() {
-                    return;
-                }
-                let fd = *(handle as *const libc::c_int);
-                let flags = libc::fcntl(fd, libc::F_GETFD);
-                if flags >= 0 {
-                    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
-                }
-            }
-        });
     }
-    #[cfg(not(unix))]
-    let _ = file;
+    #[cfg(windows)]
+    if let Some(handle) = os_handle(fd) {
+        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+        // SAFETY: `handle` is the open handle behind HDF5's descriptor.
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = fd;
 }
 
 /// What the system said went wrong, without the error number: "no such file
@@ -107,12 +156,12 @@ fn os_reason(err: &std::io::Error) -> String {
 /// features newer than 1.10 are used only where an object needs them.
 pub fn create_truncate(path: &Path) -> Result<hdf5::File> {
     super::init();
-    let file = hdf5::File::with_options()
-        .with_fapl(|p| p.libver_bounds(LibraryVersion::V110, LibraryVersion::latest()))
-        .create(path)
-        .map_err(|e| Error::File(format!("failed to create {}: {}", repr_str(&path.to_string_lossy()), e)))?;
-    close_on_exec(&file);
-    Ok(file)
+    marked(|| {
+        hdf5::File::with_options()
+            .with_fapl(|p| p.libver_bounds(LibraryVersion::V110, LibraryVersion::latest()))
+            .create(path)
+    })
+    .map_err(|e| Error::File(format!("failed to create {}: {}", repr_str(&path.to_string_lossy()), e)))
 }
 
 /// The most links a chain is followed through, as Linux bounds one.
@@ -858,26 +907,113 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), payload);
     }
 
+    /// A child that runs until it is killed.  Started through
+    /// [`super::super::spawn`], as every child of these tests is: a plain
+    /// start on one test's thread could catch another test's file between its
+    /// open and its mark, and fail that test --- the window `spawn` closes.
+    fn long_lived_child() -> std::process::Child {
+        let mut command = if cfg!(windows) {
+            let mut c = std::process::Command::new("ping");
+            c.args(["-n", "30", "127.0.0.1"]);
+            c
+        } else {
+            let mut c = std::process::Command::new("sleep");
+            c.arg("30");
+            c
+        };
+        super::super::spawn(command.stdout(std::process::Stdio::null())).unwrap()
+    }
+
     /// A child started while a file was open kept HDF5's descriptor, and the
     /// lock HDF5 holds through it: the file could not be opened again until
     /// the child exited.  The command line's `bench` test met it when a
-    /// Python another test started outlived the sample being timed.
-    #[cfg(unix)]
+    /// Python another test started outlived the sample being timed.  On
+    /// Windows the handle was inheritable too, and a rename over the file
+    /// --- every amendment's last step --- failed "Access is denied" while
+    /// the child ran.
     #[test]
     fn s14_4_a_child_process_inherits_no_open_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.h5");
+        let spare = dir.path().join("spare.h5");
         create_truncate(&path).unwrap();
-        for door in [create_truncate, open_read] {
+        for door in [create_truncate, open_read, open_rw] {
             let file = door(&path).unwrap();
-            let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+            let mut child = long_lived_child();
             drop(file);
             // For writing: an exclusive lock, which any lock the child kept refuses.
             let again = create_truncate(&path).map(drop);
+            fs::write(&spare, b"x").unwrap();
+            let renamed = fs::rename(&spare, &path);
             child.kill().unwrap();
             child.wait().unwrap();
             again.unwrap();
+            renamed.unwrap();
+            create_truncate(&path).unwrap();
         }
+    }
+
+    /// The descriptor HDF5 hands back is the file's own, so marking it marks
+    /// the file: on Windows, the C runtime's descriptor names the handle HDF5
+    /// opened, which holds only if HDF5 and medh5 share one C runtime.
+    #[test]
+    fn s14_4_the_descriptor_is_the_files_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.h5");
+        let file = create_truncate(&path).unwrap();
+        let fd = descriptor(&file).expect("sec2 hands back a descriptor");
+        #[cfg(unix)]
+        {
+            let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::fstat(fd, &mut stat) }, 0);
+            assert_eq!(Some((stat.st_dev as u64, stat.st_ino as u64)), identity(&path));
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+            let handle = os_handle(fd).expect("the descriptor names a handle");
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            assert_ne!(unsafe { GetFileInformationByHandle(handle, &mut info) }, 0);
+            let own = (info.dwVolumeSerialNumber, u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow));
+            assert_eq!(Some(own), identity(&path));
+        }
+        #[cfg(not(any(unix, windows)))]
+        let _ = fd;
+    }
+
+    /// A child medh5 starts waits while another thread is between an open
+    /// and its mark: while HDF5's lock is held, [`super::super::spawn`] does
+    /// not return, and once it is released, it does.
+    #[test]
+    fn s14_4_a_child_starts_only_between_opens() {
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            super::super::locked(|| {
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        held_rx.recv().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let starter = std::thread::spawn(move || {
+            let mut command = if cfg!(windows) {
+                let mut c = std::process::Command::new("cmd");
+                c.args(["/C", "exit 0"]);
+                c
+            } else {
+                std::process::Command::new("true")
+            };
+            let child = super::super::spawn(&mut command);
+            started_tx.send(()).unwrap();
+            child.unwrap().wait().unwrap();
+        });
+        let waited = started_rx.recv_timeout(std::time::Duration::from_millis(200));
+        assert!(waited.is_err(), "a child started while HDF5's lock was held");
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        started_rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the child starts once the lock is free");
+        starter.join().unwrap();
     }
 
     /// Off POSIX the 2.0.1 checks compared canonical paths, which a hard link
