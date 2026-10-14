@@ -279,6 +279,27 @@ class TestWorkedExample:
         with pytest.raises(MEDH5ValidationError):
             ClinicalTaskDataset(task, partition="test")
 
+    def test_a_vocabulary_is_saved_whole_not_in_place(
+        self, worked: dict[str, Any], tmp_path: Path
+    ):
+        """`save` wrote through the file in place: a reader could see half a
+        vocabulary, and every other name of the file changed with it."""
+        import os
+
+        vocab = ClinicalTaskDataset(worked["task"], partition="train").concepts
+        path = tmp_path / "vocab.json"
+        path.write_text("{}", encoding="utf-8")
+        other = tmp_path / "other-name.json"
+        os.link(path, other)
+        vocab.save(path)
+        assert other.read_text(encoding="utf-8") == "{}"
+        assert ConceptVocabulary.load(path) == vocab
+        assert path.read_bytes().endswith(b"}\n")
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            "other-name.json",
+            "vocab.json",
+        ]
+
     def test_S4_a_task_with_findings_is_refused_unless_asked(
         self, worked: dict[str, Any], tmp_path: Path
     ):

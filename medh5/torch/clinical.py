@@ -78,6 +78,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5._files import write_text
 from medh5.cache import (
     CacheReport,
     FeatureCache,
@@ -286,12 +287,23 @@ class ConceptVocabulary:
 
     @property
     def digest(self) -> str:
+        """``sha256:`` of the vocabulary's JSON, sorted and without whitespace.
+
+        Not 1.0 §5.1's canonical JSON: non-ASCII text is ``\\u``-escaped here,
+        where §5.1 writes it as UTF-8.  It stays so (2.1.0 decision D34): a
+        feature cache records this digest to say which encoder built it
+        (``medh5.cache/1``), and changing it would make every cache built with
+        a non-ASCII concept stale for no gain in correctness.
+        """
         text = json.dumps(self.to_json(), sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def save(self, path: PathLike) -> Path:
+        """Write the vocabulary to *path*, whole: through a temporary renamed
+        over it, so a reader never sees half of one, and a failed write leaves
+        the previous vocabulary in place."""
         path = Path(path)
-        path.write_text(json.dumps(self.to_json(), indent=2) + "\n", encoding="utf-8")
+        write_text(path, json.dumps(self.to_json(), indent=2) + "\n")
         return path
 
     @classmethod
