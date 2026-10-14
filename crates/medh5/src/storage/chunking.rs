@@ -91,7 +91,9 @@ fn cacheconfig_l3_sharing(raw: &str) -> Option<u64> {
 #[cfg(target_os = "macos")]
 fn macos_l3() -> Option<u64> {
     let sysctl = |key: &str| -> Option<String> {
-        let out = std::process::Command::new("/usr/sbin/sysctl").args(["-n", key]).output().ok()?;
+        let mut command = std::process::Command::new("/usr/sbin/sysctl");
+        command.args(["-n", key]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+        let out = crate::h5::spawn(&mut command).ok()?.wait_with_output().ok()?;
         Some(String::from_utf8_lossy(&out.stdout).into_owned())
     };
     let total: u64 = sysctl("hw.l3cachesize")?.trim().parse().ok()?;

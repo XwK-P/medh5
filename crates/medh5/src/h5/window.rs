@@ -368,7 +368,7 @@ mod tests {
         let path = dir.path().join("crafted.h5");
         let shape = [16usize, 16, 16];
         {
-            let file = hdf5::File::create(&path).unwrap();
+            let file = crate::h5::file::marked(|| hdf5::File::create(&path)).unwrap();
             let layout = Layout {
                 chunks: Some(shape.to_vec()),
                 filters: resolve_profile(Some("training")).unwrap().codec(Role::Image).filters(),
@@ -383,7 +383,7 @@ mod tests {
         bytes[at + 24..at + 28].copy_from_slice(&0xF000_0000u32.to_le_bytes());
         std::fs::write(&path, &bytes).unwrap();
 
-        let file = hdf5::File::open(&path).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::open(&path)).unwrap();
         let ds = file.dataset("d").unwrap();
         let window =
             [Index::Slice(Slice::new(2, 10)), Index::Slice(Slice::new(2, 10)), Index::Slice(Slice::new(2, 10))];

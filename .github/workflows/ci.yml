@@ -533,7 +533,7 @@ jobs:
     # tools. A floor nothing installs is a floor nobody has checked; the
     # extras' went untested until 2.0.2.  One resolve, so the floors are
     # installed together or the job says they cannot be.  (highdicom 0.23
-    # needs pydicom 3.0.1, so `pydicom==3.0.*` resolves to that or later.)
+    # needs pydicom 3.0.1, which is why that, not 3.0.0, is pydicom's floor.)
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -549,7 +549,7 @@ jobs:
       - run: >-
           pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg,monai]"
           "numpy==1.24.*" "h5py==3.13.*" "hdf5plugin==4.1.*"
-          "torch==2.0.*" "monai==1.3.*" "nibabel==5.0.*" "pydicom==3.0.*" "highdicom==0.23.*"
+          "torch==2.0.*" "monai==1.3.*" "nibabel==5.0.*" "pydicom==3.0.1" "highdicom==0.23.*"
       - run: python -c "from importlib.metadata import version; print(*(f'{p} {version(p)}' for p in ('numpy', 'h5py', 'hdf5plugin', 'torch', 'monai', 'nibabel', 'pydicom', 'highdicom')))"
       # As in `test-monai`: a failed import would skip its tests, and the job
       # would pass having tested nothing at the floor.

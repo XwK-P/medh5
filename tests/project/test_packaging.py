@@ -703,6 +703,9 @@ class TestRepositoryGates:
         }  # fmt: skip
         job = _jobs(CI.read_text(encoding="utf-8"))["test-min-deps"]
         for name, floor in floors.items():
+            if floor.count(".") == 2:  # a patch floor is installed exactly
+                assert f'"{name}=={floor}"' in job, name
+                continue
             series = floor if "." in floor else f"{floor}.0"
             assert f'"{name}=={series}.*"' in job, name
         oldest = re.search(r'^requires-python = ">=(3\.\d+)"$', text, re.M)
@@ -955,12 +958,13 @@ class TestDistribution:
         """The RTSTRUCT writer asks `save_as` to enforce the DICOM file
         format, a keyword pydicom 3.0 added; highdicom supports pydicom 3 from
         0.23.  The floors were pydicom 2.4 and highdicom 0.22, where writing
-        an RTSTRUCT is a `TypeError`."""
+        an RTSTRUCT is a `TypeError`.  And highdicom 0.23 requires pydicom
+        3.0.1, so a 3.0.0 floor was one no resolver could install."""
         rtstruct = Path(medh5.__file__).parent / "io" / "rtstruct.py"
         assert "enforce_file_format=" in rtstruct.read_text(encoding="utf-8")
         extras = _extras()
         for extra in ("dicom", "dicomseg"):
-            assert re.findall(r'"pydicom([^"]*)"', extras[extra]) == [">=3.0"]
+            assert re.findall(r'"pydicom([^"]*)"', extras[extra]) == [">=3.0.1"]
         assert re.findall(r'"highdicom([^"]*)"', extras["dicomseg"]) == [">=0.23"]
 
     def test_a_published_crate_is_skipped_only_when_identical(self):

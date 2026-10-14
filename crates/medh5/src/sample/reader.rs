@@ -1143,7 +1143,7 @@ mod tests {
     /// file `version`.
     fn with_a_later_axis_kind(path: &Path, version: &str) {
         crate::h5::init();
-        let file = hdf5::File::open_rw(path).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::open_rw(path)).unwrap();
         let root = file.as_group().unwrap();
         let kinds = ["depth", "spatial", "spatial"].map(String::from).to_vec();
         attrs::write(&root.group("grids/g_tp0").unwrap(), "axis_kinds", &AttrValue::Strs(kinds)).unwrap();

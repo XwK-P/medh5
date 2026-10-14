@@ -59,6 +59,12 @@ a damaged chunk — does not match. A failure of any step is **T302**; a source 
 or names a member that does not exist, **T301**. Re-pinning is explicit: a changed source is never
 silently accepted (`SourceRef.pin`), and a sample that fails step 2 cannot be pinned at all.
 
+**Opening a source.** An implementation **MUST NOT** open a source that is not a regular file: a
+pipe or a device is no sample, and opening one can block. A source that fails any of steps 1–4 is
+read no further: it adds no identity, clock, event, document or link to its subject (§3.3), and no
+finding but its own T301 or T302 speaks of its content — T302 names the pin, not what the file
+stores. `reconcile` refuses a source that fails them (Appendix A).
+
 ## 3. The task manifest
 
 ### 3.1 The document
@@ -192,8 +198,9 @@ then the smallest image id. With the merge rule of §3.3, a row's selection and 
 of its fingerprint. An eligible image of another visit is a different fill, not an error; no image
 is resampled onto another's grid, and no registration is invented.
 
-With `roi = eligible_instances` the centre comes from the **eligible** (1.1 §9.1 step 5)
-`instances` and `boxes` annotations on the image's grid that hold an object — an annotation drawn
+With `roi = eligible_instances` the centre comes from the **eligible** (1.1 §7.3, §9.1 step 5)
+`instances` and `boxes` annotations, a mask asserted by its own eligible procedure included, on the
+image's grid that hold an object — an annotation drawn
 after the cutoff never chooses a crop. The first of them, in byte order of annotation id, gives its
 first object by `instance_id` (a `boxes` annotation without `instance_ids` numbers its boxes from 0,
 in row order), and the centre is voxel `⌊(lo + hi)/2 + ½⌋` on each spatial axis of that object's box
@@ -469,7 +476,18 @@ this table to it.
 | Artifact | Where |
 |---|---|
 | `medh5-task-1.schema.json`, `medh5-cache-1.schema.json` | The engine (`crates/medh5/data/`) and the published conformance suite |
-| Fixtures | `companion/` in the published [conformance suite](conformance.md#the-task-and-cache-fixtures): one invalid manifest per T-code from T101 to T306, and a valid task whose every row's selection, slot and label is stated |
+| Fixtures | `companion/` in the published [conformance suite](conformance.md#the-task-and-cache-fixtures): one invalid manifest per T-code from T101 to T306, and two valid tasks whose every row's selection, slot and label is stated |
 | Engine | `medh5::companion` — `task`, `view` (preflight), `cache`, `source` |
 | Python | `medh5.task`, `medh5.cache`, `medh5.torch.clinical` ([Train on clinical tasks](../guides/clinical-training.md)) |
 | Command line | `medh5 task validate`, `medh5 task preflight`, `medh5 task reconcile`, `medh5 cache validate` ([Command line](../reference/cli.md)) |
+
+## Appendix A. Errata
+
+Corrections to `medh5.task/1` and `medh5.cache/1` that add no field and change no normal form,
+fingerprint or default. Each says what an implementation must refuse to open or must not report,
+never what a manifest must contain.
+
+| Clause | Change | Why |
+|---|---|---|
+| §2 | A source that is not a regular file is not opened; a source that fails any of steps 1–4 is read no further, and T302 names only the pin. `reconcile` refuses such a source. | Found after 2.0.2: once a source failed its pin, preflight kept reading the file — T303 printed its subject id, T305 its event ids, `--json` its whole event table — and T302 printed the `content_id` it stores, so a manifest naming a file its author does not hold reported that file's contents; `reconcile` checked no pin; and a named pipe given as a source blocked `task preflight`, `task reconcile` and `cache validate` inside `H5Fopen`. |
+| §3.5 | A mask its own eligible procedure asserts it describes is an eligible annotation (1.1 §7.3). | 1.1 §7.3 required the asserter to be admitted when it was also the link's endpoint, so under `order_by = effective` a procedure of unknown time never attested its mask, and `roi = eligible_instances` fell back to `center_fallback`. |

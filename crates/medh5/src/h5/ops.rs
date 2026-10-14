@@ -893,7 +893,7 @@ mod tests {
     /// bytes from outside itself.
     fn linked(path: &Path, other: &Path) {
         plain(path);
-        let file = hdf5::File::open_rw(path).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::open_rw(path)).unwrap();
         file.link_external(&other.to_string_lossy(), "/data", "x_link").unwrap();
     }
 
@@ -910,7 +910,7 @@ mod tests {
         let bad = dir.path().join("bad.medh5");
         plain(&target);
         linked(&bad, &target);
-        let handle = hdf5::File::open(&target).unwrap();
+        let handle = crate::h5::file::marked(|| hdf5::File::open(&target)).unwrap();
         std::fs::rename(&bad, &target).unwrap(); // the path now names another file
         check_self_contained(&handle, Some(&target)).unwrap(); // the file read is clean
         drop(handle);
@@ -954,7 +954,7 @@ mod tests {
         for (depth, opens) in [(MAX_DEPTH, true), (MAX_DEPTH + 1, false)] {
             let path = dir.path().join(format!("d{depth}.medh5"));
             nested(&path, depth);
-            let raw = hdf5::File::open(&path).unwrap();
+            let raw = crate::h5::file::marked(|| hdf5::File::open(&path)).unwrap();
             let walked = visit(&raw.as_group().unwrap(), &mut |_, _| Ok(true));
             assert_eq!(walked.is_ok(), opens, "{depth}: {walked:?}");
             drop(raw);
@@ -974,18 +974,18 @@ mod tests {
         let path = dir.path().join("cycle.medh5");
         plain(&path);
         {
-            let file = hdf5::File::open_rw(&path).unwrap();
+            let file = crate::h5::file::marked(|| hdf5::File::open_rw(&path)).unwrap();
             let inner = file.create_group("x_a").unwrap().create_group("b").unwrap();
             inner.link_hard("/", "up").unwrap();
             inner.link_external(&other.to_string_lossy(), "/data", "out").unwrap();
             file.link_hard("x_a", "x_again").unwrap();
         }
-        let found = outside_references(&hdf5::File::open(&path).unwrap()).unwrap();
+        let found = outside_references(&crate::h5::file::marked(|| hdf5::File::open(&path)).unwrap()).unwrap();
         assert_eq!(found, vec![("x_a/b/out".to_string(), "an external link".to_string())]);
         let clean = dir.path().join("clean.medh5");
         plain(&clean);
         {
-            let file = hdf5::File::open_rw(&clean).unwrap();
+            let file = crate::h5::file::marked(|| hdf5::File::open_rw(&clean)).unwrap();
             file.create_group("x_a").unwrap().link_hard("/", "up").unwrap();
         }
         crate::h5::file::open_read(&clean).unwrap();
@@ -996,7 +996,7 @@ mod tests {
     #[test]
     fn s2_2_a_chunk_offset_has_one_coordinate_per_axis() {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("c.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("c.h5"))).unwrap();
         let ds = file.new_dataset::<u8>().chunk((2, 2)).shape((4, 4)).create("c").unwrap();
         ds.write(&ndarray::Array2::<u8>::ones((4, 4))).unwrap();
         for wrong in [&[][..], &[0][..], &[0, 0, 0][..]] {

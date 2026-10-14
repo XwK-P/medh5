@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn s13_1_a_short_leading_axis_is_read_in_bounded_blocks() {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("s.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("s.h5"))).unwrap();
         let data = ndarray::Array4::<f32>::from_shape_fn((2, 3, 16, 20), |(c, z, y, x)| {
             (c * 1000 + z * 100 + y * 20 + x) as f32
         });
@@ -514,7 +514,7 @@ mod tests {
             }
         }
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("c.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("c.h5"))).unwrap();
         let data = ndarray::Array3::<f32>::from_shape_fn((10, 6, 8), |(z, y, x)| (z * 100 + y * 10 + x) as f32);
         let ds = file.new_dataset_builder().with_data(&data).chunk((4, 3, 8)).create("d").unwrap();
         let whole = array_digest("d", &NdArray::from(data.clone().into_dyn()), "sha256").unwrap();
@@ -551,7 +551,7 @@ mod tests {
     fn s13_1_a_string_hashes_its_stored_bytes() {
         use crate::h5sys::{h5d, h5p, h5s, h5t};
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("s.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("s.h5"))).unwrap();
         // Variable-length strings of any bytes, written through the C API:
         // the typed writers refuse invalid UTF-8.
         let vlen = |name: &str, values: &[&[u8]]| {
@@ -614,7 +614,7 @@ mod tests {
             value: f32,
         }
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("c.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("c.h5"))).unwrap();
         let rows = [Row { id: 1, value: 0.5 }, Row { id: 2, value: -1.0 }];
         assert_eq!(std::mem::size_of::<Row>(), 8);
         let table = file.new_dataset_builder().with_data(&rows).create("table").unwrap();
@@ -639,7 +639,7 @@ mod tests {
     #[test]
     fn s13_1_streaming_matches_the_whole_array() {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("s.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("s.h5"))).unwrap();
         let data = ndarray::Array2::<i16>::from_shape_fn((64, 64), |(i, j)| (i * 64 + j) as i16);
         let ds = file.new_dataset_builder().with_data(&data).create("d").unwrap();
         let whole = array_digest("d", &NdArray::from(data.into_dyn()), "sha256").unwrap();

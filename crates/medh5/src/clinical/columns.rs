@@ -890,7 +890,7 @@ mod tests {
 
     /// A one-column table of `cells`, its buffer chunked and compressed.
     fn table(dir: &std::path::Path, cells: &[Option<&str>]) -> (hdf5::File, hdf5::Group) {
-        let file = hdf5::File::create(dir.join("t.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.join("t.h5"))).unwrap();
         let group = file.create_group("documents").unwrap();
         let profile = resolve_profile(Some("training")).unwrap();
         let spec = DOCUMENT_COLUMNS[2]; // `text`, required
@@ -912,7 +912,7 @@ mod tests {
         // `document_id` is the outlier, and the first column read: every other
         // column was blamed and dropped, and the one wrong column kept.
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("t.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("t.h5"))).unwrap();
         let group = file.create_group("documents").unwrap();
         let profile = resolve_profile(Some("training")).unwrap();
         TableWriter::new(group.clone(), &profile, 1).utf8(&DOCUMENT_COLUMNS[0], &[Some("d1")]).unwrap();

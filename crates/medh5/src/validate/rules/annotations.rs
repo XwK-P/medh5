@@ -927,7 +927,7 @@ mod tests {
         // Two layers of 8 rows of 4x4 uint16: 64 bytes a row, so a 64-byte
         // budget reads one row per slab.
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("layers.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("layers.h5"))).unwrap();
         let mut data = Array4::<u16>::zeros((2, 8, 4, 4));
         data.slice_mut(s![0, 1..6, .., ..]).fill(1); // liver
         data.slice_mut(s![0, 7, .., ..]).fill(3); // spleen, in the liver's layer

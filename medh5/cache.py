@@ -503,8 +503,8 @@ def build_document_cache(
                     # since gave its new text the old version's entries.
                     if sample.content_id != source.content_id:
                         raise MEDH5ValidationError(
-                            f"{source.locator} is now {sample.content_id}; the task "
-                            f"pins {source.content_id} --- repin it explicitly if "
+                            f"{source.locator} is not the version the task pins "
+                            f"({source.content_id}) --- repin it explicitly if "
                             "the change is meant",
                             "T302",
                         )

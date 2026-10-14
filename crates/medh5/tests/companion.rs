@@ -617,3 +617,69 @@ fn s7_1_a_manifest_with_two_entries_for_one_lookup_is_corrupt() {
     }
     let _ = id;
 }
+
+/// The probe of task-cache-1 Appendix A: a subject whose first reference pins
+/// one version but names a file that is another, holding a secret identity,
+/// clock, lab value and document; and whose second, pinned correctly, holds
+/// the same event id at another value.
+fn hostile_task(dir: &Path) -> (TaskManifest, String) {
+    let secret = dir.join("secret.medh5");
+    fragment(&secret, "MRN-0042-SECRET", "clk-secret", 42.0);
+    let mut w = amend(&secret, None).unwrap();
+    w.add_event(Event {
+        event_id: "ev-doc-secret".into(),
+        record_id: "ev-doc-secret".into(),
+        kind: "document".into(),
+        temporal_type: "point".into(),
+        effective_start: Some(Bounds::exact(-HOUR)),
+        available: Some(Bounds::exact(-HOUR)),
+        status: "final".into(),
+        ..Default::default()
+    })
+    .unwrap();
+    w.add_document(medh5::clinical::model::Document::text("doc-secret", "the secret note")).unwrap();
+    w.add_link(Link::new(("event", "ev-doc-secret"), "describes", ("document", "doc-secret"))).unwrap();
+    w.commit(true).unwrap();
+    let good = dir.join("good.medh5");
+    fragment(&good, "S-01", "clk-01", 7.0);
+    let stored = open_sample(&secret).unwrap().content_id().unwrap().unwrap();
+    let mut hostile = pinned(&secret, "s-hostile", None);
+    hostile.content_id = pinned(&good, "x", None).content_id;
+    let mut task = TaskManifest::new("hostile", "1", "org.example.trial");
+    task.subjects.push(Subject {
+        subject_id: "S-01".into(),
+        clock_id: Some("clk-01".into()),
+        partition: None,
+        sources: vec![hostile, pinned(&good, "s-good", None)],
+        reconciled: Vec::new(),
+    });
+    task.rows.push(Row { row_id: "r0".into(), subject_id: "S-01".into(), cutoff_us: 0 });
+    (task, stored)
+}
+
+#[test]
+fn s2_a_source_off_its_pin_is_read_no_further() {
+    let dir = tempfile::tempdir().unwrap();
+    let (task, stored) = hostile_task(dir.path());
+    let pre = preflight(&task, None, false).unwrap();
+    let codes: Vec<(&str, &str)> = pre.findings.iter().map(|f| (f.code.as_str(), f.location.as_str())).collect();
+    assert_eq!(codes, [("T302", "s-hostile")], "no T303, T304 or T305 from a file off its pin");
+    let mut streamed = Vec::new();
+    write_preflight(&task, None, false, &mut streamed).unwrap();
+    let text = String::from_utf8(streamed).unwrap();
+    for secret in ["MRN-0042-SECRET", "clk-secret", "doc-secret", "42.0", stored.as_str()] {
+        assert!(!text.contains(secret), "{secret} reported from a source off its pin");
+    }
+    let history = pre.subject_of(pre.row("r0").unwrap()).unwrap();
+    let values: Vec<Option<f64>> = history.events.iter().map(|e| e.value_num).collect();
+    assert_eq!(values, [Some(7.0)], "the pinned source is read as before");
+}
+
+#[test]
+fn s2_reconcile_refuses_a_source_off_its_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let (task, stored) = hostile_task(dir.path());
+    let err = reconcile(&task.subjects[0], None).unwrap_err();
+    assert_eq!(err.code(), Some("T302"), "{err}");
+    assert!(!err.to_string().contains(&stored), "{err}");
+}

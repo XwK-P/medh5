@@ -482,7 +482,7 @@ mod tests {
                 a: i32,
                 b: f32,
             }
-            let file = hdf5::File::open_rw(&path).unwrap();
+            let file = crate::h5::file::marked(|| hdf5::File::open_rw(&path)).unwrap();
             let ds = file
                 .create_group("x_acme")
                 .unwrap()

@@ -6,6 +6,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.0.3] — 2026-10-14
+
+**A patch release, with no format change.** Four fixes found after 2.0.2, and
+nothing else: the documented API is unchanged, and no `content_id`, fingerprint
+or normal form changes. A task manifest no longer reports anything from a source
+that is not the version it pins, and a pipe given as a source no longer hangs
+the command reading it; on Windows a program started while a file is open no
+longer keeps it locked, which made every amendment fail while it ran; a
+procedure that asserts it drew a mask attests the mask under effective
+ordering too;
+and the DICOM extras declare the pydicom floor highdicom requires.
+
+### Security
+
+- **A task manifest reads and reports nothing its pins do not name, and a pipe
+  given as a source is refused.** Once a source failed its pin (`T302`),
+  `task preflight` kept reading the file: `T303` printed the subject id it
+  holds, `T304` and `T305` compared its clock and events with the other
+  sources', `--json` reported its whole event table, and `T302` itself printed
+  the `content_id` the file stores. A manifest naming a file its author does
+  not hold therefore reported that file's contents. A source off its pin now
+  adds nothing to its subject and `T302` names only the pin, in the engine and
+  in `build_document_cache`; `task reconcile` refuses such a source (`T302`)
+  rather than reconciling its events. A named pipe or a device given as a
+  source blocked `task preflight`, `task reconcile` and `cache validate` inside
+  HDF5's open; every open now refuses what is not a regular file.
+  task-cache-1 gains Appendix A (Errata), and `SECURITY.md` says what running a
+  manifest someone else wrote can open.
+
+### Fixed
+
+- **On Windows, a program started while a file is open no longer keeps it open
+  and locked.** HDF5's handle was inheritable, so a child process started while
+  a sample was open kept it open and locked after medh5 closed it, and every
+  rename over the file — the last step of every amendment, `scrub --apply`,
+  `recompress` and `fix` — failed "Access is denied" while the child ran. 2.0.2
+  fixed this on Linux and macOS; the handle is now kept out of children on
+  Windows too. On every platform a file is opened and marked in one hold of
+  HDF5's lock, and the programs medh5 starts itself (the Python commands of
+  the standalone `medh5`, the interpreter probe) start only outside it, so none
+  can catch a file between the two; on Linux, where a starting child shares
+  every open file for an instant after the parent resumes, medh5 also waits
+  for that instant to pass before another file is closed or opened.
+- **The DICOM extras require pydicom 3.0.1.** highdicom 0.23 requires it, so
+  the declared 3.0 floor was one no install of `medh5[dicomseg]` could resolve;
+  `medh5[dicom]` and `medh5[dicomseg]` now say `pydicom>=3.0.1`, and CI installs
+  exactly that floor.
+
+### Behaviour changes
+
+- **A procedure's assertion about its own mask attests the mask.** 2.0.2 made
+  an asserting version need only be eligible at the cutoff, but when the link's
+  event endpoint was the asserter itself — `seg0 describes lesions_tp0`, as both
+  shipped examples phrase it — the asserter still had to be admitted, so under
+  `order_by = effective` a segmentation procedure of unknown time never
+  attested its mask, and `roi = eligible_instances` fell back to
+  `center_fallback`. An endpoint that is the asserting version now needs only
+  its eligibility (1.1 §7.3, §9.1 step 5; task-cache-1 §3.5). The conformance
+  suite gains the task fixture `valid-self-asserted-mask`, whose row states the
+  annotations its slot may read. No fingerprint changes, so a cache built
+  before still validates: rebuild caches whose slots read self-asserted masks.
+
 ## [2.0.2] — 2026-10-13
 
 **A patch release, with no format change.** What the writer stores keeps the

@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn s14_plane_counts_read_within_the_slab_budget() {
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("planes.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("planes.h5"))).unwrap();
         let mut layers = ndarray::Array4::<u16>::zeros((2, 16, 32, 32));
         layers.slice_mut(ndarray::s![0, 2..10, 2..20, 2..20]).fill(1);
         layers.slice_mut(ndarray::s![1, .., .., 10..30]).fill(2);
@@ -382,7 +382,7 @@ mod tests {
         // One row per slab, the only ignore voxel and the only foreground in
         // the last one: a scan that stopped early would miss both.
         let dir = tempfile::tempdir().unwrap();
-        let file = hdf5::File::create(dir.path().join("scan.h5")).unwrap();
+        let file = crate::h5::file::marked(|| hdf5::File::create(dir.path().join("scan.h5"))).unwrap();
         let mut labels = ndarray::Array3::<u16>::zeros((8, 4, 4));
         labels[[7, 3, 3]] = 65535;
         labels[[7, 3, 2]] = 1;
