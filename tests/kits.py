@@ -16,7 +16,9 @@ defined once, here, under a name for what it builds:
 * :class:`History` --- two CT visits with a clinical history (format 1.1),
   8×12×12;
 * :class:`SplitCohort` --- a cohort manifest of one-file groups in strata of
-  60 %, 30 % and 10 % and three rare ones, with no files behind it.
+  60 %, 30 % and 10 % and three rare ones, with no files behind it;
+* :class:`EveryCheckCode` --- a cohort manifest raising every code ``dataset
+  check`` reports, with one file behind it.
 """
 
 from __future__ import annotations
@@ -454,5 +456,62 @@ class SplitCohort:
                     site_id=site,
                 )
                 for i, site in enumerate(sites)
+            ]
+        )
+
+
+class EveryCheckCode:
+    """A manifest that raises every code ``dataset check`` reports: two label
+    sets that disagree on class 1 and a sample with none (C101, C102, C103), a
+    stale claim, one subject in two partitions and a sample with no claim
+    (C201, C202, C203), class 1 examined in one sample of three and class 2 in
+    none (C301, C302), a changed file and a missing one (C401, C402), and one
+    sample without a de-identification record (C501).  Only the changed file
+    is written.
+    """
+
+    @staticmethod
+    def manifest(root: Path) -> Any:
+        from medh5.dataset import Entry, Manifest
+
+        changed = root / "changed.medh5"
+        changed.write_bytes(b"not the bytes scanned")
+
+        def claim(partition: str) -> dict[str, Any]:
+            return {"set_id": "s", "partition": partition, "manifest_sha256": "x"}
+
+        return Manifest(
+            entries=[
+                Entry(
+                    path=str(root / "gone.medh5"),
+                    sample_id="a",
+                    subject_id="p1",
+                    group_id="p1",
+                    class_ids=(1,),
+                    annotated_class_ids=(1,),
+                    class_keys={1: "liver"},
+                    label_set_id="one",
+                    label_set_digest="d1",
+                    splits=(claim("train"),),
+                    deidentified=True,
+                ),
+                Entry(
+                    path=str(changed),
+                    sample_id="b",
+                    subject_id="p1",
+                    group_id="p1",
+                    class_ids=(1, 2),
+                    class_keys={1: "kidney", 2: "spleen"},
+                    label_set_id="two",
+                    label_set_digest="d2",
+                    splits=(claim("test"),),
+                ),
+                Entry(
+                    path=str(root / "bare.medh5"),
+                    sample_id="c",
+                    subject_id="p2",
+                    group_id="p2",
+                    deidentified=True,
+                ),
             ]
         )

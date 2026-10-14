@@ -2463,6 +2463,7 @@ medh5.dataset.Assignment.partition	field
 medh5.dataset.Assignment.stratum	field
 medh5.dataset.Assignment.to_json	method	()
 medh5.dataset.CHECK_CODES	constant	dict
+medh5.dataset.CHECK_CODE_SEVERITY	constant	dict
 medh5.dataset.ClassStats	class	(class_id, voxels=0, present_in=0, examined_in=0, key=None) bases=
 medh5.dataset.ClassStats.class_id	field
 medh5.dataset.ClassStats.examined_in	field
@@ -2594,6 +2595,7 @@ medh5.dataset.Split.underfilled	property
 medh5.dataset.check	function	(manifest, *, set_id=None, deep=False)
 medh5.dataset.check	module
 medh5.dataset.check.CHECK_CODES	constant	dict
+medh5.dataset.check.CHECK_CODE_SEVERITY	constant	dict
 medh5.dataset.check.CohortReport	class	(manifest_sha256, samples, findings=<factory>, coverage=<factory>) bases=
 medh5.dataset.check.CohortReport.add	method	(code, severity, message, where=())
 medh5.dataset.check.CohortReport.coverage	field

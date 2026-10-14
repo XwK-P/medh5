@@ -786,5 +786,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         codes.set_item(code, summary)?;
     }
     m.add("CHECK_CODES", codes)?;
+    let severity = PyDict::new(py);
+    for (code, base) in check::CHECK_SEVERITY {
+        severity.set_item(code, base)?;
+    }
+    m.add("CHECK_CODE_SEVERITY", severity)?;
     Ok(())
 }

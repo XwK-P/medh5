@@ -20,14 +20,14 @@ import pytest
 import medh5
 from medh5 import _core
 from medh5.cli import main
-from medh5.dataset.check import check
+from medh5.dataset.check import CHECK_CODE_SEVERITY, CHECK_CODES, check
 from medh5.dataset.manifest import Entry, Manifest, entries_for, find, scan
 from medh5.dataset.split import Split, make_splits, write_claims
 from medh5.dataset.stats import DatasetStats, Moments, compute_stats, stats_for
 from medh5.errors import MEDH5Error, MEDH5ValidationError
 from medh5.labels import LabelClass, LabelSet
 from tests.helpers import SHAPE, block, write_sample
-from tests.kits import Flat, Hierarchy, Organs, SplitCohort
+from tests.kits import EveryCheckCode, Flat, Hierarchy, Organs, SplitCohort
 
 
 @pytest.fixture
@@ -1501,6 +1501,22 @@ class TestCohortCheck:
         report = check(manifest)
         assert report.ok
         assert not report.errors
+
+    def test_check_code_severity_matches_the_findings(self, tmp_path):
+        """Every finding carries its code's severity, but C401 under ``deep``,
+        which is an error; C204 is the splitter's refusal, never a finding."""
+        built = EveryCheckCode.manifest(tmp_path)
+        shallow = check(built)
+        assert {f.code for f in shallow.findings} == set(CHECK_CODES) - {"C204"}
+        for finding in shallow.findings:
+            assert finding.severity == CHECK_CODE_SEVERITY[finding.code], finding
+        deep = {f.code: f.severity for f in check(built, deep=True).findings}
+        assert deep.pop("C401") == "error"
+        assert deep == {
+            code: CHECK_CODE_SEVERITY[code]
+            for code in set(CHECK_CODES) - {"C204", "C401"}
+        }
+        assert set(CHECK_CODE_SEVERITY) == set(CHECK_CODES)
 
     def test_C102_a_class_id_meaning_two_things_is_an_error(self, cohort, tmp_path):
         other = LabelSet(
