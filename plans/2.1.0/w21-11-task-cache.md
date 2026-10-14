@@ -75,13 +75,19 @@
     and `medh5/cache.py`; `repin` arrives in PR 4, so until then end the sentence
     at the pin).
   - `open_read`, after the directory arm: `Ok(meta) if !meta.is_file() => return
-    Err(failed(&"it is not a regular file"))`.
+    Err(failed(&"it is not a regular file"))`. A known limit, not closed here:
+    the check and `H5Fopen` are two calls on one path, and HDF5 opens only by
+    path, so a process writing to the source's directory can swap a pipe in
+    between and the open blocks. Closing it means reading every source through
+    a descriptor opened non-blocking; the check stops a manifest that names a
+    pipe, which is the hazard found.
   - task-cache-1: create "Appendix A. Errata"; D19's §2 text, its last two
     sentences now (refusing non-regular files; a failing source read no further),
     the confinement sentences with PR 3.
   - `SECURITY.md`: a section "Running a task manifest you did not write": what a
-    manifest can make medh5 open, what pins guarantee, and (from PR 3) how to
-    confine.
+    manifest can make medh5 open, what pins guarantee, (from PR 3) how to
+    confine, and the known limit: a source directory someone else can write
+    to can still hang a read by swapping in a pipe after the check.
 - **Tests.** Rust `companion::view::tests::s2_a_source_off_its_pin_is_read_no_further`
   (only T302: no T303, no T305, no events);
   `s2_reconcile_refuses_a_source_off_its_pin`;
