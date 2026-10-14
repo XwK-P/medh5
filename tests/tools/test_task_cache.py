@@ -1409,6 +1409,41 @@ class TestInstanceCentres:
         fill = report.row("P-01@24h").slots["ct"]
         assert (fill.roi, fill.center) == ("eligible_instances", (2, 3, 4))
 
+    def test_S3_5_a_self_asserted_mask_centres_the_crop(self, tmp_path: Path):
+        """The procedure that drew the mask asserts it from itself, as both
+        shipped examples do.  Of unknown time, it is never selected under
+        effective ordering, and the asserter had to be selected when it was
+        also the endpoint: the crop fell back to the image's centre."""
+        root = tmp_path / "w"
+        root.mkdir()
+        path = root / "P-01.medh5"
+        History.write(
+            path,
+            events=[
+                Event(
+                    "seg0",
+                    "seg0",
+                    "procedure",
+                    "unknown",
+                    "completed",
+                    available_us=2 * HOUR,
+                )
+            ],
+            links=[
+                Link.between(
+                    ("event", "seg0"),
+                    "describes",
+                    ("annotation", "lesions_tp0"),
+                    asserted_by="seg0",
+                )
+            ],
+        )
+        report = instance_task(root, {"P-01": path}).preflight()
+        assert report.ok, report.findings
+        fill = report.row("P-01@24h").slots["ct"]
+        assert (fill.roi, fill.center) == ("eligible_instances", (3, 2, 7))
+        assert fill.annotations == ("lesions_tp0",)
+
     def test_S4_preflight_reads_no_mask(self, tmp_path: Path):
         """A crop is centred from the object table: a mask whose chunk no
         longer decompresses fails no preflight.  Every mask was decoded, and

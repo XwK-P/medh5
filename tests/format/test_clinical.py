@@ -1206,6 +1206,38 @@ class TestSelection:
         assert not documents.admits("annotation", "lesions_tp0")
         assert SelectionPolicy.from_json(SelectionPolicy(kinds=("imaging",)).to_json())
 
+    @pytest.mark.parametrize("order_by", ["effective", "available"])
+    def test_S7_3_an_asserter_is_its_own_endpoint(self, tmp_path: Path, order_by: str):
+        """The worked example asserts ``seg0 describes lesions_tp0`` from
+        ``seg0`` itself.  Under effective ordering a procedure of unknown time
+        is never admitted, and the asserter had to be admitted when it was also
+        the endpoint: the mask was not attested, while the same evidence
+        phrased from ``ct0`` attested it."""
+        seg0 = Event(
+            "seg0", "seg0", "procedure", "unknown", "completed", available_us=2 * HOUR
+        )
+        chosen = {}
+        for source in ("seg0", "ct0"):
+            path = tmp_path / f"{source}.medh5"
+            History.write(
+                path,
+                events=[seg0],
+                links=[
+                    Link.between(
+                        ("event", source),
+                        "describes",
+                        ("annotation", "lesions_tp0"),
+                        asserted_by="seg0",
+                    )
+                ],
+            )
+            with medh5.open(path) as s:
+                assert s.clinical is not None
+                chosen[source] = s.clinical.select(24 * HOUR, {"order_by": order_by})
+        for selection in chosen.values():
+            assert selection.admits("annotation", "lesions_tp0")
+        assert chosen["seg0"].event_ids == chosen["ct0"].event_ids
+
     def test_S9_1_a_window_bounds_plans_from_below(self):
         """A seven-day window at day +1 excluded a
         completed event of day -100 and admitted the same event planned.  The

@@ -995,6 +995,69 @@ mod tests {
         assert!(!at(&[ct0, g], &procedures).admits(0, "annotation", "seg"));
     }
 
+    /// The worked example's phrasing: the procedure asserts the link from
+    /// itself.  Under effective ordering a procedure of unknown time is never
+    /// admitted, and requiring the asserter admitted when it was also the
+    /// endpoint left its mask unattested; phrased from `ct0`, the same
+    /// evidence attested it.
+    #[test]
+    fn s7_3_an_asserter_is_its_own_endpoint() {
+        let mut ct0 = version("ct0", "ct0", 0, Some((HOUR, HOUR)));
+        ct0.kind = "imaging".into();
+        let mut seg0 = version("seg0", "seg0", 0, Some((2 * HOUR, 2 * HOUR)));
+        seg0.kind = "procedure".into();
+        seg0.temporal_type = "unknown".into();
+        seg0.effective_start = None;
+        let image = Link::new(("event", "ct0"), "describes", ("image", "CT_tp0"));
+        let mut own = Link::new(("event", "seg0"), "describes", ("annotation", "lesions_tp0"));
+        own.asserted_by_event_id = Some("seg0".into());
+        let mut from_ct = Link::new(("event", "ct0"), "describes", ("annotation", "lesions_tp0"));
+        from_ct.asserted_by_event_id = Some("seg0".into());
+        let events = [ct0, seg0];
+        for order_by in ["effective", "available"] {
+            let policy = SelectionPolicy { order_by: order_by.into(), ..SelectionPolicy::strict() };
+            for link in [&own, &from_ct] {
+                let s = select(&events, &[(0, &image), (0, link)], 24 * HOUR, &policy).unwrap();
+                assert!(s.admits(0, "annotation", "lesions_tp0"), "{order_by} {link:?}");
+                let early = select(&events, &[(0, &image), (0, link)], HOUR, &policy).unwrap();
+                assert!(!early.admits(0, "annotation", "lesions_tp0"), "not known at 1 h");
+            }
+        }
+        // The procedure attests its mask; it is still not an input itself.
+        let s = select(&events, &[(0, &image), (0, &own)], 24 * HOUR, &SelectionPolicy::strict()).unwrap();
+        assert_eq!(ids(&s, &events), ["ct0"]);
+        // Only the asserter is excused: another event endpoint is still
+        // admitted, or the link attests nothing.
+        let mut other = Link::new(("event", "seg0"), "describes", ("annotation", "lesions_tp0"));
+        other.asserted_by_event_id = Some("ct0".into());
+        let s = select(&events, &[(0, &image), (0, &other)], 24 * HOUR, &SelectionPolicy::strict()).unwrap();
+        assert!(!s.admits(0, "annotation", "lesions_tp0"));
+    }
+
+    /// A document is a payload: a link the asserter draws to one attests it
+    /// only through the document's admitted event.
+    #[test]
+    fn s9_1_a_document_endpoint_needs_its_event_admitted() {
+        let mut rep = version("rep", "rep", 0, Some((HOUR, HOUR)));
+        rep.kind = "document".into();
+        let mut ground = version("ground", "ground", 0, Some((2 * HOUR, 2 * HOUR)));
+        ground.kind = "procedure".into();
+        ground.temporal_type = "unknown".into();
+        ground.effective_start = None;
+        let text = Link::new(("event", "rep"), "describes", ("document", "rep_text"));
+        let mut grounding = Link::new(("document", "rep_text"), "describes", ("annotation", "lesions_tp0"));
+        grounding.asserted_by_event_id = Some("ground".into());
+        let events = [rep, ground];
+        let links = [(0, &text), (0, &grounding)];
+        let s = select(&events, &links, 24 * HOUR, &SelectionPolicy::strict()).unwrap();
+        assert!(s.admits(0, "document", "rep_text"));
+        assert!(s.admits(0, "annotation", "lesions_tp0"));
+        let imaging = SelectionPolicy { kinds: Some(vec!["imaging".into()]), ..SelectionPolicy::strict() };
+        let s = select(&events, &links, 24 * HOUR, &imaging).unwrap();
+        assert!(!s.admits(0, "document", "rep_text"));
+        assert!(!s.admits(0, "annotation", "lesions_tp0"), "its document is not read, so neither is the grounding");
+    }
+
     #[test]
     fn s9_1_one_preparation_answers_every_cutoff_as_select_does() {
         let mut events = Vec::new();
