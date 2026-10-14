@@ -1608,6 +1608,12 @@ def rules_for(level: str) -> list[str]:
     """Every rule run at `level`, in order."""
     ...
 
+def same_file(a: str | os.PathLike[str], b: str | os.PathLike[str]) -> bool:
+    """Whether two paths name one existing file, through `..`, a symbolic or a
+    hard link.
+    """
+    ...
+
 def sample_field(
     field: npt.NDArray[Any],
     coords: npt.NDArray[np.float64],
@@ -1742,6 +1748,12 @@ def spatial_chunk_for(
 def splits_from_json(
     docs: Sequence[Mapping[str, Any]] | None,
 ) -> tuple[SplitClaim, ...]: ...
+def stage_file(path: str | os.PathLike[str]) -> StagedFileHandle:
+    """Stage a replacement of `path`: a new, empty temporary beside the file it
+    names, keeping its suffix.
+    """
+    ...
+
 def stale_index_entries(root: Group) -> tuple[str, ...]: ...
 def storage_dtype(planes: Any, threshold: float, requested: Any = None) -> Any: ...
 def subtrees_identical(a: Group, b: Group) -> tuple[str, ...]: ...
@@ -1869,6 +1881,12 @@ def voxel_volume(spacing: Sequence[float]) -> float: ...
 def world_to_index(
     affine: npt.ArrayLike, points: npt.ArrayLike
 ) -> npt.NDArray[np.float64]: ...
+def write_atomic(path: str | os.PathLike[str], data: str | bytes) -> None:
+    """`data` as `path`'s whole content: a `str` as UTF-8, its `\\n` kept on
+    every platform, `bytes` as given.
+    """
+    ...
+
 def written_version(source: str | None, profiles: Sequence[str] = ...) -> str:
     """The `medh5_version` a commit writes: the lowest version `profiles` need
     (`1.0`, or `1.1` with `clinical`), and never below `source`, the version
@@ -3537,6 +3555,36 @@ class Skeleton:
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Skeleton: ...
     def to_json(self) -> dict[str, Any]: ...
+
+@final
+class StagedFileHandle:
+    """A replacement of a file being written by someone else: write `path`,
+    then `commit()`.  As a context manager it commits when the block ends
+    without an exception, and aborts otherwise.
+    """
+    @property
+    def path(self) -> Path:
+        """The temporary, which the foreign writer writes."""
+        ...
+    @property
+    def target(self) -> Path:
+        """The file the commit replaces: the target, its links followed."""
+        ...
+    def abort(self) -> None:
+        """Remove the temporary, leaving the target as it was.  Aborting a
+        committed or aborted file does nothing.
+        """
+        ...
+    def commit(self) -> None:
+        """Rename the written temporary over the target."""
+        ...
+    def __enter__(self) -> Self: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool: ...
 
 @final
 @dataclass(frozen=True)
