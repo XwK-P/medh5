@@ -6,6 +6,7 @@
     python .github/scripts/release.py github-release TAG DIST...
         [--prerelease | --not-latest]
     python .github/scripts/release.py verify TAG DIST CLI [--tap OWNER/REPO]
+    python .github/scripts/release.py api-baseline [--registry crates|pypi]
 
 A release publishes to four places in turn --- PyPI, crates.io, the GitHub
 Release, the Homebrew tap --- and none of them takes a version back.  When one
@@ -15,6 +16,10 @@ version that was published from something else.  So each step skips only what
 is already published *and identical* to what this run built, publishes what is
 missing, and fails on anything that differs; `verify` checks every place at the
 end.  CONTRIBUTING.md ("If a release fails partway") is the runbook.
+
+`api-baseline` is CI's, not the release's: the published release the API gates
+(`semver`, `python-api`) compare this tree with, and what kind of release it
+would be.
 """
 
 from __future__ import annotations
@@ -171,6 +176,56 @@ def dist_version(names: list[str]) -> str:
     return versions.pop()
 
 
+# The release kinds `cargo semver-checks --release-type` takes.
+RELEASE_TYPES = ("major", "minor", "patch")
+
+_SEMVER = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?")
+
+
+def api_baseline(
+    current: str, published: list[str], *, branch: str, override: str = ""
+) -> tuple[str, str]:
+    """(baseline, release type): the newest final release at or below
+    `current`, and whether `current` would be a major, minor or patch release
+    after it.  A pre-release `current` (2.1.0-rc.1) is below its final.  When
+    the two are equal, the tree is the next release's work: a patch on a
+    `release/**` line (`branch`, a name or a `refs/heads/` ref), a minor
+    elsewhere.  `override` (the repository variable
+    `API_RELEASE_TYPE`) names the type outright, for 3.0's work (D35)."""
+    ours = _SEMVER.fullmatch(current)
+    if ours is None:
+        raise SystemExit(f"version {current!r} is not X.Y.Z")
+    mine = tuple(map(int, ours.groups()[:3]))
+    finals = []
+    for version in published:
+        found = _SEMVER.fullmatch(version)
+        if found is None or found[4] is not None:
+            continue  # a pre-release is never a baseline
+        triple = tuple(map(int, found.groups()[:3]))
+        if triple < mine or (triple == mine and ours[4] is None):
+            finals.append(triple)
+    if not finals:
+        raise SystemExit(f"no final release at or below {current}")
+    base = max(finals)
+    if override:
+        if override not in RELEASE_TYPES:
+            raise SystemExit(
+                f"API_RELEASE_TYPE {override!r} is not one of "
+                f"{', '.join(RELEASE_TYPES)}"
+            )
+        kind = override
+    elif base[0] != mine[0]:
+        kind = "major"
+    elif base[1] != mine[1]:
+        kind = "minor"
+    elif base[2] != mine[2]:
+        kind = "patch"
+    else:
+        line = branch.removeprefix("refs/heads/")
+        kind = "patch" if line.startswith("release/") else "minor"
+    return ".".join(map(str, base)), kind
+
+
 # --- the network --------------------------------------------------------------
 
 
@@ -267,6 +322,25 @@ def published_crate(name: str, version: str) -> bytes:
             f"crates.io lists {name} {version} but serves no .crate for it"
         )
     return body
+
+
+def published_versions(registry: str) -> list[str]:
+    """Every version of medh5 the registry serves, yanked ones left out."""
+    if registry == "crates":
+        body = fetch("https://crates.io/api/v1/crates/medh5")
+        if body is None:
+            return []
+        versions = json.loads(body)["versions"]
+        return [v["num"] for v in versions if not v["yanked"]]
+    body = fetch("https://pypi.org/pypi/medh5/json")
+    if body is None:
+        return []
+    releases = json.loads(body)["releases"]
+    return [
+        version
+        for version, files in releases.items()
+        if files and not all(f.get("yanked") for f in files)
+    ]
 
 
 def origin_tags() -> list[str]:
@@ -493,7 +567,20 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("dist", type=Path)
     check.add_argument("cli", type=Path)
     check.add_argument("--tap")
+    # `version=` and `release_type=`, for $GITHUB_OUTPUT.
+    baseline = sub.add_parser("api-baseline")
+    baseline.add_argument("--registry", choices=("crates", "pypi"), default="crates")
     args = parser.parse_args(argv)
+    if args.step == "api-baseline":
+        version, kind = api_baseline(
+            workspace_version(),
+            published_versions(args.registry),
+            branch=os.environ.get("BASE_REF", ""),
+            override=os.environ.get("API_RELEASE_TYPE", ""),
+        )
+        print(f"version={version}")
+        print(f"release_type={kind}")
+        return 0
     if args.step == "newest":
         print(f"latest={str(newest(args.tag, origin_tags())).lower()}")
         return 0
