@@ -41,7 +41,15 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.errors import MEDH5ValidationError
+from medh5.geometry import MM_PER_UNIT
 from medh5.io._common import sanitize_key
+from medh5.io._patient import (
+    _one_frame,
+    _require_same_frame,
+    _salt_hint,
+    frames_agree,
+    patient_mapping,
+)
 from medh5.io.report import ConversionReport
 
 MIN_POLYGON_VERTICES = 3
@@ -191,7 +199,6 @@ def from_rtstruct(
     """
     import medh5
     from medh5.annotations.geometric import Polygon
-    from medh5.io.dicom_seg import _require_same_frame, frames_agree
     from medh5.labels import LabelClass, LabelSet
 
     log = report or ConversionReport(converter="from-rtstruct")
@@ -205,7 +212,7 @@ def from_rtstruct(
         target = opened.grids[grid_id]
         existing = opened.label_set
     _require_same_frame(frame, target, frame_salt, source="the RTSTRUCT")
-    signs, scale = _to_patient(target)
+    signs, scale = patient_mapping(target, "RTSTRUCT contours")
     if frames_agree(frame, target.frame_uid, frame_salt) is None:
         log.guess(
             "frame",
@@ -590,7 +597,6 @@ def _slice(index: npt.NDArray[np.float64], grid: Any, name: str | None) -> int:
     stored there and rasterised to nothing.
     """
     from medh5.io.dicom import _position_tolerance
-    from medh5.io.nifti import MM_PER_UNIT
 
     shape = grid.spatial_shape
     step = float(grid.spacing[grid.spatial_axes[0]]) * MM_PER_UNIT.get(grid.units, 1.0)
@@ -807,7 +813,6 @@ def _match_grid(
     refused afterwards, as a grid named explicitly is.  Used with a recorded
     guess, a grid in another frame received every contour.
     """
-    from medh5.io.dicom_seg import frames_agree
 
     matches = (
         [g for g in sample.grids.values() if frames_agree(frame, g.frame_uid, salt)]
@@ -874,7 +879,6 @@ def to_rtstruct(
     """
     import medh5
     from medh5.io.dicom import _dcmread, require_pydicom
-    from medh5.io.dicom_seg import _salt_hint, frames_agree
 
     pydicom = require_pydicom()
     from pydicom.dataset import Dataset, FileMetaDataset
@@ -909,7 +913,7 @@ def to_rtstruct(
                 "RTSTRUCT contours are points of the 3-D patient space",
                 code="E414",
             )
-        signs, scale = _to_patient(grid)
+        signs, scale = patient_mapping(grid, "RTSTRUCT contours")
         # World coordinates live in the annotation's own frame, index
         # coordinates in the grid's (§6.2, §8).
         stated = (
@@ -1113,44 +1117,6 @@ def _crossings(
         if any(_crosses(a, b) for a, b in combinations(drawn, 2)):
             found.setdefault(class_id, []).append(plane)
     return found
-
-
-def _one_frame(datasets: Sequence[Any]) -> str:
-    """The frame of reference every source image shares: an RTSTRUCT's
-    contours are in one, and only the first image's was read."""
-    frames = {str(getattr(d, "FrameOfReferenceUID", "") or "") for d in datasets}
-    if "" in frames or len(frames) != 1:
-        stated = sorted(f or "none" for f in frames)
-        raise MEDH5ValidationError(
-            f"the source images state the frames of reference {stated}; an "
-            "RTSTRUCT's contours are in one, which every source image must state",
-            code="E414",
-        )
-    return frames.pop()
-
-
-def _to_patient(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
-    """The world-axis signs and the millimetres per grid unit that take
-    *grid*'s world coordinates to DICOM patient coordinates (LPS, mm):
-    ``patient = signs * scale * world``, and the import divides them out ---
-    the inverse of the SEG importer's mapping."""
-    from medh5.io.nifti import MM_PER_UNIT
-
-    if grid.coord_system not in ("LPS", "RAS"):
-        raise MEDH5ValidationError(
-            f"grid {grid.grid_id!r} is in {grid.coord_system!r}; RTSTRUCT contours "
-            "are patient coordinates (LPS), which only an LPS or RAS grid relates to",
-            code="E414",
-        )
-    scale = MM_PER_UNIT.get(grid.units)
-    if scale is None:
-        raise MEDH5ValidationError(
-            f"grid {grid.grid_id!r} is in {grid.units!r}, which relates to no "
-            "patient coordinate in millimetres",
-            code="E414",
-        )
-    flip = 1.0 if grid.coord_system == "LPS" else -1.0
-    return np.array([flip, flip, 1.0]), scale
 
 
 __all__ = [

@@ -133,6 +133,7 @@ __all__ = [
     "MAX_CLASS_ID",
     "META_DATASET",
     "MIN_CHUNK_BYTES",
+    "MM_PER_UNIT",
     "ORTHONORMAL_TOL",
     "OVERSHOOT_LIMIT",
     "Observation",
@@ -615,6 +616,7 @@ IO_FALLBACK_PREFIX: str
 IO_SEVERITIES: tuple[str, ...]
 ISSUE_SEVERITY: tuple[str, ...]
 KNOWN_UNITS: tuple[str, ...]
+MM_PER_UNIT: dict[str, float]
 LABEL_SAFE_METHODS: tuple[str, ...]
 LAST_ROW_TOL: float
 LATERALITY_VALUES: tuple[str, ...]

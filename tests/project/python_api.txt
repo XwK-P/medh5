@@ -2860,6 +2860,7 @@ medh5.geometry.KNOWN_UNITS	constant	tuple
 medh5.geometry.LABEL_SAFE_METHODS	constant	tuple
 medh5.geometry.MAX_SPATIAL	constant	int
 medh5.geometry.MIN_SPATIAL	constant	int
+medh5.geometry.MM_PER_UNIT	constant	dict
 medh5.geometry.ORTHONORMAL_TOL	constant	float
 medh5.geometry.Pyramid	class	(levels, downsample_factors, downsample_method, grid_levels) bases=
 medh5.geometry.Pyramid.attrs	method	()

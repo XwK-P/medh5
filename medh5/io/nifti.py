@@ -34,7 +34,12 @@ import numpy.typing as npt
 from medh5._files import temporary_beside, write_text
 from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry import ORTHONORMAL_TOL, build_affine, decompose_affine
+from medh5.geometry import (
+    MM_PER_UNIT,
+    ORTHONORMAL_TOL,
+    build_affine,
+    decompose_affine,
+)
 from medh5.io._common import sanitize_ascii_stem, sanitize_key
 from medh5.io.report import ConversionReport
 
@@ -397,7 +402,7 @@ def _sidecar_for(target: Path) -> Path:
 
 def _sidecar_path(target: Path, suffix: str) -> Path:
     """The file beside a NIfTI sharing its stem and ending in *suffix*."""
-    for extension in (".nii.gz", ".nii"):
+    for extension in NIFTI_SUFFIXES:
         if target.name.endswith(extension):
             return target.with_name(target.name[: -len(extension)] + suffix)
     return target.with_suffix(suffix)
@@ -684,14 +689,13 @@ FOURTH_AXES = ("auto", "time", "channel")
 
 
 def _sidecar(path: str | os.PathLike[str], suffix: str) -> Path | None:
-    """The file beside a NIfTI sharing its stem and ending in *suffix*."""
+    """The existing file beside a NIfTI sharing its stem and ending in
+    *suffix*; ``None`` when there is none, or *path* is no NIfTI name."""
     name = Path(os.fspath(path))
-    stem = name.name
-    for extension in (".nii.gz", ".nii"):
-        if stem.endswith(extension):
-            candidate = name.with_name(stem[: -len(extension)] + suffix)
-            return candidate if candidate.exists() else None
-    return None
+    if not name.name.endswith(NIFTI_SUFFIXES):
+        return None
+    candidate = _sidecar_path(name, suffix)
+    return candidate if candidate.exists() else None
 
 
 def _bval_sidecar(path: str | os.PathLike[str]) -> Path | None:
@@ -1329,8 +1333,8 @@ def from_nifti(
     return log
 
 
-# Millimetres in one §3.5 length unit; `px` has no physical size.
-MM_PER_UNIT = {"mm": 1.0, "m": 1000.0, "um": 1e-3}
+# `MM_PER_UNIT`, the millimetres in one §3.2 length unit, is the engine's
+# (`medh5.geometry`), imported above and still importable from here.
 # Seconds in one §3.2 time unit.
 SECONDS_PER_UNIT = {"s": 1.0, "ms": 1e-3}
 
