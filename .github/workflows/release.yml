@@ -277,11 +277,13 @@ jobs:
 
   crates:
     name: Publish to crates.io
-    # medh5-sys, then medh5, then medh5-cli, one at a time, each in the index
-    # before the next, which resolves against it.  Each is verified --- built
-    # from its package, running every dependency's build script --- without
-    # the token in the environment, then uploaded with it.  medh5-python is
-    # `publish = false`.
+    # In three stages.  Every crate is verified first --- built from its
+    # package, as CI's `rust` job builds them --- with no token anywhere, and
+    # any version crates.io already has is held to this commit's: a failure
+    # publishes nothing.  Then trusted publishing exchanges this job's OIDC
+    # identity for a short-lived token; then medh5-sys, medh5 and medh5-cli
+    # are published, each not already there, each in the index before the
+    # next, which resolves against it.  medh5-python is `publish = false`.
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -290,24 +292,32 @@ jobs:
       url: https://crates.io/crates/medh5
     permissions:
       contents: read
+      id-token: write   # OIDC exchange for trusted publishing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The Rust CI built and tested this commit with (rust-toolchain.toml).
       - run: rustup toolchain install --no-self-update
+      - name: Verify every crate, and what crates.io already has
+        run: python3 .github/scripts/release.py crates verify
+      # Only this repository's crates have trusted publishers; a fork's
+      # exchange would fail, so a fork's release stops after verifying.
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth
+        if: github.repository == 'medh5-project/medh5'
       - name: cargo publish, each crate not already there
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           CANONICAL: ${{ github.repository == 'medh5-project/medh5' }}
         run: |
           if [[ -z "$CARGO_REGISTRY_TOKEN" ]]; then
             if [[ "$CANONICAL" == true ]]; then
-              echo "::error::CARGO_REGISTRY_TOKEN is not set, so the crates cannot be published"
+              echo "::error::crates.io issued no token, so the crates cannot be published: each needs a trusted publisher for this workflow (CONTRIBUTING.md)"
               exit 1
             fi
-            echo "::warning::CARGO_REGISTRY_TOKEN is not set, so the crates were not published"
+            echo "::warning::a fork has no trusted publisher, so the crates were not published"
             exit 0
           fi
-          python3 .github/scripts/release.py crates
+          python3 .github/scripts/release.py crates publish
 
   github-release:
     name: Create the GitHub Release

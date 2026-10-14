@@ -1364,13 +1364,13 @@ class TestDistribution:
             "crates.io: medh5-cli 2.0.0 is not published",
         ]
 
-    def test_a_crate_is_verified_without_the_token_and_indexed_before_the_next(
-        self, monkeypatch
-    ):
-        """`cargo publish` verified each crate with the token in the
-        environment of every dependency's build script, and waited for the
-        index only so long before warning and succeeding --- after which the
-        next crate, which resolves the one before through the index, failed."""
+    def test_every_crate_is_verified_before_any_is_published(self, monkeypatch):
+        """`cargo publish` verified each crate with a long-lived token in the
+        environment of every dependency's build script, one crate at a time,
+        so a failure verifying `medh5-cli` left `medh5-sys` and `medh5`
+        published.  Every crate is verified first, with no token, as CI's
+        `rust` job packages them; trusted publishing then issues a token for
+        the upload alone, and each crate is in the index before the next."""
         release = _release_script("release.py")
         steps: list[tuple[str, ...]] = []
 
@@ -1387,16 +1387,36 @@ class TestDistribution:
             "wait_for_index",
             lambda name, version: steps.append(("index", name)),
         )
-        assert release.publish_crates() == 0
+        assert release.main(["crates", "verify"]) == 0
+        packages = ("-p", "medh5-sys", "-p", "medh5", "-p", "medh5-cli")
+        assert steps == [("cargo", "package", "--locked", *packages, "no token")]
+        steps.clear()
+        assert release.main(["crates", "publish"]) == 0
         assert steps == [
             step
             for name in ("medh5-sys", "medh5", "medh5-cli")
             for step in (
-                ("cargo", "package", "-p", name, "--locked", "no token"),
-                ("cargo", "publish", "-p", name, "--locked", "--no-verify", "token"),
+                ("cargo", "publish", "--locked", "--no-verify", "-p", name, "token"),
                 ("index", name),
             )
         ]
+        # The verification is CI's own, so the release's is never the first.
+        rust = _jobs(CI.read_text(encoding="utf-8"))["rust"]
+        assert f"cargo package --locked {' '.join(packages)}" in rust
+        jobs = _jobs(RELEASE.read_text(encoding="utf-8"))
+        crates = jobs["crates"]
+        order = [
+            crates.index("release.py crates verify"),
+            crates.index("uses: rust-lang/crates-io-auth-action@"),
+            crates.index("release.py crates publish"),
+        ]
+        assert order == sorted(order)
+        assert "CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}" in crates
+        assert "secrets.CARGO_REGISTRY_TOKEN" not in RELEASE.read_text(encoding="utf-8")
+        assert "id-token: write" in crates
+        # The token reaches the publishing step alone.
+        verify_step = crates.split("release.py crates verify", 1)[0].rsplit("- ", 1)[1]
+        assert "CARGO_REGISTRY_TOKEN" not in verify_step
         # Where cargo looks a crate up, and what it finds there.
         names = ("medh5-sys", "Serde", "abc", "ab", "a")
         assert [release.index_path(n) for n in names] == [
