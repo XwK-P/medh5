@@ -2960,7 +2960,7 @@ class TestWorkers:
         assert lines[0].startswith(f"{paths[0]}: OK")
         assert lines[1].startswith(f"{paths[2]}: OK")
         assert f"{paths[1]}: the worker running it stopped" in printed.err
-        assert printed.err.count("medh5:") == 1
+        assert len(printed.err.splitlines()) == 1
 
     def test_an_error_stops_where_sequential_stops(
         self, capsys, tmp_path, batch, monkeypatch
