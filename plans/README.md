@@ -1,0 +1,322 @@
+# Release plans
+
+These plans are written so that a Claude Code session, or a person, can take
+one workstream and implement it without the conversation that produced it.
+They are not documentation: nothing here is published, tested or normative.
+The specification stays in `docs/spec/`; a plan quotes the text a workstream
+is to put there.
+
+| Release | Kind | Plan | Status |
+|---|---|---|---|
+| 2.1.0 | minor: features, errata, deprecations | [2.1.0/README.md](2.1.0/README.md) | planned |
+| 2.2.0 | minor: format 1.2, native converters, platforms | [2.2.0/README.md](2.2.0/README.md) | planned |
+| 2.0.x | patch line, cut on demand | this file, [the 2.0.x line](#the-20x-line) | 2.0.2 released |
+
+## How to use a plan
+
+1. Read this file in full: its rules hold for every workstream of every release.
+2. Read the release's `README.md` (scope, schedule, dependencies) and its
+   `decisions.md` (the specification and API decisions, with the text to write).
+3. Read your workstream's file. It names its branch, what must land before it,
+   the files it owns, its pull requests in order, and for each item the state
+   at 2.0.2, the change, the API, the tests, the documentation, the changelog
+   fragment and the acceptance criteria. Its first section is a prompt to start
+   a session with.
+4. Before you change anything, check each "State at 2.0.2" claim against
+   current `main`. The claims were verified at 2.0.2, with 2.0.2's line numbers;
+   code moves. Every citation also names its function, so it can be followed.
+   If a claim no longer holds, adapt, and say so in the pull request.
+5. A decision a plan does not settle is not yours to invent: specification
+   text, a new diagnostic code, a format change or an API break. Stop and ask
+   the coordinator (the maintainer, or the session they appoint to merge).
+   Everything else, use your judgement and say what you chose.
+
+## Ground rules
+
+### Branches and pull requests
+
+- `main` is the line of the next minor release. A patch line (`release/2.0`)
+  exists only once a patch is needed (see [the 2.0.x line](#the-20x-line)).
+- A workstream works on `w21/<name>` (2.1.0) or `w22/<name>` (2.2.0), cut from
+  the latest `main`, or on the branch its session was assigned; the pull
+  request's title starts with the workstream id (`W21-02: …`).
+- A workstream lands as the pull requests its file lists, in that order, each
+  green on its own. A pull request is small enough to review: one item or a few
+  related ones.
+- Pull requests are squash-merged by the coordinator, one at a time, each
+  rebased on the latest `main` and green after the rebase, so the merged tree is
+  the tested tree. A workstream never merges its own pull request, and never
+  merges another workstream's branch into its own.
+- Rebase on `main` before asking for a merge. Regenerate generated files after
+  a rebase instead of merging them by hand (see
+  [Generated files](#generated-files-and-stated-counts)).
+
+### The local gate
+
+Run the chain in `CLAUDE.md` ("Pre-commit checks") before every push. CI takes
+about 20 minutes to reach its first test, and a red push costs a cycle. While
+iterating, run the affected tests; before pushing, run the whole chain.
+
+The chain grows during 2.1.0: W21-00 adds `python .github/scripts/changelog.py
+check`, and W21-16 adds `python .github/scripts/api_index.py --check`. The
+chain in `CLAUDE.md` and in `CONTRIBUTING.md` must stay equal (a test compares
+them): a pull request that adds a step adds it to both.
+
+What the local gate does not reach, check another way:
+
+- **Old dependency floors.** CI's `test-min-deps` job installs the floors
+  (NumPy 1.24, torch 2.0, pydicom and highdicom floors, MONAI 1.3). 2.0.2's
+  release pull request failed there twice (`operator.index` taking a NumPy
+  `bool_` before NumPy 2.3; highdicom 0.23 writing no slice spacing). If you
+  touch code that handles NumPy scalars, dtypes or a converter's DICOM, install
+  the floors from `ci.yml`'s `test-min-deps` step into a second virtual
+  environment and run the affected tests there.
+- **Without an optional dependency.** A test that needs one must
+  `pytest.importorskip` it. To check that, run the affected tests with the
+  dependency blocked (a `sys.meta_path` finder that refuses `highdicom`,
+  `torch` or `monai` is enough).
+- **Windows-only code.** Type-check a `#[cfg(windows)]` function by copying it
+  into a scratch crate and running `cargo check --target
+  x86_64-pc-windows-msvc` (`rustup target add x86_64-pc-windows-msvc`); the
+  medh5 crates cannot cross-build without MSVC. The `rust-platforms` and
+  `test-windows` jobs are the real check.
+- **Paths on Windows.** A message that embeds a path embeds its `repr` on
+  Windows (`'C:\\x'`); compare with `repr(str(path))`, not an f-string.
+
+### Rust API
+
+The crates follow Cargo's semver rules against the newest *published* release.
+From W21-00 PR 8, `cargo semver-checks` gates every pull request; until then
+the rules hold anyway, by review. 2.0.2 shows why: three structs gained fields
+in a patch release.
+
+- Never add a field to an existing `pub` struct, a variant to an existing `pub`
+  enum, or change a `pub fn`'s signature, bounds or return type; never put
+  `#[non_exhaustive]` on an existing type (that too is a break).
+- New behaviour is a new function (`thing_with(…, &ThingOptions)`, the old
+  function delegating to it with defaults) or a new type.
+- A new type that may grow is `#[non_exhaustive]` and is built through
+  `Default` and `with_*` methods, or a `new` constructor. A new enum that may
+  grow is `#[non_exhaustive]`.
+- A new constant table is a slice, `pub const X: &[T]`, never an array
+  `[T; N]`: an array's length is part of its type, so growing it is a break
+  (2.0.2 grew two). An existing array is replaced by a function or slice and
+  deprecated, never resized.
+- A helper only a frontend needs is `#[doc(hidden)] pub`; a helper only the
+  crate needs is `pub(crate)`.
+- New error conditions use the existing `medh5::Error` variants (`invalid`,
+  `coded`, `File`, `Io`, …); `Error` gains no variant before 3.0.
+
+### Python API
+
+From W21-00 PR 8, a CI job compares the public API with the newest published
+release and fails on a break; `tests/project/python_api.txt` is the committed
+snapshot.
+
+- Add parameters only as keyword-only parameters with defaults, at the end.
+- Add dataclass fields only at the end, with defaults, so positional
+  construction keeps working.
+- Keep `medh5/_core.pyi` in step with the bindings (`stubtest` runs in
+  `tests/project/test_typing.py`), and a class's `#[pyclass(module = …)]` naming
+  the module that exports it.
+- A name that is deprecated stays importable (see below) and stays in the API
+  snapshot as deprecated until 3.0.
+
+### Deprecations
+
+There was no mechanism before 2.1.0; W21-00 PR 5 adds it, and every
+deprecation uses it.
+
+- **Python.** `medh5/_deprecation.py` provides `warn(message, *, category,
+  stacklevel)`. Every message starts with `medh5 3.0 ` and says what to do
+  instead: `"medh5 3.0 removes dataset_kwargs: use dataset_layout"`.
+  - A removed or renamed name raises `DeprecationWarning`.
+  - A default whose *result* changes in 3.0 (a split's algorithm, a default
+    sample id) raises `FutureWarning`, which Python shows to end users too.
+    Raise it only where the answer will actually differ, so correct code never
+    sees it.
+  - A deprecated module attribute, a function as much as a constant, moves
+    into a module-level `_DEPRECATED = {name: (value, message)}` served by the
+    module's `__getattr__`, and leaves `__all__`; the API snapshot lists it as
+    deprecated. Reaching the name warns, so a deprecated function needs no
+    second warning in its body. A deprecated method, parameter or attribute of
+    a class warns where it is used.
+  - A warning raised in Rust goes through
+    `crates/medh5-python/src/deprecation.rs` (`PyErr::warn` with the same
+    prefix), for the classes `_core` binds directly.
+  - `pyproject.toml` sets `filterwarnings = ["error:medh5 3\\.0 "]`, so a test
+    that triggers a deprecation without `pytest.warns(…, match="^medh5 3.0 ")`
+    fails, and medh5 never uses what it deprecates.
+- **Rust.** `#[deprecated(since = "2.1.0", note = "<what to use>; removed in
+  3.0")]` on items only: functions, methods, types, constants, fields. Never on
+  a `pub mod` (it warns at every use of every item inside, and `clippy -D
+  warnings` fails) or a `pub use` (ignored). A deprecated item still used inside
+  the workspace gets `#[allow(deprecated)]` at that use, with a comment saying
+  why.
+- **Changelog.** Every deprecation has an entry under `### Deprecated`, and a
+  line in the [3.0 ledger](#the-30-ledger) below, in the same pull request.
+
+### Specification changes
+
+`docs/spec/medh5-1.0.md`, `docs/spec/medh5-1.1.md` and
+`docs/spec/task-cache-1.md` are normative. A plan quotes the text to write;
+write it as given unless implementing it shows it wrong, and then ask.
+
+- **An erratum** (a clause corrected because it was unimplementable, ambiguous
+  or wrong) changes the text and adds a row: 1.0 Appendix C.1, whose sentence
+  "Seventy-seven clauses have been corrected — …" a test counts against the
+  rows (add a group "N in the development of 2.1" and keep the total right);
+  1.1 Appendix A; task-cache-1 Appendix A (created by W21-11 PR 1). The row
+  says what changed and why, ending "Found by …" when a review or a test found
+  it.
+- **A diagnostic code** is allocated in `crates/medh5/data/codes.json` and in
+  the spec's code table, as the code-table revision rule (2.1.0 decision D1)
+  says, and needs a conformance case (a test fails until it has one). Codes are
+  never redefined, renumbered or reused.
+- **A format version** changes only with content a reader must know about
+  (2.1.0 adds none; 2.2.0 adds 1.2).
+- **Companion contracts** (`medh5.task/1`, `medh5.cache/1`) take errata that
+  add no field and change no normal form, fingerprint or default. An erratum
+  may add a requirement on what an implementation opens, reads or reports (as
+  2.1.0's D19 does for hostile sources), never on a manifest's or a cache's
+  content: whatever was valid stays valid. Anything else is a `/2`.
+
+### Changelog fragments
+
+From W21-00 PR 4, each pull request adds `changes/<slug>.md` (the format is in
+`changes/README.md`); `CHANGELOG.md` is assembled from them at release. Before
+that pull request lands, add entries under `[Unreleased]`; PR 4 converts them.
+A pull request with nothing user-visible adds a fragment holding only `<!-- no
+entry: <reason> -->`.
+
+Classify each entry as 2.0.2 did:
+
+- **Security**: closes a way hostile input or a shared file harms the user.
+- **Fixed**: a crash, a refusal of valid input, a silently wrong answer
+  corrected, or data loss prevented (a data-loss fix made by a new refusal
+  stays here).
+- **Behaviour changes**: anything that changes what existing code produces or
+  accepts, stated so a reader can tell whether their pipeline is affected. An
+  item that is both a fix and a change goes here only.
+- **Added**, **Deprecated**, **Performance**, **Documentation** as usual;
+  **Removed** only in a major release.
+
+Each entry opens with a bold sentence that states the change as a fact, then
+one to three sentences. No `---` (write `—`), lines of at most 80 columns.
+
+### Tests and documentation
+
+`CLAUDE.md` ("Testing patterns", "Documentation") holds. In addition:
+
+- Every new behaviour has a test that fails without the change. Run it red
+  first, and say in the pull request that you did.
+- A test that holds a clause names it (`test_S13_1_…`, `s14_4_…`); a clause of
+  a document whose section numbers would read as 1.0's names the document
+  (`test_v1_2_S3_…` for 1.2 §3). A test of behaviour no clause states (an
+  integration, a command's output, an error class) has a plain name, as the
+  existing ones do.
+- Never skip, disable or loosen a test to get green. A test pinning behaviour
+  a plan changes is rewritten to pin the new behaviour, and the pull request
+  says which.
+- A claim the documentation used to make wrongly goes into `STALE_CLAIMS`
+  (`tests/project/test_docs_examples.py`) when it is corrected.
+- A documented `python` block runs; `<!-- illustrative -->` only where it
+  cannot, and fewer than half of all blocks may be.
+
+### Generated files and stated counts
+
+Never merge these by hand. After a rebase, regenerate them and commit the
+result:
+
+| File | Regenerate with |
+|---|---|
+| `THIRD_PARTY_NOTICES` | `python .github/scripts/third_party_notices.py` |
+| `tests/project/python_api.txt` (from W21-00 PR 8) | `python .github/scripts/public_api.py write` |
+| `docs/reference/api-index.md` (from W21-16 PR 3) | `python .github/scripts/api_index.py` |
+| corpus counts stated in the docs | read the failure of `TestStatedCounts` and correct each sentence |
+| 1.0 Appendix C.1's count sentence | count the rows |
+
+### Shared files
+
+Most conflicts come from a few files. Each has an owner; another workstream
+touches it only for the smallest change its item needs (a call site, a
+registration), and says so in the pull request.
+
+| File | Owner (2.1.0) | Others touch it for |
+|---|---|---|
+| `crates/medh5/src/h5/file.rs` | W21-05 files | W21-00 PR 6 (Windows mark), W21-03 PR 1 (create time tracking), W21-04 PR 1 (snapshot at commit), W21-11 PR 1 (FIFO refusal) |
+| `crates/medh5/src/sample/writer.rs`, `writer_*.rs` | W21-04 writer | W21-02 PR 3 (a crate-private `digest_algo` for a corpus case), W21-02 PR 4 (the pyramid refusal, D11), W21-03 PR 1 (create time tracking), W21-13 PR 8 (`labelmap=`), W21-10 PR 3 (de-identified derivation) |
+| `crates/medh5/src/dataset/split.rs` | W21-08 cohorts | W21-04 PR 1 (the claim writer's pre-check calls the E702 check) |
+| `crates/medh5-cli/src/app.rs`, `medh5/cli.py` | each command's owner | registering a command or flag |
+| `crates/medh5/data/codes.json`, the §15.2 table | W21-02 integrity | W21-13 PR 2 (W919, E404's case) |
+| `crates/medh5/src/conformance/**` | W21-03 conformance | each new code's case; W21-11 PR 1 (task fixture) |
+| `crates/medh5/src/conformance/robustness.rs` | W21-01 platform | — (W21-03 does not touch it) |
+| `medh5/errors.py`, `medh5/validate.py` | W21-06 python | W21-02 PR 1 (`Code`'s fields, `codes_revision`) |
+| `medh5/sampling.py` | W21-06 python | W21-14 PR 3 (adds the aggregator, a new class) |
+| `crates/medh5-python/src/convert.rs` (values across the boundary) | W21-06 python | W21-13 PR 8 (the mask copy), W21-15 PR 1 (`typed()` without the GIL) |
+| `docs/spec/*.md` | the workstream whose decision it is | — |
+| `medh5/_core.pyi` | each binding's owner | — |
+
+### Things never to do
+
+- Skip, disable or quarantine a test; push an empty commit to re-run CI;
+  rewrite history on a branch you did not create.
+- Set `HDF5_USE_FILE_LOCKING` or turn HDF5's locking off implicitly (1.0 §14.4).
+- Invent geometry, a unit, a code, a clock conversion or a date (the format's
+  rule, and every converter's).
+- Write a file in place: every write goes through the engine's replace
+  routine (`AtomicFile`, `write_atomic`, and from W21-05 `stage_file`).
+- Put a model identifier, a session transcript or a scratch path into a commit,
+  a pull request or the repository.
+
+## The 2.0.x line
+
+`release/2.0` is created from the `v2.0.2` tag only when a 2.0.3 is wanted.
+A fix lands on `main` first; a cherry-pick pull request to `release/2.0`
+carries the same fragment file. 2.0.3 is cut there (`changelog.py build 2.0.3`,
+tag `v2.0.3`); the release workflow marks it not-latest once 2.1.0 exists, and
+a pull request to `main` then copies the `[2.0.3]` section into `CHANGELOG.md`
+and deletes the fragments that shipped.
+
+Candidates for a 2.0.3, each marked "backport" in its workstream. A backport
+corrects a wrong answer or closes a hazard; a change to how a correct answer
+is spelled (the MONAI metadata's `"none"` for `None`, D30), or anything a
+deprecation announces, waits for 2.1.0.
+
+| Item | Workstream |
+|---|---|
+| A Windows child process no longer inherits HDF5's handle (amends fail, files stay locked) | W21-00 PR 6 |
+| A hostile task manifest reads and reports nothing its pins do not name; a FIFO source no longer hangs | W21-11 PR 1 |
+| A procedure that asserts its own link attests its mask (1.1 §7.3) | W21-11 PR 1 |
+| The `pydicom` floor is 3.0.1, which highdicom requires | W21-00 PR 2 |
+| `cargo install medh5-cli` documents the release profile | W21-01 |
+
+## The 3.0 ledger
+
+What 2.x deprecates and 3.0 does. A 2.x workstream never does these early; it
+adds its line here when it adds the deprecation.
+
+| 3.0 change | Deprecated in | Workstream |
+|---|---|---|
+| `medh5::Error` becomes `#[non_exhaustive]` and gains `Os { kind, path, message }`; `MEDH5IOError` derives from `MEDH5FileError` | 2.1.0 | W21-06 |
+| `SampleWriter::add_mask` returns its `Group` in Rust (Python does from 2.1.0) | 2.1.0 | W21-04 |
+| The default `sample_id` and pack key are the file stem; `subject_id` defaults to it only when the stem has no dot | 2.1.0 | W21-04 |
+| `storage.dataset_kwargs` is removed (use `dataset_layout`) | 2.1.0 | W21-06 |
+| `annotations::header::{ANNOTATION_KINDS, GEOMETRIC_KINDS}` and `version::FORMAT_VERSIONS` arrays are removed (use the functions) | 2.1.0 | W21-02 |
+| `Tracking::{state_at, states, is_new, is_resolved}` (class-level) are removed (use `locate_tracks`) | 2.1.0 | W21-09 |
+| `ClassStats.prevalence` is `float \| None` (`Option<f64>`) | 2.1.0 | W21-08 |
+| `make_splits` defaults to `medh5.split/2` | 2.1.0 | W21-08 |
+| A legacy cohort manifest (no `schema`) whose two readings differ is refused unless `base=` is given | 2.1.0 | W21-08 |
+| A scrub withholds the date shift by default; UID pseudonyms need a salt | 2.1.0 | W21-10 |
+| `scrub_paths` (Rust) is removed (use `scrub_each`); `Deidentification.extra` is removed | 2.1.0 | W21-10, W21-06 |
+| `curation::scrub::STRICT_RULES` is removed (use `strict_rules()`) | 2.1.0 | W21-10 |
+| A loaded task manifest's sources are confined to its directory by default | 2.1.0 | W21-11 |
+| `Target(negative=…)` without `min_follow_up_us` is refused by the builders | 2.1.0 | W21-11 |
+| `medh5.task.STATUSES` and `LABELS` are removed (use `ROW_STATUSES`, `TARGET_STATUSES`) | 2.1.0 | W21-11 |
+| The engine functions with no caller deprecated by W21-06 are removed | 2.1.0 | W21-06 |
+| `h5`, `json`, `pyval` move under `medh5::__private`; `numeric` becomes `pub(crate)`; whether to wrap `hdf5::Group`/`Dataset` is decided | — | 3.0 design |
+
+Not in the ledger, because a minor does it: Python 3.10 support ends in 2.2.0
+(W22-05 PR 1), announced in 2.1.0 (D36). An interpreter past its end of life
+is dropped in a minor, after one release's notice; that is the only removal a
+2.x minor makes.
