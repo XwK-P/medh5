@@ -62,6 +62,9 @@ jobs:
           cargo +"$FUZZ_TOOLCHAIN" fuzz build seed
           target/x86_64-unknown-linux-gnu/release/seed corpus/open_validate
       # A pull request's run is a smoke test; the schedule runs 40 minutes.
+      # Leaks are not checked: HDF5 keeps freed blocks on its own free lists,
+      # and leaves some behind when a call fails, which LeakSanitizer reports
+      # on nearly every malformed file.
       - name: Fuzz
         working-directory: fuzz
         env:
@@ -70,7 +73,7 @@ jobs:
         run: >
           cargo +"$FUZZ_TOOLCHAIN" fuzz run "$TARGET" --
           -max_total_time="$SECONDS_TO_RUN" -max_len=262144 -timeout=30
-          -rss_limit_mb=4096 -malloc_limit_mb=2048
+          -rss_limit_mb=4096 -malloc_limit_mb=2048 -detect_leaks=0
       # Once a week, on Tuesday's run, the corpus is minimised to what adds
       # coverage, before the cache saves it.
       - name: Minimise the corpus
