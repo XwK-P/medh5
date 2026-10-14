@@ -2549,9 +2549,9 @@ medh5.dataset.Manifest.format	field
 medh5.dataset.Manifest.from_json	classmethod	(doc)
 medh5.dataset.Manifest.generator	field
 medh5.dataset.Manifest.groups	method	(by='group_id')
-medh5.dataset.Manifest.load	classmethod	(path)
+medh5.dataset.Manifest.load	classmethod	(path, *, base=None)
 medh5.dataset.Manifest.root	field
-medh5.dataset.Manifest.save	method	(path)
+medh5.dataset.Manifest.save	method	(path, *, paths='keep')
 medh5.dataset.Manifest.sha256	method	()
 medh5.dataset.Manifest.stale	method	()
 medh5.dataset.Manifest.subjects	property
@@ -2664,18 +2664,20 @@ medh5.dataset.manifest.Manifest.format	field
 medh5.dataset.manifest.Manifest.from_json	classmethod	(doc)
 medh5.dataset.manifest.Manifest.generator	field
 medh5.dataset.manifest.Manifest.groups	method	(by='group_id')
-medh5.dataset.manifest.Manifest.load	classmethod	(path)
+medh5.dataset.manifest.Manifest.load	classmethod	(path, *, base=None)
 medh5.dataset.manifest.Manifest.root	field
-medh5.dataset.manifest.Manifest.save	method	(path)
+medh5.dataset.manifest.Manifest.save	method	(path, *, paths='keep')
 medh5.dataset.manifest.Manifest.sha256	method	()
 medh5.dataset.manifest.Manifest.stale	method	()
 medh5.dataset.manifest.Manifest.subjects	property
 medh5.dataset.manifest.Manifest.to_json	method	()
+medh5.dataset.manifest.PathStyle	alias
+medh5.dataset.manifest.SCHEMA	constant	str
 medh5.dataset.manifest.SUFFIXES	constant	tuple
 medh5.dataset.manifest.counts	function	(entries, by)
 medh5.dataset.manifest.entries_for	function	(path)
 medh5.dataset.manifest.find	function	(root, *, suffixes=('.medh5', '.medh5c'))
-medh5.dataset.manifest.load	function	(path)
+medh5.dataset.manifest.load	function	(path, *, base=None)
 medh5.dataset.manifest.scan	function	(root, *, suffixes=('.medh5', '.medh5c'), on_error='warn')
 medh5.dataset.scan	function	(root, *, suffixes=('.medh5', '.medh5c'), on_error='warn')
 medh5.dataset.split	module

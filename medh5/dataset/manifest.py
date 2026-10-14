@@ -19,12 +19,18 @@ import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
-from medh5 import _core
+from medh5 import _core, _deprecation
 from medh5._core import __format_version__, __version__
 
 SUFFIXES: tuple[str, ...] = _core.MANIFEST_SUFFIXES
+
+SCHEMA: str = _core.MANIFEST_SCHEMA
+"""What every manifest :meth:`Manifest.save` writes names under ``schema``."""
+
+PathStyle: TypeAlias = Literal["keep", "relative", "absolute"]
+"""How :meth:`Manifest.save` writes paths."""
 
 
 @dataclass(slots=True)
@@ -228,15 +234,45 @@ class Manifest:
         """
         return str(_core.dataset_manifest_sha256(self._doc()))
 
-    def save(self, path: str | os.PathLike[str]) -> Path:
-        return Path(_core.dataset_manifest_save(self._doc(), os.fspath(path)))
+    def save(self, path: str | os.PathLike[str], *, paths: PathStyle = "keep") -> Path:
+        """Write the manifest (``medh5.dataset/1``) to *path*, atomically.
+
+        In memory a relative path is relative to the working directory; in
+        the file it is relative to the manifest's directory when it lies
+        beneath it, and absolute otherwise, so the manifest opens from any
+        directory and moves with its cohort.  ``paths="keep"`` (the default)
+        leaves a path given absolute absolute, ``"relative"`` writes it
+        relative too where it lies beneath, and ``"absolute"`` writes every
+        path absolute.  The digest covers no path, so none of this changes it.
+        """
+        return Path(
+            _core.dataset_manifest_save(self._doc(), os.fspath(path), paths=paths)
+        )
 
     @classmethod
-    def load(cls, path: str | os.PathLike[str]) -> Manifest:
-        return cls.from_json(_core.dataset_manifest_load(os.fspath(path)))
+    def load(
+        cls,
+        path: str | os.PathLike[str],
+        *,
+        base: str | os.PathLike[str] | None = None,
+    ) -> Manifest:
+        """Read a manifest written by :meth:`save` or ``medh5 dataset index``.
+
+        Each relative path is read against the manifest's directory and comes
+        back relative to the working directory.  A manifest written before 2.1
+        (no ``schema``) is read against the working directory, as it was
+        written, with a ``FutureWarning`` where 3.0 would read it otherwise;
+        *base* names the directory its relative paths are relative to.
+        """
+        return _load(path, base, stacklevel=4)
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Manifest:
+        """A manifest from its JSON, with its paths as the document holds them.
+
+        An unknown ``schema`` is refused.
+        """
+        _core.dataset_manifest_legacy(doc)
         return cls(
             entries=[Entry.from_json(e) for e in doc.get("entries", ())],
             root=doc.get("root"),
@@ -302,9 +338,31 @@ def entries_for(path: str | os.PathLike[str]) -> list[Entry]:
     ]
 
 
-def load(path: str | os.PathLike[str]) -> Manifest:
-    """Read a manifest written by ``Manifest.save`` or ``medh5 dataset index``."""
-    return Manifest.load(path)
+def load(
+    path: str | os.PathLike[str], *, base: str | os.PathLike[str] | None = None
+) -> Manifest:
+    """Read a manifest written by ``Manifest.save`` or ``medh5 dataset index``;
+    see :meth:`Manifest.load`."""
+    return _load(path, base, stacklevel=4)
+
+
+def _load(
+    path: str | os.PathLike[str],
+    base: str | os.PathLike[str] | None,
+    *,
+    stacklevel: int,
+) -> Manifest:
+    doc, differs = _core.dataset_manifest_load(
+        os.fspath(path), base=None if base is None else os.fspath(base)
+    )
+    if differs:
+        _deprecation.warn(
+            f"medh5 3.0 reads the paths of {os.fspath(path)!r} against its own "
+            "directory: pass base=… or run `medh5 dataset upgrade`",
+            category=FutureWarning,
+            stacklevel=stacklevel,
+        )
+    return Manifest.from_json(doc)
 
 
 def counts(entries: Iterable[Entry], by: str) -> dict[str, int]:
@@ -315,7 +373,9 @@ def counts(entries: Iterable[Entry], by: str) -> dict[str, int]:
 
 __all__ = [
     "GROUPABLE",
+    "SCHEMA",
     "SUFFIXES",
+    "PathStyle",
     "Entry",
     "Manifest",
     "counts",

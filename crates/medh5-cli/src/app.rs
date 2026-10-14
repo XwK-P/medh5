@@ -359,6 +359,25 @@ fn dataset() -> Command {
                 .arg(positional("root", "directory tree to scan for .medh5 files"))
                 .arg(out_required("manifest JSON to write"))
                 .arg(flag("strict", "strict", "stop at the first unreadable file"))
+                .arg(flag(
+                    "absolute",
+                    "absolute",
+                    "write every path absolute; by default a path beneath the manifest's directory is written \
+                     relative to it",
+                ))
+                .arg(json()),
+        )
+        .subcommand(
+            Command::new("upgrade")
+                .about("rewrite a manifest so its paths are relative to it (medh5.dataset/1)")
+                .arg(positional("manifest", "the manifest to upgrade"))
+                .arg(out_required("manifest JSON to write"))
+                .arg(opt(
+                    "base",
+                    "base",
+                    "the directory the manifest's relative paths are relative to (default: the working directory, \
+                     as a manifest written before 2.1 is read)",
+                ))
                 .arg(json()),
         )
         .subcommand(

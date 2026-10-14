@@ -287,14 +287,26 @@ fn dataset_manifest_sha256(doc: &Bound<'_, PyAny>) -> R<String> {
     Ok(manifest_arg(doc)?.sha256())
 }
 
+/// Written with paths as `paths` says: `"keep"`, `"relative"` or `"absolute"`.
 #[pyfunction]
-fn dataset_manifest_save(doc: &Bound<'_, PyAny>, path: PathBuf) -> R<String> {
-    Ok(manifest_arg(doc)?.save(&path)?.to_string_lossy().into_owned())
+#[pyo3(signature = (doc, path, *, paths="keep"))]
+fn dataset_manifest_save(doc: &Bound<'_, PyAny>, path: PathBuf, paths: &str) -> R<String> {
+    let style = manifest::PathStyle::parse(paths)?;
+    Ok(manifest_arg(doc)?.save_with(&path, style)?.to_string_lossy().into_owned())
 }
 
+/// `(manifest JSON, legacy and read otherwise than 3.0 will read it)`.
 #[pyfunction]
-fn dataset_manifest_load<'py>(py: Python<'py>, path: PathBuf) -> R<Bound<'py, PyAny>> {
-    Ok(json_to_py(py, &manifest::Manifest::load(&path)?.to_json())?)
+#[pyo3(signature = (path, *, base=None))]
+fn dataset_manifest_load<'py>(py: Python<'py>, path: PathBuf, base: Option<PathBuf>) -> R<(Bound<'py, PyAny>, bool)> {
+    let (found, differs) = manifest::Manifest::load_noting(&path, base.as_deref())?;
+    Ok((json_to_py(py, &found.to_json())?, differs))
+}
+
+/// Whether a manifest is legacy (no `schema`); an unknown schema is refused.
+#[pyfunction]
+fn dataset_manifest_legacy(doc: &Bound<'_, PyAny>) -> R<bool> {
+    Ok(manifest::check_schema(&py_to_json(doc)?)?)
 }
 
 #[pyfunction]
@@ -692,6 +704,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(dataset_manifest_sha256, m)?,
         wrap_pyfunction!(dataset_manifest_save, m)?,
         wrap_pyfunction!(dataset_manifest_load, m)?,
+        wrap_pyfunction!(dataset_manifest_legacy, m)?,
         wrap_pyfunction!(dataset_manifest_stale, m)?,
         wrap_pyfunction!(dataset_default_ratios, m)?,
         wrap_pyfunction!(dataset_make_splits, m)?,
@@ -731,6 +744,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SAMPLES_GROUP", coll::SAMPLES_GROUP)?;
     m.add("MANIFEST_SUFFIXES", PyTuple::new(py, manifest::SUFFIXES)?)?;
     m.add("GROUPABLE", PyTuple::new(py, manifest::GROUPABLE)?)?;
+    m.add("MANIFEST_SCHEMA", manifest::MANIFEST_SCHEMA)?;
     m.add("CHECK_SEVERITIES", PyTuple::new(py, check::SEVERITIES)?)?;
     let codes = PyDict::new(py);
     for (code, summary) in check::CHECK_CODES {
