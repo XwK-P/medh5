@@ -22,8 +22,9 @@ anything is published:
   names, against the [RustSec](https://rustsec.org/) database, with
   `cargo audit --deny warnings`. An unmaintained, unsound or yanked crate fails
   as a vulnerable one does.
-- **The Python packages** that the runtime dependency and the extras install
-  today, against PyPI's advisories, with `pip-audit`.
+- **The Python packages** that `pip install medh5` installs (NumPy) and that
+  each extra installs, as they resolve today, against PyPI's advisories, with
+  `pip-audit`.
 
 Neither can see the C libraries the crates build from source and link
 statically: a C library is not a crate, and an advisory names the library's
@@ -32,7 +33,14 @@ every advisory against a version the project ships.
 
 A finding that does not apply is passed over in the workflow by its id, and
 recorded under [Advisories](#advisories) with the reason. A release ships no
-finding that has neither a fix nor a disposition here.
+finding against a crate or against what `pip install medh5` installs that has
+neither a fix nor a disposition here.
+
+An extra installs projects medh5 neither ships nor pins (PyTorch, MONAI,
+pydicom, highdicom, nibabel, h5py), and an advisory against one may have no fix
+for weeks. Such a finding is reported, in the weekly run and in the release
+run's summary, and dispositioned here, but it does not hold a medh5 release:
+the release would not change what that extra installs.
 
 ## Running a task manifest you did not write
 

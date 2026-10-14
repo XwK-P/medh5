@@ -258,8 +258,11 @@ deletes them), and push a `vX.Y.Z` tag on a commit whose CI passed.
 
 1. runs the full CI on the tagged commit, which builds every wheel, the sdist
    and every binary, and the advisory checks (`advisories.yml`: `cargo audit`
-   over `Cargo.lock`, `pip-audit` over the extras), which fail on an advisory
-   that `SECURITY.md` has not dispositioned;
+   over `Cargo.lock`, `pip-audit` over the package's requirement and over the
+   extras), which fail on an advisory against a crate or the requirement that
+   `SECURITY.md` has not dispositioned; an advisory against what an extra
+   installs is reported in the run's summary, to disposition in `SECURITY.md`,
+   and does not stop the release;
 2. checks the tag against the workspace version, every platform's wheel and
    binary against the tag (each carrying `LICENSE` and `THIRD_PARTY_NOTICES`),
    and extracts the version's section of `CHANGELOG.md` — a tag with no
@@ -298,6 +301,12 @@ and does nothing, so a fork can release to PyPI alone. The format version
 `THIRD_PARTY_NOTICES` holds the licences of everything the wheel and the binary
 compile in, generated from `Cargo.lock`. After changing `Cargo.lock`, run
 `python .github/scripts/third_party_notices.py`; CI fails while it is stale.
+Every Monday `lock-refresh.yml` refreshes the lock, regenerates the notices
+and opens a pull request on `deps/cargo-lock`; it holds back the crates of the
+native inventory below and lists their bumps in its body, for a person to make
+with the inventory's row. If the repository has neither the `LOCK_REFRESH_APP_ID`
+app nor the `LOCK_REFRESH_TOKEN` token, that pull request runs no CI until it is
+closed and reopened.
 A library under a licence the others do not already name goes into
 `pyproject.toml`'s `license` expression too, and the Homebrew formula's
 (`.github/scripts/homebrew_formula.py`); neither can be corrected for a

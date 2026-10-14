@@ -18,12 +18,15 @@ jobs:
       contents: read
 
   advisories:
-    # No advisory against what the release compiles in or what its extras
-    # install, unless SECURITY.md says why it does not apply: an advisory
+    # No advisory against what the release compiles in or what the package
+    # requires, unless SECURITY.md says why it does not apply: an advisory
     # published after the pull request merged stops the release here, before
-    # anything is published.
+    # anything is published.  One against what an extra installs is reported
+    # in the run's summary and dispositioned in SECURITY.md, and does not.
     name: Advisories on the tagged commit
     uses: ./.github/workflows/advisories.yml
+    with:
+      release: true
     permissions:
       contents: read
 

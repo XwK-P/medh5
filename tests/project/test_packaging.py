@@ -35,6 +35,7 @@ BUILD = ROOT / ".github/workflows/build.yml"
 FUZZ = ROOT / ".github/workflows/fuzz.yml"
 RELEASE = ROOT / ".github/workflows/release.yml"
 ADVISORIES = ROOT / ".github/workflows/advisories.yml"
+LOCK_REFRESH = ROOT / ".github/workflows/lock-refresh.yml"
 
 
 WORKSPACE = ROOT / "Cargo.toml"
@@ -790,6 +791,68 @@ class TestRepositoryGates:
         pull = advisories.split("\n  pull_request:\n", 1)[1]
         assert pull.split("\n", 1)[0].strip() == 'branches: [main, "release/**"]'
 
+    def test_an_advisory_against_an_extra_does_not_hold_a_release(self):
+        """`pip-audit --strict` audited NumPy with every extra, and the release
+        waited on it: a PyTorch advisory with no fix would have held a medh5
+        release that changes nothing PyTorch installs.  What the package
+        requires still blocks; the extras block every run but the release's,
+        which reports them in its summary."""
+        text = ADVISORIES.read_text(encoding="utf-8")
+        call = text.split("\n  workflow_call:\n", 1)[1].split("\n  pull_request:", 1)[0]
+        release = r"^      release:\n(?:        .*\n)*?        type: boolean$"
+        assert re.search(release, call, re.M)
+        jobs = _jobs(text)
+        assert "continue-on-error" not in jobs["pypi"]
+        assert 'print(*sorted(project["dependencies"])' in jobs["pypi"]
+        assert "optional-dependencies" not in jobs["pypi"]
+        extras = jobs["pypi-extras"]
+        assert "    continue-on-error: ${{ inputs.release == true }}\n" in extras
+        assert '"optional-dependencies"' in extras
+        assert '>> "$GITHUB_STEP_SUMMARY"' in extras
+        assert 'exit "$status"' in extras
+        caller = _jobs(RELEASE.read_text(encoding="utf-8"))["advisories"]
+        assert "    with:\n      release: true\n" in caller
+
+    def test_the_lock_is_refreshed_weekly_but_not_the_native_inventory(self):
+        """Cargo.lock moved only by hand: Dependabot cannot regenerate
+        THIRD_PARTY_NOTICES with it.  A weekly workflow refreshes it within
+        the crates' `rust-version` and opens a pull request, and puts back
+        every crate that builds a library of SECURITY.md's native inventory,
+        whose row and advisories a person reads again; its bumps are listed."""
+        refresh = _release_script("lock_refresh.py")
+        security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        # The crates test_the_native_inventory_is_what_the_lock_builds names.
+        native = ["hdf5-metno-src", "libz-sys", "lz4-sys", "zstd-sys"]
+        assert refresh.native_crates(security) == native
+        lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
+        before = refresh.locked(lock)
+        assert all(len(before[name]) == 1 for name in native)
+        after = {**before, "libz-sys": ["9.9.9"], "serde": ["9.9.9"]}
+        moves = refresh.held_back(before, after, native)
+        assert moves == [("libz-sys", before["libz-sys"][0], "9.9.9")]
+        assert refresh.held_back(before, before, native) == []
+        with pytest.raises(SystemExit, match="zstd-sys"):
+            refresh.held_back(before, {**before, "zstd-sys": ["1", "2"]}, native)
+        body = refresh.summary(moves)
+        assert f"| `libz-sys` | {before['libz-sys'][0]} | 9.9.9 |" in body
+        assert "serde" not in body
+        assert "No crate" in refresh.summary([])
+        script = (ROOT / ".github/scripts/lock_refresh.py").read_text(encoding="utf-8")
+        assert '"CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS": "fallback"' in script
+        assert '"--precise", old' in script and "third_party_notices.py" in script
+        text = LOCK_REFRESH.read_text(encoding="utf-8")
+        assert '    - cron: "17 6 * * 1"\n' in text
+        assert "\n  workflow_dispatch:\n" in text
+        (job,) = _jobs(text).values()
+        assert "          ref: main\n" in job
+        assert "python .github/scripts/lock_refresh.py --summary" in job
+        assert "uses: peter-evans/create-pull-request@" in job
+        assert "branch: deps/cargo-lock" in job
+        # A pull request opened with GITHUB_TOKEN runs no workflows.
+        assert "secrets.LOCK_REFRESH_TOKEN" in job and "close and reopen" in job
+        dependabot = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
+        assert "lock-refresh.yml" in dependabot
+
     def test_the_weekly_audit_reads_every_line(self):
         """A scheduled workflow runs on the default branch only, so the weekly
         audit saw `main`'s lock and never the patch line's.  Each job audits
@@ -798,7 +861,7 @@ class TestRepositoryGates:
         skipped check as passing."""
         text = ADVISORIES.read_text(encoding="utf-8")
         jobs = _jobs(text)
-        assert sorted(jobs) == ["pypi", "rustsec"]
+        assert sorted(jobs) == ["pypi", "pypi-extras", "rustsec"]
         for name, job in jobs.items():
             assert not re.search(r"^    if:", job, re.M), name
             assert 'fromJSON(\'["main", "release/2.0"]\')' in job, name
