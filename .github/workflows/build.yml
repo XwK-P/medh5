@@ -1,0 +1,111 @@
+name: Build
+
+# One platform's abi3 wheel and native binary, built together from one checkout
+# and one lock.  `ci.yml` calls this once per platform, as a job of its own, so
+# each platform's tests wait for its own build and no other: as one matrix job,
+# no test started before the slowest of the five builds ended.
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: The Rust target triple.
+        type: string
+        required: true
+      runner:
+        description: The runner the build runs on.
+        type: string
+        required: true
+      container:
+        description: A manylinux image, by digest, to build in; none elsewhere.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    # Every platform the project ships: the abi3 wheel and the native binary,
+    # built together from one checkout and one lock.  The release publishes
+    # these artifacts as they are, so each is checked here: the binary runs the
+    # conformance corpus and hands a converter to the wheel's Python, and the
+    # wheel imports and runs the corpus too.
+    name: build (${{ inputs.target }})
+    runs-on: ${{ inputs.runner }}
+    # A caller cannot bound a called workflow's job; the job bounds itself.
+    timeout-minutes: 60
+    env:
+      # The oldest macOS the wheel and the binary support; ignored elsewhere.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build in a manylinux container
+        if: inputs.container
+        run: docker run --rm -v "$PWD:/io" -w /io "${{ inputs.container }}" bash .github/scripts/build-dist.sh "${{ inputs.target }}"
+      - name: Build
+        if: ${{ !inputs.container }}
+        shell: bash
+        run: bash .github/scripts/build-dist.sh "${{ inputs.target }}"
+      - name: The binary runs the conformance corpus
+        shell: bash
+        run: |
+          exe=target/release/medh5
+          if [[ -f "$exe.exe" ]]; then exe="$exe.exe"; fi
+          "$exe" --version
+          "$exe" conformance build "$RUNNER_TEMP/corpus-native"
+          "$exe" conformance run "$RUNNER_TEMP/corpus-native"
+          # Damage is a report, never an abort: what an HDF5 built without
+          # NDEBUG does on a damaged file.
+          python .github/scripts/damaged.py "$exe" "$RUNNER_TEMP/corpus-native"
+      - name: The wheel installs and runs the conformance corpus
+        shell: bash
+        run: |
+          pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          python -c "import medh5; print(medh5.__version__, medh5.__file__)"
+          medh5 --version
+          medh5 conformance build corpus
+          medh5 conformance run corpus
+      # The converters are the Python package's: the standalone binary runs them
+      # through a Python that has it (`MEDH5_PYTHON`, or `python3`/`python`),
+      # and says what to install when there is none.  Out of the checkout, whose
+      # `medh5/` has no compiled engine and would shadow the installed one.
+      - name: The binary hands the converters to the wheel's Python
+        shell: bash
+        run: |
+          exe="$PWD/target/release/medh5"
+          if [[ -f "$exe.exe" ]]; then exe="$exe.exe"; fi
+          cd "$RUNNER_TEMP"
+          # Only the Python package says this, and it needs none of the extras.
+          status=0
+          MEDH5_PYTHON=python "$exe" convert from-nifti x.medh5 --image CT 2> bridged.log || status=$?
+          cat bridged.log
+          [[ $status == 1 ]]
+          grep -F -e "--image expects NAME=VALUE" bridged.log
+          status=0
+          MEDH5_PYTHON=/nonexistent "$exe" convert from-nifti x.medh5 --image CT 2> missing.log || status=$?
+          cat missing.log
+          [[ $status == 1 ]]
+          grep -F "MEDH5_PYTHON" missing.log
+      # Not `dist`: when `release.yml` calls this workflow, the release's own
+      # job uploads that name in the same run, and artifact names are unique.
+      # A pull request's artifacts are kept 3 days, which is all anyone reads
+      # them for; a release's, 90, so re-running its failed jobs finds them.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-dist-${{ inputs.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 90 }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-cli-${{ inputs.target }}
+          path: cli/*
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 90 }}

@@ -82,7 +82,8 @@ jobs:
       - run: rustup toolchain install --no-self-update
       # The crates' builds, HDF5's among them, as main's last run left them:
       # saved from main only, so pull requests restore it and never crowd it
-      # out.  Not in `build`, whose artifacts the release publishes.
+      # out.  Not in the builds (build.yml), whose artifacts the release
+      # publishes.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -221,115 +222,59 @@ jobs:
       # after publication.
       - run: mkdocs build --strict
 
-  build:
-    # Every platform the project ships: the abi3 wheel and the native binary,
-    # built together from one checkout and one lock.  The release publishes
-    # these artifacts as they are, so each is checked here: the binary runs the
-    # conformance corpus and hands a converter to the wheel's Python, and the
-    # wheel imports and runs the corpus too.
+  # Each platform's build is a job of its own (build.yml), and each test job
+  # needs only the build whose artifacts it downloads.  The manylinux images
+  # by digest (the ones 2.0.1 was built in), not by `latest`, which moves: a
+  # new image reaches the artifacts through a pull request that names it.
+  # `docker pull` prints an image's digest.
+  build-linux-x86_64:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    name: build (${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        # The manylinux images by digest (the ones 2.0.1 was built in), not
-        # by `latest`, which moves: a new image reaches the artifacts through a
-        # pull request that names it.  `docker pull` prints an image's digest.
-        include:
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            container: quay.io/pypa/manylinux_2_28_x86_64@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-            container: quay.io/pypa/manylinux_2_28_aarch64@sha256:abd1230aa9e4058a74b89d27cd14ba18c0db036d7bfe6e6f219a29ea63c24eb6
-          - target: aarch64-apple-darwin
-            runner: macos-14
-          - target: x86_64-apple-darwin
-            runner: macos-15-intel
-          - target: x86_64-pc-windows-msvc
-            runner: windows-latest
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    env:
-      # The oldest macOS the wheel and the binary support; ignored elsewhere.
-      MACOSX_DEPLOYMENT_TARGET: "11.0"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Build in a manylinux container
-        if: matrix.container
-        run: docker run --rm -v "$PWD:/io" -w /io "${{ matrix.container }}" bash .github/scripts/build-dist.sh "${{ matrix.target }}"
-      - name: Build
-        if: ${{ !matrix.container }}
-        shell: bash
-        run: bash .github/scripts/build-dist.sh "${{ matrix.target }}"
-      - name: The binary runs the conformance corpus
-        shell: bash
-        run: |
-          exe=target/release/medh5
-          if [[ -f "$exe.exe" ]]; then exe="$exe.exe"; fi
-          "$exe" --version
-          "$exe" conformance build "$RUNNER_TEMP/corpus-native"
-          "$exe" conformance run "$RUNNER_TEMP/corpus-native"
-          # Damage is a report, never an abort: what an HDF5 built without
-          # NDEBUG does on a damaged file.
-          python .github/scripts/damaged.py "$exe" "$RUNNER_TEMP/corpus-native"
-      - name: The wheel installs and runs the conformance corpus
-        shell: bash
-        run: |
-          pip install dist/*.whl
-          cd "$RUNNER_TEMP"
-          python -c "import medh5; print(medh5.__version__, medh5.__file__)"
-          medh5 --version
-          medh5 conformance build corpus
-          medh5 conformance run corpus
-      # The converters are the Python package's: the standalone binary runs them
-      # through a Python that has it (`MEDH5_PYTHON`, or `python3`/`python`),
-      # and says what to install when there is none.  Out of the checkout, whose
-      # `medh5/` has no compiled engine and would shadow the installed one.
-      - name: The binary hands the converters to the wheel's Python
-        shell: bash
-        run: |
-          exe="$PWD/target/release/medh5"
-          if [[ -f "$exe.exe" ]]; then exe="$exe.exe"; fi
-          cd "$RUNNER_TEMP"
-          # Only the Python package says this, and it needs none of the extras.
-          status=0
-          MEDH5_PYTHON=python "$exe" convert from-nifti x.medh5 --image CT 2> bridged.log || status=$?
-          cat bridged.log
-          [[ $status == 1 ]]
-          grep -F -e "--image expects NAME=VALUE" bridged.log
-          status=0
-          MEDH5_PYTHON=/nonexistent "$exe" convert from-nifti x.medh5 --image CT 2> missing.log || status=$?
-          cat missing.log
-          [[ $status == 1 ]]
-          grep -F "MEDH5_PYTHON" missing.log
-      # Not `dist`: when `release.yml` calls this workflow, the release's own
-      # job uploads that name in the same run, and artifact names are unique.
-      # A pull request's artifacts are kept 3 days, which is all anyone reads
-      # them for; a release's, 90, so re-running its failed jobs finds them.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ci-dist-${{ matrix.target }}
-          path: dist/*.whl
-          if-no-files-found: error
-          retention-days: ${{ github.event_name == 'pull_request' && 3 || 90 }}
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ci-cli-${{ matrix.target }}
-          path: cli/*
-          if-no-files-found: error
-          retention-days: ${{ github.event_name == 'pull_request' && 3 || 90 }}
+    uses: ./.github/workflows/build.yml
+    with:
+      target: x86_64-unknown-linux-gnu
+      runner: ubuntu-latest
+      container: quay.io/pypa/manylinux_2_28_x86_64@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae
+
+  build-linux-aarch64:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      target: aarch64-unknown-linux-gnu
+      runner: ubuntu-24.04-arm
+      container: quay.io/pypa/manylinux_2_28_aarch64@sha256:abd1230aa9e4058a74b89d27cd14ba18c0db036d7bfe6e6f219a29ea63c24eb6
+
+  build-macos-arm64:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      target: aarch64-apple-darwin
+      runner: macos-14
+
+  build-macos-x86_64:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      target: x86_64-apple-darwin
+      runner: macos-15-intel
+
+  build-windows-x86_64:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      target: x86_64-pc-windows-msvc
+      runner: windows-latest
 
   sdist:
     # A platform without a wheel builds from the sdist, so CI does too: the
     # whole engine from the source distribution alone, in a clean directory ---
     # with the oldest maturin `pyproject.toml` accepts, so the floor it states
-    # is one that builds, and writes the licence as PEP 639 says.  `build`
-    # runs the one build-dist.sh pins.
+    # is one that builds, and writes the licence as PEP 639 says.  The builds
+    # (build.yml) run the one build-dist.sh pins.
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -461,7 +406,7 @@ jobs:
     # interpreter.  The checkout's `medh5/` is removed first: it has no
     # compiled engine, and on the path ahead of the wheel it would be what the
     # tests --- and `--cov=medh5` --- found.
-    needs: build
+    needs: build-linux-x86_64
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -496,7 +441,7 @@ jobs:
     # 24.04's libhdf5, and the torch and DICOM SEG tests skip; `--no-cov`, as
     # skipped tests cover less.  Once this is green with the full extras, 3.15
     # joins the `test` matrix and the classifiers.
-    needs: build
+    needs: build-linux-x86_64
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     continue-on-error: true
@@ -522,7 +467,7 @@ jobs:
     # macOS defaults to the `spawn` multiprocessing start method, which is
     # where DataLoader workers and process pools re-import the package.  One
     # interpreter: this job is about the start method, not the matrix.
-    needs: build
+    needs: build-macos-arm64
     runs-on: macos-14
     timeout-minutes: 30
     steps:
@@ -543,7 +488,7 @@ jobs:
     # atomic-rewrite paths exist for --- and what `medh5.torch`'s handle cache,
     # which keeps files open, runs into when a sample it holds is amended.
     # DataLoader workers start by `spawn` here, as on macOS.
-    needs: build
+    needs: build-windows-x86_64
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -562,24 +507,11 @@ jobs:
       - run: rm -rf medh5
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
-  test-platforms:
+  test-linux-aarch64:
     # The two wheels no job above tests, as published: Linux on aarch64 and
-    # macOS on x86_64 (their binaries run the corpus in `build`).  PyTorch has
-    # published no macOS x86_64 wheel since 2.2, which predates NumPy 2, so
-    # that one goes without `torch`.
-    name: test-platforms (${{ matrix.target }})
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-            extras: dev,torch,nifti,dicom,dicomseg
-          - target: x86_64-apple-darwin
-            runner: macos-15-intel
-            extras: dev,nifti,dicom,dicomseg
-    runs-on: ${{ matrix.runner }}
+    # macOS on x86_64 (their binaries run the corpus in their builds).
+    needs: build-linux-aarch64
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -588,9 +520,28 @@ jobs:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: ci-dist-${{ matrix.target }}
+          name: ci-dist-aarch64-unknown-linux-gnu
           path: dist/
-      - run: pip install "$(ls dist/*.whl)[${{ matrix.extras }}]"
+      - run: pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg]"
+      - run: rm -rf medh5
+      - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
+
+  test-macos-x86_64:
+    # PyTorch has published no macOS x86_64 wheel since 2.2, which predates
+    # NumPy 2, so this one goes without `torch`.
+    needs: build-macos-x86_64
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-dist-x86_64-apple-darwin
+          path: dist/
+      - run: pip install "$(ls dist/*.whl)[dev,nifti,dicom,dicomseg]"
       - run: rm -rf medh5
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
@@ -601,7 +552,7 @@ jobs:
     # extras' went untested until 2.0.2.  One resolve, so the floors are
     # installed together or the job says they cannot be.  (highdicom 0.23
     # needs pydicom 3.0.1, which is why that, not 3.0.0, is pydicom's floor.)
-    needs: build
+    needs: build-linux-x86_64
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -630,7 +581,7 @@ jobs:
     # has to run *somewhere*.  `pytest.importorskip("monai")` skips silently
     # when it is absent, so `medh5.monai`'s level handling shipped covered by
     # a test that had never once executed.
-    needs: build
+    needs: build-linux-x86_64
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -659,7 +610,7 @@ jobs:
     # implementation while it printed "[ok]".  So the
     # file it writes is validated, at integrity level, by the wheel and by the
     # native binary this run built.
-    needs: build
+    needs: build-linux-x86_64
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -713,7 +664,7 @@ jobs:
     # implementation runs the same 163 cases, and is scored the same way.
     # Running it here through `publish` + `score` exercises the public path
     # rather than the in-process one.
-    needs: build
+    needs: build-linux-x86_64
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -766,7 +717,7 @@ jobs:
     # h5py 3.13 and hdf5plugin 4.1 are the test suite's floors; h5py 3.9 is
     # the last wheel that bundles 1.12.
     name: hdf5-readers (HDF5 ${{ matrix.hdf5 }})
-    needs: [build, conformance]
+    needs: [build-linux-x86_64, conformance]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -810,14 +761,18 @@ jobs:
 
   ci-ok:
     # The one check the branch ruleset requires.  A ruleset names checks as
-    # they report, and a matrix job reports once per entry --- `build
-    # (x86_64-pc-windows-msvc)`, never `build` --- so a ruleset that names
+    # they report, and a matrix job reports once per entry --- `rust
+    # (windows-latest)`, never `rust` --- so a ruleset that names
     # jobs one by one can wait on a name nothing reports, and misses every job
     # added after it was written.  This needs every other job and passes only
     # when each of them passed: `if: always()` makes it run, and fail, when
     # one failed or was skipped, where a skipped required check counts as
     # passing.  The one skip it accepts is the one `changes` asked for: when
     # that job passed and found nothing to test, the rest skipped on its word.
+    # A cancelled job fails it too: with `!cancelled()` instead of `always()`,
+    # a run cancelled by hand would skip this check, which would count as
+    # passing, and the pull request would merge untested.  The summary names
+    # cancelled jobs apart, since they need a re-run rather than a fix.
     if: always()
     needs:
       - changes
@@ -827,13 +782,18 @@ jobs:
       - lint
       - typecheck
       - docs
-      - build
+      - build-linux-x86_64
+      - build-linux-aarch64
+      - build-macos-arm64
+      - build-macos-x86_64
+      - build-windows-x86_64
       - sdist
       - msvc-from-crates-io
       - test
       - test-macos
       - test-windows
-      - test-platforms
+      - test-linux-aarch64
+      - test-macos-x86_64
       - test-min-deps
       - test-monai
       - prototype
@@ -855,7 +815,15 @@ jobs:
           changes = needs["changes"]
           if changes["result"] == "success" and changes["outputs"]["code"] == "false":
               sys.exit(0)
-          failed = sorted(job for job, result in results.items() if result != "success")
-          if failed:
-              sys.exit(f"not every job passed: {', '.join(failed)}")
+          cancelled = sorted(job for job, result in results.items() if result == "cancelled")
+          failed = sorted(
+              job for job, result in results.items() if result not in ("success", "cancelled")
+          )
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              if failed:
+                  print(f"failed or skipped: {', '.join(failed)}", file=summary)
+              if cancelled:
+                  print(f"cancelled or superseded: re-run {', '.join(cancelled)}", file=summary)
+          if failed or cancelled:
+              sys.exit(f"not every job passed: {', '.join(failed + cancelled)}")
           PY

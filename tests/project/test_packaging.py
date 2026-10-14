@@ -30,6 +30,7 @@ from tests.helpers import ROOT, write_sample
 
 PYPROJECT = ROOT / "pyproject.toml"
 CI = ROOT / ".github/workflows/ci.yml"
+BUILD = ROOT / ".github/workflows/build.yml"
 RELEASE = ROOT / ".github/workflows/release.yml"
 ADVISORIES = ROOT / ".github/workflows/advisories.yml"
 
@@ -168,7 +169,9 @@ def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
-    built = set(re.findall(r"- target: (\S+)", ci))
+    # The targets ci.yml passes to build.yml, one job each.
+    built = set(re.findall(r"^      target: (\S+)$", ci, re.M))
+    assert len(built) == 5
     assert set(brew.TARGETS.values()) <= built
     assert all(target in release for target in built)
     assert 'name="medh5-$version-$target"' in build
@@ -441,7 +444,7 @@ class TestRepositoryGates:
         for image in containers:
             assert re.fullmatch(r"quay\.io/pypa/[\w.-]+@sha256:[0-9a-f]{64}", image)
         built = []
-        for workflow in (CI, RELEASE):
+        for workflow in (CI, BUILD, RELEASE):
             for name, job in _jobs(workflow.read_text(encoding="utf-8")).items():
                 code = "\n".join(
                     line
@@ -458,6 +461,19 @@ class TestRepositoryGates:
         assert sorted(built) == [
             "build", "crates", "msvc-from-crates-io", "rust", "rust-platforms", "sdist"
         ]  # fmt: skip
+        # `build` is build.yml's, which the five platform jobs call.
+        callers = [
+            name
+            for name, job in _jobs(CI.read_text(encoding="utf-8")).items()
+            if "uses: ./.github/workflows/build.yml" in job
+        ]
+        assert sorted(callers) == [
+            "build-linux-aarch64",
+            "build-linux-x86_64",
+            "build-macos-arm64",
+            "build-macos-x86_64",
+            "build-windows-x86_64",
+        ]
 
     def test_advisories_are_checked_weekly_and_before_a_release(self):
         """Nothing checked the crates compiled into every wheel and binary, or
@@ -566,10 +582,14 @@ class TestRepositoryGates:
         assert "[windows-latest, macos-14]" in platforms
         extras = re.search(r"\[(dev,[\w,]+)\]", jobs["test-windows"])
         assert extras and "torch" in extras.group(1).split(",")
+        build = _jobs(BUILD.read_text(encoding="utf-8"))["build"]
         for bridged in ("MEDH5_PYTHON=python ", "MEDH5_PYTHON=/nonexistent "):
-            assert bridged in jobs["build"]
-        tested = set(re.findall(r"- target: (\S+)", jobs["test-platforms"]))
-        assert tested == {"aarch64-unknown-linux-gnu", "x86_64-apple-darwin"}
+            assert bridged in build
+        for name, target in (
+            ("test-linux-aarch64", "aarch64-unknown-linux-gnu"),
+            ("test-macos-x86_64", "x86_64-apple-darwin"),
+        ):
+            assert f"name: ci-dist-{target}\n" in jobs[name], name
         assert "-rs" in jobs["test-monai"]
 
     def test_an_older_hdf5_reads_what_the_engine_writes(self):
@@ -644,10 +664,13 @@ class TestRepositoryGates:
             assert "save-if: ${{ github.ref == 'refs/heads/main' }}" in jobs[name]
         # Not where the release's artifacts are built, nor where the job is
         # what a clean build does.
-        for name in ("build", "sdist", "msvc-from-crates-io"):
+        for name in ("sdist", "msvc-from-crates-io"):
             assert cache not in jobs[name], name
+        built = BUILD.read_text(encoding="utf-8")
+        assert cache not in built
         uploads = re.findall(
-            r"upload-artifact@\S+ # v[\d.]+\n {8}with:\n((?: {10}.*\n)+)", text
+            r"upload-artifact@\S+ # v[\d.]+\n {8}with:\n((?: {10}.*\n)+)",
+            text + built,
         )
         assert len(uploads) == 4
         short = "retention-days: ${{ github.event_name == 'pull_request' && 3 || 90 }}"
@@ -812,7 +835,36 @@ class TestDistribution:
         }
         assert informational == {"test-python-next"}
         assert sorted(needs) == sorted(set(jobs) - informational)
-        assert "if: always()" in gate and 'result != "success"' in gate
+        assert re.search(r"^    if: always\(\)$", gate, re.M)
+        # A cancelled job fails the gate too, named apart in the summary.
+        assert '("success", "cancelled")' in gate and "if failed or cancelled:" in gate
+        assert "cancelled or superseded: re-run" in gate
+
+    def test_each_platform_waits_only_for_its_own_build(self):
+        """Every test job needed the one five-target `build`, so no Python test
+        started before the slowest build ended.  A job that downloads a
+        target's wheel or binary needs that target's build job, and no other."""
+        jobs = _jobs(CI.read_text(encoding="utf-8"))
+        build_of = {
+            re.search(r"^      target: (\S+)$", job, re.M)[1]: name  # type: ignore[index]
+            for name, job in jobs.items()
+            if "uses: ./.github/workflows/build.yml" in job
+        }
+        assert len(build_of) == 5
+        downloading = 0
+        for name, job in jobs.items():
+            targets = set(re.findall(r"name: ci-(?:dist|cli)-([\w-]+)$", job, re.M))
+            targets.discard("sdist")
+            needs = re.search(r"^    needs: (.+)$", job, re.M)
+            needed = (set(re.findall(r"[\w-]+", needs[1])) if needs else set()) & set(
+                build_of.values()
+            )
+            if name in build_of.values():
+                continue
+            if targets:
+                downloading += 1
+            assert needed == {build_of[t] for t in targets}, name
+        assert downloading == 11
 
     def test_the_next_python_is_tried_and_not_claimed(self):
         """The classifiers name the interpreters the gating matrix tests, and
@@ -1302,7 +1354,7 @@ class TestDistribution:
         write_sample(tmp_path / "corpus" / "case.medh5")
         assert damaged.main([binary, str(tmp_path / "corpus"), "--runs", "6"]) == 0
         jobs = _jobs(CI.read_text(encoding="utf-8"))
-        assert "damaged.py" in jobs["build"]
+        assert "damaged.py" in _jobs(BUILD.read_text(encoding="utf-8"))["build"]
         msvc = jobs["msvc-from-crates-io"]
         assert "rm -r ws/.cargo" in msvc and "damaged.py" in msvc
         assert "cargo clean --release -p hdf5-metno-src" in msvc
