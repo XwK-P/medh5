@@ -15,7 +15,7 @@ on:
   workflow_call:
   # A change to what is locked or declared is checked on its pull request.
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
     paths:
       - Cargo.lock
       - pyproject.toml
@@ -29,34 +29,98 @@ env:
 
 jobs:
   rustsec:
-    name: RustSec (Cargo.lock)
+    name: RustSec (Cargo.lock)${{ matrix.ref && format(' on {0}', matrix.ref) || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # A scheduled run starts on the default branch only, so on the schedule
+    # each job audits every line: `main` and the patch line.  Any other run
+    # audits the commit it was started for (an empty ref is checkout's
+    # default).  A line not cut yet ends its job successfully at the first
+    # step, never by a job-level `if:`, since a skipped check counts as passing.
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ github.event_name == 'schedule' && fromJSON('["main", "release/2.0"]') || fromJSON('[""]') }}
     steps:
+      - name: Whether the line exists
+        id: line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ matrix.ref }}
+        # Only "not found" means the line is not cut; any other failure of the
+        # lookup fails the job rather than skip the audit.
+        run: |
+          if [ -z "$REF" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif out=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$REF" --silent 2>&1); then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$out" | grep -q 'HTTP 404'; then
+            echo "::notice::$REF does not exist yet; nothing to audit"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.line.outputs.exists == 'true'
+        with:
+          ref: ${{ matrix.ref }}
       - run: rustup toolchain install --no-self-update
+        if: steps.line.outputs.exists == 'true'
       # A pinned release, built from its own lock.
       - run: cargo install cargo-audit --version 0.22.2 --locked
+        if: steps.line.outputs.exists == 'true'
       # `--deny warnings`: an unmaintained, unsound or yanked crate fails as a
       # vulnerable one does, since each is compiled into what the project
       # ships.  One that does not apply is passed over with `--ignore ID` here,
       # with the reason in SECURITY.md.
       - run: cargo audit --deny warnings
+        if: steps.line.outputs.exists == 'true'
 
   pypi:
-    name: PyPI (the extras)
+    name: PyPI (the extras)${{ matrix.ref && format(' on {0}', matrix.ref) || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Every line on the schedule, as `rustsec` above.
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ github.event_name == 'schedule' && fromJSON('["main", "release/2.0"]') || fromJSON('[""]') }}
     steps:
+      - name: Whether the line exists
+        id: line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ matrix.ref }}
+        # Only "not found" means the line is not cut; any other failure of the
+        # lookup fails the job rather than skip the audit.
+        run: |
+          if [ -z "$REF" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif out=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$REF" --silent 2>&1); then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$out" | grep -q 'HTTP 404'; then
+            echo "::notice::$REF does not exist yet; nothing to audit"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.line.outputs.exists == 'true'
+        with:
+          ref: ${{ matrix.ref }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.line.outputs.exists == 'true'
         with:
           python-version: "3.12"
       - run: pip install "pip-audit==2.10.1"
+        if: steps.line.outputs.exists == 'true'
       # The runtime dependency and every extra but `dev`, as a fresh
       # `pip install "medh5[...]"` resolves them today (pip-audit resolves
       # the requirements without installing them).
       - name: What the package and its extras require
+        if: steps.line.outputs.exists == 'true'
         run: |
           python - <<'PY' > requirements.txt
           import tomllib
@@ -72,3 +136,4 @@ jobs:
       # One that does not apply is passed over with `--ignore-vuln ID` here,
       # with the reason in SECURITY.md.
       - run: pip-audit --requirement requirements.txt --strict --desc
+        if: steps.line.outputs.exists == 'true'

@@ -31,6 +31,7 @@ from tests.helpers import ROOT, write_sample
 PYPROJECT = ROOT / "pyproject.toml"
 CI = ROOT / ".github/workflows/ci.yml"
 RELEASE = ROOT / ".github/workflows/release.yml"
+ADVISORIES = ROOT / ".github/workflows/advisories.yml"
 
 
 WORKSPACE = ROOT / "Cargo.toml"
@@ -743,6 +744,40 @@ class TestRepositoryGates:
         assert (
             "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in header
         )
+
+    def test_patch_lines_are_tested_as_main_is(self):
+        """CI ran on `main` only, so a pull request to `release/2.0` merged
+        untested; the advisory audit's pull-request trigger was `main`'s too."""
+        ci = CI.read_text(encoding="utf-8").split("\njobs:\n", 1)[0]
+        on = "\n" + ci.split("\non:\n", 1)[1].split("\n  workflow_call:", 1)[0]
+        for trigger in ("push", "pull_request"):
+            block = on.split(f"\n  {trigger}:\n", 1)[1].split("\n  ", 1)[0]
+            assert block.strip() == 'branches: [main, "release/**"]', trigger
+        advisories = ADVISORIES.read_text(encoding="utf-8").split("\njobs:\n", 1)[0]
+        pull = advisories.split("\n  pull_request:\n", 1)[1]
+        assert pull.split("\n", 1)[0].strip() == 'branches: [main, "release/**"]'
+
+    def test_the_weekly_audit_reads_every_line(self):
+        """A scheduled workflow runs on the default branch only, so the weekly
+        audit saw `main`'s lock and never the patch line's.  Each job audits
+        both on the schedule, and a line not cut yet ends its job successfully
+        at a step: a job-level `if:` would skip the job, and GitHub counts a
+        skipped check as passing."""
+        text = ADVISORIES.read_text(encoding="utf-8")
+        jobs = _jobs(text)
+        assert sorted(jobs) == ["pypi", "rustsec"]
+        for name, job in jobs.items():
+            assert not re.search(r"^    if:", job, re.M), name
+            assert 'fromJSON(\'["main", "release/2.0"]\')' in job, name
+            assert "ref: ${{ matrix.ref }}" in job, name
+            assert 'gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$REF"' in job, name
+            # Only a missing line skips; a failed lookup fails the job.
+            assert "grep -q 'HTTP 404'" in job and "exit 1" in job, name
+            # The check comes first, and every step after it waits on it.
+            steps = job.split("\n      - ")[1:]
+            assert "id: line" in steps[0], name
+            for step in steps[1:]:
+                assert "if: steps.line.outputs.exists == 'true'" in step, name
 
     def test_the_release_runs_ci_on_the_tagged_commit(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
