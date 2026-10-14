@@ -15,14 +15,14 @@
 > Implement workstream W21-03 (conformance suite) of medh5 2.1.0 in this
 > repository. First read `plans/README.md`, `plans/2.1.0/README.md` and
 > `plans/2.1.0/decisions.md` (D1, D19), then `plans/2.1.0/w21-03-conformance.md`
-> in full. Work from the latest `main` on `w21/conformance`; land the three pull
-> requests in order. Check before PR 1 that W21-00 PR 6 has merged (it edits the
-> same `create_truncate`), and before PR 2 that W21-02 PR 1 has (the code
-> revisions). The corpus is a shipped artifact third parties run: every stated
-> count is tested (`TestStatedCounts`), so correct each sentence it names. Write
-> tests first, run the local gate from `CLAUDE.md` (both `conformance run`
-> commands included), add a fragment, open `W21-03: …` pull requests, and do
-> not merge.
+> in full. Work from the latest `main` on `w21/conformance`; land the three
+> items in order as one pull request. Check before PR 1 that W21-00 PR 6 has
+> merged (it edits the same `create_truncate`), and before PR 2 that W21-02 PR 1
+> has (the code revisions). The corpus is a shipped artifact third parties run:
+> every stated count is tested (`TestStatedCounts`), so correct each sentence it
+> names. Write tests first, run the local gate from `CLAUDE.md` (both
+> `conformance run` commands included), add a fragment per item, open the
+> `W21-03: …` pull request, and do not merge.
 
 ## Pull requests
 

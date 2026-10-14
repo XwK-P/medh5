@@ -16,13 +16,13 @@
 > repository. First read `plans/README.md`, `plans/2.1.0/README.md` and
 > `plans/2.1.0/decisions.md` (D27, D31, D35, D38), then
 > `plans/2.1.0/w21-06-python.md` in full. Work from the latest `main` on
-> `w21/python`; land the six pull requests in order. The layering pull requests
-> (3–5) replace Python re-implementations of engine answers with calls into
-> `_core`: where the two disagree today, the engine's answer wins and the
+> `w21/python`; land the six items in order as one pull request. The layering
+> items (3–5) replace Python re-implementations of engine answers with calls
+> into `_core`: where the two disagree today, the engine's answer wins and the
 > difference is a Fixed entry, never silently absorbed. PR 6 is conditional on
 > the semver gate (D35): check it locally with `cargo semver-checks` against
 > 2.0.2 before deciding. Write tests first, run the local gate from `CLAUDE.md`,
-> add fragments, open `W21-06: …` pull requests, and do not merge.
+> add a fragment per item, open the `W21-06: …` pull request, and do not merge.
 
 ## Pull requests
 

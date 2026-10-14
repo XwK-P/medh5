@@ -16,14 +16,15 @@
 > 2.1.0 in this repository. First read `plans/README.md`,
 > `plans/2.1.0/README.md` and `plans/2.1.0/decisions.md` (D1, D2, D4–D9, D11,
 > D20), then `plans/2.1.0/w21-02-integrity.md` in full. Work from the latest
-> `main` on `w21/integrity`; land the four pull requests in order, one at a
-> time. PR 1 is the foundation every new code in 2.1.0 waits for, so finish it
-> first. For each item: re-check its "State at 2.0.2" on `main`, write the
-> tests first and see them fail, implement, write the specification text the
-> decision gives (with its Appendix C.1 row and the corrected count sentence),
-> add the conformance case, run the local gate from `CLAUDE.md`, add a
-> `changes/` fragment, push, and open a pull request titled `W21-02: …`. Do not
-> merge: the coordinator does. Ask before allocating any code not in D2.
+> `main` on `w21/integrity`. PR 1 is the foundation every new code in 2.1.0
+> waits for, so it is an enabler: finish it first and open it as a pull request
+> of its own; items 2–4 follow, in order, as a second pull request. For each
+> item: re-check its "State at 2.0.2" on `main`, write the tests first and see
+> them fail, implement, write the specification text the decision gives (with
+> its Appendix C.1 row and the corrected count sentence), add the conformance
+> case, run the local gate from `CLAUDE.md`, add a `changes/` fragment, and
+> push; open each pull request titled `W21-02: …`. Do not merge: the coordinator
+> does. Ask before allocating any code not in D2.
 
 ## Pull requests
 

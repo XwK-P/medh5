@@ -16,11 +16,13 @@
 > of medh5 2.1.0 in this repository. First read `plans/README.md`,
 > `plans/2.1.0/README.md` and `plans/2.1.0/decisions.md` (D21, D22, D25), then
 > `plans/2.1.0/w21-08-cohorts.md` in full. Work from the latest `main` on
-> `w21/cohorts`; land the four pull requests in order (PR 1 first: W21-11 waits
-> for its path rule, and PR 3's split keys use it). Every default whose result
+> `w21/cohorts`. PR 1 is an enabler (W21-11 waits for its path rule, and PR
+> 3's split keys use it): open it as a pull request of its own first; items 2–4
+> follow, in order, as a second pull request. Every default whose result
 > changes in 3.0 raises a `FutureWarning` through `medh5/_deprecation.py`, only
 > where the answer will differ. Write tests first, run the local gate from
-> `CLAUDE.md`, add fragments, open `W21-08: …` pull requests, and do not merge.
+> `CLAUDE.md`, add a fragment per item, open the two `W21-08: …` pull requests,
+> and do not merge.
 
 ## Pull requests
 

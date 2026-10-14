@@ -15,15 +15,15 @@
 > Implement workstream W21-12 (MEDS and FHIR importers) of medh5 2.1.0 in this
 > repository. First read `plans/README.md`, `plans/2.1.0/README.md` and
 > `plans/2.1.0/decisions.md` (D18), then `plans/2.1.0/w21-12-clinical-import.md`
-> in full. Check that W21-11 PR 2 and PR 4 have merged (you need its rounding,
-> `Clock.utc` and `day_bounds`). Work from the latest `main` on
-> `w21/clinical-import`; land the three pull requests in order. The importers
-> follow 1.1 §5 and §10 to the letter: invent no unit, no time zone, no code, no
-> availability and no absolute date for a relative clock; where a rule would need
-> a guess, refuse instead, so a report never holds a `guess` note. `pyarrow` is
-> an optional dependency: its tests `importorskip` it and a CI job installs it.
-> Write tests first, run the local gate from `CLAUDE.md`, add fragments, open
-> `W21-12: …` pull requests, and do not merge.
+> in full. Check that W21-11 has merged (you need its rounding, `Clock.utc` and
+> `day_bounds`). Work from the latest `main` on `w21/clinical-import`; land the
+> three items in order as one pull request. The importers follow 1.1 §5 and §10
+> to the letter: invent no unit, no time zone, no code, no availability and no
+> absolute date for a relative clock; where a rule would need a guess, refuse
+> instead, so a report never holds a `guess` note. `pyarrow` is an optional
+> dependency: its tests `importorskip` it and a CI job installs it. Write tests
+> first, run the local gate from `CLAUDE.md`, add a fragment per item, open the
+> `W21-12: …` pull request, and do not merge.
 
 ## Pull requests
 
