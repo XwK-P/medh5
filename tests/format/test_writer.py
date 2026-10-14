@@ -27,6 +27,7 @@ from medh5.annotations.voxel import InstanceInput
 from medh5.errors import MEDH5FileError, MEDH5ValidationError, MEDH5VersionError
 from medh5.labels import LabelClass, LabelSet
 from medh5.validate import validate_file
+from tests.helpers import LATER_MINOR
 from tests.kits import Flat, Framed, Numbered, Organs
 
 # Each door a boolean volume comes in by, writing it into annotation `a`, and
@@ -532,7 +533,7 @@ class TestRewriteGate:
         with h5py.File(path, "r") as handle:
             assert handle.attrs["medh5_version"] == "1.1"
 
-    @pytest.mark.parametrize("version", ["2.0", "1.2"])
+    @pytest.mark.parametrize("version", ["2.0", LATER_MINOR])
     def test_S16_the_scrub_and_fix_doors_are_the_same_gate(
         self, tmp_path: Path, version: str
     ):
