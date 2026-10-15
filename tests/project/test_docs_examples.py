@@ -433,16 +433,14 @@ def test_the_registration_preflight_resolves_on_frames() -> None:
 def test_transform_between_over_visits_is_described_as_it_behaves(
     tmp_path: Path,
 ) -> None:
-    """Between two visits, `transform_between` tries the visits' frame pairs in
-    grid-id order, and answers for the first that is one frame (`None`) or that
-    a path relates.
+    """Between two visits of several frames, `transform_between` refuses.
 
-    The guides said it searched every pair and returned the first path. Where
-    the visits share a frame, it answers `None` before it reaches a registered
-    pair whose grids sort later, so renaming a grid changes the answer. Out of
-    reach of `STALE_CLAIMS`: both wrong paragraphs carried a word the
-    disclaimer check reads as a correction. Should the engine come to search
-    every pair, this fails, and the pages need the new rule.
+    The guides once said it searched every pair and returned the first path;
+    2.0.2 tried the pairs in grid-id order, so renaming a grid changed the
+    answer (`apet*` gave `None`, `pet*` a transform). 2.1.0 refuses either
+    naming, and the pages say so and point to `by="grid"`. Out of reach of
+    `STALE_CLAIMS`: the wrong paragraphs carried a word the disclaimer check
+    reads as a correction.
     """
     import numpy as np
 
@@ -477,16 +475,19 @@ def test_transform_between_over_visits_is_described_as_it_behaves(
         with medh5.open(path) as s:
             return s.transform_between("tp0", "tp1")
 
-    assert between_visits("apet") is None  # the shared frame's grids sort first
-    assert between_visits("pet") is not None  # ... and here, after the CT's
-    for page in ("guides/longitudinal.md", "guides/registration.md"):
+    from medh5.errors import MEDH5ValidationError
+
+    for naming in ("apet", "pet"):
+        with pytest.raises(MEDH5ValidationError, match="one frame"):
+            between_visits(naming)
+    pages = ("guides/longitudinal.md", "guides/registration.md")
+    for page in (*pages, "reference/python-api.md"):
         text = (DOCS / page).read_text(encoding="utf-8")
-        assert "grid-id order" in text, page
+        assert "grid-id order" not in text, page
         assert "returns the first path it finds" not in text, page
         assert "share a frame with the other visit's" not in text, page
-    assert "grid-id order" in (DOCS / "reference/python-api.md").read_text(
-        encoding="utf-8"
-    )
+        assert "MEDH5ValidationError" in text, page
+        assert 'by="grid"' in text, page
 
 
 def _documented_signatures() -> list[tuple[str, str]]:

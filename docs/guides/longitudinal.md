@@ -226,21 +226,17 @@ for path in paths:
 
 Two details decide whether this check is worth running.
 
-**Resolve between the frames, not the timepoints — and not by grid id either.**
-A visit may hold a CT grid and a PET grid on different frames.
-`transform_between("tp0", "tp1")` takes the frames of each visit's grids, in
-grid-id order, and tries them pair by pair: the first pair that is one frame
-answers `None`, and the first pair a path relates answers with that transform,
-whichever comes first. So the answer depends on how the grids are named. A CT
-registration answers "yes" for a PET dataset that has no registration of its
-own; and two PET grids on one shared frame answer `None` for the whole visit
-pair, CT registration or not, when their ids sort before the CT grids'.
-Naming the two grids instead is not enough:
-grid ids and timepoint ids are separate namespaces (spec §2.3), so a grid may
-legitimately be called `tp0`, and a key is read as a timepoint before it is read
-as a grid — which puts the whole visit's frames back in play for exactly the
-files most likely to be affected. A frame uid is matched last and answers for
-that frame alone.
+**Resolve between the frames, not the timepoints.** A visit may hold a CT grid
+and a PET grid on different frames, and then no one transform relates it to
+another visit: `transform_between("tp0", "tp1")` raises
+`MEDH5ValidationError`, naming each visit's grids and their frames. It answers
+for two visits only when each visit's grids share one frame. Asking about the
+two grids works when you say that the keys are grids,
+`transform_between(first_grid, second_grid, by="grid")`; without `by=`, a key
+is read as a timepoint before it is read as a grid, and grid ids and timepoint
+ids are separate namespaces (spec §2.3), so a grid may legitimately be called
+`tp0` and the question goes back to the whole visit. A frame uid, as the recipe
+above passes, answers for that frame alone.
 
 **Compare the frames first.** `transform_between` answers `None` both when
 nothing relates the two and when they are already the same frame and need

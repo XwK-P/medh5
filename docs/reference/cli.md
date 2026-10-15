@@ -500,6 +500,10 @@ medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...
                                               [--label TEXT] [--points ANN]
                                               [--frame-salt S]
 
+medh5 convert from-itk-transform TRANSFORM SAMPLE --id ID --fixed GRID --moving GRID
+                                 [--warp FILE --vectors lps|ras] [--inverse-warp FILE]
+medh5 convert to-itk-transform SAMPLE OUT --id ID [--warp-out FILE --vectors lps|ras]
+
 medh5 convert from-nnunet ROOT OUT [--case ID ...] [--include-test]
                                    [--coord-system LPS|RAS] [--codec PROFILE]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
@@ -579,6 +583,13 @@ way.
 scrub used, the DICOM side's frame of reference (the SEG's or the RTSTRUCT's on
 import, the source images' on export) is compared with the sample's as the
 scrub wrote it, rather than refused as another frame.
+
+`from-itk-transform` stores an ITK `.tfm`, `.txt` or ANTs `.mat` transform as
+`--id`, from grid `--fixed`'s frame to grid `--moving`'s (ITK's fixed and moving
+images); `--warp` adds a displacement field applied before it, as ANTs pairs
+them, and needs `--vectors`, which the field's file does not say.
+`to-itk-transform` writes `--id` back, its displacement to `--warp-out` in the
+`--vectors` convention.
 
 `from-dicom-seg` writes annotation `seg` and `from-rtstruct` writes `contours`
 unless `--id` names another; `to-nnunet` exports annotation `seg` unless

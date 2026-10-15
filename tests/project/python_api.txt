@@ -343,7 +343,7 @@ medh5.Sample.summary	method	()
 medh5.Sample.support	property
 medh5.Sample.timepoints	property
 medh5.Sample.tracks	method	(class_key=None, *, measure=True)
-medh5.Sample.transform_between	method	(source, target)
+medh5.Sample.transform_between	method	(source, target, *, by=None)
 medh5.Sample.transforms	property
 medh5.Sample.valid_region	method	(image_id, roi=None)
 medh5.Sample.verify	method	(partial=None)
@@ -3003,6 +3003,12 @@ medh5.io.ConversionReport.source	field
 medh5.io.ConversionReport.to_json	method	()
 medh5.io.ConversionReport.warn	method	(kind, message, detail=None)
 medh5.io.ConversionReport.warnings	property
+medh5.io.ItkTransform	class	(name, matrix, components=()) bases=
+medh5.io.ItkTransform.components	field
+medh5.io.ItkTransform.dimension	property
+medh5.io.ItkTransform.is_composite	property
+medh5.io.ItkTransform.matrix	field
+medh5.io.ItkTransform.name	field
 medh5.io.Note	class	(kind, message, severity='info', detail=<factory>) bases=
 medh5.io.Note.detail	field
 medh5.io.Note.kind	field
@@ -3070,6 +3076,7 @@ medh5.io.dicom_seg.require_highdicom	function	()
 medh5.io.dicom_seg.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None, segmentation_type='binary', fractional_type='PROBABILITY')
 medh5.io.from_dicom	function	(root, out, *, group_by='subject', modalities=None, series_uids=None, codec='balanced', report=None, per_slice_rescale='refuse')
 medh5.io.from_dicom_seg	function	(path, sample, *, ann_id='seg', grid=None, annotated_classes='all_given', frame_salt=None, report=None)
+medh5.io.from_itk_transform	function	(path, sample, *, transform_id, fixed, moving, warp=None, vectors=None, inverse_warp=None, report=None)
 medh5.io.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None, plane_as_volume=False, label_set=None)
 medh5.io.from_nnunetv2	function	(root, out, *, case_ids=None, coord_system='LPS', codec='balanced', report=None, include_test=False)
 medh5.io.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None, roi_classes=None, points_id=None, open_curves='omit')
@@ -3098,6 +3105,17 @@ medh5.io.grouping.group_by_subject	function	(occasions, *, mode='subject', repor
 medh5.io.grouping.note_instance_ids	function	(group, log)
 medh5.io.grouping.output_name	function	(group, used, *, safe=None)
 medh5.io.import_seg_nifti	function	(path, masks, *, ann_id='seg', grid=None, coord_system=None, transpose=True, annotated_classes='all_given', assume_aligned=False, assume_geometry=False, report=None, plane_as_volume=False)
+medh5.io.itk	module
+medh5.io.itk.ItkTransform	class	(name, matrix, components=()) bases=
+medh5.io.itk.ItkTransform.components	field
+medh5.io.itk.ItkTransform.dimension	property
+medh5.io.itk.ItkTransform.is_composite	property
+medh5.io.itk.ItkTransform.matrix	field
+medh5.io.itk.ItkTransform.name	field
+medh5.io.itk.from_itk_transform	function	(path, sample, *, transform_id, fixed, moving, warp=None, vectors=None, inverse_warp=None, report=None)
+medh5.io.itk.read_itk_transform	function	(path)
+medh5.io.itk.to_itk_transform	function	(sample, out, *, transform_id, warp_out=None, vectors=None)
+medh5.io.itk.write_itk_transform	function	(path, transform)
 medh5.io.legacy	module
 medh5.io.legacy.BOX_SHIFT	constant	float
 medh5.io.legacy.LegacyMeta	class	(spatial=<factory>, shape=None, image_names=<factory>, seg_names=<factory>, label=None, label_name=None, patch_size=None, extra=<factory>, schema_version='1') bases=
@@ -3152,6 +3170,7 @@ medh5.io.nnunetv2.cases	function	(root, document, *, include_test=False)
 medh5.io.nnunetv2.from_nnunetv2	function	(root, out, *, case_ids=None, coord_system='LPS', codec='balanced', report=None, include_test=False)
 medh5.io.nnunetv2.read_dataset_json	function	(path)
 medh5.io.nnunetv2.to_nnunetv2	function	(paths, out, *, dataset_name='Dataset001_medh5', file_ending='.nii.gz', annotation='seg', classes=None, unlabeled='refuse', report=None, split=None, replace=False)
+medh5.io.read_itk_transform	function	(path)
 medh5.io.read_nifti	function	(path, *, coord_system='LPS', transpose=True, fourth_axis='auto', assume_geometry=False, plane_as_volume=False)
 medh5.io.report	module
 medh5.io.report.ConversionReport	class	(source='', converter='', outputs=<factory>, notes=<factory>) bases=
@@ -3184,9 +3203,11 @@ medh5.io.rtstruct.read_rtstruct	function	(path)
 medh5.io.rtstruct.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None, points=None)
 medh5.io.scan_dicom	function	(root, *, report=None)
 medh5.io.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None, segmentation_type='binary', fractional_type='PROBABILITY')
+medh5.io.to_itk_transform	function	(sample, out, *, transform_id, warp_out=None, vectors=None)
 medh5.io.to_nifti	function	(path, image_id, out, *, physical=True, annotation=None, class_key=None, report=None)
 medh5.io.to_nnunetv2	function	(paths, out, *, dataset_name='Dataset001_medh5', file_ending='.nii.gz', annotation='seg', classes=None, unlabeled='refuse', report=None, split=None, replace=False)
 medh5.io.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None, points=None)
+medh5.io.write_itk_transform	function	(path, transform)
 medh5.labels	module
 medh5.labels.BACKGROUND_ID	constant	int
 medh5.labels.CLOSURES	constant	tuple
@@ -3381,7 +3402,7 @@ medh5.sample.Sample.summary	method	()
 medh5.sample.Sample.support	property
 medh5.sample.Sample.timepoints	property
 medh5.sample.Sample.tracks	method	(class_key=None, *, measure=True)
-medh5.sample.Sample.transform_between	method	(source, target)
+medh5.sample.Sample.transform_between	method	(source, target, *, by=None)
 medh5.sample.Sample.transforms	property
 medh5.sample.Sample.valid_region	method	(image_id, roi=None)
 medh5.sample.Sample.verify	method	(partial=None)

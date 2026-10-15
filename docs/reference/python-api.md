@@ -169,21 +169,27 @@ s.resolve_frames(frame_a, frame_b) # the same, between two frame uids; memoised 
 t.kind                             # "identity" | "affine" | "displacement" |
                                    # "bspline" | "composite"
 t.from_frame, t.to_frame
-t.is_invertible                    # the mapping is invertible
-t.inverse()                        # the *stored* inverse, when the file has one
+t.is_invertible                    # the file claims the mapping is invertible
+t.inverse()                        # the stored inverse; a chain's or composite's
+                                   # steps inverted in reverse; or None
 t.transform_points(points)         # world -> world, in t.units
+# A displacement field, w, also has:
+# w.jacobian_determinant(roi)      # det(I + du/dx): the whole field's, at the
+#                                  # voxels roi selects (== w.jacobian_determinant()[roi])
+# w.folding_fraction(roi)          # the fraction of those voxels with det <= 0
 
 from medh5.transforms import jacobian_determinant, target_registration_error
 target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ...}
 jacobian_determinant(field, grid)                           # for a displacement field
 ```
 
-`transform_between` accepts a timepoint id, a grid id or a frame uid at either
-end, matched in that order. A timepoint stands for the frames of all its grids:
-their pairs are tried in grid-id order, and the first that is one frame answers
-`None`, the first a path relates answers with that transform — so between two
-visits of several frames, resolve between the frames the images you read are
-on ([why](../guides/longitudinal.md#train-on-the-pairs)). It searches the frame
+`transform_between(source, target, *, by=None)` accepts a timepoint id, a grid
+id or a frame uid at either end, matched in that order unless `by="timepoint"`,
+`"grid"` or `"frame"` says which. A timepoint stands for the frames of all its
+grids, and has an answer only when they are one frame: a visit holding several
+raises `MEDH5ValidationError` naming its grids and frames, so between such
+visits ask by grid (`by="grid"`) or resolve between the frames the images you read are on
+([why](../guides/longitudinal.md#train-on-the-pairs)). It searches the frame
 graph, composing chains and traversing a link backwards only where its inverse
 can be *evaluated* — an affine's or identity's analytic inverse, or a stored
 `inverse_id` — not merely where `invertible=True` is declared. It returns
