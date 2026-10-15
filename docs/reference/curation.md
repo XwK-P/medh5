@@ -263,7 +263,10 @@ w.deidentification(method="dicom-psi-profile",
 **A file with no de-identification record must be treated as potentially
 identifying.** Absence is never evidence.
 
-`medh5 scrub` finds identifiers and writes this record for you. The procedure —
+`medh5 scrub` finds identifiers and writes this record for you. From Python,
+`medh5.curation.scrub.scan(path, profile="basic")` finds them and changes
+nothing, each a `medh5.curation.scrub.Finding`; `medh5.curation.scrub.PROFILES`
+are the profiles it takes. The procedure —
 including, importantly, what it cannot do — is
 [De-identify and publish](../guides/deidentify.md).
 

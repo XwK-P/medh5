@@ -282,19 +282,28 @@ def mentions(relative: str) -> Iterator[tuple[Section, str, bool]]:
 
 
 def resolve(dotted: str) -> Any:
-    """The object a dotted path from the package names, or `_MISSING`."""
+    """The object a dotted path from the package names, or `_MISSING`.
+
+    Attribute by attribute, as Python reads it: `medh5.dataset.check` is the
+    function the package exports, not the submodule of that name, which is
+    imported only where no attribute names it.
+    """
     parts = dotted.split(".")
-    for cut in range(len(parts), 0, -1):
-        try:
-            value = importlib.import_module(".".join(parts[:cut]))
-        except ImportError:
-            continue
-        for part in parts[cut:]:
-            value = getattr(value, part, _MISSING)
-            if value is _MISSING:
-                break
-        return value
-    return _MISSING
+    try:
+        value: Any = importlib.import_module(parts[0])
+    except ImportError:
+        return _MISSING
+    for i, part in enumerate(parts[1:], start=2):
+        found = getattr(value, part, _MISSING)
+        if found is _MISSING and inspect.ismodule(value):
+            try:
+                found = importlib.import_module(".".join(parts[:i]))
+            except ImportError:
+                return _MISSING
+        if found is _MISSING:
+            return _MISSING
+        value = found
+    return value
 
 
 _MISSING = object()
@@ -356,17 +365,36 @@ def rows() -> list[Row]:
         m: attribute_docs(importlib.import_module(m)) for m in modules()
     }
     found = sections({name for _, name, _ in entries}, qualified=True)
+    # A bare mention of a name two objects share (`load`, `SCHEMA`) cannot
+    # say which it documents, so it documents neither: each needs its path.
+    objects: dict[str, set[int]] = {}
+    for _, name, value in entries:
+        objects.setdefault(name, set()).add(id(value))
     out: list[Row] = []
     for module_name, name, value in entries:
         kind = kind_of(value)
         doc = own_doc(value, kind)
         if not doc and kind in ("constant", "type"):
-            # Where the constant is defined, if not in the module exporting it.
+            # Where the constant is defined, if not in the module exporting
+            # it: a module whose attribute of that name is this object.
             owners = [module_name, *sorted(docs)]
-            doc = next((docs[m][name] for m in owners if name in docs[m]), "")
+            doc = next(
+                (
+                    docs[m][name]
+                    for m in owners
+                    if name in docs[m]
+                    and getattr(sys.modules[m], name, _MISSING) is value
+                ),
+                "",
+            )
         if kind == "constant":
             kind = f"constant (`{type(value).__name__}`)"
-        section = found.get(("object", id(value))) or found.get(name)
+        candidates = [found.get(("object", id(value)))]
+        if len(objects[name]) == 1:
+            candidates.append(found.get(name))
+        named = [c for c in candidates if c is not None]
+        # The reference before the guides, whichever way the name was written.
+        section = min(named, key=lambda s: _tier(s.page)) if named else None
         out.append(Row(module_name, name, kind, summary(doc), section))
     return out
 

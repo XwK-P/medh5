@@ -185,6 +185,20 @@ jobs:
             | grep -v -e '/README.md$' -e '/lead.md$' | grep -q . \
             || { echo "::error::add changes/<name>.md (see changes/README.md)"; exit 1; }
       - run: python .github/scripts/changelog.py check
+      # tests/project/undocumented_api.txt only shrinks: a new public name is
+      # documented, never listed.  The tests see the list, not the base it is
+      # against, so this step refuses a line the pull request adds.
+      - name: No public name joins the undocumented list
+        if: github.event_name == 'pull_request'
+        run: |
+          list=tests/project/undocumented_api.txt
+          git cat-file -e "HEAD^1:$list" 2>/dev/null || exit 0
+          added=$(git diff --unified=0 HEAD^1 HEAD -- "$list" | grep '^+[^+]' || true)
+          if [ -n "$added" ]; then
+            echo "::error::document these in docs/reference/ rather than list them:"
+            echo "$added"
+            exit 1
+          fi
       # The pin in the `dev` extra, read from pyproject.toml: CI and a
       # developer's checkout run one version by construction.  Installing the
       # extra itself would compile the engine to run a linter.

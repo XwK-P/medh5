@@ -6,7 +6,9 @@ row per name in a public module's `__all__`, with its docstring's first
 sentence and the section of the pages that documents it.  At 2.0.2, 470 of the
 names were named on no page outside the specification.
 `tests/project/undocumented_api.txt` lists the ones still without a section,
-and may only shrink: a pull request that adds a public name documents it.
+and may only shrink: a pull request that adds a public name documents it.  A
+test cannot see the base a pull request is against, so CI's `lint` job refuses
+a line the pull request adds to the list.
 """
 
 from __future__ import annotations
@@ -97,3 +99,30 @@ def test_a_qualified_name_documents_that_object_alone(rows: list) -> None:
     for other in ("medh5.task.SCHEMA", "medh5.cache.SCHEMA"):
         section = by_path[other].section
         assert section is None or section.page != "reference/cohort-manifest.md"
+
+
+def test_a_bare_name_two_objects_share_documents_neither(rows: list) -> None:
+    """`load(...)` on the label-set page is `medh5.labels.load`; it says nothing
+    of the manifest's or the split's `load`, which their paths document."""
+    by_path = {row.path: row for row in rows}
+    for path in ("medh5.dataset.manifest.load", "medh5.dataset.split.load"):
+        section = by_path[path].section
+        assert section is not None and section.page == "reference/cohort-manifest.md"
+
+
+def test_a_constant_borrows_only_its_own_objects_docstring(rows: list) -> None:
+    """A constant with no docstring of its own takes one from the module that
+    defines *it*, never from another module's constant of the same name."""
+    by_path = {row.path: row for row in rows}
+    assert "manifest" not in by_path["medh5.cache.SCHEMA"].summary
+    assert "collection" not in by_path["medh5.cache.SUFFIX"].summary
+
+
+def test_a_dotted_path_resolves_as_python_reads_it() -> None:
+    """`medh5.dataset.check` is the function the package exports, not the
+    submodule its name shadows."""
+    import medh5.dataset
+
+    assert api_index.resolve("medh5.dataset.check") is medh5.dataset.check
+    assert api_index.resolve("medh5.dataset.manifest.load") is not None
+    assert api_index.resolve("medh5.no_such_module.x") is api_index._MISSING

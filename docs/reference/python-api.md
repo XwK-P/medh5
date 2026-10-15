@@ -593,6 +593,7 @@ row.events, row.slots["ct"].image_id, row.target.status
 | `CacheWriter.add(entry_id, values, *, sources, ...)` | One entry, naming every source version it read; at the patient level also its row, fingerprint, cutoff and the versions it encodes |
 | `CacheWriter.add_row(row, values, ...)` | A preflight row's feature, its id, fingerprint, cutoff, admitted versions and sources taken from the `RowView` |
 | `TaskManifest.repin(base=None, *, sources=None, dry_run=False, confine=None)` | Pin sources to the samples they name now; returns a `RepinReport` (`changed`, a `Repinned` per source, `unchanged`, `reconciled`, `rows`) |
+| `medh5.task.Finding` | One thing wrong with a task, its sources or a cache: its code, a key of `medh5.task.CODES` (contract §9) |
 | `TaskManifest.notes` | What the manifest should state and does not, each a `medh5.task.Note`; unlike a `Finding`, never a failure |
 | `confine=` | On `preflight`, `reconcile` and `repin`, where sources may be opened from (`medh5.task.Confine`): `True` the manifest's base, a directory, or `False` anywhere |
 

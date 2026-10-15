@@ -400,7 +400,7 @@ to one number:
 | `value`, `has_value` | `(B, N)` | The value, normalised by the fitted statistics; whether there is one — an absent value is not 0 |
 | `unit` | `(B, N)` int | 2 when the value is in the unit its concept was fitted in (and so normalised); 1 when it is in another, or its concept was not fitted — then `value` is 0; 0 without a value |
 | `value_index` | `(B, N)` int | The text value (`value_text`) as a fitted `(concept, value)` pair's index: 0 none, 1 a value the concept never took in training, fitted pairs from 2 (`ConceptVocabulary.n_values` in all) |
-| `comparator` | `(B, N)` int | `eq`, `lt`, ... as `COMPARATORS` index + 1 (`eq` when a value has none); 0 without a value |
+| `comparator` | `(B, N)` int | `eq`, `lt`, ... as `medh5.clinical.COMPARATORS` index + 1 (`eq` when a value has none); 0 without a value |
 | `missing` | `(B, N)` bool | An expected result missing for a source reason: absence, never a negative |
 | `start_age_h`, `end_age_h`, `available_age_h` | `(B, N, 2)` | Effective start, effective end and availability as ages before the cutoff in hours: `[..., 0]` the least, `[..., 1]` the most, equal for an exact instant |
 | `start_known`, `end_known`, `available_known` | `(B, N)` bool | Whether that time is known; an unknown one is zeros, which are not a time |
@@ -417,6 +417,8 @@ orders an unknown time; `order_by = "available"` admits it, as unknown).
 ```bash
 pip install "medh5[monai]"
 ```
+
+`medh5.monai.available()` says whether MONAI imports.
 
 ```python
 from medh5.monai import to_metatensor, from_metatensor, meta_dict, affine_for

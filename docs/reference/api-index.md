@@ -55,7 +55,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `pack` | function | Copy sample files into one collection shard (spec §2.2). | [Python API › Collections](python-api.md#collections) |
 | `Patch` | class | One draw: where to read, and how the location was chosen. | [Python API › Sampling patches](python-api.md#sampling-patches) |
 | `PatchSampler` | class | Choose patch windows in a volume (spec §14.3). | [Python API › Sampling patches](python-api.md#sampling-patches) |
-| `PROFILES` | constant (`tuple`) |  | [Storage › Codec profiles](storage.md#codec-profiles) |
+| `PROFILES` | constant (`tuple`) |  | [Profiles and validation levels › Profiles — what to hold the file to](profiles-and-levels.md#profiles--what-to-hold-the-file-to) |
 | `Provenance` | class | Who did what (§11.1): agents and the activities they performed. | [Curation records › Provenance](curation.md#provenance) |
 | `QualityRecord` | class | What is known about an annotation's trustworthiness: status, confidence, agreement, issues (§11.2). |  |
 | `Sample` | class | A read-only view of one sample root (a file, or a collection member). | [Python API › Sample](python-api.md#sample) |
@@ -251,9 +251,9 @@ compiled extension the modules re-export from, not an API of its own.
 | `HashingTextEncoder` | class | Signed feature hashing of lower-cased words into `dim` floats. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `LEVELS` | constant (`tuple`) |  |  |
 | `open_cache` | function | Open a cache file, read-only. |  |
-| `SCHEMA` | constant (`str`) | What every manifest `Manifest.save` writes names under `schema`. |  |
+| `SCHEMA` | constant (`str`) |  |  |
 | `schema_text` | function | The `medh5.cache/1` manifest JSON Schema. | [Cache manifest schema](cache-schema.md) |
-| `SUFFIX` | constant (`str`) | Conventional extension for a collection file (spec §2.1). |  |
+| `SUFFIX` | constant (`str`) |  |  |
 | `validate_cache` | function | Validate a cache: its checksums, every source pin, and — given a task — that it was built for this task, fitted on this task's training partition, and (`check_rows`) that each row's entry was built at its cutoff, from versions it admits, of its own subject's sources. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 
 ## `medh5.cli` { #medh5-cli }
@@ -279,7 +279,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `Clock` | class | The subject clock every clinical time is measured on (1.1 §3). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `clock_day` | function | The clock day holding `t_us`: its midnight to the last microsecond before the next, counted from the clock's zero (the engine's `Bounds::day_containing`). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `CLOCK_REFERENCES` | constant (`tuple`) |  |  |
-| `COMPARATORS` | constant (`tuple`) | `Quantity.comparator` -&gt; `value_comparator` (`ad` has none). | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
+| `COMPARATORS` | constant (`tuple`) |  | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
 | `DAY` | constant (`int`) |  | [Train on clinical tasks › Describe the task](../guides/clinical-training.md#describe-the-task) |
 | `day_bounds` | function | Every instant of a calendar `day` on a `utc` clock, inclusive. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `days` | function | `value` days, in clock microseconds, rounded half to even, as the engine rounds a visit's `days_from_baseline`. | [Clinical history beside the images › Write a history](../guides/clinical.md#write-a-history) |
@@ -299,7 +299,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `PROFILE` | constant (`str`) |  |  |
 | `records_from` | function | A bundle from lists. |  |
 | `RELATIONS` | constant (`tuple`) |  |  |
-| `SCHEMA` | constant (`str`) | What every manifest `Manifest.save` writes names under `schema`. |  |
+| `SCHEMA` | constant (`str`) |  |  |
 | `schema_text` | function | The clinical descriptor and logical-record JSON Schema. | [Clinical schema](clinical-schema.md) |
 | `SECOND` | constant (`int`) |  |  |
 | `select` | function | Select at `cutoff_us` from records not read from a file. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
@@ -307,7 +307,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `Selection` | class | What a cutoff admits (1.1 §9). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `SELECTION_POLICIES` | constant (`tuple`) |  |  |
 | `SelectionPolicy` | class | How inputs are chosen at a cutoff (task-and-cache contract §3.4). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
-| `STATUSES` | constant (`tuple`) | FHIR R4 Observation and DiagnosticReport status -&gt; event status (`registered` is left out). |  |
+| `STATUSES` | constant (`tuple`) |  |  |
 | `strip` | function | Write the imaging projection of `path` to `out`: a different sample, and a reported loss. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `TEMPORAL_TYPES` | constant (`tuple`) |  |  |
 | `utc_us` | function | An aware `datetime` on a `utc` clock: microseconds since 1970-01-01T00:00:00Z. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
@@ -341,7 +341,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `load_manifest` | function | The suite's `expected.json`. | [Run the conformance suite › Publish a suite](../guides/conformance.md#publish-a-suite) |
 | `publish` | function | Write the whole suite into *outdir* — the cases, `expected.json`, the code table, the JSON Schemas (the sample document, the clinical profile, the task and cache contract), the task-and-cache fixtures under `companion/` when the clinical cases they read are among the cases, a checksum file and instructions, everything a third-party implementation needs; returns *outdir*. | [Run the conformance suite › Publish a suite](../guides/conformance.md#publish-a-suite) |
 | `run_corpus` | function | Build the corpus into *outdir* and check this validator against it. |  |
-| `SCHEMA` | constant (`str`) | What every manifest `Manifest.save` writes names under `schema`. |  |
+| `SCHEMA` | constant (`str`) |  |  |
 | `score` | function | Score a foreign validator's results against the published expectations. | [Annotation kinds › Classification](annotations.md#classification) |
 | `score_companion` | function | Score another implementation of the task-and-cache contract against the fixtures under `companion/` of a published suite. | [Run the conformance suite › Score a task-and-cache implementation](../guides/conformance.md#score-a-task-and-cache-implementation) |
 | `SEED` | constant (`int`) |  |  |
@@ -424,15 +424,15 @@ compiled extension the modules re-export from, not an API of its own.
 |---|---|---|---|
 | `apply` | function | Act on the actionable findings and write the §11.4 attestation. | [Converters › DICOM](converters.md#dicom) |
 | `DATE_KEYS` | constant (`frozenset`) |  |  |
-| `Finding` | class | One place an identifier may live. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
+| `Finding` | class | One place an identifier may live. | [Curation records › De-identification](curation.md#de-identification) |
 | `IDENTIFYING_KEYS` | constant (`frozenset`) | Attributes to remove, from the DICOM PS3.15 E.1 basic profile. |  |
 | `IDENTITY_RULES` | constant (`tuple`) | Findings about what the sample is *called*. |  |
 | `MAX_DEPTH` | constant (`int`) | How deep the walk goes before it reports rather than descends. |  |
-| `PROFILES` | constant (`tuple`) |  | [Storage › Codec profiles](storage.md#codec-profiles) |
+| `PROFILES` | constant (`tuple`) |  | [Curation records › De-identification](curation.md#de-identification) |
 | `PSEUDONYM_PREFIX` | constant (`str`) | What `pseudonymise` produces, and therefore what the rules skip. |  |
 | `pseudonymise` | function | A stable pseudonym for a UID: same input, same output, everywhere. | [De-identify and publish › 2. Apply, with a salt](../guides/deidentify.md#2-apply-with-a-salt) |
 | `QUASI_IDENTIFYING_KEYS` | constant (`frozenset`) | Attributes that identify *in combination* — and that some pipelines need. |  |
-| `scan` | function | Find identifiers in one file. | [Build and split a cohort › Index the directory](../guides/cohorts.md#index-the-directory) |
+| `scan` | function | Find identifiers in one file. | [Curation records › De-identification](curation.md#de-identification) |
 | `scan_document` | function | Every rule, over every string in one sample document. |  |
 | `scrub_paths` | function | `scan` each of *paths*, or, with *apply_changes*, `apply` the other options to each. | [De-identify and publish › 2. Apply, with a salt](../guides/deidentify.md#2-apply-with-a-salt) |
 | `ScrubReport` | class | What was found, what was changed, and what was never looked at. |  |
@@ -456,7 +456,7 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `Assignment` | class | Where one group went. |  |
-| `check` | function | Every cohort-level check, over a manifest. | [Profiles and validation levels › Levels — how much to check](profiles-and-levels.md#levels--how-much-to-check) |
+| `check` | function | Every cohort-level check, over a manifest. | [Cohort check codes](cohort-checks.md) |
 | `CHECK_CODE_SEVERITY` | constant (`dict`) | Each cohort code's severity. | [Cohort check codes](cohort-checks.md) |
 | `CHECK_CODES` | constant (`dict`) | Cohort codes. | [Cohort check codes](cohort-checks.md) |
 | `ClassStats` | class | How often a class occurs, over the samples that examined it. |  |
@@ -466,11 +466,11 @@ compiled extension the modules re-export from, not an API of its own.
 | `entries_for` | function | The manifest entries in one file: one per sample, so a collection fans out into one entry per member (each with its `key`). |  |
 | `Entry` | class | One sample's metadata, as far as a cohort needs it. | [Partial labels and coverage › What this buys you at training time](../guides/partial-labels.md#what-this-buys-you-at-training-time) |
 | `find` | function | Every sample and collection under *root*, in a stable order. |  |
-| `Finding` | class | One cohort check's finding: its `C`-code, severity, message and the samples or paths it concerns. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
+| `Finding` | class | One cohort check's finding: its `C`-code, severity, message and the samples or paths it concerns. | [Cohort check codes](cohort-checks.md) |
 | `make_splits` | function | Assign every group in *manifest* to a partition, or to a fold. | [Train on clinical tasks › Describe the task](../guides/clinical-training.md#describe-the-task) |
 | `Manifest` | class | A cohort as metadata, with the digest that makes a split checkable. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
 | `Moments` | class | Count, mean and M2 for one image key — a Welford accumulator over the finite values folded in. |  |
-| `scan` | function | Build a manifest from a directory tree, and report what would not open. | [Build and split a cohort › Index the directory](../guides/cohorts.md#index-the-directory) |
+| `scan` | function | Build a manifest from a directory tree, and report what would not open. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
 | `Split` | class | A complete assignment of a cohort's groups. | [Curation records › Split claims](curation.md#split-claims) |
 | `write_claims` | function | Stamp each sample with its partition and the manifest digest (§12.3). | [Build and split a cohort › Split it](../guides/cohorts.md#split-it) |
 
@@ -478,12 +478,12 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
-| `check` | function | Every cohort-level check, over a manifest. | [Profiles and validation levels › Levels — how much to check](profiles-and-levels.md#levels--how-much-to-check) |
+| `check` | function | Every cohort-level check, over a manifest. | [Cohort check codes](cohort-checks.md) |
 | `CHECK_CODE_SEVERITY` | constant (`dict`) | Each cohort code's severity. | [Cohort check codes](cohort-checks.md) |
 | `CHECK_CODES` | constant (`dict`) | Cohort codes. | [Cohort check codes](cohort-checks.md) |
 | `CohortReport` | class | What `medh5.dataset.check` found in a cohort: the manifest it read, the number of samples, every finding and each class's coverage. |  |
-| `Finding` | class | One cohort check's finding: its `C`-code, severity, message and the samples or paths it concerns. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
-| `SEVERITIES` | constant (`tuple`) | `decision` was determined by the data; `guess` was not. |  |
+| `Finding` | class | One cohort check's finding: its `C`-code, severity, message and the samples or paths it concerns. | [Cohort check codes](cohort-checks.md) |
+| `SEVERITIES` | constant (`tuple`) |  |  |
 
 ## `medh5.dataset.manifest` { #medh5-dataset-manifest }
 
@@ -494,10 +494,10 @@ compiled extension the modules re-export from, not an API of its own.
 | `Entry` | class | One sample's metadata, as far as a cohort needs it. | [Partial labels and coverage › What this buys you at training time](../guides/partial-labels.md#what-this-buys-you-at-training-time) |
 | `find` | function | Every sample and collection under *root*, in a stable order. |  |
 | `GROUPABLE` | constant (`tuple`) | Fields worth grouping or stratifying on — all single-valued and scannable. |  |
-| `load` | function | Read a manifest written by `Manifest.save` or `medh5 dataset index`; see `Manifest.load`. | [Annotation kinds › Label sets](annotations.md#label-sets) |
+| `load` | function | Read a manifest written by `Manifest.save` or `medh5 dataset index`; see `Manifest.load`. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
 | `Manifest` | class | A cohort as metadata, with the digest that makes a split checkable. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
 | `PathStyle` | type | How `Manifest.save` writes paths. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
-| `scan` | function | Build a manifest from a directory tree, and report what would not open. | [Build and split a cohort › Index the directory](../guides/cohorts.md#index-the-directory) |
+| `scan` | function | Build a manifest from a directory tree, and report what would not open. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
 | `SCHEMA` | constant (`str`) | What every manifest `Manifest.save` writes names under `schema`. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
 | `SUFFIXES` | constant (`tuple`) |  |  |
 
@@ -508,7 +508,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `Algorithm` | type | How `make_splits` deals groups to partitions: `"medh5.split/2"` moves few when the cohort grows, and is medh5 3.0's default. | [Build and split a cohort › The algorithm, and continuing a split](../guides/cohorts.md#the-algorithm-and-continuing-a-split) |
 | `Assignment` | class | Where one group went. |  |
 | `DEFAULT_RATIOS` | constant (`dict`) |  |  |
-| `load` | function | Read a split written by `medh5 dataset split -o`. | [Annotation kinds › Label sets](annotations.md#label-sets) |
+| `load` | function | Read a split written by `medh5 dataset split -o`. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
 | `make_splits` | function | Assign every group in *manifest* to a partition, or to a fold. | [Train on clinical tasks › Describe the task](../guides/clinical-training.md#describe-the-task) |
 | `Split` | class | A complete assignment of a cohort's groups. | [Curation records › Split claims](curation.md#split-claims) |
 | `write_claims` | function | Stamp each sample with its partition and the manifest digest (§12.3). | [Build and split a cohort › Split it](../guides/cohorts.md#split-it) |
@@ -708,7 +708,7 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `augment_from_fhir` | function | `read_fhir` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
-| `COMPARATORS` | constant (`dict`) | `Quantity.comparator` -&gt; `value_comparator` (`ad` has none). | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
+| `COMPARATORS` | constant (`dict`) | `Quantity.comparator` -&gt; `value_comparator` (`ad` has none). | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `read_fhir` | function | The Observations and DiagnosticReports of *subject* (a reference, such as `Patient/123`) in *source*, as clinical records on *clock*, and what the conversion decided. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `STATUSES` | constant (`dict`) | FHIR R4 Observation and DiagnosticReport status -&gt; event status (`registered` is left out). | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `UCUM` | constant (`str`) |  | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
@@ -752,7 +752,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `migrate_paths` | function | Migrate a cohort, minting one label set for all of it. | [Converters › 0.x files](converters.md#0x-files) |
 | `read_legacy` | function | A whole 0.x file. |  |
 | `SCHEMA_VERSION` | constant (`str`) | The only 0.x schema version that ever shipped. |  |
-| `SUFFIX` | constant (`str`) | Conventional extension for a collection file (spec §2.1). |  |
+| `SUFFIX` | constant (`str`) |  |  |
 | `write_sidecar` | function | Write the minted label set for review before a cohort-wide migration. |  |
 
 ## `medh5.io.meds` { #medh5-io-meds }
@@ -811,7 +811,7 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
-| `available` | function | Every vocabulary name `load` accepts, bundled and registered. | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
+| `available` | function | Every vocabulary name `load` accepts, bundled and registered. | [Annotation kinds › Label sets](annotations.md#label-sets) |
 | `BACKGROUND_ID` | constant (`int`) |  |  |
 | `canonical_json` | function | Return the canonical JSON bytes of a document: sorted keys, no whitespace, UTF-8 (§5.1). |  |
 | `check` | function | Whether sample files share one vocabulary, as `medh5 labels check --json`. | [Choose and map a label set › Find where a cohort disagrees](../guides/label-sets.md#find-where-a-cohort-disagrees) |
@@ -838,7 +838,7 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `affine_for` | function | The index→world affine of one image, as MONAI receives it: optionally re-expressed in *space*, and in millimetres (see `_monai_affine`). | [PyTorch and MONAI › MONAI](torch.md#monai) |
-| `available` | function | Whether MONAI can be imported. | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
+| `available` | function | Whether MONAI can be imported. | [PyTorch and MONAI › MONAI](torch.md#monai) |
 | `convert_affine` | function | Re-express an index→world affine in another world convention. | [PyTorch and MONAI › A reader for `LoadImage`](torch.md#a-reader-for-loadimage) |
 | `from_metatensor` | function | A `MetaTensor` back to `(array, geometry)` a writer can consume. | [PyTorch and MONAI › MONAI](torch.md#monai) |
 | `LoadMedH5d` | class | `medh5.monai.to_dict` as a MONAI dictionary transform. | [PyTorch and MONAI › A reader for `LoadImage`](torch.md#a-reader-for-loadimage) |
@@ -870,7 +870,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `ImageCollection` | class | The sample's images, with timepoint- and modality-aware views. |  |
 | `MANAGED_ROOT_ATTRS` | constant (`tuple`) | Root attributes `commit` writes itself; an amend does not copy them. |  |
 | `open_sample` | function | Open a `.medh5` sample file, read-only. | [Python API › Opening](python-api.md#opening) |
-| `PROFILES` | constant (`tuple`) |  | [Storage › Codec profiles](storage.md#codec-profiles) |
+| `PROFILES` | constant (`tuple`) |  | [Profiles and validation levels › Profiles — what to hold the file to](profiles-and-levels.md#profiles--what-to-hold-the-file-to) |
 | `ROOT_DIGEST_ATTRS` | constant (`tuple`) | Root attributes covered by `content_id`. |  |
 | `Sample` | class | A read-only view of one sample root (a file, or a collection member). | [Python API › Sample](python-api.md#sample) |
 | `SampleWriter` | class | Builder for one sample. | [Python API › Writing](python-api.md#writing) |
@@ -945,7 +945,7 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `CENSORING` | constant (`tuple`) | What a target does with a row it cannot label (contract §5). |  |
-| `CODES` | constant (`dict`) | The companion contract's finding codes (T1xx manifest, T2xx identity and splits, T3xx sources, T4xx caches) and what each means. | [Diagnostic codes](diagnostic-codes.md) |
+| `CODES` | constant (`dict`) | The companion contract's finding codes (T1xx manifest, T2xx identity and splits, T3xx sources, T4xx caches) and what each means. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `concept_token` | function | An event's concept token: `kind|code_system|code`, or `kind|` when it is uncoded. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `Confine` | type | Where a runner lets a task's sources be opened from (contract §2): `True` confines them to the base relative URIs resolve against, a path to that directory, `False` opens wherever the URIs point. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `EventTable` | class | One subject's merged event versions, as columns. |  |
@@ -997,7 +997,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `PairedPatchDataset` | class | Corresponding patches from two visits of one subject (§3.7, §10). | [PyTorch and MONAI › PairedPatchDataset — the same place at two visits](torch.md#pairedpatchdataset--the-same-place-at-two-visits) |
 | `PairReport` | class | What a paired dataset kept and what it skipped. |  |
 | `Patch` | class | One draw: where to read, and how the location was chosen. | [Python API › Sampling patches](python-api.md#sampling-patches) |
-| `PatchDataset` | class | `samples_per_volume` patches from each file, drawn by a sampler. | [Threads, processes and open files › Fork and exec](../explanation/concurrency.md#fork-and-exec) |
+| `PatchDataset` | class | `samples_per_volume` patches from each file, drawn by a sampler. | [PyTorch and MONAI › PatchDataset — random patches](torch.md#patchdataset--random-patches) |
 | `PatchSampler` | class | Choose patch windows in a volume (spec §14.3). | [Python API › Sampling patches](python-api.md#sampling-patches) |
 | `require_torch` | function | Without PyTorch, raise an `ImportError` that says how to install it — or, when it is installed and fails to import, why. |  |
 | `set_cache_size` | function | Resize this process's cache: how many files each worker keeps open. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
@@ -1005,7 +1005,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `TimepointPair` | class | One ordered pair of visits, and the change label spanning it, if any. |  |
 | `TimepointPairSampler` | class | Enumerate the visit pairs a longitudinal model trains on (§3.7, §9). | [PyTorch and MONAI › PairedPatchDataset — the same place at two visits](torch.md#pairedpatchdataset--the-same-place-at-two-visits) |
 | `VolumeDataset` | class | One item per file: the whole volume, eagerly read. | [PyTorch and MONAI › VolumeDataset — whole volumes](torch.md#volumedataset--whole-volumes) |
-| `worker_init_fn` | function | `DataLoader(worker_init_fn=...)`: drop handles inherited across `fork` (in a process that opened them, close them; see `HandleCache.clear`). | [Threads, processes and open files › Fork and exec](../explanation/concurrency.md#fork-and-exec) |
+| `worker_init_fn` | function | `DataLoader(worker_init_fn=...)`: drop handles inherited across `fork` (in a process that opened them, close them; see `HandleCache.clear`). | [PyTorch and MONAI › The DataLoader](torch.md#the-dataloader) |
 
 ## `medh5.torch.clinical` { #medh5-torch-clinical }
 
@@ -1033,7 +1033,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `GridPatchDataset` | class | Deterministic sliding-window cover of every file — the inference path. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
 | `LABEL_FORMATS` | constant (`tuple`) |  |  |
 | `PairedPatchDataset` | class | Corresponding patches from two visits of one subject (§3.7, §10). | [PyTorch and MONAI › PairedPatchDataset — the same place at two visits](torch.md#pairedpatchdataset--the-same-place-at-two-visits) |
-| `PatchDataset` | class | `samples_per_volume` patches from each file, drawn by a sampler. | [Threads, processes and open files › Fork and exec](../explanation/concurrency.md#fork-and-exec) |
+| `PatchDataset` | class | `samples_per_volume` patches from each file, drawn by a sampler. | [PyTorch and MONAI › PatchDataset — random patches](torch.md#patchdataset--random-patches) |
 | `VolumeDataset` | class | One item per file: the whole volume, eagerly read. | [PyTorch and MONAI › VolumeDataset — whole volumes](torch.md#volumedataset--whole-volumes) |
 
 ## `medh5.torch.handles` { #medh5-torch-handles }
@@ -1045,7 +1045,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `HandleCache` | class | PID-scoped, thread-safe LRU cache of open samples. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
 | `open_cached` | function | Open a sample — or a collection member — through the per-worker cache. |  |
 | `set_cache_size` | function | Resize this process's cache: how many files each worker keeps open. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
-| `worker_init_fn` | function | `DataLoader(worker_init_fn=...)`: drop handles inherited across `fork` (in a process that opened them, close them; see `HandleCache.clear`). | [Threads, processes and open files › Fork and exec](../explanation/concurrency.md#fork-and-exec) |
+| `worker_init_fn` | function | `DataLoader(worker_init_fn=...)`: drop handles inherited across `fork` (in a process that opened them, close them; see `HandleCache.clear`). | [PyTorch and MONAI › The DataLoader](torch.md#the-dataloader) |
 
 ## `medh5.torch.samplers` { #medh5-torch-samplers }
 

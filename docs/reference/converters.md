@@ -723,7 +723,8 @@ when asked. The mapping tables and refusals are in
 `medh5.io.meds.COLUMNS` names the MEDS columns the importer reads,
 `medh5.io.meds.BOTH_VALUES` the choices for a row holding both values, and
 `medh5.io.meds.BIRTH` the birth code left out unless asked;
-`medh5.io.fhir.STATUSES` maps a FHIR status to an event's, and
+`medh5.io.fhir.STATUSES` maps a FHIR status to an event's,
+`medh5.io.fhir.COMPARATORS` a quantity's comparator to an event's, and
 `medh5.io.fhir.UCUM` is the system a quantity's unit code is read from.
 
 ### COCO

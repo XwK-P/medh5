@@ -457,6 +457,9 @@ from medh5.labels import load
 load("brats-subregions")
 ```
 
+`medh5.labels.available()` names every vocabulary `medh5.labels.load` takes,
+the bundled ones and any registered.
+
 Ids `0` (background) and `65535` (ignore) are reserved.
 
 `brats-subregions` uses the BraTS 2023 numbering: 1 necrotic tumour core,

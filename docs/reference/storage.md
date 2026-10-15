@@ -38,6 +38,8 @@ attributes. There is no sidecar and no dataset-wide schema to keep in sync.
 $ medh5 recompress cohort/*.medh5 --profile archive
 ```
 
+`medh5.storage.PROFILES` maps each profile's name to its codecs.
+
 Recompression is **in place** by default: each file is rewritten atomically
 under the new profile, and a `.medh5c` collection member by member, each member
 keeping its `content_id`. A file reached through a symbolic link is rewritten

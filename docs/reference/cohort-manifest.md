@@ -44,6 +44,9 @@ path given absolute stays absolute unless `paths="relative"` is passed;
 absolute. No path is covered by `sha256`, so re-basing never changes it.
 `medh5.dataset.manifest.PathStyle` names the three choices, and
 `medh5.dataset.manifest.SCHEMA` is the `schema` every save writes.
+`medh5.dataset.scan(root)` indexes a directory into a manifest,
+`medh5.dataset.manifest.load(path)` reads a saved one, and
+`medh5.dataset.split.load(path)` reads a split `medh5 dataset split -o` wrote.
 
 ## Manifests written before 2.1
 
