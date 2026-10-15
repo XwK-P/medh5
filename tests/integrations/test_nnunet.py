@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
 
 import medh5
 from medh5.errors import MEDH5ValidationError
+from tests.helpers import group_contents
 from tests.kits import Numbered, Organs
 
 nib = pytest.importorskip("nibabel")
@@ -81,6 +83,20 @@ class TestNnunet:
             assert sample.label_set["edema"].parents == (
                 sample.label_set["whole_tumor"].id,
             )
+
+    def test_S7_a_label_volume_is_written_as_its_masks_were(
+        self, dataset, tmp_path, monkeypatch
+    ):
+        written_as_masks(dataset, tmp_path, monkeypatch)
+
+    def test_S7_a_float_label_volume_is_written_as_its_masks_were(
+        self, dataset, tmp_path, monkeypatch
+    ):
+        """Integer labels stored as float32, as some tools write them."""
+        for path in (dataset / "labelsTr").iterdir():
+            labels = np.asarray(nib.load(str(path)).dataobj).astype(np.float32)
+            nib.save(nib.Nifti1Image(labels, np.eye(4)), str(path))
+        written_as_masks(dataset, tmp_path, monkeypatch)
 
     def test_S11_3_an_nnunet_label_volume_is_exhaustive(self, dataset, tmp_path):
         from medh5.io.nnunetv2 import from_nnunetv2
@@ -896,6 +912,27 @@ class TestNnunetDatasetLabels:
         assert np.array_equal(written, volume)
         assert read_dataset_json(back) == read_dataset_json(tmp_path / "D")
 
+    def test_S7_a_brats_label_volume_is_written_as_its_masks_were(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Nested regions over values, and an ignore label."""
+        self._regions(tmp_path / "D", order=True)
+        written_as_masks(tmp_path / "D", tmp_path, monkeypatch)
+
+    def test_S7_a_region_over_background_is_written_as_masks(self):
+        """Background 0 is no value of a labelmap, so a region naming it is
+        written one mask per class."""
+        from medh5.io.nnunetv2 import _label_values
+        from medh5.labels import LabelClass, LabelSet
+
+        labels = LabelSet(
+            "n",
+            version="1.0.0",
+            classes=[LabelClass(1, "a", "A"), LabelClass(2, "r", "R")],
+        )
+        assert _label_values(labels, {2: [1]}) == {1: [1, 2]}
+        assert _label_values(labels, {2: [0, 1]}) is None
+
     def test_S7_regions_no_order_reconstructs_are_refused(self, tmp_path: Path):
         """Without `regions_class_order` the components cannot be painted, and
         the regions are refused rather than written as background."""
@@ -906,6 +943,24 @@ class TestNnunetDatasetLabels:
         with pytest.raises(MEDH5ValidationError, match="does not give back") as caught:
             to_nnunetv2([tmp_path / "out/CASE.medh5"], tmp_path / "back")
         assert "whole_tumor" in str(caught.value)
+
+
+def written_as_masks(root: Path, tmp_path: Path, monkeypatch: Any) -> None:
+    """Imported as one labelmap, each value the classes it is in (its own and
+    every region holding it), every case of *root* holds what one mask per
+    class wrote, byte for byte, its ignore label included."""
+    from medh5.io import nnunetv2
+
+    nnunetv2.from_nnunetv2(root, tmp_path / "labelmap")
+    monkeypatch.setattr(nnunetv2, "_label_values", lambda *_: None)
+    nnunetv2.from_nnunetv2(root, tmp_path / "masks")
+    cases = sorted((tmp_path / "labelmap").glob("*.medh5"))
+    assert cases
+    for path in cases:
+        masks = tmp_path / "masks" / path.name
+        assert group_contents(path, "annotations") == group_contents(
+            masks, "annotations"
+        )
 
 
 def nnunet_checks(root: Path) -> dict:

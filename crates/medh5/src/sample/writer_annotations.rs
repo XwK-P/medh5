@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ndarray::ArrayD;
+use ndarray::{ArrayD, ArrayViewD};
 use serde_json::{Map, Value};
 
 use super::writer::{Annotated, QualityArg, SampleWriter};
@@ -15,10 +15,12 @@ use crate::annotations::encode_geometric::{
     encode_mesh, encode_obb, encode_points, Assertions, ObjectColumns, Polygon,
 };
 use crate::annotations::header::{AnnotationHeader, VOXEL_KINDS};
+use crate::annotations::labelmap_input::{analyse_labelmap, encode_labelmap_input, Values};
 use crate::annotations::layout;
 use crate::annotations::payload::{normalize_masks, Masks, Payload, PayloadData};
 use crate::annotations::select::{analyse, select_encoding_checked, OverlapStats};
 use crate::annotations::Annotation;
+use crate::annotations::LabelValue;
 use crate::array::{DType, NdArray};
 use crate::curation::quality::QualityRecord;
 use crate::geometry::grid::Grid;
@@ -43,6 +45,44 @@ pub enum SegmentationSource {
     Masks(Vec<(ClassKey, ArrayD<bool>)>),
     Probabilities(Vec<(ClassKey, ArrayD<f64>)>),
     Instances(Vec<InstanceInput>),
+}
+
+/// A segmentation given as one integer volume of the grid's spatial shape,
+/// for [`SampleWriter::add_segmentation_labelmap`]: what one mask per class
+/// would say, held as the volume a model or a converter already has.
+///
+/// Each nonzero value names its classes: with no [`values`](Self::values),
+/// the class of that id; with them, the classes each value is given (an
+/// nnU-Net region is a union of values, so a value stands for its own class
+/// and every region holding it).  0 is background.  The volume is borrowed,
+/// never copied.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct LabelmapSource<'a, T: LabelValue> {
+    data: ArrayViewD<'a, T>,
+    values: Option<Vec<(i64, Vec<ClassKey>)>>,
+    ignore_value: Option<i64>,
+}
+
+impl<'a, T: LabelValue> LabelmapSource<'a, T> {
+    /// The volume, each nonzero value the class of that id.
+    pub fn new(data: ArrayViewD<'a, T>) -> LabelmapSource<'a, T> {
+        LabelmapSource { data, values: None, ignore_value: None }
+    }
+
+    /// Each value's classes: every nonzero value the volume holds is one of
+    /// these, or the [`ignore_value`](Self::ignore_value).
+    pub fn values(mut self, values: impl IntoIterator<Item = (i64, Vec<ClassKey>)>) -> LabelmapSource<'a, T> {
+        self.values = Some(values.into_iter().collect());
+        self
+    }
+
+    /// The value marking the ignore region (§7.7): written in band where the
+    /// encoding holds one, else as the sibling `mask` annotation.
+    pub fn ignore_value(mut self, value: i64) -> LabelmapSource<'a, T> {
+        self.ignore_value = Some(value);
+        self
+    }
 }
 
 /// Options shared by every annotation writer.
@@ -211,69 +251,17 @@ impl SampleWriter {
         ann_id: &str,
         grid: &str,
         source: SegmentationSource,
-        options: SegmentationOptions,
+        mut options: SegmentationOptions,
     ) -> Result<(String, Option<OverlapStats>)> {
         let target = self.grid_ref(grid)?.clone();
         let encoding = options.encoding.clone().unwrap_or_else(|| "auto".into());
-        let source_name = match &source {
-            SegmentationSource::Masks(_) => "masks",
-            SegmentationSource::Probabilities(_) => "probabilities",
-            SegmentationSource::Instances(_) => "instances",
+        let (source_name, implied) = match &source {
+            SegmentationSource::Masks(_) => ("masks", None),
+            SegmentationSource::Probabilities(_) => ("probabilities", Some("probmap")),
+            SegmentationSource::Instances(_) => ("instances", Some("instances")),
         };
-        let implied = match &source {
-            SegmentationSource::Probabilities(_) => Some("probmap"),
-            SegmentationSource::Instances(_) => Some("instances"),
-            SegmentationSource::Masks(_) => None,
-        };
-        if let Some(implied) = implied {
-            if encoding != "auto" && encoding != implied {
-                return Err(Error::coded(
-                    "E404",
-                    format!(
-                        "annotation {}: encoding={} contradicts {source_name}=, which is stored as {}; pass encoding='auto' or {}",
-                        repr_str(ann_id),
-                        repr_str(&encoding),
-                        repr_str(implied),
-                        repr_str(implied)
-                    ),
-                ));
-            }
-        }
-        // What a transcode refuses, a write refuses: as `mask`, every class
-        // merged into one volume, written with no `class_ids` and no
-        // `annotated_class_ids` --- and the file validated clean (§4.4).
-        if encoding != "auto" {
-            check_target(&encoding).map_err(|refused| {
-                let message = match encoding.as_str() {
-                    "mask" => format!(
-                        "a `mask` has no classes (§4.4), so every class would merge into one volume and the \
-                         coverage contract (`class_ids`, `annotated_class_ids`) would be lost; pass encoding='auto' \
-                         or one of {}, and write a deliberate union with add_mask",
-                        repr_list(&TRANSCODABLE)
-                    ),
-                    _ => refused.message().to_string(),
-                };
-                Error::coded(
-                    refused.code().unwrap_or("E404"),
-                    format!("annotation {}: encoding={}: {message}", repr_str(ann_id), repr_str(&encoding)),
-                )
-            })?;
-        }
-        if options.threshold.is_some() && !matches!(source, SegmentationSource::Probabilities(_)) {
-            return Err(Error::coded(
-                "E404",
-                format!("annotation {}: threshold= applies to probabilities= only", repr_str(ann_id)),
-            ));
-        }
-        if options.ignore.is_some() && options.ignore_mask.is_some() {
-            return Err(Error::coded(
-                "E404",
-                format!(
-                    "annotation {}: pass ignore= (an array this writer stores) or ignore_mask= (a `mask` annotation you wrote), not both",
-                    repr_str(ann_id)
-                ),
-            ));
-        }
+        let probabilities = matches!(source, SegmentationSource::Probabilities(_));
+        Self::check_segmentation(ann_id, &encoding, source_name, implied, probabilities, &options)?;
         let spatial = target.spatial_shape();
         if let Some(ignore) = &options.ignore {
             if ignore.shape() != spatial.as_slice() {
@@ -298,9 +286,169 @@ impl SampleWriter {
             &examined,
             options.threshold,
         )?;
+        let sibling = if in_band { None } else { options.ignore.take() };
+        let kind = payload.kind.clone();
+        self.finish_segmentation(ann_id, grid, &target, &payload, class_ids, sibling, options)?;
+        Ok((kind, stats))
+    }
+
+    /// [`add_segmentation`](Self::add_segmentation) from one integer volume:
+    /// the same payload, attributes and [`OverlapStats`], byte for byte, as
+    /// the masks its values imply, which are never built (§7.1–§7.6).
+    ///
+    /// The volume is read twice --- measured, then encoded --- and nothing
+    /// the size of the volume is held but the payload itself.  A nonzero value
+    /// the source does not name is refused (E404), as is an `ignore=` array
+    /// (give the region as the source's ignore value) and a `threshold`.
+    pub fn add_segmentation_labelmap<T: LabelValue>(
+        &mut self,
+        ann_id: &str,
+        grid: &str,
+        source: LabelmapSource<'_, T>,
+        options: SegmentationOptions,
+    ) -> Result<(String, Option<OverlapStats>)> {
+        let target = self.grid_ref(grid)?.clone();
+        let encoding = options.encoding.clone().unwrap_or_else(|| "auto".into());
+        Self::check_segmentation(ann_id, &encoding, "labelmap", None, false, &options)?;
+        if options.ignore.is_some() {
+            return Err(Error::coded(
+                "E404",
+                format!(
+                    "annotation {}: a labelmap gives its ignore region as a value (ignore_value=), not as ignore=",
+                    repr_str(ann_id)
+                ),
+            ));
+        }
+        if source.ignore_value.is_some() && options.ignore_mask.is_some() {
+            return Err(Error::coded(
+                "E404",
+                format!(
+                    "annotation {}: pass ignore_value= (a value of the labelmap) or ignore_mask= (a `mask` annotation \
+                     you wrote), not both",
+                    repr_str(ann_id)
+                ),
+            ));
+        }
+        let spatial = target.spatial_shape();
+        if source.data.shape() != spatial.as_slice() {
+            return Err(Error::coded(
+                "E405",
+                format!(
+                    "annotation {}: the labelmap has shape {}; grid {} spatial shape is {}",
+                    repr_str(ann_id),
+                    repr_int_tuple(source.data.shape()),
+                    repr_str(grid),
+                    repr_int_tuple(&spatial)
+                ),
+            ));
+        }
+        let map = match &source.values {
+            None => None,
+            Some(given) => Some(
+                given
+                    .iter()
+                    .map(|(value, keys)| {
+                        Ok((*value, keys.iter().map(|k| self.class_id(k)).collect::<Result<Vec<_>>>()?))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        };
+        let values = Values::new(map.as_deref(), source.ignore_value)?;
+        let examined = self.named_classes(&options.common.annotated_classes)?;
+        let analysis = analyse_labelmap(source.data.view(), values, &examined)?;
+        // The ignore value names no class, so its region meets none and can
+        // always ride in band.
+        let in_band_possible = analysis.has_ignore();
+        let prefer = if encoding == "auto" { None } else { Some(encoding.as_str()) };
+        let kind = select_encoding_checked(&analysis.stats, false, prefer, in_band_possible)?;
+        let in_band = in_band_possible && IN_BAND_IGNORE_KINDS.contains(&kind.as_str());
+        let start_id = if kind == "instances" { Some(self.unused_instance_id()?) } else { None };
+        let payload = encode_labelmap_input(source.data.view(), &analysis, &kind, in_band, start_id)?;
+        let sibling = if in_band { None } else { analysis.ignore_mask(source.data.view()) };
+        let class_ids = payload.class_ids.clone();
+        self.finish_segmentation(ann_id, grid, &target, &payload, class_ids, sibling, options)?;
+        Ok((payload.kind, Some(analysis.stats)))
+    }
+
+    /// Refuse what no segmentation can be written as, whatever its source:
+    /// an `encoding` the source contradicts or no voxel kind is, a
+    /// `threshold` without probabilities, and two ignore regions.
+    fn check_segmentation(
+        ann_id: &str,
+        encoding: &str,
+        source_name: &str,
+        implied: Option<&str>,
+        probabilities: bool,
+        options: &SegmentationOptions,
+    ) -> Result<()> {
+        if let Some(implied) = implied {
+            if encoding != "auto" && encoding != implied {
+                return Err(Error::coded(
+                    "E404",
+                    format!(
+                        "annotation {}: encoding={} contradicts {source_name}=, which is stored as {}; pass encoding='auto' or {}",
+                        repr_str(ann_id),
+                        repr_str(encoding),
+                        repr_str(implied),
+                        repr_str(implied)
+                    ),
+                ));
+            }
+        }
+        // What a transcode refuses, a write refuses: as `mask`, every class
+        // merged into one volume, written with no `class_ids` and no
+        // `annotated_class_ids` --- and the file validated clean (§4.4).
+        if encoding != "auto" {
+            check_target(encoding).map_err(|refused| {
+                let message = match encoding {
+                    "mask" => format!(
+                        "a `mask` has no classes (§4.4), so every class would merge into one volume and the \
+                         coverage contract (`class_ids`, `annotated_class_ids`) would be lost; pass encoding='auto' \
+                         or one of {}, and write a deliberate union with add_mask",
+                        repr_list(&TRANSCODABLE)
+                    ),
+                    _ => refused.message().to_string(),
+                };
+                Error::coded(
+                    refused.code().unwrap_or("E404"),
+                    format!("annotation {}: encoding={}: {message}", repr_str(ann_id), repr_str(encoding)),
+                )
+            })?;
+        }
+        if options.threshold.is_some() && !probabilities {
+            return Err(Error::coded(
+                "E404",
+                format!("annotation {}: threshold= applies to probabilities= only", repr_str(ann_id)),
+            ));
+        }
+        if options.ignore.is_some() && options.ignore_mask.is_some() {
+            return Err(Error::coded(
+                "E404",
+                format!(
+                    "annotation {}: pass ignore= (an array this writer stores) or ignore_mask= (a `mask` annotation you wrote), not both",
+                    repr_str(ann_id)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Write an encoded segmentation's group, and `sibling`, an ignore region
+    /// its encoding could not hold, as the `mask` annotation it names.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_segmentation(
+        &mut self,
+        ann_id: &str,
+        grid: &str,
+        target: &Grid,
+        payload: &Payload,
+        class_ids: Vec<i64>,
+        sibling: Option<ArrayD<bool>>,
+        options: SegmentationOptions,
+    ) -> Result<()> {
         let mut ignore_mask = options.ignore_mask.clone();
-        let mut sibling = None;
-        if options.ignore.is_some() && !in_band {
+        let mut sibling_name = None;
+        if sibling.is_some() {
             let name = format!("{ann_id}_ignore");
             validate_id(&name, "annotation id")?;
             let anns = self.root()?.group("annotations")?;
@@ -310,7 +458,7 @@ impl SampleWriter {
                 }
             }
             ignore_mask = Some(name.clone());
-            sibling = Some(name);
+            sibling_name = Some(name);
         }
         let annotated = self.resolve_annotated(&options.common.annotated_classes, &class_ids)?;
         let mut header = AnnotationHeader::new(
@@ -329,10 +477,10 @@ impl SampleWriter {
         header.derived_from = options.common.derived_from.clone();
         header.extra = payload.attrs.clone();
         header.check()?;
-        self.write_annotation(ann_id, &header, &payload, Some(&target), options.common.codec.as_deref())?;
-        if let (Some(name), Some(ignore)) = (sibling, options.ignore) {
+        self.write_annotation(ann_id, &header, payload, Some(target), options.common.codec.as_deref())?;
+        if let (Some(name), Some(region)) = (sibling_name, sibling) {
             let (prov, codec) = (options.common.prov.as_deref(), options.common.codec.as_deref());
-            if let Err(error) = self.add_mask(&name, ignore, grid, "other", prov, codec) {
+            if let Err(error) = self.add_mask(&name, region, grid, "other", prov, codec) {
                 // The annotation names the mask as its ignore region, so it
                 // goes with it.
                 self.remove_annotation(ann_id).ok();
@@ -340,7 +488,7 @@ impl SampleWriter {
             }
         }
         self.file_quality(ann_id, record);
-        Ok((payload.kind, stats))
+        Ok(())
     }
 
     fn encode_segmentation(

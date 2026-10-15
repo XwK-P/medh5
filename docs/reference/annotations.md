@@ -166,6 +166,33 @@ stats.edges      # the overlapping class pairs it found
 `medh5 seg stats FILE ANN` shows the same numbers for an existing annotation,
 including what each alternative encoding would cost.
 
+### From a label volume
+
+A model's argmax and a converter's label file are already one integer volume.
+**`labelmap=` takes it as it is**: each nonzero value is the class of that id,
+or the classes `label_values` gives it, and `ignore_value` marks the ignore
+region (§7.7). A value may stand for several classes, as a voxel of an nnU-Net
+region's component is in its own class and in the region. What it writes is
+what the masks the volume implies write, byte for byte, the encoding chosen
+from the same `stats`; the masks are never built.
+
+```python
+volume = np.select([lesion, liver, spleen], [3, 1, 2]).astype(np.uint8)
+kind, stats = w.add_segmentation(
+    "segmented",
+    grid="ct",
+    labelmap=volume,
+    label_values={1: "liver", 2: "spleen", 3: ["liver", "lesion"]},
+)
+kind             # "layers": a lesion voxel is in the liver as well
+```
+
+The volume is borrowed from NumPy, never copied, and read with the GIL
+released. A nonzero value it holds that `label_values` does not name is
+refused (`E404`), as are `ignore=` (the region is a value here) and a
+`threshold`. One mask per class held the volume once per class: at 104 classes
+of 384³, 11 GB.
+
 ### Transcoding
 
 Any encoding converts to any other without loss of what both can express:

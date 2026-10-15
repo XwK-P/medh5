@@ -413,6 +413,30 @@ def encode_attr(value: Any) -> Any:
     raise TypeError(f"cannot encode attribute value of type {type(value)!r}")
 
 
+def group_contents(path: Path, name: str) -> dict[str, Any]:
+    """Every attribute, and every dataset's type, chunks and bytes, below
+    group *name* of the file at *path*: what two writes of one thing hold
+    alike, read by h5py rather than by the engine that wrote them."""
+    out: dict[str, Any] = {}
+
+    def attrs(obj: Any) -> dict[str, Any]:
+        return {k: np.asarray(v).tolist() for k, v in obj.attrs.items()}
+
+    def visit(key: str, obj: Any) -> None:
+        if isinstance(obj, h5py.Dataset):
+            stored = np.asarray(obj[()])
+            held = stored.tolist() if stored.dtype.kind == "O" else stored.tobytes()
+            out[key] = (obj.dtype.str, obj.shape, obj.chunks, attrs(obj), held)
+        else:
+            out[key] = attrs(obj)
+
+    with h5py.File(path, "r") as handle:
+        group = handle[name]
+        out[""] = attrs(group)
+        group.visititems(visit)
+    return out
+
+
 def attested_as_written(path: Path) -> None:
     """Write the `content_id` that *path* now recomputes to.
 

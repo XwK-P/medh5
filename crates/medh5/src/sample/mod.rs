@@ -22,6 +22,6 @@ pub mod writer_annotations;
 pub mod writer_clinical;
 
 pub use writer_annotations::{
-    annotation_to_masks, transcode, AnnotationOptions, FieldDtype, ObjectFields, Placement, SegmentationOptions,
-    SegmentationSource, TransformSpec,
+    annotation_to_masks, transcode, AnnotationOptions, FieldDtype, LabelmapSource, ObjectFields, Placement,
+    SegmentationOptions, SegmentationSource, TransformSpec,
 };
