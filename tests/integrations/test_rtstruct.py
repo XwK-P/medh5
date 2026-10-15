@@ -1123,7 +1123,8 @@ class TestRoiNamesAndText:
             study_date="20260101",
         )
 
-    def _sample(self, path: Path, series: dict[str, Any], classes: list) -> Path:
+    @staticmethod
+    def _sample(path: Path, series: dict[str, Any], classes: list) -> Path:
         from medh5.annotations.geometric import Polygon
         from medh5.labels import LabelSet
 
@@ -1223,6 +1224,42 @@ class TestRoiNamesAndText:
         assert written.SpecificCharacterSet == "ISO_IR 192"
         assert str(written.PatientName) == "Müller^Jürgen"
         assert written.StructureSetROISequence[0].ROIName == "Rückenmark"
+
+
+class TestRtstructIsWrittenWhole:
+    """An RTSTRUCT export replaces its file through the engine's replace
+    (§14.4): at 2.0.2 ``save_as`` wrote over the previous one in place, so a
+    crash during it left a truncated structure set."""
+
+    def test_S14_4_an_interrupted_save_leaves_the_previous_rtstruct(
+        self, tmp_path, monkeypatch
+    ):
+        from pydicom.uid import generate_uid
+
+        from medh5.io.rtstruct import to_rtstruct
+        from medh5.labels import LabelClass
+        from tests.helpers import crash_save_as
+
+        series = write_dicom_series(
+            tmp_path / "dcm",
+            patient_id="PSEUDO-011",
+            study_uid=generate_uid(),
+            study_date="20260101",
+        )
+        path = TestRoiNamesAndText._sample(
+            tmp_path / "s.medh5", series, [LabelClass(1, "liver", "Liver")]
+        )
+        out = tmp_path / "exports" / "rt.dcm"
+        out.parent.mkdir()
+        to_rtstruct(path, "rois", series["paths"], out)
+        before = out.read_bytes()
+        asked = crash_save_as(monkeypatch, before)
+        with pytest.raises(OSError, match="interrupted"):
+            to_rtstruct(path, "rois", series["paths"], out)
+        monkeypatch.undo()
+        assert asked and asked[0] != out, "pydicom wrote a temporary"
+        assert out.read_bytes() == before
+        assert [p.name for p in out.parent.iterdir()] == ["rt.dcm"]
 
 
 def _bladder_label_set(*keys: str) -> Any:

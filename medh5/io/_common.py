@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import unicodedata
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from medh5 import _core
@@ -142,3 +143,15 @@ def examined_classes(
 
 
 __all__ = ["examined_classes", "sanitize_ascii_stem", "sanitize_key", "sanitize_stem"]
+
+
+def save_dicom(dataset: Any, target: Path, **options: Any) -> None:
+    """*dataset* (pydicom's, or highdicom's) written as *target* through the
+    engine's replace (§14.4): to a temporary beside it, renamed over it once
+    whole, a link at *target* kept and the file it names replaced with that
+    file's mode.  ``save_as`` wrote the previous file over in place, so a
+    crash during it left a truncated SEG or RTSTRUCT where a whole one was.
+    *options* are ``save_as``'s.
+    """
+    with _core.stage_file(target) as staged:
+        dataset.save_as(str(staged.path), **options)

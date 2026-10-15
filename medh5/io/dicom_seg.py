@@ -36,7 +36,7 @@ from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
 from medh5.io import _codes
 from medh5.io._codes import same_concept
-from medh5.io._common import examined_classes, sanitize_key
+from medh5.io._common import examined_classes, sanitize_key, save_dicom
 from medh5.io._frames import _direction, _frame_placement
 
 # Where it was defined, and is still imported from.
@@ -976,7 +976,7 @@ def to_dicom_seg(
             **options,
         )
     target = Path(os.fspath(out))
-    segmentation.save_as(str(target))
+    save_dicom(segmentation, target)
     log.decision(
         "segments",
         f"{len(ids)} class(es) were written as separate segments, so overlap "

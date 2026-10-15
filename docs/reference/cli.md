@@ -587,8 +587,9 @@ annotation is refused unless `--unlabeled test` writes it to `imagesTs`.
 `--split SET_ID` places each case by its claim in that split set — `test` in
 `imagesTs` and `labelsTs`, `train` or `val` in `imagesTr` — and refuses a case
 the set does not place. `--replace` replaces an existing dataset (a
-directory holding a `dataset.json`, not a link): the new one is built beside
-it and swapped in, files that are not the export's carried over. `from-nnunet
+directory holding a `dataset.json`, not a link) in place, file by file,
+`dataset.json` last, then removes the NIfTI files it no longer writes; files
+that are not the export's are left where they are. `from-nnunet
 --include-test` imports `imagesTs`'s cases too, each case claiming its
 partition in split `nnunetv2:<dataset>`; without it the cases left out are a
 warning. `from-nnunet --coord-system` is the world coordinate system the grids

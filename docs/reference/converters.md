@@ -562,11 +562,14 @@ dropped case or channel, a case since moved between `imagesTr` and
 case file it finds. An identical re-export replaces its own files, and other
 files are left alone. **`replace=True` (`--replace`) replaces a dataset
 instead**: the directory must be a directory, not a link, holding a
-`dataset.json`; the new dataset is built in a hidden sibling
-(`.<name>.medh5-staging-…`) with every file that is not the export's copied
-in, the old one is renamed aside (`.<name>.medh5-old-…`) and the new one into
-its place — the first rename undone if the second fails — and the old tree is
-deleted. The `replace` note lists the files removed and carried over.
+`dataset.json`; the new dataset is written over it in place, file by file,
+`dataset.json` last, and the NIfTI files of those four folders that the
+export does not write are removed after it. Every other file is left where it
+is. The `replace` note lists the files removed and, as `carried_over`, those
+left. Every file an export writes goes through the engine's replace (§14.4):
+written beside its name and renamed over it once whole, so an export
+interrupted part way leaves each file whole — the old one or the new — but
+the dataset a mix of the two until it is run again.
 
 **A split places the cases.** With `split="SET_ID"` (`--split SET_ID`) each
 case goes where its claim in that set says (§12.3): `test` to `imagesTs`, its

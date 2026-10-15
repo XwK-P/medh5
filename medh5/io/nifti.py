@@ -32,7 +32,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 
-from medh5._files import temporary_beside, write_text
+from medh5 import _core
+from medh5._files import write_text
 from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry import (
@@ -199,14 +200,13 @@ def write_nifti(
     header.set_xyzt_units(xyz="mm" if scale is not None else "unknown", t=temporal)
     sidecar = _sidecar_for(target)
     fields = _volume_statements(sidecar, needed=bool(statements))
-    temporary, fd = temporary_beside(target)
-    os.close(fd)
-    try:
-        nib.save(image, str(temporary))
+    # Through the engine's replace (§14.4): nibabel writes a temporary
+    # beside the file, renamed over it once whole --- a link kept and the
+    # file it names replaced, with that file's mode --- and discarded if
+    # anything before the rename fails.
+    with _core.stage_file(target) as staged:
+        nib.save(image, str(staged.path))
         kept = _withdraw_volume_statements(target, sidecar, fields)
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
     if statements:
         _replace_text(sidecar, json.dumps({**kept, **statements}, indent=2) + "\n")
         if report is not None and "VolumeTiming" in statements:

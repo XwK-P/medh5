@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -1488,10 +1489,89 @@ class TestTestCases:
         assert written.exists()
 
 
+def _disk_full_while(monkeypatch, owner: object, name: str) -> None:
+    """Make *owner*'s *name* run on a disk with room for 8 bytes a file: the
+    write fails part way through, as on a full disk (POSIX only)."""
+    import resource
+    import signal
+
+    real = getattr(owner, name)
+
+    def limited(*args, **kwargs):
+        limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+        handler = signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (8, limit[1]))
+        try:
+            return real(*args, **kwargs)
+        finally:
+            resource.setrlimit(resource.RLIMIT_FSIZE, limit)
+            signal.signal(signal.SIGXFSZ, handler)
+
+    monkeypatch.setattr(owner, name, limited)
+
+
+def _dataset_json_disk_full(monkeypatch) -> None:
+    """The writes of `dataset.json`, whichever writes it, fail part way."""
+    _disk_full_while(monkeypatch, medh5._core, "write_atomic")
+    _disk_full_while(monkeypatch, Path, "write_text")
+
+
+def _temporaries(top: Path) -> list[str]:
+    return sorted(str(p) for p in top.rglob("*") if p.name.startswith("."))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a file size limit")
+def test_S14_4_an_interrupted_dataset_json_leaves_the_previous_one(
+    tmp_path: Path, monkeypatch
+):
+    """`dataset.json` was written in place: a re-export that failed while
+    writing it truncated the dataset's description, and nnU-Net read none."""
+    from medh5.io.nnunetv2 import to_nnunetv2
+
+    a = TestReexport._case(tmp_path / "s/a.medh5", "a")
+    out = tmp_path / "nn"
+    to_nnunetv2([a], out, dataset_name="D1")
+    document = out / "D1" / "dataset.json"
+    before = document.read_bytes()
+    _dataset_json_disk_full(monkeypatch)
+    with pytest.raises(OSError):
+        to_nnunetv2([a], out, dataset_name="D1")
+    monkeypatch.undo()
+    assert document.read_bytes() == before
+    assert _temporaries(out) == []
+
+
+def test_S14_4_a_link_out_of_the_dataset_at_any_case_file_is_refused(
+    tmp_path: Path,
+):
+    """A file is written through a link at its name (§14.4), so a link at
+    any channel's file naming one outside the dataset is refused, not
+    written through; the first channel's and the labels' alone were
+    checked."""
+    import os
+
+    from medh5.io.nnunetv2 import to_nnunetv2
+
+    a = TestReexport._case(tmp_path / "s/a.medh5", "a", ("CT", "MR"))
+    out = tmp_path / "nn"
+    to_nnunetv2([a], out, dataset_name="D1")
+    elsewhere = tmp_path / "elsewhere.nii.gz"
+    elsewhere.write_bytes(b"not the dataset's")
+    second = out / "D1" / "imagesTr" / "a_0001.nii.gz"
+    second.unlink()
+    try:
+        os.symlink(elsewhere, second)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover
+        pytest.skip(f"symbolic links cannot be made here: {exc}")
+    with pytest.raises(MEDH5ValidationError, match="outside the dataset"):
+        to_nnunetv2([a], out, dataset_name="D1")
+    assert elsewhere.read_bytes() == b"not the dataset's"
+
+
 class TestReplace:
     """An export into an existing dataset that would not write every NIfTI
     file there is refused, so the only way to change a dataset was to delete
-    it first; ``replace=True`` builds the new one beside it and swaps it in."""
+    it first; ``replace=True`` rewrites it in place, file by file."""
 
     @staticmethod
     def _hidden(out: Path) -> list[str]:
@@ -1505,7 +1585,7 @@ class TestReplace:
             if p.is_file() and not p.is_symlink()
         }
 
-    def test_replace_swaps_a_dataset_and_carries_other_files(
+    def test_replace_rewrites_a_dataset_in_place_and_leaves_other_files(
         self, tmp_path: Path, capsys
     ):
         from medh5.cli import EXIT_OK, main
@@ -1520,6 +1600,8 @@ class TestReplace:
         (root / "notes").mkdir()
         (root / "notes" / "plan.md").write_text("plan", encoding="utf-8")
         (root / "notes" / "scan.nii.gz").write_bytes(b"not the export's")
+        others = ("imagesTr/README.txt", "splits_final.json", "notes/plan.md")
+        inodes = {name: (root / name).stat().st_ino for name in others}
 
         report = to_nnunetv2([a], out, dataset_name="D1", replace=True)
         files = TestReexport._files(root)
@@ -1531,8 +1613,11 @@ class TestReplace:
         assert files["imagesTr/README.txt"] == b"mine"
         assert files["splits_final.json"] == b"[]"
         assert files["notes/plan.md"] == b"plan"
+        # Left where they are, never copied.
+        assert {name: (root / name).stat().st_ino for name in others} == inodes
         assert nnunet_checks(root)["numTraining"] == 1
         (note,) = report.of_kind("replace")
+        assert "in place" in note.message
         assert note.detail["removed"] == ["imagesTr/b_0000.nii.gz", "labelsTr/b.nii.gz"]
         assert note.detail["carried_over"] == [
             "imagesTr/README.txt",
@@ -1541,7 +1626,7 @@ class TestReplace:
             "splits_final.json",
         ]
         assert all(Path(o).is_relative_to(root) for o in report.outputs)
-        assert self._hidden(out) == [], "no staging or old tree is left"
+        assert _temporaries(out) == [], "no temporary is left"
 
         argv = ["convert", "to-nnunet", str(out), str(a), str(b)]
         assert main([*argv, "--dataset-name", "D1", "--replace"]) == EXIT_OK
@@ -1586,8 +1671,12 @@ class TestReplace:
         assert self._tree(tmp_path) == before, "nothing was written"
         assert self._hidden(out) == []
 
-    def test_replace_failure_leaves_the_old_dataset(self, tmp_path: Path, monkeypatch):
-        import os
+    def test_S14_4_an_interrupted_replace_leaves_each_file_whole(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Stopped on its first file, a replace leaves the old dataset as it
+        was; no temporary is left either way."""
+        import nibabel
 
         from medh5.io.nnunetv2 import to_nnunetv2
 
@@ -1596,22 +1685,40 @@ class TestReplace:
         to_nnunetv2([a, b], out, dataset_name="D1")
         (out / "D1" / "splits_final.json").write_text("[]", encoding="utf-8")
         before = TestReexport._files(out / "D1")
-        rename = os.rename
-        calls: list[str] = []
 
-        def failing(src, dst, *args, **kwargs):
-            calls.append(Path(src).name)
-            if ".medh5-staging-" in Path(src).name:
-                raise OSError(28, "No space left on device")
-            return rename(src, dst, *args, **kwargs)
+        def crashed(image, filename, *args, **kwargs):
+            Path(filename).write_bytes(b"half")
+            raise OSError("interrupted")
 
-        monkeypatch.setattr(os, "rename", failing)
-        with pytest.raises(OSError, match="No space left"):
+        monkeypatch.setattr(nibabel, "save", crashed)
+        with pytest.raises(OSError, match="interrupted"):
             to_nnunetv2([a], out, dataset_name="D1", replace=True)
         monkeypatch.undo()
-        # The old dataset went aside, the staging tree failed to take its
-        # place, and the old one came back: the second rename was reached.
-        assert len(calls) == 3, calls
-        assert calls[0] == "D1" and calls[2].startswith(".D1.medh5-old-")
         assert TestReexport._files(out / "D1") == before
-        assert self._hidden(out) == []
+        assert _temporaries(out) == []
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="a file size limit")
+    def test_S14_4_dataset_json_is_written_last(self, tmp_path: Path, monkeypatch):
+        """A replace that fails on `dataset.json` has written the new images,
+        keeps the old description whole, and has removed nothing: the files
+        it no longer writes go only after it.  Run again, it completes."""
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        a, b = (TestReexport._case(tmp_path / f"s/{n}.medh5", n) for n in "ab")
+        out = tmp_path / "nn"
+        to_nnunetv2([a, b], out, dataset_name="D1")
+        root = out / "D1"
+        document = (root / "dataset.json").read_bytes()
+        _dataset_json_disk_full(monkeypatch)
+        with pytest.raises(OSError):
+            to_nnunetv2([a], out, dataset_name="D1", replace=True)
+        monkeypatch.undo()
+        assert (root / "dataset.json").read_bytes() == document
+        assert (root / "imagesTr" / "b_0000.nii.gz").exists(), "nothing removed"
+        assert _temporaries(out) == []
+
+        report = to_nnunetv2([a], out, dataset_name="D1", replace=True)
+        assert nnunet_checks(root)["numTraining"] == 1
+        assert not (root / "imagesTr" / "b_0000.nii.gz").exists()
+        (note,) = report.of_kind("replace")
+        assert note.detail["removed"] == ["imagesTr/b_0000.nii.gz", "labelsTr/b.nii.gz"]

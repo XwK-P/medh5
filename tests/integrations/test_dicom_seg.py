@@ -1195,6 +1195,32 @@ class TestSegKinds:
 
 
 @pytest.mark.usefixtures("highdicom")
+class TestSegIsWrittenWhole:
+    """A SEG export replaces its file through the engine's replace (§14.4):
+    at 2.0.2 ``save_as`` wrote over the previous SEG in place, so a crash
+    during it left a truncated SEG where a whole one had been."""
+
+    def test_S14_4_an_interrupted_save_leaves_the_previous_seg(
+        self, prepared, tmp_path, monkeypatch
+    ):
+        from medh5.io.dicom_seg import to_dicom_seg
+        from tests.helpers import crash_save_as
+
+        out = tmp_path / "exports" / "s.dcm"
+        out.parent.mkdir()
+        sources = prepared["series"]["paths"]
+        to_dicom_seg(prepared["path"], "organs", sources, out)
+        before = out.read_bytes()
+        asked = crash_save_as(monkeypatch, before)
+        with pytest.raises(OSError, match="interrupted"):
+            to_dicom_seg(prepared["path"], "organs", sources, out)
+        monkeypatch.undo()
+        assert asked and asked[0] != out, "pydicom wrote a temporary"
+        assert out.read_bytes() == before
+        assert [p.name for p in out.parent.iterdir()] == ["s.dcm"]
+
+
+@pytest.mark.usefixtures("highdicom")
 class TestSegCommandLine:
     """`medh5 convert to-dicom-seg` and `from-dicom-seg`."""
 

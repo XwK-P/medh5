@@ -46,7 +46,7 @@ import numpy.typing as npt
 from medh5 import _core
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry import MM_PER_UNIT
-from medh5.io._common import examined_classes, sanitize_key
+from medh5.io._common import examined_classes, sanitize_key, save_dicom
 from medh5.io._patient import (
     _one_frame,
     _require_same_frame,
@@ -1352,7 +1352,7 @@ def to_rtstruct(
         # which is ASCII: a name with an umlaut read back as other letters.
         structure.SpecificCharacterSet = "ISO_IR 192"
     target = Path(os.fspath(out))
-    structure.save_as(str(target), enforce_file_format=True)
+    save_dicom(structure, target, enforce_file_format=True)
     log.decision(
         "contours",
         f"{len(world)} contour(s) across {len(class_ids)} ROI(s) were written in "

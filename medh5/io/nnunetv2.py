@@ -37,10 +37,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import secrets
-import shutil
-import stat
-import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -48,6 +44,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5._files import write_text
 from medh5.errors import MEDH5ValidationError
 from medh5.io._common import sanitize_key
 from medh5.io.report import ConversionReport
@@ -665,9 +662,9 @@ def to_nnunetv2(
       own files and any other is refused (:func:`_require_no_strays`).  With
       *replace*, the directory must be an existing dataset instead --- a
       directory, not a link, holding a ``dataset.json`` --- and the new
-      dataset is built beside it and swapped in (:func:`_swap`): NIfTI files
-      of those four folders that the export does not write are removed,
-      every other file is carried over, and the report lists both;
+      dataset is written over it in place, file by file: NIfTI files of
+      those four folders that the export does not write are removed, every
+      other file is left where it is, and the report lists both;
     * every channel and the labels are **one lattice in one physical space** ---
       shape, spacing, origin and direction, coordinate system, units, and no two
       known frames of reference --- because nnU-Net pairs their voxels by index;
@@ -685,6 +682,14 @@ def to_nnunetv2(
       painted in ``regions_class_order``, overlapping classes refused rather than
       written over each other --- and every one is a training case's: a
       refused case refuses the export, before any case's files are written.
+
+    Every file is written through the engine's replace (§14.4): to a
+    temporary beside it, renamed over the old one once whole, so an
+    interrupted export leaves each file whole, the old one or the new.
+    ``dataset.json`` is the last file written, and with *replace* the old
+    dataset's files that the export no longer writes are removed only after
+    it.  An export interrupted part way leaves the dataset a mix of the old
+    and the new until it is run again, which completes it.
     """
     from medh5.io.nifti import NIFTI_SUFFIXES, require_nibabel
 
@@ -713,37 +718,29 @@ def to_nnunetv2(
     if ignore_value is not None:
         labels[IGNORE] = ignore_value
     if not replace:
-        _write(plan, root, root, labels, ignore_value, annotation, file_ending, log)
+        _write(plan, root, labels, ignore_value, annotation, file_ending, log)
         return log
 
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{root.name}.medh5-staging-", dir=root.parent)
-    )
-    try:
-        os.chmod(staging, stat.S_IMODE(os.stat(root).st_mode))
-        carried, owned = _carry_over(root, staging)
-        written = _write(
-            plan, staging, root, labels, ignore_value, annotation, file_ending, log
-        )
-        _swap(staging, root)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
+    left, owned = _inventory(root)
+    written = _write(plan, root, labels, ignore_value, annotation, file_ending, log)
+    # After `dataset.json`, so an export interrupted before it has removed
+    # nothing.
     removed = sorted(set(owned) - set(written))
+    for relative in removed:
+        (root / relative).unlink(missing_ok=True)
     log.decision(
         "replace",
-        f"the dataset {root} was replaced: the new one was built beside it and "
-        f"swapped in; {len(removed)} NIfTI file(s) of the old one that this "
-        f"export does not write were removed, and {len(carried)} file(s) that "
-        "are not the export's were carried over",
-        {"removed": removed, "carried_over": carried},
+        f"the dataset {root} was replaced in place, file by file: "
+        f"{len(removed)} NIfTI file(s) of the old one that this export does "
+        f"not write were removed, and {len(left)} file(s) that are not the "
+        "export's were left where they are",
+        {"removed": removed, "carried_over": left},
     )
     return log
 
 
 def _write(
     plan: _Plan,
-    dest: Path,
     root: Path,
     labels: dict[str, Any],
     ignore_value: int | None,
@@ -751,30 +748,28 @@ def _write(
     file_ending: str,
     log: ConversionReport,
 ) -> list[str]:
-    """Write the planned dataset under *dest*, reporting each file at its
-    place under *root*, where the dataset is read from once written; the
-    files written, relative to *dest*."""
+    """Write the planned dataset under *root*, ``dataset.json`` last; the
+    files written, relative to *root*."""
     import medh5
 
     written: list[str] = []
 
     def place(target: Path) -> str:
-        relative = target.relative_to(dest)
-        written.append(relative.as_posix())
-        return str(root / relative)
+        written.append(target.relative_to(root).as_posix())
+        return str(target)
 
-    (dest / "imagesTr").mkdir(parents=True, exist_ok=True)
-    (dest / "labelsTr").mkdir(parents=True, exist_ok=True)
+    (root / "imagesTr").mkdir(parents=True, exist_ok=True)
+    (root / "labelsTr").mkdir(parents=True, exist_ok=True)
     for case in plan.cases:
-        (dest / case.images).mkdir(exist_ok=True)
+        (root / case.images).mkdir(exist_ok=True)
         if case.labeled:
-            (dest / case.labels).mkdir(exist_ok=True)
+            (root / case.labels).mkdir(exist_ok=True)
 
     for case in plan.cases:
         with medh5.open(case.path) as sample:
             ann = sample.annotations.get(annotation) if case.labeled else None
             for index, image_id in enumerate(plan.channels):
-                target = dest / case.images / f"{case.name}_{index:04d}{file_ending}"
+                target = root / case.images / f"{case.name}_{index:04d}{file_ending}"
                 _save(
                     sample.images[image_id].grid,
                     sample.images[image_id].read(),
@@ -805,7 +800,7 @@ def _write(
                             "over": covered,
                         },
                     )
-                target = dest / case.labels / f"{case.name}{file_ending}"
+                target = root / case.labels / f"{case.name}{file_ending}"
                 _save(ann.grid, volume, target)
                 # Listed only when written.  A sample without the annotation
                 # produced no label file and the report named one anyway, so a
@@ -832,10 +827,10 @@ def _write(
         }
     else:
         document.pop("medh5_class_ids", None)
-    (dest / "dataset.json").write_text(
-        json.dumps(document, indent=2) + "\n", encoding="utf-8"
-    )
-    log.outputs.append(place(dest / "dataset.json"))
+    # The last file written: a dataset interrupted before it keeps the old
+    # description, whole (§14.4).
+    write_text(root / "dataset.json", json.dumps(document, indent=2) + "\n")
+    log.outputs.append(place(root / "dataset.json"))
     log.decision(
         "dataset_json",
         "the stashed dataset.json was reused: its fields as stashed, its labels "
@@ -857,10 +852,10 @@ not write, or with ``replace`` removes it."""
 def _require_replaceable(root: Path) -> None:
     """Refuse to replace what is not an nnU-Net dataset directory.
 
-    ``replace`` deletes the old tree once the new one is in place, so it
-    holds itself to what an export could have written: a directory of its
-    own --- a link would be swapped for a directory and the tree it names
-    left as it was, or deleted through it --- holding a ``dataset.json``.
+    ``replace`` removes the old dataset's files that the export does not
+    write, so it holds itself to what an export could have written: a
+    directory of its own --- not a link, which would rewrite the tree it
+    names wherever that is --- holding a ``dataset.json``.
     """
     why = None
     if root.is_symlink():
@@ -896,56 +891,25 @@ def _owned(relative: PurePosixPath, path: Path) -> bool:
     )
 
 
-def _carry_over(root: Path, staging: Path) -> tuple[list[str], list[str]]:
-    """Copy into *staging* every file of *root* that is not the export's;
-    the files copied, and the export's own files found, as relative paths.
+def _inventory(root: Path) -> tuple[list[str], list[str]]:
+    """The files of *root* that are not the export's, which a replace leaves
+    where they are, and the export's own, as sorted relative paths.
 
-    Copied rather than moved, so the old dataset is whole until the swap.
-    A link is copied as a link, never followed.
+    A link is listed as itself, never followed.
     """
-    carried: list[str] = []
+    left: list[str] = []
     owned: list[str] = []
     for directory, folders, files in os.walk(root):
         here = Path(directory)
         relative = PurePosixPath(here.relative_to(root).as_posix())
-        (staging / relative).mkdir(exist_ok=True)
         for name in list(folders):
             if (here / name).is_symlink():
                 folders.remove(name)
                 files.append(name)
-        for name in sorted(files):
-            source = here / name
+        for name in files:
             entry = relative / name
-            if _owned(entry, source):
-                owned.append(entry.as_posix())
-                continue
-            target = staging / entry
-            if source.is_symlink():
-                os.symlink(
-                    os.readlink(source), target, target_is_directory=source.is_dir()
-                )
-            else:
-                shutil.copy2(source, target)
-            carried.append(entry.as_posix())
-    return sorted(carried), sorted(owned)
-
-
-def _swap(staging: Path, root: Path) -> None:
-    """Put *staging* where *root* is, by two renames on one file system.
-
-    The old dataset is renamed aside first, then the staging tree into its
-    place; if that second rename fails, the first is undone, so *root*
-    names the old dataset, whole.  The old tree is deleted only once the
-    new one is in place.
-    """
-    old = root.with_name(f".{root.name}.medh5-old-{secrets.token_hex(4)}")
-    os.rename(root, old)
-    try:
-        os.rename(staging, root)
-    except BaseException:
-        os.rename(old, root)
-        raise
-    shutil.rmtree(old)
+            (owned if _owned(entry, here / name) else left).append(entry.as_posix())
+    return sorted(left), sorted(owned)
 
 
 UNLABELED = ("refuse", "test")
@@ -1010,11 +974,19 @@ def _require_name(name: str, what: str) -> None:
 
 def _require_under(root: Path, plan: _Plan, file_ending: str) -> None:
     """Every file the plan writes resolves under *root* --- what the case
-    names already ensure, checked where the files are named."""
+    names already ensure, checked where the files are named.
+
+    Each one, every channel's: a file is written through a link at its
+    name (§14.4), so a link at a case file naming one outside the dataset
+    would have the export write there.
+    """
     top = root.resolve()
     for case in plan.cases:
         for target in (
-            root / case.images / f"{case.name}_0000{file_ending}",
+            *(
+                root / case.images / f"{case.name}_{index:04d}{file_ending}"
+                for index in range(len(plan.channels))
+            ),
             root / case.labels / f"{case.name}{file_ending}",
         ):
             if not target.resolve().is_relative_to(top):

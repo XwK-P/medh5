@@ -830,8 +830,8 @@ fn convert() -> Vec<Command> {
                 .arg(flag(
                     "replace",
                     "replace",
-                    "replace an existing dataset: build the new one beside it and swap it in, removing the NIfTI \
-                     files it no longer writes and carrying every other file over",
+                    "replace an existing dataset in place, file by file and dataset.json last, then remove the \
+                     NIfTI files it no longer writes; every other file is left where it is",
                 )),
         ));
     let migrate = report_args(

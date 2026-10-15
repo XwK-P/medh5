@@ -201,15 +201,16 @@ other file ending — refuses the export with nothing written: nnU-Net trains on
 every case file it finds there, whatever `dataset.json` says. Export to a new
 directory, remove those files first, or replace the dataset.
 
-**`--replace` swaps a dataset whole.** The directory must be an nnU-Net
-dataset — a directory, not a link, holding a `dataset.json` — or the export
-is refused. The new dataset is built in a hidden sibling directory on the
-same file system, with every file that is not the export's copied in
-(`splits_final.json`, notes, anything outside the case folders); two renames
-then swap it in, the old dataset aside and the new one into its place, and
-if the second fails the first is undone, so the directory always holds one
-whole dataset. The old tree is deleted last. The report's `replace` note
-lists the NIfTI files removed and the files carried over.
+**`--replace` rewrites a dataset in place.** The directory must be an
+nnU-Net dataset — a directory, not a link, holding a `dataset.json` — or the
+export is refused. Each file the export writes replaces the old one whole,
+`dataset.json` last, and the NIfTI files of the case folders that the export
+no longer writes are removed after it. Every file that is not the export's
+(`splits_final.json`, notes, anything outside the case folders) is left where
+it is. An export interrupted part way leaves every file whole but the
+dataset a mix of the old and the new: run it again to complete it. The
+report's `replace` note lists the NIfTI files removed and, as
+`carried_over`, the files left.
 
 nnU-Net normalises a channel by its name in `dataset.json`: `CT` selects its CT
 scheme, and any other name z-scoring. A stashed `dataset.json` keeps its own

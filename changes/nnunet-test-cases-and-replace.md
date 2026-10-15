@@ -9,10 +9,13 @@
   A case claiming `test` in that set goes to `imagesTs` and `labelsTs`, one
   claiming `train` or `val` to `imagesTr`; an unplaced or held-out case is
   refused (`--split`). The stray-file check now covers `labelsTs`.
-- **`to_nnunetv2(replace=True)` replaces an existing dataset whole.** The new
-  dataset is built beside it, files that are not the export's are carried
-  over, and two renames swap it in, the first undone if the second fails
-  (`--replace`). The report lists the files removed and carried over.
+- **`to_nnunetv2(replace=True)` replaces an existing dataset.** The new
+  dataset is written over it in place, file by file, each file whole, with
+  `dataset.json` last; the NIfTI files of the case folders that the export
+  no longer writes are removed after it, and every other file is left where
+  it is (`--replace`). The report lists the files removed and left. A crash
+  part way leaves each file whole but the dataset a mix of the old and the
+  new until the export is run again.
 
 ### Behaviour changes
 
