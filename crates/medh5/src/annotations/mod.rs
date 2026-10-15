@@ -5,6 +5,7 @@
 //! [`read`] opens a stored group as one [`Annotation`] whose methods dispatch
 //! on its kind.
 
+pub mod depth;
 pub mod encode;
 pub mod encode_geometric;
 pub mod header;

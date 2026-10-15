@@ -460,36 +460,55 @@ Cross-file consistency. Findings carry
 
 ## Converting
 
-Every `convert` command except `to-nifti` writes a report of what it
-**decided** (determined from the data) and where it **guessed** (assumed
-something it could not read). `--report FILE` keeps it as JSON and `--json`
-prints it; without either, guesses and warnings still print.
+Every `convert` command writes a report of what it **decided** (determined
+from the data) and where it **guessed** (assumed something it could not read).
+`--report FILE` keeps it as JSON and `--json` prints it; without either,
+guesses and warnings still print. `to-nifti` prints the file it wrote instead,
+unless `--json` asks for the report.
 
 ```
 medh5 convert from-nifti OUT --image NAME=PATH [--image ...] [--mask NAME=PATH ...]
-                             [--modality NAME=CODE ...] [--coord-system LPS|RAS]
-                             [--fourth-axis auto|time|channel] [--assume-geometry]
-                             [--sample-id ID] [--subject-id ID]
+                             [--modality NAME=CODE ...] [--value-units NAME=UNIT ...]
+                             [--coord-system LPS|RAS] [--fourth-axis auto|time|channel]
+                             [--assume-geometry] [--plane-as-volume]
+                             [--label-set FILE] [--annotated-classes all_given|all|K1,K2]
+                             [--codec PROFILE] [--sample-id ID] [--subject-id ID]
+medh5 convert import-seg-nifti SAMPLE --mask NAME=PATH [--mask ...] [--id ANN] [--grid G]
+                                      [--assume-aligned] [--assume-geometry]
+                                      [--plane-as-volume]
+                                      [--annotated-classes all_given|all|K1,K2]
 medh5 convert to-nifti PATH IMAGE OUT [--annotation A --class K] [--stored]
 
 medh5 convert from-dicom ROOT OUT [--group-by subject|study]
                                   [--modality M ...] [--series UID ...]
+                                  [--per-slice-rescale refuse|apply] [--codec PROFILE]
 
 medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G] [--frame-salt S]
+                                        [--annotated-classes all_given|all|K1,K2]
 medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
+                                               [--class K ...] [--series-description TEXT]
+                                               [--segmentation-type binary|fractional]
+                                               [--fractional-type PROBABILITY|OCCUPANCY]
                                                [--frame-salt S]
 
-medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G] [--rasterize]
+medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G]
+                                            [--rasterize [--mask-id ID]]
+                                            [--roi NUMBER=KEY ...] [--points-id ID]
+                                            [--annotated-classes all_given|all|K1,K2]
                                             [--frame-salt S]
 medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
+                                              [--label TEXT] [--points ANN]
                                               [--frame-salt S]
 
-medh5 convert from-nnunet ROOT OUT [--case ID ...]
+medh5 convert from-nnunet ROOT OUT [--case ID ...] [--include-test]
+                                   [--coord-system LPS|RAS] [--codec PROFILE]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
                                     [--class K ...] [--unlabeled refuse|test]
+                                    [--file-ending .nii.gz|.nii]
+                                    [--split SET_ID] [--replace]
 ```
 
-All but `to-nifti` also take `[--report FILE] [--json]`. A report never
+All of them also take `[--report FILE] [--json]`. A report never
 replaces a file the command reads or writes: a `--report` naming one — through
 `..` or a link included — or lying inside the tree or nnU-Net dataset the
 command reads or the nnU-Net dataset it writes is refused before anything is
@@ -502,12 +521,47 @@ files: a collection is refused before anything is converted, and
 cine, DCE and 4-D CT, `channel` for multi-b-value DWI and multi-echo; `auto`
 (the default) reads the file's sidecars and header and records a guess when they
 do not say. `--assume-geometry` imports a file that declares no spatial mapping,
-recorded as a guess; without it such a file is refused.
+recorded as a guess; without it such a file is refused. `--plane-as-volume`
+imports every 2-D file as a one-slice 3-D grid, `(x, y, 1)`, keeping its
+affine, so a plane off z = 0 or not parallel to x-y is imported where it lies
+rather than refused. `--value-units CT=HU` says what an image's values are in,
+which makes them quantitative.
+
+`--annotated-classes` says which classes an import examined: `all_given` (the
+default) the classes the input supplies, `all` every class of the label set,
+or class keys separated by commas. A class it names that the input does not
+supply was examined and found absent. An import that mints its classes —
+`from-nifti`, and `import-seg-nifti`, `from-dicom-seg` or `from-rtstruct` into a
+sample without a label set — mints it after the classes the input supplies,
+with a `label_set` decision in the report; otherwise the label set must hold
+it, and the import is refused (E402). `from-nifti --label-set FILE` matches the
+masks to the classes of a label-set JSON file by key instead of minting them,
+so every case of a cohort gets the same class ids; a mask it has no class for
+is refused (E402).
+
+`import-seg-nifti` adds NIfTI masks to an existing sample, amended in place, as
+annotation `seg` unless `--id` names another, on the sample's reference grid
+unless `--grid` names another. Each mask must sit on the grid in shape and
+geometry; `--assume-aligned` takes its voxels anyway, for a header known to be
+wrong, and records a guess. The masks are classes of the sample's label set,
+found by the keys their names make, or minted when it has none.
+
+`--codec PROFILE` (`from-nifti`, `from-dicom`, `from-nnunet` and `migrate`) is
+the codec profile the samples are written with — `training`, `balanced` (the
+default), `archive` or `portable`, as for `medh5 recompress`.
 
 `to-nifti` writes `OUT`, a `.nii` or `.nii.gz` file. With `--annotation` it
 writes that annotation's labelmap, each ignored voxel as its ignore id; with
 `--class` too, one class as a 0/1 mask, refused for an annotation with an ignore
 region, which a mask has no value for.
+
+`to-dicom-seg --class` exports only the classes named, each of them one the
+annotation examined, and `--series-description` is the SEG's
+`SeriesDescription`, a DICOM LO of at most 64 characters. `to-rtstruct --label`
+is the `StructureSetLabel`, a DICOM SH of at most 16 characters; a longer one
+is refused rather than written into an invalid file. `from-rtstruct --mask-id`
+names the voxel annotation `--rasterize` derives (the contours' id and `_mask`
+by default).
 
 `from-dicom --group-by subject` (the default) merges a patient's studies into
 one multi-timepoint sample. Identity is never inferred from filenames, dates or
@@ -515,7 +569,11 @@ accession numbers; when it cannot be established the command falls back to one
 sample per study, warns, and records the fallback. `OUT` is the file the one
 sample is written to, or a directory of samples named for their subjects: when
 several samples result, when it is an existing directory, or when it ends in a
-path separator (`out/`).
+path separator (`out/`). A series whose slices state different
+`RescaleSlope`/`RescaleIntercept` — ordinary in PET — is refused unless
+`--per-slice-rescale apply` stores each slice's physical values instead, as
+float32 with no rescale; a series with one rescale is written the same either
+way.
 
 `--frame-salt` is for a sample `medh5 scrub` pseudonymised: given the salt the
 scrub used, the DICOM side's frame of reference (the SEG's or the RTSTRUCT's on
@@ -528,6 +586,17 @@ unless `--id` names another; `to-nnunet` exports annotation `seg` unless
 `--dataset-name` does, with every class the cases carry unless `--class` names
 the ones to export — each of them examined by every case. A case without the
 annotation is refused unless `--unlabeled test` writes it to `imagesTs`.
+`--split SET_ID` places each case by its claim in that split set — `test` in
+`imagesTs` and `labelsTs`, `train` or `val` in `imagesTr` — and refuses a case
+the set does not place. `--replace` replaces an existing dataset (a
+directory holding a `dataset.json`, not a link) in place, file by file,
+`dataset.json` last, then removes the NIfTI files it no longer writes; files
+that are not the export's are left where they are. `from-nnunet
+--include-test` imports `imagesTs`'s cases too, each case claiming its
+partition in split `nnunetv2:<dataset>`; without it the cases left out are a
+warning. `from-nnunet --coord-system` is the world coordinate system the grids
+are stored in (`LPS` by default), and `to-nnunet --file-ending` writes `.nii`
+files instead of `.nii.gz`.
 
 See [Converters](converters.md).
 
@@ -544,6 +613,7 @@ medh5 migrate PATH... -o OUTDIR [options]
 --subject-key extra.patient_id
 --write-labels FILE        mint the cohort's label set for review, then stop
 --label-set FILE           reuse a reviewed label set
+--codec PROFILE            codec profile to write, balanced by default
 --report FILE
 --json
 ```

@@ -133,6 +133,7 @@ __all__ = [
     "MAX_CLASS_ID",
     "META_DATASET",
     "MIN_CHUNK_BYTES",
+    "MM_PER_UNIT",
     "ORTHONORMAL_TOL",
     "OVERSHOOT_LIMIT",
     "Observation",
@@ -457,6 +458,7 @@ __all__ = [
     "pack",
     "parse_digest",
     "payload_to_masks",
+    "polygon_depths",
     "profile_family",
     "pyramid_factors",
     "quality_from_json",
@@ -615,6 +617,7 @@ IO_FALLBACK_PREFIX: str
 IO_SEVERITIES: tuple[str, ...]
 ISSUE_SEVERITY: tuple[str, ...]
 KNOWN_UNITS: tuple[str, ...]
+MM_PER_UNIT: dict[str, float]
 LABEL_SAFE_METHODS: tuple[str, ...]
 LAST_ROW_TOL: float
 LATERALITY_VALUES: tuple[str, ...]
@@ -934,6 +937,11 @@ def carries_instance_ids(annotation: Any) -> bool:
 def check_class_id(class_id: Any) -> int: ...
 def check_contour_role(role: str) -> str:
     """A contour role, or E411."""
+    ...
+
+def polygon_depths(polygons: Any) -> list[int]:
+    """Each of one class's polygons in one plane, its depth: how many of the
+    others enclose it (§8.6).  Each is `(V, 2)` in-plane coordinates."""
     ...
 
 def check_orthonormal(

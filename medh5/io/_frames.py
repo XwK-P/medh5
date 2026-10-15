@@ -1,0 +1,250 @@
+"""Where a multi-frame DICOM object's frames lie: the functional groups.
+
+A multi-frame object --- a Segmentation now, an enhanced image series in
+2.2.0 --- places each frame through functional groups that may sit in the
+shared item or in the frame's own (PS3.3 C.7.6.16).  These read them: each
+frame's position, orientation, pixel spacing and segment, and the regular
+stack the frames' planes sit on.  They were :mod:`medh5.io.dicom_seg`'s own;
+one copy serves every reader that places frames.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
+
+import numpy as np
+import numpy.typing as npt
+
+from medh5.errors import MEDH5ValidationError
+
+
+def _frame_placement(dataset: Any, n_frames: int) -> dict[str, Any]:
+    """Where each frame belongs, from the per-frame functional groups.
+
+    A functional group may sit in the shared item or in each frame's own
+    (PS3.3 C.7.6.16), so every frame's orientation and pixel spacing are read
+    where they are --- and the frames must agree on them, being one volume's
+    slices.  The first orientation found and the shared spacing stood for
+    every frame: a frame turned in plane was placed as the first one was, and
+    spacing kept in the frames read as 1 mm.
+    """
+    shared = _first_item(dataset, "SharedFunctionalGroupsSequence")
+    per_frame = list(getattr(dataset, "PerFrameFunctionalGroupsSequence", []))
+    positions: list[npt.NDArray[np.float64]] = []
+    segments: list[int] = []
+    orientations: list[npt.NDArray[np.float64]] = []
+    pixels: list[npt.NDArray[np.float64]] = []
+    for index in range(n_frames):
+        group = per_frame[index] if index < len(per_frame) else None
+        positions.append(_position(group, shared))
+        segments.append(_segment_number(group, shared, index))
+        orientations.append(_orientation(group, shared, index))
+        pixels.append(_pixel_spacing(group, shared, index))
+    _congruent(orientations, pixels)
+    orientation = orientations[0]
+    normal = np.cross(orientation[:3], orientation[3:])
+    projected = [float(np.dot(p, normal)) for p in positions]
+    planes = sorted(set(np.round(projected, 4)))
+    first = per_frame[0] if per_frame else None
+    between = _between(first, shared)
+    regular = _lattice(planes, between)
+    # An import places every frame by its own position (`place_frames`), so a
+    # stack no regular lattice holds is still placeable; only a volume of the
+    # file's own (`read_dicom_seg`) needs one.
+    step, lattice = regular or (float("nan"), list(range(len(planes))))
+    source: str | None = "SpacingBetweenSlices" if between else "positions"
+    if regular is None:
+        source = None
+    elif len(planes) == 1 and not between:
+        # One plane has no neighbour to measure a step against: the slab it
+        # states is its only extent, as for a lone DICOM slice; stating none,
+        # it has none (`read_dicom_seg` refuses it), where 1 mm was assumed.
+        step = _thickness(first, shared)
+        source = "SliceThickness" if np.isfinite(step) else None
+    indices = [lattice[planes.index(round(v, 4))] for v in projected]
+    spacing = [step, float(pixels[0][0]), float(pixels[0][1])]
+    origin_index = indices.index(0) if 0 in indices else 0
+    return {
+        "planes": planes,
+        "regular": regular is not None,
+        "spacing_source": source,
+        "indices": indices,
+        "segments": segments,
+        # Each frame's own `ImagePositionPatient`, kept rather than collapsed
+        # into a plane index: placing a frame on the grid it is being imported
+        # onto needs the position, and the index is only meaningful among the
+        # planes this file happens to carry.
+        "positions": positions,
+        "orientations": orientations,
+        "pixel_spacings": pixels,
+        "spacing": spacing,
+        "origin": [float(v) for v in positions[origin_index]],
+        "direction": _direction(orientation),
+        "source_series": _source_series(dataset),
+    }
+
+
+def _direction(orientation: npt.NDArray[np.float64]) -> list[list[float]]:
+    """A frame's `ImageOrientationPatient` as a (slice, row, column) direction."""
+    normal = np.cross(orientation[:3], orientation[3:])
+    return [
+        [float(v) for v in row]
+        for row in np.stack([normal, orientation[3:], orientation[:3]], axis=1)
+    ]
+
+
+def _orientation(group: Any, shared: Any, index: int) -> npt.NDArray[np.float64]:
+    for holder in (group, shared):
+        plane = _first_item(holder, "PlaneOrientationSequence")
+        if plane is not None and hasattr(plane, "ImageOrientationPatient"):
+            return np.asarray(
+                [float(v) for v in plane.ImageOrientationPatient], dtype=np.float64
+            )
+    raise MEDH5ValidationError(
+        f"SEG frame {index} carries no ImageOrientationPatient, in its own "
+        "functional groups or the shared ones, so it cannot be placed"
+    )
+
+
+def _position(group: Any, shared: Any) -> npt.NDArray[np.float64]:
+    for holder in (group, shared):
+        plane = _first_item(holder, "PlanePositionSequence")
+        if plane is not None and hasattr(plane, "ImagePositionPatient"):
+            return np.asarray(
+                [float(v) for v in plane.ImagePositionPatient], dtype=np.float64
+            )
+    raise MEDH5ValidationError("a SEG frame carries no ImagePositionPatient")
+
+
+def _pixel_spacing(group: Any, shared: Any, index: int) -> npt.NDArray[np.float64]:
+    for holder in (group, shared):
+        measures = _first_item(holder, "PixelMeasuresSequence")
+        if measures is not None and getattr(measures, "PixelSpacing", None):
+            return np.asarray(
+                [float(v) for v in measures.PixelSpacing], dtype=np.float64
+            )
+    raise MEDH5ValidationError(
+        f"SEG frame {index} carries no PixelSpacing, in its own functional "
+        "groups or the shared ones; where its pixels lie is not stated, and "
+        "it is refused rather than read as 1 mm"
+    )
+
+
+def _between(group: Any, shared: Any) -> float | None:
+    for holder in (group, shared):
+        measures = _first_item(holder, "PixelMeasuresSequence")
+        if measures is not None and getattr(measures, "SpacingBetweenSlices", None):
+            return float(measures.SpacingBetweenSlices)
+    return None
+
+
+def _thickness(group: Any, shared: Any) -> float:
+    """The ``SliceThickness`` a frame's pixel measures state, NaN for none."""
+    for holder in (group, shared):
+        measures = _first_item(holder, "PixelMeasuresSequence")
+        value = getattr(measures, "SliceThickness", None) if measures else None
+        try:
+            thickness = abs(float(value)) if value is not None else 0.0
+        except (TypeError, ValueError):
+            thickness = 0.0
+        if np.isfinite(thickness) and thickness > 0:
+            return thickness
+    return float("nan")
+
+
+def _congruent(
+    orientations: Sequence[npt.NDArray[np.float64]],
+    pixels: Sequence[npt.NDArray[np.float64]],
+) -> None:
+    """Every frame oriented and spaced as the first: one volume's slices.
+
+    About the SEG alone, so no §15.2 code: the codes describe a sample, and
+    this refusal comes before there is one.
+    """
+    pairs = zip(orientations, pixels, strict=True)
+    for index, (orientation, pixel) in enumerate(pairs):
+        if not np.allclose(orientation, orientations[0], atol=1e-4):
+            raise MEDH5ValidationError(
+                f"SEG frame {index} is oriented {orientation.round(4).tolist()} and "
+                f"frame 0 {orientations[0].round(4).tolist()}: frames turned "
+                "against each other are not one volume's slices"
+            )
+        if not np.allclose(pixel, pixels[0], rtol=1e-4, atol=1e-6):
+            raise MEDH5ValidationError(
+                f"SEG frame {index} has pixel spacing {pixel.tolist()} mm and frame "
+                f"0 {pixels[0].tolist()} mm: frames of different spacing are not "
+                "one volume's slices"
+            )
+
+
+def _segment_number(group: Any, shared: Any, index: int) -> int:
+    """The segment a frame holds, from its own functional groups or the
+    shared ones; a frame that names none is refused, not read as segment 1."""
+    for holder in (group, shared):
+        identification = _first_item(holder, "SegmentIdentificationSequence")
+        number = getattr(identification, "ReferencedSegmentNumber", None)
+        if number is not None:
+            return int(number)
+    raise MEDH5ValidationError(
+        f"SEG frame {index} names no segment: no SegmentIdentificationSequence "
+        "with a ReferencedSegmentNumber, in its own functional groups or the "
+        "shared ones"
+    )
+
+
+def _lattice(
+    planes: Sequence[float], between: float | None
+) -> tuple[float, list[int]] | None:
+    """The regular stack the planes a SEG carries sit on: its step, and each
+    plane's index in it; ``None`` when no regular stack holds them.
+
+    A SEG may omit its empty frames, so the planes it carries need not be
+    adjacent.  The stack is the one whose step --- the stated
+    ``SpacingBetweenSlices``, else the smallest gap --- divides every gap a
+    whole number of times, the omitted planes empty.  The median gap stood
+    for the step: planes at 10, 12.5 and 17.5 mm read as a stack 3.75 mm
+    apart, the middle one 1.25 mm from where it was drawn.
+
+    Every plane must lie within the bound a DICOM series is held to --- a
+    tenth of a step, and at least 0.01 mm --- of where the stack puts it,
+    measured per plane, not per gap: gaps each within a fixed bound drift.
+    Where the smallest gap does not place every plane, the least-squares step
+    from the first plane does, or nothing does; a stated step is kept or
+    refused.  Each gap was held to 10⁻³ mm, which refused planes of a series
+    whose positions were written to two decimals.  One plane has no step to
+    measure: the stated one, or NaN.
+    """
+    from medh5.io.dicom import _position_tolerance
+
+    if len(planes) < 2:
+        return (abs(between) if between else float("nan")), [0] * len(planes)
+    positions = np.asarray(planes, dtype=np.float64)
+    gaps = np.diff(positions)
+    along = positions - positions[0]
+    step = abs(float(between)) if between else float(gaps.min())
+    whole = np.round(gaps / step)
+    if np.any(whole < 1):
+        return None
+    indices = np.concatenate([[0.0], np.cumsum(whole)])
+    fits = [step] if between else [step, float(indices @ along / (indices @ indices))]
+    for step in fits:
+        if np.max(np.abs(along - indices * step)) <= _position_tolerance(step):
+            return step, indices.astype(int).tolist()
+    return None
+
+
+def _first_item(holder: Any, name: str) -> Any:
+    sequence = getattr(holder, name, None) if holder is not None else None
+    return sequence[0] if sequence else None
+
+
+def _source_series(dataset: Any) -> str | None:
+    for item in getattr(dataset, "ReferencedSeriesSequence", []):
+        uid = getattr(item, "SeriesInstanceUID", None)
+        if uid:
+            return str(uid)
+    return None
+
+
+__all__: list[str] = []

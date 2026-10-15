@@ -327,6 +327,26 @@ class TestCodeRevisions:
         published = json.loads((ROOT / "crates/medh5/data/codes.json").read_text())
         assert published["revision"] == CODES_REVISION
 
+    def test_S15_2_the_table_states_its_revision_and_marks_the_codes(self):
+        """§15.2 names the table's revision, and marks (rN) exactly the codes
+        a revision after the first allocated, in 1.0's table or 1.1's."""
+        spec = (ROOT / "docs" / "spec" / "medh5-1.0.md").read_text(encoding="utf-8")
+        table = spec[
+            spec.index("### 15.2 Error codes") : spec.index("## 16. Versioning")
+        ]
+        stated = f"complete for 1.0 at revision {CODES_REVISION}"
+        assert stated in " ".join(table.split())
+        minor = (ROOT / "docs" / "spec" / "medh5-1.1.md").read_text(encoding="utf-8")
+        added = minor[
+            minor.index("### 11.2 Diagnostic codes") : minor.index("### 11.3")
+        ]
+        marked = {
+            code: int(revision)
+            for code, revision in re.findall(r"`([EW]\d{3})` \(r(\d+)\)", table + added)
+        }
+        later = {c.code: c.revision for c in CODES.values() if c.revision > 1}
+        assert marked == later
+
     def test_S15_2_a_revision_keeps_every_earlier_code(self):
         """No later revision narrows, renumbers, removes or re-severs a code."""
         first = {c.code: c.severity for c in CODES.values() if c.revision == 1}

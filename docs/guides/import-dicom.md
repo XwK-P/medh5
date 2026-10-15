@@ -115,6 +115,21 @@ tolerance is half a pixel, and a passing check is recorded as a
 `slice_alignment` decision. The messages name the offending `SOPInstanceUID` or
 series.
 
+**A PET series with a rescale per slice is refused by default.** An image
+stores one modality LUT, and many PET scanners write a `RescaleSlope` per
+slice. The refusal names the option that imports it:
+
+```bash
+medh5 convert from-dicom /pet pet.medh5 --per-slice-rescale apply
+```
+
+Each slice is then stored as its physical values, `stored × slope +
+intercept`, in float32 and with no rescale, so `read()` and
+`read(physical=True)` agree; the report's `per_slice_rescale` decision lists
+the slopes and the slices that state each. SUV is not computed. A series whose
+slices share one rescale is written the same with or without the option, so it
+is safe to pass for a whole tree.
+
 **The slice-position tolerance is a physical bound.** The slice spacing is
 measured from the slice positions, never read from `SliceThickness`, which is
 the slab: it is the median gap between neighbouring slices or, where that does

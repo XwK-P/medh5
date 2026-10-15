@@ -1114,42 +1114,73 @@ def _write_atomic(path: Path, text: str) -> None:
     medh5._core.write_atomic(path, text)
 
 
-# Every Python site that writes a file through the engine's replace so far.
-# Each owner that moves a site (tests/project/test_layers.py) adds it here.
+def _nifti_image(path: Path, text: str) -> None:
+    """`write_nifti`, with nibabel writing *text* as the image."""
+    from unittest import mock
+
+    nibabel = pytest.importorskip("nibabel")
+    from medh5.io.nifti import write_nifti
+
+    def save(image: Any, filename: str) -> None:
+        Path(filename).write_bytes(text.encode())
+
+    with mock.patch.object(nibabel, "save", save):
+        write_nifti(np.zeros((1, 1, 1), np.uint8), np.eye(4), path)
+
+
+def _dicom_object(path: Path, text: str) -> None:
+    """A SEG or an RTSTRUCT export's save, with a dataset that writes *text*."""
+    from medh5.io._common import save_dicom
+
+    class Written:
+        def save_as(self, filename: str, **options: Any) -> None:
+            Path(filename).write_bytes(text.encode())
+
+    save_dicom(Written(), path, enforce_file_format=True)
+
+
+# Every Python site that writes a file through the engine's replace so far,
+# with the suffix its file takes.  Each owner that moves a site
+# (tests/project/test_layers.py) adds it here.  nnU-Net's `dataset.json` is
+# `files.write_text`'s.
 _SITES = {
-    "write_atomic": _write_atomic,
-    "files.write_text": _files_write_text,
-    "convert --report": _report,
-    "nifti sidecar": _sidecar,
+    "write_atomic": (_write_atomic, ".json"),
+    "files.write_text": (_files_write_text, ".json"),
+    "convert --report": (_report, ".json"),
+    "nifti sidecar": (_sidecar, ".json"),
+    "nifti image": (_nifti_image, ".nii.gz"),
+    "dicom seg, rtstruct": (_dicom_object, ".dcm"),
 }
 
 
-@pytest.mark.parametrize("write", _SITES.values(), ids=list(_SITES))
+@pytest.mark.parametrize(("write", "suffix"), _SITES.values(), ids=list(_SITES))
 class TestOneReplace:
     """Every file medh5 writes from Python is replaced as an amendment
     replaces a sample (§14.4, D23): at 2.0.2 a report replaced a link, lost
     the file's mode, and wrote CRLF on Windows."""
 
     def test_S14_4_a_link_is_kept_and_the_file_it_names_replaced(
-        self, tmp_path: Path, write: Any
+        self, tmp_path: Path, write: Any, suffix: str
     ):
-        real = tmp_path / "data" / "real.json"
+        real = tmp_path / "data" / f"real{suffix}"
         real.parent.mkdir()
         real.write_bytes(b"before\n")
-        link = tmp_path / "given.json"
+        link = tmp_path / f"given{suffix}"
         try:
-            link.symlink_to(Path("data", "real.json"))
+            link.symlink_to(Path("data", real.name))
         except OSError as exc:  # pragma: no cover - no links on this file system
             pytest.skip(str(exc))
         write(link, "after\n")
-        assert link.is_symlink() and os.readlink(link) == str(Path("data", "real.json"))
+        assert link.is_symlink() and os.readlink(link) == str(Path("data", real.name))
         assert real.read_bytes() == b"after\n"
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["data", "given.json"]
-        assert [p.name for p in real.parent.iterdir()] == ["real.json"]
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["data", link.name]
+        assert [p.name for p in real.parent.iterdir()] == [real.name]
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
-    def test_S14_4_the_file_s_mode_is_kept(self, tmp_path: Path, write: Any):
-        target = tmp_path / "private.json"
+    def test_S14_4_the_file_s_mode_is_kept(
+        self, tmp_path: Path, write: Any, suffix: str
+    ):
+        target = tmp_path / f"private{suffix}"
         target.write_bytes(b"before\n")
         target.chmod(0o600)
         write(target, "after\n")
@@ -1157,10 +1188,10 @@ class TestOneReplace:
         assert target.read_bytes() == b"after\n"
 
     def test_S14_4_a_read_only_file_is_replaced_and_stays_read_only(
-        self, tmp_path: Path, write: Any
+        self, tmp_path: Path, write: Any, suffix: str
     ):
         """Windows refused both: `os.replace` over a read-only file."""
-        target = tmp_path / "read-only.json"
+        target = tmp_path / f"read-only{suffix}"
         target.write_bytes(b"before\n")
         target.chmod(stat.S_IREAD)
         try:
@@ -1171,8 +1202,10 @@ class TestOneReplace:
             target.chmod(stat.S_IREAD | stat.S_IWRITE)
         assert [p.name for p in tmp_path.iterdir()] == [target.name]
 
-    def test_S14_4_newlines_are_written_as_given(self, tmp_path: Path, write: Any):
-        target = tmp_path / "lines.json"
+    def test_S14_4_newlines_are_written_as_given(
+        self, tmp_path: Path, write: Any, suffix: str
+    ):
+        target = tmp_path / f"lines{suffix}"
         write(target, "a\nb\r\nc\n")
         assert target.read_bytes() == b"a\nb\r\nc\n"
 

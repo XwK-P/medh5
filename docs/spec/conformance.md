@@ -5,9 +5,9 @@ makes "conforming MEDH5 file" a claim somebody else can test.
 
 ## The corpus
 
-169 cases, each a file plus the **exact set of diagnostic codes** a conforming
-validator must emit for it. 56 are valid files an implementation must accept,
-37 of them with specific warnings; 113 are invalid ones it must reject with
+171 cases, each a file plus the **exact set of diagnostic codes** a conforming
+validator must emit for it. 57 are valid files an implementation must accept,
+38 of them with specific warnings; 114 are invalid ones it must reject with
 specific errors. Between them they hold at least one case for every code in
 the specification's tables: 1.0 §15.2, and the codes [1.1](medh5-1.1.md) §11.2
 adds.
@@ -28,7 +28,7 @@ against each other.
 ```
 $ medh5 conformance list
 $ medh5 conformance run /tmp/corpus
-169/169 cases pass
+171/171 cases pass
 ```
 
 A test in this repository asserts that the specification's tables (1.0 §15.2
@@ -39,12 +39,12 @@ code the other lacks.
 
 ```
 $ medh5 conformance publish suite/
-wrote the suite to suite/: 169 cases, see suite/README.md
+wrote the suite to suite/: 171 cases, see suite/README.md
 ```
 
 | File | |
 |---|---|
-| `*.medh5`, `*.medh5c` | the cases: 163 samples and six collections |
+| `*.medh5`, `*.medh5c` | the cases: 165 samples and six collections |
 | `expected.json` | per case: the clause, the level, and the expected codes |
 | `codes.json` | the diagnostic code table as data (1.0 §15.2 and 1.1 §11.2) |
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |
@@ -90,7 +90,7 @@ one JSON array:
 
 ```
 $ medh5 conformance score suite/ results.json
-169/169 cases pass
+171/171 cases pass
 ```
 
 The scorer also takes the shape `medh5 validate --json` reports a file in: a
@@ -143,7 +143,7 @@ stored digests cover the pre-edit bytes and an integrity pass adds a
 `"mutated": true`.
 
 *(That correction came from running it. The README first said deeper was safe;
-it is not, and 118 of the cases prove it.)*
+it is not, and 119 of the cases prove it.)*
 
 **A `.medh5c` case is a collection** (§2.2) — it contains samples rather than
 being one. `"file_suffix"` says which.
@@ -164,7 +164,7 @@ publish("suite/")
 check_checksums("suite/")           # names of files whose bytes changed
 
 results = score("suite/", submitted)
-summarize(results)                  # {"cases": 169, "passed": 169, "ok": True, ...}
+summarize(results)                  # {"cases": 171, "passed": 171, "ok": True, ...}
 ```
 
 ## Profiles
@@ -183,7 +183,7 @@ The ten profiles and the four validation levels are in
 
 Stable API, and part of the specification (1.0 §15.2, 1.1 §11.2): a code's
 meaning never changes and codes are never reused, so the corpus can assert
-exact code sets. All 99 codes are listed in
+exact code sets. All 100 codes are listed in
 [Diagnostic codes](../reference/diagnostic-codes.md).
 
 ```python

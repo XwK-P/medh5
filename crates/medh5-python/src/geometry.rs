@@ -728,6 +728,14 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("AXIS_KINDS", PyTuple::new(py, engine_grid::AXIS_KINDS)?)?;
     m.add("KNOWN_UNITS", PyTuple::new(py, engine_grid::KNOWN_UNITS)?)?;
     m.add("TIME_UNITS", PyTuple::new(py, engine_grid::TIME_UNITS)?)?;
+    // Millimetres per calibrated length unit (§3.2), `px` having none.
+    let mm_per_unit = pyo3::types::PyDict::new(py);
+    for unit in engine_grid::KNOWN_UNITS {
+        if let Some(mm) = engine_grid::mm_per_unit(unit) {
+            mm_per_unit.set_item(unit, mm)?;
+        }
+    }
+    m.add("MM_PER_UNIT", mm_per_unit)?;
     m.add("SPEC_GRID_ATTRS", PyTuple::new(py, engine_grid::SPEC_GRID_ATTRS)?)?;
     m.add("DOWNSAMPLE_METHODS", PyTuple::new(py, multiscale::DOWNSAMPLE_METHODS)?)?;
     m.add("LABEL_SAFE_METHODS", PyTuple::new(py, multiscale::LABEL_SAFE_METHODS)?)?;

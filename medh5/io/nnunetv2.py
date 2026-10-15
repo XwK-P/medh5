@@ -6,6 +6,7 @@ An nnU-Net v2 dataset is a directory of NIfTI files plus a ``dataset.json``:
 
     imagesTr/CASE_0000.nii.gz   channel 0        labelsTr/CASE.nii.gz
     imagesTr/CASE_0001.nii.gz   channel 1        dataset.json
+    imagesTs/TEST_0000.nii.gz   a test case      labelsTs/TEST.nii.gz (optional)
 
 Two properties of that layout are worth preserving carefully.
 
@@ -33,15 +34,17 @@ reproduces the dataset that was imported rather than a reconstruction of it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
+from medh5._files import write_text
 from medh5.errors import MEDH5ValidationError
 from medh5.io._common import sanitize_key
 from medh5.io.report import ConversionReport
@@ -114,18 +117,47 @@ def _labels(document: Mapping[str, Any]) -> dict[str, Any]:
     return dict(document["labels"])
 
 
-def cases(root: str | os.PathLike[str], document: Mapping[str, Any]) -> list[str]:
-    """Case identifiers present in ``imagesTr``."""
+def cases(
+    root: str | os.PathLike[str],
+    document: Mapping[str, Any],
+    *,
+    include_test: bool = False,
+) -> list[str]:
+    """Case identifiers present in ``imagesTr`` --- and, with
+    *include_test*, in ``imagesTs``."""
     ending = str(document["file_ending"])
-    directory = Path(os.fspath(root)) / "imagesTr"
+    base = Path(os.fspath(root))
+    directory = base / "imagesTr"
     if not directory.is_dir():
         raise MEDH5ValidationError(f"{directory} does not exist")
-    found = set()
+    found = _case_names(directory, ending)
+    if include_test:
+        found |= _case_names(base / "imagesTs", ending)
+    return sorted(found)
+
+
+def _case_names(directory: Path, ending: str) -> set[str]:
+    """The cases whose channel files *directory* holds; none when it is not
+    there."""
+    found: set[str] = set()
+    if not directory.is_dir():
+        return found
     for path in sorted(directory.glob(f"*{ending}")):
         stem = path.name[: -len(ending)]
         if "_" in stem and stem.rsplit("_", 1)[1].isdigit():
             found.add(stem.rsplit("_", 1)[0])
-    return sorted(found)
+    return found
+
+
+ASSIGNED_BY = "nnU-Net v2 dataset layout"
+"""The ``assigned_by`` of the split claim :func:`from_nnunetv2` writes with
+``include_test``: the partition is the folder a case was found in."""
+
+
+def _split_id(source: Path) -> str:
+    """The split set an imported dataset's cases claim: ``nnunetv2:<name>``,
+    named for the dataset's directory."""
+    return f"nnunetv2:{Path(os.path.abspath(source)).name}"
 
 
 def from_nnunetv2(
@@ -136,8 +168,20 @@ def from_nnunetv2(
     coord_system: str = "LPS",
     codec: str = "balanced",
     report: ConversionReport | None = None,
+    include_test: bool = False,
 ) -> ConversionReport:
-    """Convert an nnU-Net v2 dataset into one ``.medh5`` per case."""
+    """Convert an nnU-Net v2 dataset into one ``.medh5`` per case.
+
+    The training cases are ``imagesTr``'s, labeled from ``labelsTr``.  With
+    *include_test*, ``imagesTs``'s test cases are imported too, labeled from
+    ``labelsTs`` where it holds their labels, and every case records its
+    partition as a §12.3 split claim: set ``nnunetv2:<dataset>``, partition
+    ``train`` or ``test``, the dataset layout as its ``assigned_by`` and the
+    SHA-256 of ``dataset.json`` as its ``manifest_sha256`` --- so an export
+    with ``split=`` puts each case back where it was.  A case in both
+    folders is refused.  Without it, the test cases left out are counted in
+    a warning.
+    """
     import medh5
     from medh5.io.nifti import _same_grid, read_nifti
 
@@ -151,7 +195,50 @@ def from_nnunetv2(
     label_set, regions, ignore_value = _label_set(document, log)
     declared = _declared_values(document)
     ending = str(document["file_ending"])
-    wanted = list(case_ids) if case_ids is not None else cases(source, document)
+    training = set(cases(source, document))
+    testing = _case_names(source / "imagesTs", ending)
+    if case_ids is not None:
+        wanted = list(case_ids)
+    else:
+        wanted = sorted(training | testing) if include_test else sorted(training)
+    # Where each case's files are: a test case is one only in imagesTs.
+    test = {c for c in wanted if include_test and c in testing and c not in training}
+    if include_test:
+        both = sorted(c for c in wanted if c in training and c in testing)
+        if both:
+            raise MEDH5ValidationError(
+                f"case(s) {both} are in both imagesTr and imagesTs: a case is a "
+                "training case or a test case, and imported as both its split "
+                "claim would say neither; nothing was written"
+            )
+    elif case_ids is None and testing:
+        log.warn(
+            "test_cases",
+            f"{len(testing)} case(s) in imagesTs were not imported; pass "
+            "include_test=True (--include-test) to import them, labeled from "
+            "labelsTs where it has their labels",
+            {"cases": len(testing), "first": sorted(testing)[0]},
+        )
+    claim: dict[str, Any] | None = None
+    if include_test:
+        claim = {
+            "set_id": _split_id(source),
+            "assigned_by": ASSIGNED_BY,
+            "manifest_sha256": hashlib.sha256(
+                (source / "dataset.json").read_bytes()
+            ).hexdigest(),
+        }
+        log.decision(
+            "splits",
+            f"each case claims its folder's partition in split {claim['set_id']!r} "
+            "(§12.3): imagesTr's train, imagesTs's test, with dataset.json's "
+            "SHA-256 as the manifest; export with split= to write them back",
+            {
+                "set_id": claim["set_id"],
+                "train": len(wanted) - len(test),
+                "test": len(test),
+            },
+        )
     directory = Path(os.fspath(out))
     directory.mkdir(parents=True, exist_ok=True)
     if image_ids != channels:
@@ -173,12 +260,15 @@ def from_nnunetv2(
 
     unitless: list[str] = []
     for case in wanted:
+        images_folder, labels_folder = (
+            ("imagesTs", "labelsTs") if case in test else ("imagesTr", "labelsTr")
+        )
         images: dict[str, npt.NDArray[Any]] = {}
         rescales: dict[str, tuple[float, float] | None] = {}
         modalities: dict[str, str] = {}
         geometry: dict[str, Any] | None = None
         for index, name in sorted(channels.items()):
-            path = source / "imagesTr" / f"{case}_{index:04d}{ending}"
+            path = source / images_folder / f"{case}_{index:04d}{ending}"
             if not path.exists():
                 raise MEDH5ValidationError(f"case {case!r} has no channel {index}")
             data, geo = read_nifti(path, coord_system=coord_system)
@@ -195,7 +285,7 @@ def from_nnunetv2(
             rescales[image_id] = geo["rescale"]
             modalities[image_id] = _modality(name)
         assert geometry is not None
-        label_path = source / "labelsTr" / f"{case}{ending}"
+        label_path = source / labels_folder / f"{case}{ending}"
         masks: dict[int, npt.NDArray[np.bool_]] | None = None
         ignored: npt.NDArray[np.bool_] | None = None
         if label_path.exists():
@@ -229,6 +319,13 @@ def from_nnunetv2(
             )
             writer.label_set(label_set)
             writer.extra("nnunetv2", dict(document))
+            if claim is not None:
+                writer.split(
+                    set_id=claim["set_id"],
+                    partition="test" if case in test else "train",
+                    assigned_by=claim["assigned_by"],
+                    manifest_sha256=claim["manifest_sha256"],
+                )
             writer.add_grid(
                 "ref",
                 shape=geometry["shape"],
@@ -526,6 +623,8 @@ def to_nnunetv2(
     classes: Sequence[int | str] | None = None,
     unlabeled: str = "refuse",
     report: ConversionReport | None = None,
+    split: str | None = None,
+    replace: bool = False,
 ) -> ConversionReport:
     """Export samples as an nnU-Net v2 dataset.
 
@@ -548,12 +647,24 @@ def to_nnunetv2(
       ``../../victim`` or an absolute one wrote outside the export;
     * every case is **labeled**: a case without the annotation is refused, or
       with ``unlabeled="test"`` written to ``imagesTs`` and not counted in
-      ``numTraining``;
+      ``numTraining`` --- unless *split* places it in training, which it
+      keeps: such a case is refused either way;
+    * with *split*, every case is **placed by its claim** in that split set
+      (§12.3): a case claiming ``test`` is written to ``imagesTs``, its labels
+      to ``labelsTs``, and one claiming ``train`` or ``val`` to ``imagesTr``
+      (nnU-Net cross-validates its training cases itself); a case the set does
+      not place, places twice, or holds out (``holdout``, ``unassigned``) is
+      refused --- a mistyped set id would otherwise train on every test case;
     * the dataset directory holds **no NIfTI file the export would not
-      write** in ``imagesTr``, ``labelsTr`` or ``imagesTs`` --- an earlier
-      export's dropped case, channel, partition or file ending, which nnU-Net
-      would train on --- so an identical re-export rewrites its own files and
-      any other is refused (:func:`_require_no_strays`);
+      write** in ``imagesTr``, ``labelsTr``, ``imagesTs`` or ``labelsTs`` ---
+      an earlier export's dropped case, channel, partition or file ending,
+      which nnU-Net would train on --- so an identical re-export rewrites its
+      own files and any other is refused (:func:`_require_no_strays`).  With
+      *replace*, the directory must be an existing dataset instead --- a
+      directory, not a link, holding a ``dataset.json`` --- and the new
+      dataset is written over it in place, file by file: NIfTI files of
+      those four folders that the export does not write are removed, every
+      other file is left where it is, and the report lists both;
     * every channel and the labels are **one lattice in one physical space** ---
       shape, spacing, origin and direction, coordinate system, units, and no two
       known frames of reference --- because nnU-Net pairs their voxels by index;
@@ -571,8 +682,15 @@ def to_nnunetv2(
       painted in ``regions_class_order``, overlapping classes refused rather than
       written over each other --- and every one is a training case's: a
       refused case refuses the export, before any case's files are written.
+
+    Every file is written through the engine's replace (§14.4): to a
+    temporary beside it, renamed over the old one once whole, so an
+    interrupted export leaves each file whole, the old one or the new.
+    ``dataset.json`` is the last file written, and with *replace* the old
+    dataset's files that the export no longer writes are removed only after
+    it.  An export interrupted part way leaves the dataset a mix of the old
+    and the new until it is run again, which completes it.
     """
-    import medh5
     from medh5.io.nifti import NIFTI_SUFFIXES, require_nibabel
 
     require_nibabel()
@@ -587,33 +705,78 @@ def to_nnunetv2(
         )
     log = report or ConversionReport(converter="to-nnunet")
     root = _dataset_root(out, dataset_name)
-    plan = _plan(paths, annotation, classes, log, unlabeled)
+    if replace:
+        _require_replaceable(root)
+    plan = _plan(paths, annotation, classes, log, unlabeled, split)
     _require_under(root, plan, file_ending)
-    _require_no_strays(root, plan, file_ending)
+    if not replace:
+        _require_no_strays(root, plan, file_ending)
     labels = dict(plan.labels)
     # nnU-Net's ignore label is the highest value (§7.7): ignored voxels
     # written as 0 were verified negatives for every class.
     ignore_value = _ignore_value(labels) if _check_cases(plan, annotation) else None
     if ignore_value is not None:
         labels[IGNORE] = ignore_value
+    if not replace:
+        _write(plan, root, labels, ignore_value, annotation, file_ending, log)
+        return log
+
+    left, owned = _inventory(root)
+    written = _write(plan, root, labels, ignore_value, annotation, file_ending, log)
+    # After `dataset.json`, so an export interrupted before it has removed
+    # nothing.
+    removed = sorted(set(owned) - set(written))
+    for relative in removed:
+        (root / relative).unlink(missing_ok=True)
+    log.decision(
+        "replace",
+        f"the dataset {root} was replaced in place, file by file: "
+        f"{len(removed)} NIfTI file(s) of the old one that this export does "
+        f"not write were removed, and {len(left)} file(s) that are not the "
+        "export's were left where they are",
+        {"removed": removed, "carried_over": left},
+    )
+    return log
+
+
+def _write(
+    plan: _Plan,
+    root: Path,
+    labels: dict[str, Any],
+    ignore_value: int | None,
+    annotation: str,
+    file_ending: str,
+    log: ConversionReport,
+) -> list[str]:
+    """Write the planned dataset under *root*, ``dataset.json`` last; the
+    files written, relative to *root*."""
+    import medh5
+
+    written: list[str] = []
+
+    def place(target: Path) -> str:
+        written.append(target.relative_to(root).as_posix())
+        return str(target)
+
     (root / "imagesTr").mkdir(parents=True, exist_ok=True)
     (root / "labelsTr").mkdir(parents=True, exist_ok=True)
-    if any(not case.labeled for case in plan.cases):
-        (root / "imagesTs").mkdir(parents=True, exist_ok=True)
+    for case in plan.cases:
+        (root / case.images).mkdir(exist_ok=True)
+        if case.labeled:
+            (root / case.labels).mkdir(exist_ok=True)
 
     for case in plan.cases:
         with medh5.open(case.path) as sample:
             ann = sample.annotations.get(annotation) if case.labeled else None
-            images = "imagesTr" if case.labeled else "imagesTs"
             for index, image_id in enumerate(plan.channels):
-                target = root / images / f"{case.name}_{index:04d}{file_ending}"
+                target = root / case.images / f"{case.name}_{index:04d}{file_ending}"
                 _save(
                     sample.images[image_id].grid,
                     sample.images[image_id].read(),
                     target,
                     rescale=sample.images[image_id].rescale,
                 )
-                log.outputs.append(str(target))
+                log.outputs.append(place(target))
             if ann is not None:
                 volume = _labelmap_for(ann, labels, plan.order, plan.by_label)
                 ignored = np.asarray(sample.ignore_region(annotation), dtype=bool)
@@ -637,13 +800,13 @@ def to_nnunetv2(
                             "over": covered,
                         },
                     )
-                target = root / "labelsTr" / f"{case.name}{file_ending}"
+                target = root / case.labels / f"{case.name}{file_ending}"
                 _save(ann.grid, volume, target)
                 # Listed only when written.  A sample without the annotation
                 # produced no label file and the report named one anyway, so a
                 # caller checking `outputs` for what to ship was told about a
                 # path that did not exist.
-                log.outputs.append(str(target))
+                log.outputs.append(place(target))
 
     stashed = plan.stashed
     document = dict(stashed) if stashed else {}
@@ -652,7 +815,7 @@ def to_nnunetv2(
             "channel_names": {str(i): n for i, n in enumerate(plan.channel_names)},
             "labels": labels or document.get("labels") or {},
             # The training cases only: a case written to imagesTs is not one.
-            "numTraining": sum(1 for case in plan.cases if case.labeled),
+            "numTraining": sum(1 for case in plan.cases if case.training),
             "file_ending": file_ending,
         }
     )
@@ -664,10 +827,10 @@ def to_nnunetv2(
         }
     else:
         document.pop("medh5_class_ids", None)
-    (root / "dataset.json").write_text(
-        json.dumps(document, indent=2) + "\n", encoding="utf-8"
-    )
-    log.outputs.append(str(root / "dataset.json"))
+    # The last file written: a dataset interrupted before it keeps the old
+    # description, whole (§14.4).
+    write_text(root / "dataset.json", json.dumps(document, indent=2) + "\n")
+    log.outputs.append(place(root / "dataset.json"))
     log.decision(
         "dataset_json",
         "the stashed dataset.json was reused: its fields as stashed, its labels "
@@ -677,7 +840,76 @@ def to_nnunetv2(
         else "a dataset.json was generated from the label set",
         {"reused": plan.reused},
     )
-    return log
+    return written
+
+
+OWNED = ("imagesTr", "labelsTr", "imagesTs", "labelsTs")
+"""The folders whose NIfTI files are an exported dataset's own: nnU-Net
+reads every case file there, so :func:`to_nnunetv2` refuses one it would
+not write, or with ``replace`` removes it."""
+
+
+def _require_replaceable(root: Path) -> None:
+    """Refuse to replace what is not an nnU-Net dataset directory.
+
+    ``replace`` removes the old dataset's files that the export does not
+    write, so it holds itself to what an export could have written: a
+    directory of its own --- not a link, which would rewrite the tree it
+    names wherever that is --- holding a ``dataset.json``.
+    """
+    why = None
+    if root.is_symlink():
+        why = "is a symbolic link; name the dataset directory itself"
+    elif not root.exists():
+        why = "does not exist; export without replace to write a new dataset"
+    elif not root.is_dir():
+        why = "is not a directory"
+    elif not (root / "dataset.json").is_file():
+        why = (
+            "holds no dataset.json, so it is no nnU-Net dataset; replace never "
+            "deletes a directory that is not one"
+        )
+    if why is not None:
+        raise MEDH5ValidationError(
+            f"replace=True (--replace) replaces an nnU-Net dataset, and {root} "
+            f"{why}; nothing was written"
+        )
+
+
+def _owned(relative: PurePosixPath, path: Path) -> bool:
+    """Whether the file at *relative* in a dataset is the export's: its
+    ``dataset.json``, or a NIfTI file in one of the case folders."""
+    from medh5.io.nifti import NIFTI_SUFFIXES
+
+    if relative.as_posix() == "dataset.json":
+        return True
+    return (
+        len(relative.parts) == 2
+        and relative.parts[0] in OWNED
+        and relative.name.endswith(NIFTI_SUFFIXES)
+        and not path.is_dir()
+    )
+
+
+def _inventory(root: Path) -> tuple[list[str], list[str]]:
+    """The files of *root* that are not the export's, which a replace leaves
+    where they are, and the export's own, as sorted relative paths.
+
+    A link is listed as itself, never followed.
+    """
+    left: list[str] = []
+    owned: list[str] = []
+    for directory, folders, files in os.walk(root):
+        here = Path(directory)
+        relative = PurePosixPath(here.relative_to(root).as_posix())
+        for name in list(folders):
+            if (here / name).is_symlink():
+                folders.remove(name)
+                files.append(name)
+        for name in files:
+            entry = relative / name
+            (owned if _owned(entry, here / name) else left).append(entry.as_posix())
+    return sorted(left), sorted(owned)
 
 
 UNLABELED = ("refuse", "test")
@@ -742,13 +974,20 @@ def _require_name(name: str, what: str) -> None:
 
 def _require_under(root: Path, plan: _Plan, file_ending: str) -> None:
     """Every file the plan writes resolves under *root* --- what the case
-    names already ensure, checked where the files are named."""
+    names already ensure, checked where the files are named.
+
+    Each one, every channel's: a file is written through a link at its
+    name (§14.4), so a link at a case file naming one outside the dataset
+    would have the export write there.
+    """
     top = root.resolve()
     for case in plan.cases:
-        folder = "imagesTr" if case.labeled else "imagesTs"
         for target in (
-            root / folder / f"{case.name}_0000{file_ending}",
-            root / "labelsTr" / f"{case.name}{file_ending}",
+            *(
+                root / case.images / f"{case.name}_{index:04d}{file_ending}"
+                for index in range(len(plan.channels))
+            ),
+            root / case.labels / f"{case.name}{file_ending}",
         ):
             if not target.resolve().is_relative_to(top):
                 raise MEDH5ValidationError(
@@ -774,16 +1013,15 @@ def _require_no_strays(root: Path, plan: _Plan, file_ending: str) -> None:
 
     planned: set[Path] = set()
     for case in plan.cases:
-        folder = "imagesTr" if case.labeled else "imagesTs"
         planned.update(
-            root / folder / f"{case.name}_{index:04d}{file_ending}"
+            root / case.images / f"{case.name}_{index:04d}{file_ending}"
             for index in range(len(plan.channels))
         )
         if case.labeled:
-            planned.add(root / "labelsTr" / f"{case.name}{file_ending}")
+            planned.add(root / case.labels / f"{case.name}{file_ending}")
     stray = sorted(
         f"{folder}/{path.name}"
-        for folder in ("imagesTr", "labelsTr", "imagesTs")
+        for folder in OWNED
         if (root / folder).is_dir()
         for path in (root / folder).iterdir()
         if path.name.endswith(NIFTI_SUFFIXES)
@@ -798,21 +1036,37 @@ def _require_no_strays(root: Path, plan: _Plan, file_ending: str) -> None:
             f"{root} holds {len(stray)} NIfTI file(s) this export would not "
             f"write ({shown}): nnU-Net trains on every case file it finds, "
             "whatever dataset.json says, so they would join the new dataset; "
-            "export to a new directory, or remove them first --- nothing was "
-            "written"
+            "export to a new directory, pass replace=True (--replace) to "
+            "replace the dataset, or remove them first --- nothing was written"
         )
 
 
 class _Case:
-    """One sample of the export: its file, the name its files take, and
-    whether it carries the annotation."""
+    """One sample of the export: its file, the name its files take, whether
+    it carries the annotation, and whether a split claims it for ``test``."""
 
-    __slots__ = ("labeled", "name", "path")
+    __slots__ = ("labeled", "name", "path", "test")
 
     def __init__(self, path: str, name: str, labeled: bool) -> None:
         self.path = path
         self.name = name
         self.labeled = labeled
+        self.test = False
+
+    @property
+    def training(self) -> bool:
+        """Whether the case is one of ``numTraining``: in ``imagesTr``."""
+        return self.labeled and not self.test
+
+    @property
+    def images(self) -> str:
+        """The folder its channels are written to."""
+        return "imagesTr" if self.training else "imagesTs"
+
+    @property
+    def labels(self) -> str:
+        """The folder its label volume is written to, when it has one."""
+        return "labelsTs" if self.test else "labelsTr"
 
 
 class _Plan:
@@ -868,6 +1122,7 @@ def _plan(
     classes: Sequence[int | str] | None,
     log: ConversionReport,
     unlabeled: str = "refuse",
+    split: str | None = None,
 ) -> _Plan:
     """Every case read once, and every refusal but the label volumes' own
     (:func:`_check_cases`) made, before a file is written.
@@ -890,6 +1145,7 @@ def _plan(
     searched: list[tuple[str, frozenset[int]]] = []
     cases: list[_Case] = []
     taken: dict[str, str] = {}
+    claims: dict[str, list[str]] = {}
     for path in paths:
         with medh5.open(path) as sample:
             name = sample.identity.sample_id
@@ -922,7 +1178,14 @@ def _plan(
                     channels[0],
                 )
             labeled = annotation in sample.annotations
-            cases.append(_Case(os.fspath(path), name, labeled))
+            case = _Case(os.fspath(path), name, labeled)
+            cases.append(case)
+            if split is not None:
+                claimed = sorted(
+                    {c.partition for c in sample.document.splits if c.set_id == split}
+                )
+                claims[case.path] = claimed
+                case.test = claimed == ["test"]
             if not labeled:
                 continue
             ann = sample.annotations[annotation]
@@ -944,7 +1207,16 @@ def _plan(
                 (os.fspath(path), frozenset(int(c) for c in ann.annotated_class_ids))
             )
 
-    bare = [case.path for case in cases if not case.labeled]
+    if split is not None:
+        _require_placed(claims, split, log)
+    bare = [case.path for case in cases if not case.labeled and not case.test]
+    if bare and split is not None:
+        raise MEDH5ValidationError(
+            f"{bare} carry no annotation {annotation!r} and claim train or val "
+            f"in split {split!r}: an imagesTr case is an image with its label "
+            "volume, and unlabeled='test' would move them out of the partition "
+            "their claims place them in; nothing was written"
+        )
     if bare and unlabeled == "refuse":
         raise MEDH5ValidationError(
             f"{bare} carry no annotation {annotation!r}: an nnU-Net training case "
@@ -1030,6 +1302,56 @@ def _plan(
         by_label,
         class_ids,
         frozenset(wanted),
+    )
+
+
+def _require_placed(
+    claims: Mapping[str, Sequence[str]], split: str, log: ConversionReport
+) -> None:
+    """Refuse a case that split set *split* does not place in ``imagesTr``
+    or ``imagesTs``; note where the claims sent the cases.
+
+    ``train`` and ``val`` are ``imagesTr``'s, since nnU-Net cross-validates
+    its training cases itself, and ``test`` is ``imagesTs``'s.  A case
+    claiming nothing in the set is refused rather than trained on --- a
+    mistyped set id would put every test case in training --- and so is one
+    whose claims disagree (W906), and one held out of both.
+    """
+    unplaced = sorted(path for path, found in claims.items() if not found)
+    if unplaced:
+        raise MEDH5ValidationError(
+            f"{unplaced} claim no partition in split {split!r} (§12.3): split= "
+            "(--split) sends a case claiming test to imagesTs and one claiming "
+            "train or val to imagesTr, so a case the set does not place has no "
+            "folder; export the set's cases, or check the set id --- nothing "
+            "was written"
+        )
+    torn = {path: found for path, found in claims.items() if len(found) > 1}
+    if torn:
+        raise MEDH5ValidationError(
+            f"{sorted(torn)} claim more than one partition in split {split!r} "
+            f"({sorted(set(p for f in torn.values() for p in f))}), which "
+            "conflict (W906); nothing was written"
+        )
+    held = {
+        path: found[0]
+        for path, found in claims.items()
+        if found[0] not in ("train", "val", "test")
+    }
+    if held:
+        raise MEDH5ValidationError(
+            f"{sorted(held)} claim {sorted(set(held.values()))} in split "
+            f"{split!r}: a holdout case is kept from both training and testing, "
+            "and an unassigned one belongs to neither, so neither has an nnU-Net "
+            "folder; leave them out of the export --- nothing was written"
+        )
+    test = sorted(path for path, found in claims.items() if found == ["test"])
+    log.decision(
+        "split",
+        f"split {split!r} (§12.3): {len(test)} case(s) claiming test were written "
+        "to imagesTs, their labels to labelsTs, and "
+        f"{len(claims) - len(test)} claiming train or val to imagesTr",
+        {"set_id": split, "test": test, "train": len(claims) - len(test)},
     )
 
 

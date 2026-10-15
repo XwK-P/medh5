@@ -39,7 +39,20 @@ scale, as the file had them.
 imported at z = 0, on one grid with a plane — or a mask — from any other
 slice, so it is refused, and so is a plane not parallel to x-y. Save such an
 image as `(x, y, 1)` instead: it imports as a one-slice volume, whose third
-axis keeps its position.
+axis keeps its position. Or let the import do that:
+
+```bash
+medh5 convert from-nifti xr.medh5 --image XR=xr.nii.gz --plane-as-volume
+```
+
+`--plane-as-volume` reads every 2-D image and mask as `(x, y, 1)` with the
+file's whole affine, so the result is the one you would get from re-saving
+the plane yourself. Planes at z = 0 are read the same way, so a cohort whose
+headers put some planes at z = 0 and some elsewhere still comes out on one
+kind of grid. The affine's third column is the slice's normal and thickness;
+a zero column, or one not orthogonal to the plane, is refused, since neither
+is invented. Each plane is a `plane_as_volume` decision in the report,
+naming its z and normal.
 
 Mask names become class keys as a label set allows them — `--mask GTV-1=...`
 is the class `gtv_1`, displayed as `GTV-1` — and two names that make one key

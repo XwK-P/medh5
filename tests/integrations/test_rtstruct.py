@@ -12,8 +12,9 @@ import pytest
 import medh5
 from medh5.errors import MEDH5ValidationError
 from medh5.io.report import ConversionReport
+from medh5.validate import validate_file
 from tests.helpers import write_dicom_series
-from tests.kits import Flat
+from tests.kits import Flat, NestedSameNameRoiKit
 
 pydicom = pytest.importorskip("pydicom")
 
@@ -521,7 +522,9 @@ class TestContourTypes:
             "ROI 'gtv' in .* mixes CLOSEDPLANAR_XOR contours with CLOSED_PLANAR",
         )
 
-    def test_S8_6_point_and_open_rois_are_left_out_with_a_warning_each(self, case):
+    def test_S8_6_open_rois_are_left_out_with_a_warning_naming_the_option(self, case):
+        """Open curves are left out (``open_curves="omit"``); points are not
+        (§8.5): a POINT ROI vanished, with a warning, until 2.1."""
         grid = case.grid
         organ = _square(grid, 2, (2, 7), (2, 7))
         line = grid.index_to_world(
@@ -539,8 +542,9 @@ class TestContourTypes:
             },
         )
         with medh5.open(case.path) as sample:
-            assert [c.key for c in sample.label_set] == ["organ"]
+            assert [c.key for c in sample.label_set] == ["organ", "marker"]
             assert len(list(sample.annotations["rois"].polygons())) == 1
+            assert len(sample.annotations["rois_points"]) == 2
         assert _voxels(case.path) == {"organ": 36}, "no class examined and empty"
         notes = report.of_kind("contour_type")
         assert all(n.severity == "warning" for n in notes)
@@ -549,15 +553,17 @@ class TestContourTypes:
         ) == [
             ("applicator", "OPEN_NONPLANAR", 1),
             ("line", "OPEN_PLANAR", 1),
-            ("marker", "POINT", 2),
         ]
+        assert all("open_curves='omit'" in n.message for n in notes)
 
-    def test_S8_6_an_rtstruct_of_points_alone_is_refused_by_name(self, case):
-        point = case.grid.index_to_world(np.array([[2, 4.0, 4.0]]))
+    def test_S8_6_an_rtstruct_of_open_curves_alone_is_refused_by_name(self, case):
+        line = case.grid.index_to_world(
+            np.array([[2, 2.0, 2.0], [2, 2.0, 8.0], [2, 8.0, 8.0]])
+        )
         self._refused(
             case,
-            {4: ("marker", [("POINT", point)])},
-            "contains no usable contours: 'marker' is POINT",
+            {2: ("line", [("OPEN_PLANAR", line)])},
+            "contains no usable contours or points: 'line' is OPEN_PLANAR",
         )
 
     def test_S8_6_an_roi_of_areas_and_curves_is_refused(self, case):
@@ -1117,7 +1123,8 @@ class TestRoiNamesAndText:
             study_date="20260101",
         )
 
-    def _sample(self, path: Path, series: dict[str, Any], classes: list) -> Path:
+    @staticmethod
+    def _sample(path: Path, series: dict[str, Any], classes: list) -> Path:
         from medh5.annotations.geometric import Polygon
         from medh5.labels import LabelSet
 
@@ -1217,3 +1224,343 @@ class TestRoiNamesAndText:
         assert written.SpecificCharacterSet == "ISO_IR 192"
         assert str(written.PatientName) == "Müller^Jürgen"
         assert written.StructureSetROISequence[0].ROIName == "Rückenmark"
+
+
+class TestRtstructIsWrittenWhole:
+    """An RTSTRUCT export replaces its file through the engine's replace
+    (§14.4): at 2.0.2 ``save_as`` wrote over the previous one in place, so a
+    crash during it left a truncated structure set."""
+
+    def test_S14_4_an_interrupted_save_leaves_the_previous_rtstruct(
+        self, tmp_path, monkeypatch
+    ):
+        from pydicom.uid import generate_uid
+
+        from medh5.io.rtstruct import to_rtstruct
+        from medh5.labels import LabelClass
+        from tests.helpers import crash_save_as
+
+        series = write_dicom_series(
+            tmp_path / "dcm",
+            patient_id="PSEUDO-011",
+            study_uid=generate_uid(),
+            study_date="20260101",
+        )
+        path = TestRoiNamesAndText._sample(
+            tmp_path / "s.medh5", series, [LabelClass(1, "liver", "Liver")]
+        )
+        out = tmp_path / "exports" / "rt.dcm"
+        out.parent.mkdir()
+        to_rtstruct(path, "rois", series["paths"], out)
+        before = out.read_bytes()
+        asked = crash_save_as(monkeypatch, before)
+        with pytest.raises(OSError, match="interrupted"):
+            to_rtstruct(path, "rois", series["paths"], out)
+        monkeypatch.undo()
+        assert asked and asked[0] != out, "pydicom wrote a temporary"
+        assert out.read_bytes() == before
+        assert [p.name for p in out.parent.iterdir()] == ["rt.dcm"]
+
+
+def _bladder_label_set(*keys: str) -> Any:
+    from medh5.labels import LabelClass, LabelSet
+
+    return LabelSet(
+        "bladder-1",
+        version="1.0.0",
+        classes=[LabelClass(i, key, key.title()) for i, key in enumerate(keys, 1)],
+    )
+
+
+class TestSameNamedRois:
+    """ROIs whose names make one key are one class (§8.6).
+
+    Minting, two ROIs named "GTV" failed "[E302] duplicate class keys"; with
+    a label set they merged without a note, their roles nested per ROI while
+    the rasteriser nested per class --- so a "Bladder" drawn inside another
+    became a hole in it.
+    """
+
+    @pytest.fixture(params=["minted", "label_set"])
+    def given(self, request) -> Any:
+        """No label set (the importer mints one), or one the sample holds."""
+        if request.param == "minted":
+            return None
+        return _bladder_label_set("gtv", "bladder", "bladder_inner")
+
+    def test_S8_6_same_named_rois_are_one_class(self, tmp_path, given):
+        from medh5.io.rtstruct import from_rtstruct
+
+        case = _dicom_case(tmp_path)
+        if given is not None:
+            with medh5.amend(case.path) as w:
+                w.label_set(given)
+        grid = case.grid
+        rt = _structure_set(
+            case.tmp / "rt.dcm",
+            {
+                1: ("GTV", [(CLOSED, _square(grid, 2, (2, 5), (2, 5)))]),
+                3: ("gtv", [(CLOSED, _square(grid, 2, (8, 10), (8, 10)))]),
+                4: ("GTV", [(CLOSED, _square(grid, 3, (2, 7), (2, 7)))]),
+            },
+            [FRAME_A],
+        )
+        report = from_rtstruct(rt, case.path, ann_id="rois", rasterize=True)
+        with medh5.open(case.path) as sample:
+            polygons = list(sample.annotations["rois"].polygons())
+            gtv = sample.label_set["gtv"]
+            assert {p.class_id for p in polygons} == {gtv.id}
+            assert [p.role for p in polygons] == ["outer"] * 3
+            if given is None:
+                assert [c.key for c in sample.label_set] == ["gtv"]
+                assert gtv.name == "GTV"
+        assert _voxels(case.path) == {"gtv": 16 + 9 + 36}
+        [note] = report.of_kind("merged_rois")
+        assert note.severity == "decision"
+        assert note.detail == {
+            "class": "gtv",
+            "rois": [1, 3, 4],
+            "names": ["GTV", "gtv", "GTV"],
+        }
+
+    def test_S8_6_nested_same_named_rois_are_refused(self, tmp_path, given):
+        """The Bladder kit: drawn, 121 voxels; 2.0.2 stored 105."""
+        from medh5.io.rtstruct import from_rtstruct
+
+        kit = NestedSameNameRoiKit
+        sample = kit.sample(tmp_path / "ct.medh5", label_set=given)
+        rt = kit.rtstruct(tmp_path / "rt.dcm", sample)
+        before = sample.read_bytes()
+        with pytest.raises(
+            MEDH5ValidationError,
+            match=r"ROIs 1 \('Bladder'\), 2 \('Bladder'\) are one class 'bladder', "
+            r"and on slice 0 of grid 'ct' .*\(--roi NUMBER=KEY\)",
+        ):
+            from_rtstruct(rt, sample, rasterize=True)
+        assert sample.read_bytes() == before, "the sample is untouched"
+
+    def test_S8_6_roi_classes_import_rois_apart(self, tmp_path, given):
+        from medh5.io.rtstruct import from_rtstruct
+
+        kit = NestedSameNameRoiKit
+        sample = kit.sample(tmp_path / "ct.medh5", label_set=given)
+        rt = kit.rtstruct(tmp_path / "rt.dcm", sample)
+        report = from_rtstruct(
+            rt, sample, rasterize=True, roi_classes={2: "bladder_inner"}
+        )
+        assert _voxels(sample, "contours") == {
+            "bladder": kit.DRAWN,
+            "bladder_inner": 16,
+        }
+        assert not report.of_kind("merged_rois")
+        with medh5.open(sample) as opened:
+            assert opened.annotations["contours"].roles == ("outer", "outer")
+            if given is None:
+                assert [(c.key, c.name) for c in opened.label_set] == [
+                    ("bladder", "Bladder"),
+                    ("bladder_inner", "Bladder"),
+                ]
+
+    def test_S8_6_roi_classes_name_a_class_of_the_label_set(self, tmp_path):
+        """With a label set, the key must be one of its classes (E402); an ROI
+        number the file does not hold is refused, not ignored."""
+        from medh5.io.rtstruct import from_rtstruct
+
+        kit = NestedSameNameRoiKit
+        sample = kit.sample(
+            tmp_path / "ct.medh5", label_set=_bladder_label_set("bladder")
+        )
+        rt = kit.rtstruct(tmp_path / "rt.dcm", sample)
+        with pytest.raises(MEDH5ValidationError, match="'bladder_inner'") as exc:
+            from_rtstruct(rt, sample, roi_classes={2: "bladder_inner"})
+        assert exc.value.code == "E402"
+        with pytest.raises(MEDH5ValidationError, match=r"ROI number\(s\) \[7\]"):
+            from_rtstruct(rt, sample, roi_classes={7: "bladder"})
+
+    def test_roi_classes_come_in_through_the_command_line(self, tmp_path, capsys):
+        from medh5.cli import main
+
+        kit = NestedSameNameRoiKit
+        sample = kit.sample(tmp_path / "ct.medh5")
+        rt = kit.rtstruct(tmp_path / "rt.dcm", sample)
+        command = ["convert", "from-rtstruct", str(rt), str(sample), "--rasterize"]
+        assert main(command) == 1, "refused without --roi"
+        assert "--roi NUMBER=KEY" in capsys.readouterr().err
+        assert main([*command, "--roi", "two=x"]) == 1
+        assert "--roi" in capsys.readouterr().err
+        assert main([*command, "--roi", "2=bladder_inner"]) == 0
+        assert _voxels(sample, "contours") == {"bladder": 121, "bladder_inner": 16}
+
+
+class TestPointRois:
+    """An RTSTRUCT's POINT ROIs are a `points` annotation (§8.5): landmarks,
+    in world coordinates of the contours' frame.  They were left out with a
+    warning."""
+
+    @pytest.fixture
+    def case(self, tmp_path: Path) -> SimpleNamespace:
+        return _dicom_case(tmp_path)
+
+    @staticmethod
+    def _rois(grid: Any) -> dict:
+        organ = _square(grid, 2, (2, 7), (2, 7))
+        first = grid.index_to_world(np.array([[2, 4.0, 4.0]]))
+        second = grid.index_to_world(np.array([[3, 9.25, 11.5]]))
+        return {
+            1: ("organ", [(CLOSED, organ)]),
+            4: ("marker", [("POINT", first), ("POINT", second)]),
+        }
+
+    def _import(self, case: SimpleNamespace, rois: dict, **kw: Any):
+        from medh5.io.rtstruct import from_rtstruct
+
+        rt = _structure_set(case.tmp / "rt.dcm", rois, [FRAME_A])
+        return from_rtstruct(rt, case.path, ann_id="rois", **kw)
+
+    def test_S8_5_rtstruct_point_rois_import_as_points(self, case):
+        rois = self._rois(case.grid)
+        report = self._import(case, rois)
+        expected = np.concatenate([points for _, points in rois[4][1]])
+        with medh5.open(case.path) as sample:
+            points = sample.annotations["rois_points"]
+            marker = sample.label_set["marker"]
+            assert points.kind == "points" and points.space == "world"
+            assert points.header.frame_uid == sample.grids[points.grid_id].frame_uid
+            assert points.grid_id == sample.annotations["rois"].grid_id
+            assert points.task == "other", "a marker is no detection finding"
+            assert points.object_class_ids.tolist() == [marker.id, marker.id]
+            assert points.names == ("marker", "marker")
+            assert np.allclose(points.points, expected, atol=1e-4)
+            assert [c.key for c in points.annotated_classes] == ["marker"]
+            contours = sample.annotations["rois"]
+            assert [c.key for c in contours.annotated_classes] == ["organ"]
+        assert not report.of_kind("contour_type"), "no warning"
+        [note] = report.of_kind("points")
+        assert note.severity == "decision"
+        assert note.detail["rois"] == {"4": "marker"}
+        assert validate_file(case.path).ok
+
+    def test_S8_5_point_only_structure_set_writes_no_contours(self, case):
+        rois = {4: self._rois(case.grid)[4]}
+        report = self._import(case, rois, points_id="landmarks", rasterize=True)
+        with medh5.open(case.path) as sample:
+            assert sorted(sample.annotations) == ["landmarks"]
+            assert len(sample.annotations["landmarks"]) == 2
+        [note] = report.of_kind("rasterization")
+        assert note.severity == "warning"
+
+    def test_S8_5_a_point_contour_of_several_points_is_refused(self, case):
+        grid = case.grid
+        two = grid.index_to_world(np.array([[2, 4.0, 4.0], [2, 5.0, 5.0]]))
+        before = case.path.read_bytes()
+        with pytest.raises(
+            MEDH5ValidationError,
+            match=r"ROI 'marker' has a POINT contour of 2 points",
+        ):
+            self._import(case, {4: ("marker", [("POINT", two)])})
+        assert case.path.read_bytes() == before
+
+    def test_S8_5_open_curves_take_only_omit(self, case):
+        with pytest.raises(MEDH5ValidationError, match="2.2.0"):
+            self._import(case, self._rois(case.grid), open_curves="polylines")
+
+    def test_S8_5_annotated_classes_split_across_points_and_contours(self, case):
+        rois = self._rois(case.grid)
+        rois[5] = ("seed", [("POINT", rois[4][1][0][1] + 2.0)])
+        self._import(case, rois, annotated_classes=["organ", "marker"])
+        with medh5.open(case.path) as sample:
+            seen = {
+                ann: [c.key for c in sample.annotations[ann].annotated_classes]
+                for ann in ("rois", "rois_points")
+            }
+        assert seen == {"rois": ["organ"], "rois_points": ["marker"]}
+
+    def test_S8_5_all_applies_to_the_contours_only(self, case):
+        self._import(case, self._rois(case.grid), annotated_classes="all")
+        with medh5.open(case.path) as sample:
+            contours = sample.annotations["rois"].annotated_classes
+            points = sample.annotations["rois_points"].annotated_classes
+            assert [c.key for c in contours] == ["organ", "marker"]
+            assert [c.key for c in points] == ["marker"]
+
+    def test_S8_5_points_round_trip_through_to_rtstruct(self, case):
+        from medh5.io.rtstruct import read_rtstruct, to_rtstruct
+
+        rois = self._rois(case.grid)
+        self._import(case, rois)
+        out = case.tmp / "out.dcm"
+        report = ConversionReport()
+        to_rtstruct(
+            case.path,
+            "rois",
+            case.series["paths"],
+            out,
+            points="rois_points",
+            report=report,
+        )
+        written = pydicom.dcmread(out)
+        names = {r.ROINumber: r.ROIName for r in written.StructureSetROISequence}
+        kinds = {
+            o.ReferencedROINumber: o.RTROIInterpretedType
+            for o in written.RTROIObservationsSequence
+        }
+        marker = next(n for n, name in names.items() if name == "marker")
+        organ = next(n for n, name in names.items() if name == "organ")
+        assert kinds == {organ: "ORGAN", marker: "MARKER"}
+        [item] = [
+            i for i in written.ROIContourSequence if i.ReferencedROINumber == marker
+        ]
+        assert [c.ContourGeometricType for c in item.ContourSequence] == ["POINT"] * 2
+        assert [int(c.NumberOfContourPoints) for c in item.ContourSequence] == [1, 1]
+        found = np.array(
+            [list(map(float, c.ContourData)) for c in item.ContourSequence]
+        )
+        expected = np.concatenate([points for _, points in rois[4][1]])
+        assert np.allclose(found, expected.astype(np.float32), rtol=0, atol=1e-4)
+        _, meta = read_rtstruct(out)
+        assert [len(p) for p in meta["points"][marker]] == [1, 1]
+
+    def test_S8_5_a_class_in_both_annotations_is_refused_on_export(self, case):
+        from medh5.io.rtstruct import to_rtstruct
+
+        grid = case.grid
+        rois = self._rois(grid)
+        rois[6] = ("marker", [(CLOSED, _square(grid, 4, (2, 3), (2, 3)))])
+        self._import(case, rois)
+        with pytest.raises(MEDH5ValidationError, match="'marker'"):
+            to_rtstruct(
+                case.path,
+                "rois",
+                case.series["paths"],
+                case.tmp / "out.dcm",
+                points="rois_points",
+            )
+
+    def test_points_come_in_and_go_out_through_the_command_line(self, case):
+        from medh5.cli import main
+
+        rt = _structure_set(case.tmp / "rt.dcm", self._rois(case.grid), [FRAME_A])
+        assert (
+            main(
+                [
+                    "convert",
+                    "from-rtstruct",
+                    str(rt),
+                    str(case.path),
+                    "--points-id",
+                    "landmarks",
+                    "--open-curves",
+                    "omit",
+                ]
+            )
+            == 0
+        )
+        out = case.tmp / "out.dcm"
+        sources = [arg for p in case.series["paths"] for arg in ("--source", str(p))]
+        command = ["convert", "to-rtstruct", str(case.path), "contours", str(out)]
+        assert main([*command, *sources, "--points", "landmarks"]) == 0
+        written = pydicom.dcmread(out)
+        assert {o.RTROIInterpretedType for o in written.RTROIObservationsSequence} == {
+            "ORGAN",
+            "MARKER",
+        }

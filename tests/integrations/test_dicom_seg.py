@@ -1195,6 +1195,32 @@ class TestSegKinds:
 
 
 @pytest.mark.usefixtures("highdicom")
+class TestSegIsWrittenWhole:
+    """A SEG export replaces its file through the engine's replace (§14.4):
+    at 2.0.2 ``save_as`` wrote over the previous SEG in place, so a crash
+    during it left a truncated SEG where a whole one had been."""
+
+    def test_S14_4_an_interrupted_save_leaves_the_previous_seg(
+        self, prepared, tmp_path, monkeypatch
+    ):
+        from medh5.io.dicom_seg import to_dicom_seg
+        from tests.helpers import crash_save_as
+
+        out = tmp_path / "exports" / "s.dcm"
+        out.parent.mkdir()
+        sources = prepared["series"]["paths"]
+        to_dicom_seg(prepared["path"], "organs", sources, out)
+        before = out.read_bytes()
+        asked = crash_save_as(monkeypatch, before)
+        with pytest.raises(OSError, match="interrupted"):
+            to_dicom_seg(prepared["path"], "organs", sources, out)
+        monkeypatch.undo()
+        assert asked and asked[0] != out, "pydicom wrote a temporary"
+        assert out.read_bytes() == before
+        assert [p.name for p in out.parent.iterdir()] == ["s.dcm"]
+
+
+@pytest.mark.usefixtures("highdicom")
 class TestSegCommandLine:
     """`medh5 convert to-dicom-seg` and `from-dicom-seg`."""
 
@@ -1398,3 +1424,435 @@ class TestSparseSegReader:
             read_dicom_seg(seg)
         # About the SEG alone, so no §15.2 code (there is no sample yet).
         assert caught.value.code is None
+
+
+def _seg_sample(
+    tmp_path: Path,
+    classes: list[LabelClass],
+    payload: Any,
+    *,
+    probabilities: bool = False,
+    activity: str | None = None,
+    software: tuple[str, ...] | None = None,
+    threshold: float | None = None,
+) -> tuple[Path, list[Any], Path]:
+    """A one-series sample whose annotation ``ann`` holds *payload(shape)*
+    --- ``{class id: volume}``, masks or *probabilities* --- for *classes*,
+    produced by an *activity* of *software* (else of a person) where one is
+    given; with its
+    source files, and a blank sample of the same series to import into."""
+    from pydicom.uid import generate_uid
+
+    from medh5.io.dicom import from_dicom
+
+    root = tmp_path / "dcm"
+    series = write_dicom_series(
+        root, patient_id="p", study_uid=generate_uid(), study_date="20260101"
+    )
+    path = tmp_path / "case.medh5"
+    from_dicom(root, path, group_by="study")
+    blank = tmp_path / "blank.medh5"
+    from_dicom(root, blank, group_by="study")
+    with medh5.open(path) as sample:
+        grid_id = sorted(sample.grids)[0]
+        shape = sample.grids[grid_id].spatial_shape
+    with medh5.amend(path) as writer:
+        writer.label_set(LabelSet("d", version="1.0.0", classes=classes))
+        prov = None
+        if activity is not None:
+            agent = (
+                writer.software(*software)
+                if software
+                else writer.person("pseudonym:RAD-07")
+            )
+            prov = writer.activity(activity, agent=agent)
+        values = payload(shape)
+        writer.add_segmentation(
+            "ann",
+            grid=grid_id,
+            **({"probabilities": values} if probabilities else {"masks": values}),
+            threshold=threshold,
+            prov=prov,
+        )
+    return path, series["paths"], blank
+
+
+def _two_kidneys_and_a_stent(shape: tuple[int, ...]) -> dict[int, Any]:
+    left, right, stent = (np.zeros(shape, bool) for _ in range(3))
+    left[1:4, 2:6, 2:6] = True
+    right[1:4, 2:6, 12:16] = True
+    stent[2:4, 9:12, 8:11] = True
+    return {1: left, 2: right, 3: stent}
+
+
+def _segment(dataset: Any, label: str) -> Any:
+    (found,) = [s for s in dataset.SegmentSequence if s.SegmentLabel == label]
+    return found
+
+
+def _concept(sequence: Any) -> tuple[str, str, str]:
+    (entry,) = sequence
+    return (
+        str(entry.CodeValue),
+        str(entry.CodingSchemeDesignator),
+        str(entry.CodeMeaning),
+    )
+
+
+@pytest.mark.usefixtures("highdicom")
+class TestSegConcepts:
+    """A SEG segment must carry a property category, a property type and an
+    algorithm type.  Every segment got SCT 91723000 "Anatomical Structure"
+    for both, and MANUAL: wrong for a lesion, a device or a model's output."""
+
+    KIDNEY = ("SNOMED-CT", "64033007", "Kidney")
+
+    def _kidneys(self) -> list[LabelClass]:
+        from medh5.labels import OntologyCode
+
+        kidney = (OntologyCode(*self.KIDNEY),)
+        return [
+            LabelClass(
+                1, "kidney_left", "Left kidney", category="organ",
+                laterality="left", codes=kidney,
+            ),
+            LabelClass(
+                2, "kidney_right", "Right kidney", category="organ",
+                laterality="right", codes=kidney,
+            ),
+            LabelClass(
+                3, "stent", "Stent", category="device",
+                codes=(OntologyCode("SNOMED-CT", "65818007", "Stent"),),
+            ),
+        ]  # fmt: skip
+
+    def test_S5_2_codes_category_laterality_round_trip(self, tmp_path):
+        from medh5.io.dicom_seg import from_dicom_seg, to_dicom_seg
+        from medh5.io.report import ConversionReport
+
+        path, sources, blank = _seg_sample(
+            tmp_path, self._kidneys(), _two_kidneys_and_a_stent, activity="annotate"
+        )
+        report = ConversionReport()
+        out = to_dicom_seg(path, "ann", sources, tmp_path / "s.dcm", report=report)
+        dataset = pydicom.dcmread(str(out))
+        left = _segment(dataset, "kidney_left")
+        assert _concept(left.SegmentedPropertyTypeCodeSequence) == (
+            "64033007", "SCT", "Kidney",
+        )  # fmt: skip
+        assert _concept(left.SegmentedPropertyCategoryCodeSequence) == (
+            "91723000", "SCT", "Anatomical Structure",
+        )  # fmt: skip
+        assert _concept(left.SegmentedPropertyTypeModifierCodeSequence) == (
+            "7771000", "SCT", "Left",
+        )  # fmt: skip
+        right = _segment(dataset, "kidney_right")
+        assert _concept(right.SegmentedPropertyTypeModifierCodeSequence)[0] == (
+            "24028007"
+        )
+        stent = _segment(dataset, "stent")
+        assert _concept(stent.SegmentedPropertyCategoryCodeSequence) == (
+            "260787004", "SCT", "Physical object",
+        )  # fmt: skip
+        assert "SegmentedPropertyTypeModifierCodeSequence" not in stent
+        assert not report.guesses, "every concept was stated"
+
+        from_dicom_seg(out, blank, ann_id="back")
+        with medh5.open(blank) as sample:
+            minted = {c.key: c for c in sample.label_set}
+        kidney = minted["kidney_left"]
+        assert [c.to_json() for c in kidney.codes] == [
+            {"system": "SNOMED-CT", "code": "64033007", "name": "Kidney"}
+        ], "the designator SCT is SNOMED-CT's, as §5.2 spells it"
+        assert kidney.laterality == "left"
+        assert minted["kidney_right"].laterality == "right"
+        assert minted["stent"].category == "device"
+        assert minted["stent"].laterality is None
+        # "Anatomical Structure" is an organ's, a vessel's and a bone's: the
+        # concept is kept, and no category is chosen among them.
+        assert kidney.category is None
+        assert kidney.properties["dicom_category"] == {
+            "system": "SNOMED-CT", "code": "91723000",
+            "name": "Anatomical Structure",
+        }  # fmt: skip
+
+        # And out again: the same concepts, the category from the property.
+        again = to_dicom_seg(blank, "back", sources, tmp_path / "again.dcm")
+        second = pydicom.dcmread(str(again))
+        for label in ("kidney_left", "kidney_right", "stent"):
+            first, back = _segment(dataset, label), _segment(second, label)
+            for name in (
+                "SegmentedPropertyTypeCodeSequence",
+                "SegmentedPropertyCategoryCodeSequence",
+                "SegmentedPropertyTypeModifierCodeSequence",
+            ):
+                if name in first:
+                    assert _concept(first[name].value) == _concept(back[name].value)
+                else:
+                    assert name not in back
+
+    def test_S5_2_lesion_category_is_morphologically_abnormal(self, tmp_path):
+        from medh5.io.dicom_seg import from_dicom_seg, to_dicom_seg
+
+        def lesion(shape: tuple[int, ...]) -> dict[int, Any]:
+            mask = np.zeros(shape, bool)
+            mask[2:4, 5:8, 6:10] = True
+            return {4: mask}
+
+        classes = [LabelClass(4, "lesion", "Lesion", category="lesion")]
+        path, sources, blank = _seg_sample(tmp_path, classes, lesion)
+        out = to_dicom_seg(path, "ann", sources, tmp_path / "s.dcm")
+        segment = _segment(pydicom.dcmread(str(out)), "lesion")
+        assert _concept(segment.SegmentedPropertyCategoryCodeSequence) == (
+            "49755003", "SCT", "Morphologically Abnormal Structure",
+        )  # fmt: skip
+        from_dicom_seg(out, blank, ann_id="back")
+        with medh5.open(blank) as sample:
+            back = sample.label_set["lesion"]
+        assert back.category == "lesion" and back.is_lesion
+
+    def test_S5_2_unknown_system_is_a_noted_guess(self, tmp_path):
+        from medh5.io.dicom_seg import to_dicom_seg
+        from medh5.io.report import ConversionReport
+        from medh5.labels import OntologyCode
+
+        def organ(shape: tuple[int, ...]) -> dict[int, Any]:
+            mask = np.zeros(shape, bool)
+            mask[1:4, 2:8, 3:9] = True
+            return {1: mask}
+
+        classes = [
+            LabelClass(
+                1, "kidney", "Kidney", category="organ",
+                codes=(OntologyCode("MyAtlas", "K-17", "Kidney"),),
+            )
+        ]  # fmt: skip
+        path, sources, _ = _seg_sample(tmp_path, classes, organ)
+        report = ConversionReport()
+        out = to_dicom_seg(path, "ann", sources, tmp_path / "s.dcm", report=report)
+        segment = _segment(pydicom.dcmread(str(out)), "kidney")
+        # No designator is invented for a system the table does not know.
+        assert _concept(segment.SegmentedPropertyTypeCodeSequence) == (
+            "91723000", "SCT", "Anatomical Structure",
+        )  # fmt: skip
+        assert b"MyAtlas" not in out.read_bytes()
+        (note,) = report.of_kind("property_type")
+        assert note.severity == "guess"
+        assert note.detail["classes"] == ["kidney"]
+        assert note.detail["unknown_systems"] == {"kidney": ["MyAtlas"]}
+
+    def test_S5_2_mint_refuses_one_label_with_two_modifiers(self, tmp_path):
+        from medh5.io.dicom_seg import from_dicom_seg, to_dicom_seg
+
+        path, sources, blank = _seg_sample(
+            tmp_path, self._kidneys(), _two_kidneys_and_a_stent
+        )
+        out = to_dicom_seg(path, "ann", sources, tmp_path / "s.dcm")
+        dataset = pydicom.dcmread(str(out))
+        for segment in dataset.SegmentSequence:
+            if segment.SegmentLabel.startswith("kidney"):
+                segment.SegmentLabel = "Kidney"
+        dataset.save_as(str(out), enforce_file_format=True)
+        before = blank.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="modifier") as exc:
+            from_dicom_seg(out, blank)
+        assert "SCT 7771000" in str(exc.value) and "SCT 24028007" in str(exc.value)
+        assert blank.read_bytes() == before, "Left and Right Kidney became one class"
+
+    def test_S11_1_a_predicted_annotation_exports_automatic(self, tmp_path):
+        from medh5.io.dicom_seg import to_dicom_seg
+        from medh5.io.report import ConversionReport
+
+        path, sources, _ = _seg_sample(
+            tmp_path,
+            self._kidneys(),
+            _two_kidneys_and_a_stent,
+            activity="predict",
+            software=("nnU-Net", "2.5.1"),
+        )
+        report = ConversionReport()
+        out = to_dicom_seg(path, "ann", sources, tmp_path / "s.dcm", report=report)
+        for segment in pydicom.dcmread(str(out)).SegmentSequence:
+            assert segment.SegmentAlgorithmType == "AUTOMATIC"
+            assert segment.SegmentAlgorithmName == "nnU-Net"
+            (algorithm,) = segment.SegmentationAlgorithmIdentificationSequence
+            assert algorithm.AlgorithmName == "nnU-Net"
+            assert algorithm.AlgorithmVersion == "2.5.1"
+            assert _concept(algorithm.AlgorithmFamilyCodeSequence) == (
+                "123110", "DCM", "Artificial Intelligence",
+            )  # fmt: skip
+        assert not report.guesses
+        (note,) = report.of_kind("algorithm_type")
+        assert note.detail["algorithm_type"] == "AUTOMATIC"
+
+    def test_S11_1_a_prediction_naming_no_software_is_a_noted_guess(self, tmp_path):
+        from medh5.io.dicom_seg import to_dicom_seg
+        from medh5.io.report import ConversionReport
+
+        path, sources, _ = _seg_sample(
+            tmp_path,
+            self._kidneys(),
+            _two_kidneys_and_a_stent,
+            activity="predict",
+            software=("nnU-Net",),
+        )
+        report = ConversionReport()
+        out = to_dicom_seg(path, "ann", sources, tmp_path / "s.dcm", report=report)
+        for segment in pydicom.dcmread(str(out)).SegmentSequence:
+            assert segment.SegmentAlgorithmType == "MANUAL"
+        (note,) = report.of_kind("algorithm_type")
+        assert note.severity == "guess" and "software" in note.message
+
+    def test_S11_1_an_annotated_annotation_exports_manual(self, tmp_path):
+        from medh5.io.dicom_seg import to_dicom_seg
+        from medh5.io.report import ConversionReport
+
+        path, sources, _ = _seg_sample(
+            tmp_path, self._kidneys(), _two_kidneys_and_a_stent, activity="annotate"
+        )
+        report = ConversionReport()
+        out = to_dicom_seg(path, "ann", sources, tmp_path / "s.dcm", report=report)
+        for segment in pydicom.dcmread(str(out)).SegmentSequence:
+            assert segment.SegmentAlgorithmType == "MANUAL"
+        assert not report.guesses
+
+    def test_S5_2_an_unstated_concept_is_the_generic_one_with_a_guess(
+        self, prepared, tmp_path
+    ):
+        """The one value a converter writes that it was not given --- the
+        generic one, because DICOM gives no way to leave it out --- and the
+        report names each class it was written for."""
+        from medh5.io.dicom_seg import to_dicom_seg
+        from medh5.io.report import ConversionReport
+
+        report = ConversionReport()
+        out = to_dicom_seg(
+            prepared["path"], "organs", prepared["series"]["paths"],
+            tmp_path / "s.dcm", report=report,
+        )  # fmt: skip
+        generic = ("91723000", "SCT", "Anatomical Structure")
+        for segment in pydicom.dcmread(str(out)).SegmentSequence:
+            assert _concept(segment.SegmentedPropertyTypeCodeSequence) == generic
+            assert _concept(segment.SegmentedPropertyCategoryCodeSequence) == generic
+            assert segment.SegmentAlgorithmType == "MANUAL"
+        guesses = {note.kind: note for note in report.guesses}
+        assert set(guesses) == {"property_type", "property_category", "algorithm_type"}
+        assert guesses["property_type"].detail["classes"] == ["liver", "lesion"]
+        assert guesses["property_category"].detail["classes"] == ["liver", "lesion"]
+        assert "no prov" in guesses["algorithm_type"].message
+
+
+def _soft(shape: tuple[int, ...]) -> dict[int, Any]:
+    """Two classes of probabilities: a ramp across every value, and voxels
+    just over a 0.31 threshold that quantising to 1/255 puts under it."""
+    rng = np.random.default_rng(7)
+    first = rng.random(shape).astype(np.float32)
+    second = np.zeros(shape, np.float32)
+    second[2, 3:7, 4:9] = 0.311
+    return {1: first, 3: second}
+
+
+@pytest.mark.usefixtures("highdicom")
+class TestSegFractional:
+    """`segmentation_type="fractional"` writes a probmap as it is, where the
+    export thresholded every probmap into a BINARY SEG."""
+
+    CLASSES = [LabelClass(1, "liver", "Liver"), LabelClass(3, "lesion", "Lesion")]
+
+    def test_fractional_export_round_trips_within_1_510(self, tmp_path):
+        from medh5.io.dicom_seg import from_dicom_seg, read_dicom_seg, to_dicom_seg
+        from medh5.io.report import ConversionReport
+
+        path, sources, blank = _seg_sample(
+            tmp_path, self.CLASSES, _soft, probabilities=True, threshold=0.31
+        )
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["ann"]
+            given = annotation.probabilities()
+            contains = np.asarray(annotation.dense(), bool)
+        report = ConversionReport()
+        out = to_dicom_seg(
+            path, "ann", sources, tmp_path / "f.dcm",
+            segmentation_type="fractional", report=report,
+        )  # fmt: skip
+        dataset = pydicom.dcmread(str(out))
+        assert dataset.SegmentationType == "FRACTIONAL"
+        assert dataset.SegmentationFractionalType == "PROBABILITY"
+        assert int(dataset.MaximumFractionalValue) == 255
+        volumes, _ = read_dicom_seg(out)
+        for k, number in enumerate(sorted(volumes)):
+            error = np.abs(volumes[number].astype(np.float64) - given[k])
+            assert float(error.max()) <= 1 / 510 + 1e-6
+        (note,) = report.of_kind("fractional")
+        assert note.detail["bound"] == pytest.approx(1 / 510)
+        assert note.detail["max_error"] <= 1 / 510 + 1e-6
+        # The 0.311 voxels are at or over 0.31 and come back as 79/255 < 0.31.
+        quantised = np.round(given.astype(np.float64) * 255) / 255
+        flipped = int(np.count_nonzero((quantised >= 0.31) != contains))
+        assert flipped >= 20
+        assert note.detail["changed_side"] == flipped
+        assert note.detail["threshold"] == pytest.approx(0.31)
+        assert "threshold" in note.message and "normalized" in note.message
+        assert not report.of_kind("threshold"), "nothing was thresholded"
+
+        from_dicom_seg(out, blank, ann_id="back")
+        with medh5.open(blank) as sample:
+            back = sample.annotations["back"]
+            assert back.kind == "probmap"
+            assert back.threshold == 0.5, "the threshold is not carried"
+
+    def test_fractional_export_refuses_a_labelmap(self, tmp_path):
+        from medh5.io.dicom_seg import to_dicom_seg
+
+        def organ(shape: tuple[int, ...]) -> dict[int, Any]:
+            mask = np.zeros(shape, bool)
+            mask[1:4, 2:8, 3:9] = True
+            return {1: mask}
+
+        path, sources, _ = _seg_sample(tmp_path, self.CLASSES[:1], organ)
+        with medh5.open(path) as sample:
+            assert sample.annotations["ann"].kind == "labelmap"
+        out = tmp_path / "f.dcm"
+        with pytest.raises(MEDH5ValidationError, match="'labelmap'") as exc:
+            to_dicom_seg(path, "ann", sources, out, segmentation_type="fractional")
+        assert "probmap" in str(exc.value)
+        assert not out.exists()
+        for wrong in ({"segmentation_type": "labelmap"},
+                      {"fractional_type": "certainty"}):  # fmt: skip
+            with pytest.raises(MEDH5ValidationError, match="one of"):
+                to_dicom_seg(path, "ann", sources, out, **wrong)
+
+    def test_a_binary_export_of_a_probmap_says_where_it_thresholded(self, tmp_path):
+        from medh5.io.dicom_seg import read_dicom_seg, to_dicom_seg
+        from medh5.io.report import ConversionReport
+
+        path, sources, _ = _seg_sample(
+            tmp_path, self.CLASSES, _soft, probabilities=True, threshold=0.31
+        )
+        with medh5.open(path) as sample:
+            contains = np.asarray(sample.annotations["ann"].dense(), bool)
+        report = ConversionReport()
+        out = to_dicom_seg(path, "ann", sources, tmp_path / "b.dcm", report=report)
+        volumes, geometry = read_dicom_seg(out)
+        assert not geometry["fractional"]
+        assert np.array_equal(volumes[2], contains[1])
+        (note,) = report.of_kind("threshold")
+        assert note.severity == "decision"
+        assert "thresholded at 0.31" in note.message
+
+    def test_the_command_line_writes_a_fractional_seg(self, tmp_path):
+        from medh5.cli import EXIT_OK, main
+
+        path, sources, _ = _seg_sample(
+            tmp_path, self.CLASSES, _soft, probabilities=True
+        )
+        out = tmp_path / "f.dcm"
+        argv = [
+            "convert", "to-dicom-seg", str(path), "ann", str(out),
+            *(a for p in sources for a in ("--source", p)),
+            "--segmentation-type", "fractional", "--fractional-type", "OCCUPANCY",
+        ]  # fmt: skip
+        assert main(argv) == EXIT_OK
+        dataset = pydicom.dcmread(str(out))
+        assert dataset.SegmentationType == "FRACTIONAL"
+        assert dataset.SegmentationFractionalType == "OCCUPANCY"
