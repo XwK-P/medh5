@@ -71,7 +71,8 @@ from medh5.dataset import make_splits, scan
 from medh5.task import Slot, TaskManifest
 
 cohort, _ = scan("cohort")
-split = make_splits(cohort, set_id="fold-0", group_by="subject_id")
+split = make_splits(cohort, set_id="fold-0", group_by="subject_id",
+                    algorithm="medh5.split/2")
 drawn = TaskManifest.from_cohort(
     cohort, split, task_id="progression-180d", version="1",
     identity_namespace="example-site", base="cohort",

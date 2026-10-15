@@ -25,7 +25,6 @@ PACKAGE = Path(medh5.__file__).parent
 # moves to the engine in its owner's pull request and leaves this list, which
 # is empty at release.
 ALLOWED = {
-    ("medh5/task.py", "TaskManifest.save"),  # W21-11 PR 3
     ("medh5/_files.py", "temporary_beside"),  # the later of W21-11 PR 3, W21-13 PR 9
     ("medh5/io/nifti.py", "write_nifti"),  # W21-13 PR 9
     ("medh5/io/nnunetv2.py", "to_nnunetv2"),  # W21-13 PR 9

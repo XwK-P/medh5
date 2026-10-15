@@ -3089,7 +3089,9 @@ class TestFromCohort:
         from medh5.dataset import make_splits, scan, write_claims
 
         manifest, root = scanned
-        split = make_splits(manifest, set_id="claimed", group_by="subject_id")
+        split = make_splits(
+            manifest, set_id="claimed", group_by="subject_id", algorithm="medh5.split/2"
+        )
         write_claims(split, manifest)
         claimed, _ = scan(root)
         task = self.build(claimed, "claimed", root)
@@ -3104,7 +3106,10 @@ class TestFromCohort:
         from medh5.dataset import make_splits, scan, write_claims
 
         manifest, root = scanned
-        write_claims(make_splits(manifest, set_id="claimed"), manifest)
+        write_claims(
+            make_splits(manifest, set_id="claimed", algorithm="medh5.split/2"),
+            manifest,
+        )
         claimed, _ = scan(root)
         fewer = claimed.filter(lambda e: e.subject_id != "P-04")
         with pytest.raises(MEDH5ValidationError, match="against another manifest"):
@@ -3193,7 +3198,13 @@ def test_task_new_from_a_split(tmp_path: Path, capsys):
     cohort(root)
     manifest, _ = scan(root)
     manifest.save(root / "cohort.json")
-    split = make_splits(manifest, set_id="s1", group_by="subject_id", k_folds=3)
+    split = make_splits(
+        manifest,
+        set_id="s1",
+        group_by="subject_id",
+        k_folds=3,
+        algorithm="medh5.split/2",
+    )
     (root / "split.json").write_text(json.dumps(split.to_json()))
     definition = TaskManifest.new(
         "progression",
