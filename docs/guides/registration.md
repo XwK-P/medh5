@@ -179,6 +179,28 @@ Before 1.4.2 the linked form raised `E501` in both directions: the resolver
 counted the forward transform's delegated inverse as a second route beside the
 stored one, and refused to choose between them.
 
+## Storing a field in float16
+
+A displacement field is stored as `float32` unless you ask otherwise. §10.3
+permits `float16`, and recommends it below about 64 voxels of displacement,
+where it costs roughly 5·10⁻⁴ of relative precision and halves the field's size.
+`field_dtype=` chooses:
+
+```python
+w.add_transform("warp", kind="displacement", field=field, field_grid="ct_tp0",
+                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
+                field_dtype="auto")
+```
+
+| `field_dtype` | stores |
+|---|---|
+| `"float32"` (default) | `float32`, whatever the field holds |
+| `"float16"` | `float16`; a component beyond 65504, which `float16` cannot hold, is refused |
+| `"auto"` | `float16` when every displacement is finite, within float16's range and below 64 voxels (in the field grid's smallest spacing, for a `world` field), else `float32` |
+
+Only a displacement field has a field to store, so another kind given a
+`field_dtype` other than `"float32"` is refused.
+
 ## Related
 
 - **[Longitudinal studies](longitudinal.md)** — the task this fits into.

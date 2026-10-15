@@ -15,6 +15,7 @@ use medh5::curation::splits::{audit_splits, memberships_of};
 use medh5::error::os_error;
 use medh5::h5::file::same_file;
 use medh5::json::{py_str, repr_str};
+use medh5::sample::writer::default_ids;
 use medh5::Error;
 
 use crate::common::*;
@@ -60,6 +61,21 @@ fn pack_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             "{} is one of the samples being packed; write the shard to a new path",
             repr_str(&source.to_string_lossy())
         )));
+    }
+    if keys.is_none() {
+        for source in &sources {
+            if let Ok(ids) = default_ids(source) {
+                if ids.current != ids.stem {
+                    ctx.eprint(format!(
+                        "note: {}: medh5 3.0 keys this sample {} (the file stem), not {}: pass --key to keep {}",
+                        source.to_string_lossy(),
+                        repr_str(&ids.stem),
+                        repr_str(&ids.current),
+                        repr_str(&ids.current)
+                    ));
+                }
+            }
+        }
     }
     let source_bytes: u64 = sources.iter().map(|p| file_size(p)).sum();
     let out = match pack(&sources, target, keys.as_deref()) {

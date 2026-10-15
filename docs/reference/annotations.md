@@ -330,6 +330,20 @@ an axial stack, `(-1, 0)` for one that is not in-plane. The RTSTRUCT importer
 records it, so `ann.by_plane()` groups an imported structure set by slice.
 `role` distinguishes an outer boundary from a hole inside it.
 
+**A class's polygons combine by depth** (§8.6). On one plane, a polygon's
+depth is how many of the class's other polygons on that plane enclose it;
+polygons of one depth are united, and the region is what lies inside an odd
+number of those layers — a hole cuts the region around it, an island inside
+the hole adds back, and two outlines that cross without nesting are their
+union. Write `role="hole"` exactly for a polygon of odd depth. Readers take
+the depth, not the stored role: `ann.roles` and `ann.polygons()` report each
+in-plane polygon's role from its depth, the validator reports a stored role
+that disagrees as `W919` and one other than 0 or 1 as `E404`, and neither
+stops a read. A polygon with `plane=(-1, 0)` takes part in no combination
+and keeps the role written for it. Avoid storing crossing outlines of one
+class on one plane: a reader that combines them by exclusive-or, as many
+RTSTRUCT readers do, cancels their overlap.
+
 An empty polygon list is accepted when `annotated_classes` names what was
 looked for: a contours annotation can record a verified negative, exactly as
 an empty box set can (§9).

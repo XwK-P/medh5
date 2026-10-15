@@ -7,6 +7,7 @@ import inspect
 import json
 import os
 import stat
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -1795,6 +1796,80 @@ class TestProjectionRead:
             assert type(lost.grids) is dict
             with pytest.raises(KeyError):
                 _ = lost.annotations["nope"]
+
+
+class TestDefaultIds:
+    """§12.1: the default `sample_id` and pack key are the file name up to its
+    first dot; 3.0 takes the stem, and 2.1 warns wherever the two differ."""
+
+    @staticmethod
+    def _write(path: Path, **ids: str) -> Path:
+        with medh5.create(path, codec="portable", **ids) as w:
+            w.add_grid("g", shape=Flat.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", Flat.image(), grid="g", modality="CT")
+        return path
+
+    def test_S12_1_a_dotted_name_warns_that_its_default_id_will_change(
+        self, tmp_path: Path
+    ):
+        with pytest.warns(
+            FutureWarning, match=r"^medh5 3\.0 names this sample 'case\.v2'"
+        ) as caught:
+            path = self._write(tmp_path / "case.v2.medh5")
+        assert "sample_id=" in str(caught[0].message)
+        assert caught[0].filename == __file__
+        with medh5.open(path) as sample:
+            assert (sample.identity.sample_id, sample.identity.subject_id) == (
+                "case",
+                "case",
+            )
+
+    def test_S12_1_an_undotted_name_or_explicit_id_does_not_warn(self, tmp_path: Path):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self._write(tmp_path / "case.medh5")
+            self._write(tmp_path / "P001.ct.medh5", sample_id="P001.ct")
+            self._write(
+                tmp_path / "P001.mr.medh5", sample_id="P001.mr", subject_id="P001"
+            )
+            # An amendment takes its identity from the file.
+            with medh5.amend(tmp_path / "P001.mr.medh5") as w:
+                w.set_quality("CT", status="approved")
+        with medh5.open(tmp_path / "P001.mr.medh5") as sample:
+            assert sample.identity.subject_id == "P001"
+
+    def test_S12_1_a_name_that_gives_no_id_is_refused_by_name(self, tmp_path: Path):
+        """It failed "[E005] identity requires both sample_id and subject_id",
+        naming neither the file nor the cause."""
+        path = tmp_path / ".hidden.medh5"
+        with pytest.raises(MEDH5ValidationError, match=r"\.hidden\.medh5.*first dot"):
+            self._write(path)
+        assert not path.exists()
+        self._write(path, sample_id="hidden")
+        with pytest.raises(MEDH5ValidationError, match="first dot"):
+            medh5.pack([path], tmp_path / "s.medh5c")
+
+    def test_S2_2_pack_warns_where_a_default_key_will_change(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        plain = self._write(tmp_path / "a.medh5")
+        dotted = self._write(tmp_path / "b.v2.medh5", sample_id="b")
+        with pytest.warns(
+            FutureWarning, match=r"keys .*b\.v2\.medh5.* as 'b\.v2'"
+        ) as caught:
+            shard = medh5.pack([plain, dotted], tmp_path / "s.medh5c")
+        assert len(caught) == 1 and caught[0].filename == __file__
+        with medh5.open_collection(shard) as collection:
+            assert sorted(collection.keys()) == ["a", "b"]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            medh5.pack([plain, dotted], tmp_path / "t.medh5c", keys=["a", "b"])
+        assert (
+            main(["pack", str(plain), str(dotted), "-o", str(tmp_path / "u.medh5c")])
+            == 0
+        )
+        note = capsys.readouterr().err
+        assert "medh5 3.0 keys this sample 'b.v2'" in note and "a.medh5" not in note
 
 
 class TestImplicitTimepoint:

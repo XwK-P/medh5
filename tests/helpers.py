@@ -424,3 +424,20 @@ def attested_as_written(path: Path) -> None:
         content_id = sample.compute_content_id()
     with h5py.File(path, "r+") as handle:
         handle.attrs["content_id"] = encode_attr(content_id)
+
+
+def crash_save_as(monkeypatch: Any, before: bytes) -> list[Path]:
+    """Make pydicom's ``save_as`` stop half way through the file it is given
+    --- half of *before*, then an ``OSError`` --- as a full disk or a killed
+    process would; the files it was asked to write, in order."""
+    from pydicom.dataset import Dataset
+
+    asked: list[Path] = []
+
+    def crashed(self: Any, filename: Any, *args: Any, **kwargs: Any) -> None:
+        asked.append(Path(filename))
+        Path(filename).write_bytes(before[: len(before) // 2])
+        raise OSError("interrupted")
+
+    monkeypatch.setattr(Dataset, "save_as", crashed)
+    return asked

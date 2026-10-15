@@ -22,7 +22,9 @@ defined once, here, under a name for what it builds:
 * :class:`Meds` --- a MEDS 0.3 dataset of two subjects, and an imaging sample
   to import one into;
 * :class:`Fhir` --- a FHIR R4 Bundle of one patient's observations and
-  reports, and an imaging sample to import them into.
+  reports, and an imaging sample to import them into;
+* :class:`NestedSameNameRoiKit` --- one CT plane of 16×16 and an RTSTRUCT of
+  two ROIs named "Bladder", one inside the other.
 """
 
 from __future__ import annotations
@@ -779,3 +781,101 @@ class Fhir:
     def sample(path: Path) -> Path:
         """An imaging-only sample (1.0), images ``CT_tp0`` and ``CT_tp1``."""
         return Meds.sample(path)
+
+
+class NestedSameNameRoiKit:
+    """One CT plane of 16×16 voxels at 1 mm, and an RTSTRUCT on it of two ROIs
+    both named "Bladder": ROI 1 a square around 11×11 voxel centres, ROI 2 a
+    square around 4×4 voxel centres strictly inside it, on the same plane.
+
+    Drawn, the class covers 121 voxels; 2.0.2 imported it as 105 (121 − 16),
+    the inner ROI a hole in the outer.
+    """
+
+    SHAPE = (1, 16, 16)
+    FRAME = "1.2.826.0.1.3680043.8.498.919"
+    DRAWN = 121
+    HOLED = 105
+    OUTER = ((2, 12), (2, 12))
+    """Rows and columns, inclusive, of the voxel centres ROI 1 encloses."""
+    INNER = ((6, 9), (6, 9))
+
+    @staticmethod
+    def sample(path: Path, *, label_set: LabelSet | None = None) -> Path:
+        """The CT plane, in the kit's frame; *label_set* when given."""
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            if label_set is not None:
+                w.label_set(label_set)
+            w.add_grid(
+                "ct",
+                shape=NestedSameNameRoiKit.SHAPE,
+                spacing=(1.0, 1.0, 1.0),
+                frame_uid=NestedSameNameRoiKit.FRAME,
+            )
+            w.add_image(
+                "CT",
+                np.zeros(NestedSameNameRoiKit.SHAPE, np.int16),
+                grid="ct",
+                modality="CT",
+            )
+        return path
+
+    @staticmethod
+    def square(grid: Any, rows: tuple[int, int], columns: tuple[int, int]) -> Any:
+        """A square on the plane with its edges on voxel edges around *rows*
+        and *columns* (inclusive), in patient coordinates."""
+        (r0, r1), (c0, c1) = rows, columns
+        corners = [
+            (r0 - 0.5, c0 - 0.5),
+            (r0 - 0.5, c1 + 0.5),
+            (r1 + 0.5, c1 + 0.5),
+            (r1 + 0.5, c0 - 0.5),
+        ]
+        return grid.index_to_world(np.array([[0, r, c] for r, c in corners], float))
+
+    @staticmethod
+    def rtstruct(
+        out: Path, sample: Path, *, names: tuple[str, str] = ("Bladder", "Bladder")
+    ) -> Path:
+        """The structure set: ROI 1 the outer square, ROI 2 the inner one."""
+        import pydicom
+        from pydicom.dataset import Dataset, FileMetaDataset
+        from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+
+        with medh5.open(sample) as opened:
+            grid = opened.grids["ct"]
+        kit = NestedSameNameRoiKit
+        structure = Dataset()
+        structure.file_meta = FileMetaDataset()
+        structure.file_meta.MediaStorageSOPClassUID = pydicom.uid.RTStructureSetStorage
+        structure.file_meta.MediaStorageSOPInstanceUID = generate_uid()
+        structure.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+        structure.SOPClassUID = pydicom.uid.RTStructureSetStorage
+        structure.SOPInstanceUID = structure.file_meta.MediaStorageSOPInstanceUID
+        structure.Modality = "RTSTRUCT"
+        structure.StructureSetLabel = "bladder"
+        frame = Dataset()
+        frame.FrameOfReferenceUID = kit.FRAME
+        structure.ReferencedFrameOfReferenceSequence = [frame]
+        structure.StructureSetROISequence = []
+        structure.ROIContourSequence = []
+        for number, (name, where) in enumerate(
+            zip(names, (kit.OUTER, kit.INNER), strict=True), start=1
+        ):
+            roi = Dataset()
+            roi.ROINumber = number
+            roi.ROIName = name
+            roi.ReferencedFrameOfReferenceUID = kit.FRAME
+            structure.StructureSetROISequence.append(roi)
+            points = kit.square(grid, *where)
+            contour = Dataset()
+            contour.ContourGeometricType = "CLOSED_PLANAR"
+            contour.NumberOfContourPoints = len(points)
+            contour.ContourData = [float(v) for v in points.reshape(-1)]
+            item = Dataset()
+            item.ReferencedROINumber = number
+            item.ROIDisplayColor = [200, 120, 40 * number]
+            item.ContourSequence = [contour]
+            structure.ROIContourSequence.append(item)
+        structure.save_as(str(out), enforce_file_format=True)
+        return out

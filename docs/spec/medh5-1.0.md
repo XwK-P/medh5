@@ -981,6 +981,20 @@ Planar polygons, for DICOM RTSTRUCT round-trips and slice-wise manual annotation
 
 Rasterisation to a voxel annotation is an explicit, provenance-tracked activity — never implicit.
 
+**Combining polygons.** A class's region in a plane is fixed by its
+polygons in that plane (`contour_plane`) alone. Polygon *p* encloses *q*
+when every vertex of *q* lies inside *p*; a polygon's *depth* is the number
+of the class's other polygons in that plane that enclose it. Polygons of
+one depth are united, and the region is the points inside an odd number of
+those layers: a hole subtracts from the region around it, an island inside
+a hole adds back, and outlines that overlap without nesting are their
+union. `contour_role` **SHOULD** be `1` exactly for a polygon of odd depth;
+readers compute the region from depth, not from the role, and a role that
+disagrees is reported W919. A `contour_role` other than `0` or `1` is
+E404. A polygon with `axis = −1` takes part in no combination. A writer
+**SHOULD NOT** store crossing polygons of one class in one plane, since
+readers that combine by exclusive-or cancel their overlap.
+
 ### 8.7 `mesh`
 
 | Dataset | Shape | dtype | Meaning |
@@ -1655,11 +1669,11 @@ revision 2, and every other in revision 1.
 | `E1xx` | geometry | `E101` referenced grid does not exist; `E102` `direction` not orthonormal; `E103` spatial axes not trailing/contiguous; `E104` `spacing` not finite and strictly positive; `E105` a multiscale image's levels malformed (`levels`, `grid_levels` or `downsample_factors` missing or inconsistent, a level dataset missing), or a level's geometry inconsistent with level 0; `E106` grid without `timepoint` in a multi-timepoint sample; `E107` grid `timepoint` not declared; `E108` `timepoints` empty, a timepoint `id` repeated, or `index` not dense and increasing; `E109` a grid that is not a group, or a grid attribute missing where required, malformed or of the wrong size — a non-positive or uncountable `shape`, a non-finite `origin` and a non-positive `chunk_hint` among them — or `units`/`time_units` outside its vocabulary; `E110` `axis_kinds` invalid for the declared dimensionality; `E111` `grids` contains no grid |
 | `E2xx` | images | `E201` `images` empty; `E202` image shape ≠ grid shape; `E203` unknown `value_type`; `E204` `channel_names` length ≠ channel extent; `E205` required image attribute missing |
 | `E3xx` | label set | `E301` missing label set for a declared profile; `E302` duplicate class id or key; `E303` reserved id used; `E304` hierarchy cycle; `E305` `ref` label set lacking `uri`/`sha256`, or unresolvable; `E306` class entry missing a required field, out of id range or naming an unknown parent, or a relation naming a class the label set does not hold (§5.4) |
-| `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers); `E405` shape mismatch with the grid, or between an annotation's own datasets, mesh `faces` indexing outside its `vertices` among them; `E406` box `lo > hi`, or a bound that is not finite; an `obb` centre that is not finite, or a size that is not finite or is negative (§8.1, §8.3); `E407` `rotations` not a proper rotation; `E408` offsets that decrease or do not delimit their data: an `instances` object's span in `mask_data` other than its packed crop's size or past its end (§7.4), or `contour_offsets`/`mesh_offsets` whose last value is not the number of vertices/faces they index (§8.6, §8.7); `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`, or a stored value it does not permit: a `probmap` value outside [0, 1] (§7.5), a keypoint `visibility` other than 0, 1 or 2 (§8.4); `E412` required annotation attribute missing — `task` or `closure`, or on any kind but `mask` `class_ids` or `annotated_class_ids` (§6.2) — or an unknown `task`, `closure`, `space` or `scope`; `E413` a `skeleton`, `correspondence`, `derived_from`, `ignore_mask` or `valid_mask` reference that does not resolve, or an `ignore_mask`/`valid_mask` naming an annotation that is not a `mask` on the same grid (§4.4, §7.7); `E414` `space` invalid for the annotation's grid or frame |
+| `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers, or a `contour_role` other than 0 or 1, §8.6); `E405` shape mismatch with the grid, or between an annotation's own datasets, mesh `faces` indexing outside its `vertices` among them; `E406` box `lo > hi`, or a bound that is not finite; an `obb` centre that is not finite, or a size that is not finite or is negative (§8.1, §8.3); `E407` `rotations` not a proper rotation; `E408` offsets that decrease or do not delimit their data: an `instances` object's span in `mask_data` other than its packed crop's size or past its end (§7.4), or `contour_offsets`/`mesh_offsets` whose last value is not the number of vertices/faces they index (§8.6, §8.7); `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`, or a stored value it does not permit: a `probmap` value outside [0, 1] (§7.5), a keypoint `visibility` other than 0, 1 or 2 (§8.4); `E412` required annotation attribute missing — `task` or `closure`, or on any kind but `mask` `class_ids` or `annotated_class_ids` (§6.2) — or an unknown `task`, `closure`, `space` or `scope`; `E413` a `skeleton`, `correspondence`, `derived_from`, `ignore_mask` or `valid_mask` reference that does not resolve, or an `ignore_mask`/`valid_mask` naming an annotation that is not a `mask` on the same grid (§4.4, §7.7); `E414` `space` invalid for the annotation's grid or frame |
 | `E5xx` | transforms | `E501` composite frame chain broken; `E502` missing or unknown transform `kind`, or a transform lacking the frames or parameters its kind requires, mapping a frame to itself, or naming an unknown `vector_space`; `E503` a displacement field or B-spline control points not fitting their grid: `field_grid`/`cp_grid` missing or not in `from_frame`, a `field` not `(S, *spatial)` on its grid, or `control_points` not `(S, *cp_shape)` on the grid's spatial axes with at least `order + 1` points on each (§10.4, §10.5); `E504` affine `matrix` not `(S+1, S+1)` for the spatial axes of the grids it relates (§10.3), holding an entry that is not finite, or its last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent; `E506` `units` missing or not the units of the grids in its frames |
 | `E6xx` | curation | `E601` dangling `prov` reference; `E602` unknown `quality` key; `E603` unknown agent or activity type; `E604` non-RFC3339 timestamp; `E605` activity names an undeclared agent |
 | `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch, or a `digest` on a dataset that no line of `content_id` covers (§13.2); `E703` malformed digest string; `E704` an object `content_id` covers reached at a path that is not its own |
-| `W9xx` | warnings | `W901` no digests; `W902` uncompressed or unchunked bulk dataset; `W903` no `deidentification`; `W904` partial coverage without an ignore region; `W905` stale `index/` entry; `W906` conflicting split claims; `W907` `float32` storage where `int16 + rescale` is lossless; `W908` `layers` count far from the greedy-colouring optimum; `W909` one `instance_id` carrying two class ids; `W910` grids in different timepoints sharing a `frame_uid`; `W911` multi-timepoint sample with no transform relating any two timepoints; `W912` a class used by an annotation carries no ontology binding; `W915` (r2) a dataset inside an object `content_id` covers carries no `digest` (§13.1); `W916` (r2) under `implicit` closure, a class asserted absent where an `is_a` descendant is asserted present (§5.4); `W917` (r2) two grids name one `frame_uid` but differ in S or `coord_system` (§3.3); `W918` (r2) a voxel annotation declares `closure = "implicit"` (§5.4) |
+| `W9xx` | warnings | `W901` no digests; `W902` uncompressed or unchunked bulk dataset; `W903` no `deidentification`; `W904` partial coverage without an ignore region; `W905` stale `index/` entry; `W906` conflicting split claims; `W907` `float32` storage where `int16 + rescale` is lossless; `W908` `layers` count far from the greedy-colouring optimum; `W909` one `instance_id` carrying two class ids; `W910` grids in different timepoints sharing a `frame_uid`; `W911` multi-timepoint sample with no transform relating any two timepoints; `W912` a class used by an annotation carries no ontology binding; `W915` (r2) a dataset inside an object `content_id` covers carries no `digest` (§13.1); `W916` (r2) under `implicit` closure, a class asserted absent where an `is_a` descendant is asserted present (§5.4); `W917` (r2) two grids name one `frame_uid` but differ in S or `coord_system` (§3.3); `W918` (r2) a voxel annotation declares `closure = "implicit"` (§5.4); `W919` (r2) a contour's `contour_role` disagrees with its depth among its class's polygons in its plane (§8.6) |
 
 ---
 
@@ -1786,7 +1800,7 @@ a patient's name, and the sample's `content_id` would follow the machine.
 
 Sections §2–§15 are **implemented** by the `medh5` format engine — the Rust crate `medh5`, which the
 Python package and the `medh5` command line wrap — and exercised by a conformance corpus (§15) of
-169 files: valid samples covering every encoding, annotation kind, transform kind,
+171 files: valid samples covering every encoding, annotation kind, transform kind,
 dimensionality, profile and container kind, plus at least one case per diagnostic code: a
 deliberately invalid file for each error, and a file drawing each warning.
 The corpus includes the cases of the [1.1](medh5-1.1.md) `clinical` profile, which the same engine
@@ -1795,7 +1809,7 @@ Running the corpus against a validator is how a third-party implementation demon
 
 ```
 $ medh5 conformance run ./corpus
-169/169 cases pass
+171/171 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `cargo clippy` and `rustfmt`
@@ -1809,10 +1823,10 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 2.3 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.04 ms at 63
 classes), a metadata-only read 0.13 ms, and `open()` → first patch 1.6 ms.
 
-Eighty-four clauses have been corrected — ten during implementation, eleven in the 1.x package
+Eighty-five clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
 package, one when it implemented 1.1, twenty-eight in the audits of 2.0 before its release,
-twenty-three in the audit of 2.0.1, and seven in the development of 2.1 — each because
+twenty-three in the audit of 2.0.1, and eight in the development of 2.1 — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1902,6 +1916,7 @@ implementation could honestly promise, as written:
 | §13.1 | `<hex>` is lowercase hexadecimal of the algorithm's length, and any other spelling is malformed (**E703**). The clause said nothing of the spelling, and the reference read a digest as Python's `int(hex, 16)` reads a number, accepting a sign, `0x`, `_`, whitespace, uppercase and short hex: an uppercase digest of unchanged bytes was reported as a mismatch (**E701**) and its root as tampered with (**E702**), sending people looking for corruption that was not there. A `content_id` spelled otherwise is E703 too, and `fix --rewrite-digests` restamps either. |
 | §13.3 | `H` is the algorithm the `source_digest` prefix names, which need not be the root's `digest_algo`, and an entry naming one outside §2.1, or malformed, is ignored like a stale one. The clause gave the prefix and never said what `H` was; the reference always hashed in sha256, so a third party reading `<algo>` as the file's algorithm wrote a sha512 index into a sha512 file and the reference declared it stale (**W905**), failing the file at `strict`. Every index the reference wrote stays current. |
 | §4.3, §16 | Voxel annotations are not pyramided in 1.x, and `levels`, `downsample_factors`, `downsample_method` and `grid_levels` are reserved on an annotation. §4.3 said voxel annotations "MAY be pyramided identically, with `nearest` or `max`" and defined nothing more: which voxel `nearest` takes under an even factor, what `max` means over class ids, how coverage and the ignore region downsample, whether levels are digested or indexed. Nothing wrote, read or validated one, so no file changes meaning. |
+| §8.6 | Found by the RTSTRUCT importer in the development of 2.1: how a class's polygons in a plane combine is defined by their nesting depth — polygons of one depth united, the region inside an odd number of layers — and `contour_role` **SHOULD** be the depth's parity; readers take the depth, a role that disagrees is W919, and a role other than `0` or `1` is E404. The clause gave the role "0 = outer boundary, 1 = hole" and no rule for combining, so two RTSTRUCT ROIs of one name, one inside the other, were imported as a hole (roles came from nesting per ROI, the rasteriser nested per class), and the reference reader failed on a role of `2`, against §16's rule that readers ignore values they do not know. |
 
 ### C.2 Prototype checks
 

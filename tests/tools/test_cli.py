@@ -2289,8 +2289,14 @@ class TestConvertPathsNeverAlias:
                 "CT={d}/ct.nii.gz",
                 "--mask",
                 "m={d}/m.nii.gz",
+                "--label-set",
+                "{d}/labels.json",
             ],
-            ["ct.nii.gz", "m.nii.gz", "out.medh5"],
+            ["ct.nii.gz", "m.nii.gz", "labels.json", "out.medh5"],
+        ),
+        "import-seg-nifti": (
+            ["{d}/case.medh5", "--mask", "m={d}/m.nii.gz"],
+            ["case.medh5", "m.nii.gz"],
         ),
         "from-dicom": (["{d}/dcm", "{d}/out.medh5"], ["dcm/CT_000.dcm", "out.medh5"]),
         "from-dicom-seg": (
@@ -2328,6 +2334,7 @@ class TestConvertPathsNeverAlias:
         files = {
             "ct.nii.gz": b"original",
             "m.nii.gz": b"original",
+            "labels.json": b"original",
             "seg.dcm": cls.DICOM,
             "rt.dcm": cls.DICOM,
             "case.medh5": b"original",
@@ -2948,3 +2955,644 @@ class TestWorkers:
         )
         code, printed = run(capsys, "verify", *paths, "--workers", "-1")
         assert code == EXIT_USAGE
+
+
+# -- the converter command line: one typed flag per parameter -----------------------
+
+
+def _nifti_case(tmp_path: Path, *masks: str) -> dict[str, Path]:
+    """A 12×10×6 CT and one mask per name of *masks* on its grid, as NIfTI."""
+    nib = pytest.importorskip("nibabel")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    affine = np.diag([1.0, 1.0, 2.0, 1.0])
+    shape = (12, 10, 6)
+    files = {"ct": tmp_path / "ct.nii.gz"}
+    nib.save(nib.Nifti1Image(np.zeros(shape, np.int16), affine), str(files["ct"]))
+    for i, name in enumerate(masks):
+        volume = np.zeros(shape, np.uint8)
+        volume[2 + i : 6, 2:6, 1:3] = 1
+        files[name] = tmp_path / f"{name}.nii.gz"
+        nib.save(nib.Nifti1Image(volume, affine), str(files[name]))
+    return files
+
+
+def _dicom(tmp_path: Path) -> Any:
+    """A 6×16×16 CT series of 1 mm voxels and its sample, with no label set
+    (``tests.integrations.test_rtstruct``'s case)."""
+    pytest.importorskip("pydicom")
+    from tests.integrations.test_rtstruct import _dicom_case
+
+    return _dicom_case(tmp_path)
+
+
+def _with_label_set(path: Path, *classes: tuple[int, str]) -> None:
+    with medh5.amend(path) as writer:
+        writer.label_set(
+            LabelSet(
+                "given",
+                version="1.0.0",
+                classes=[LabelClass(i, key, key.title()) for i, key in classes],
+            )
+        )
+
+
+def _liver(grid: Any) -> np.ndarray:
+    mask = np.zeros(grid.spatial_shape, bool)
+    mask[1:4, 3:9, 4:10] = True
+    return mask
+
+
+def _organs(case: Any) -> None:
+    """Annotation ``organs`` on *case*'s sample: liver (1) and lesion (3)."""
+    _with_label_set(case.path, (1, "liver"), (3, "lesion"))
+    lesion = np.zeros(case.grid.spatial_shape, bool)
+    lesion[2, 5:7, 6:8] = True
+    with medh5.amend(case.path) as writer:
+        writer.add_segmentation(
+            "organs",
+            grid=case.grid.grid_id,
+            masks={1: _liver(case.grid), 3: lesion},
+        )
+
+
+def _liver_seg(case: Any, out: Path) -> Path:
+    """A DICOM SEG of one segment, ``liver``, over *case*'s series, written
+    from a copy of its sample (which keeps *case*'s without a label set)."""
+    pytest.importorskip("highdicom")
+    from medh5.io.dicom import from_dicom
+    from medh5.io.dicom_seg import to_dicom_seg
+
+    source = out.parent / "seg-source.medh5"
+    from_dicom(Path(case.series["paths"][0]).parent, source, group_by="study")
+    with medh5.open(source) as sample:
+        grid = sample.grids[sorted(sample.grids)[0]]
+    _with_label_set(source, (1, "liver"))
+    with medh5.amend(source) as writer:
+        writer.add_segmentation("organs", grid=grid.grid_id, masks={1: _liver(grid)})
+    to_dicom_seg(source, "organs", case.series["paths"], out)
+    return out
+
+
+def _gtv_rtstruct(case: Any, out: Path) -> Path:
+    """An RTSTRUCT on *case*'s frame: ROI 1, ``GTV``, a square on plane 2."""
+    from tests.integrations.test_rtstruct import (
+        CLOSED,
+        FRAME_A,
+        _square,
+        _structure_set,
+    )
+
+    square = _square(case.grid, 2, (3, 8), (3, 8))
+    return _structure_set(out, {1: ("GTV", [(CLOSED, square)])}, [FRAME_A])
+
+
+def _nnunet_dataset(tmp_path: Path) -> Path:
+    nib = pytest.importorskip("nibabel")
+    root = tmp_path / "Dataset001_T"
+    (root / "imagesTr").mkdir(parents=True)
+    (root / "labelsTr").mkdir()
+    shape = (8, 6, 4)
+    nib.save(
+        nib.Nifti1Image(np.zeros(shape, np.int16), np.eye(4)),
+        str(root / "imagesTr" / "C1_0000.nii.gz"),
+    )
+    labels = np.zeros(shape, np.uint8)
+    labels[1:4, 1:3, 1:2] = 1
+    nib.save(nib.Nifti1Image(labels, np.eye(4)), str(root / "labelsTr" / "C1.nii.gz"))
+    (root / "dataset.json").write_text(
+        json.dumps(
+            {
+                "channel_names": {"0": "CT"},
+                "labels": {"background": 0, "liver": 1},
+                "numTraining": 1,
+                "file_ending": ".nii.gz",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return root
+
+
+def _ok(capsys: Any, *argv: str) -> Any:
+    code, printed = run(capsys, *argv)
+    assert code == EXIT_OK, (argv, printed.out, printed.err)
+    return printed
+
+
+def _sources(case: Any) -> list[str]:
+    return [a for p in case.series["paths"] for a in ("--source", p)]
+
+
+def _examined(path: Path, ann_id: str) -> set[str]:
+    with medh5.open(path) as sample:
+        ann = sample.annotations[ann_id]
+        return {ann.class_key(c) for c in ann.annotated_class_ids}
+
+
+def _flag_annotated_classes_from_nifti(tmp_path: Path, capsys: Any) -> None:
+    files = _nifti_case(tmp_path, "liver")
+    out = tmp_path / "case.medh5"
+    _ok(
+        capsys, "convert", "from-nifti", str(out), "--image", f"CT={files['ct']}",
+        "--mask", f"liver={files['liver']}", "--annotated-classes", "liver,tumor",
+    )  # fmt: skip
+    assert _examined(out, "seg") == {"liver", "tumor"}
+
+
+def _flag_annotated_classes_import_seg_nifti(tmp_path: Path, capsys: Any) -> None:
+    files = _nifti_case(tmp_path, "liver")
+    out = tmp_path / "case.medh5"
+    _ok(capsys, "convert", "from-nifti", str(out), "--image", f"CT={files['ct']}")
+    _ok(
+        capsys, "convert", "import-seg-nifti", str(out),
+        "--mask", f"liver={files['liver']}", "--annotated-classes", "liver,tumor",
+    )  # fmt: skip
+    assert _examined(out, "seg") == {"liver", "tumor"}
+
+
+def _flag_annotated_classes_from_dicom_seg(tmp_path: Path, capsys: Any) -> None:
+    case = _dicom(tmp_path)
+    seg = _liver_seg(case, tmp_path / "liver.dcm")
+    _with_label_set(case.path, (1, "liver"), (3, "lesion"))
+    _ok(
+        capsys, "convert", "from-dicom-seg", str(seg), str(case.path),
+        "--annotated-classes", "all",
+    )  # fmt: skip
+    assert _examined(case.path, "seg") == {"liver", "lesion"}
+
+
+def _flag_annotated_classes_from_rtstruct(tmp_path: Path, capsys: Any) -> None:
+    case = _dicom(tmp_path)
+    rt = _gtv_rtstruct(case, tmp_path / "rt.dcm")
+    _with_label_set(case.path, (1, "gtv"), (2, "bladder"))
+    _ok(
+        capsys, "convert", "from-rtstruct", str(rt), str(case.path),
+        "--annotated-classes", "all",
+    )  # fmt: skip
+    assert _examined(case.path, "contours") == {"gtv", "bladder"}
+
+
+def _portable(path: Path) -> None:
+    from medh5.storage import profile_family
+
+    assert profile_family(path) == "portable"
+
+
+def _flag_codec_from_nifti(tmp_path: Path, capsys: Any) -> None:
+    files = _nifti_case(tmp_path)
+    out = tmp_path / "case.medh5"
+    _ok(
+        capsys, "convert", "from-nifti", str(out), "--image", f"CT={files['ct']}",
+        "--codec", "portable",
+    )  # fmt: skip
+    _portable(out)
+
+
+def _flag_codec_from_dicom(tmp_path: Path, capsys: Any) -> None:
+    case = _dicom(tmp_path)
+    out = tmp_path / "portable.medh5"
+    root = Path(case.series["paths"][0]).parent
+    _ok(capsys, "convert", "from-dicom", str(root), str(out), "--codec", "portable")
+    _portable(out)
+
+
+def _flag_codec_from_nnunet(tmp_path: Path, capsys: Any) -> None:
+    root = _nnunet_dataset(tmp_path)
+    out = tmp_path / "out"
+    _ok(capsys, "convert", "from-nnunet", str(root), str(out), "--codec", "portable")
+    _portable(out / "C1.medh5")
+
+
+def _flag_codec_migrate(tmp_path: Path, capsys: Any) -> None:
+    shape = (6, 8, 10)
+    mask = np.zeros(shape, bool)
+    mask[1:4, 2:6, 3:8] = True
+    old = tmp_path / "old.medh5"
+    write_legacy_sample(
+        old, images={"CT": np.zeros(shape, np.int16)}, seg={"liver": mask},
+        spacing=[1.0, 1.0, 1.0],
+    )  # fmt: skip
+    out = tmp_path / "m"
+    _ok(capsys, "migrate", str(old), "-o", str(out), "--codec", "portable")
+    (written,) = sorted(out.glob("*.medh5"))
+    _portable(written)
+
+
+def _flag_class_to_dicom_seg(tmp_path: Path, capsys: Any) -> None:
+    pytest.importorskip("highdicom")
+    import pydicom
+
+    case = _dicom(tmp_path)
+    _organs(case)
+    out = tmp_path / "seg.dcm"
+    _ok(
+        capsys, "convert", "to-dicom-seg", str(case.path), "organs", str(out),
+        *_sources(case), "--class", "lesion",
+    )  # fmt: skip
+    written = pydicom.dcmread(out)
+    assert [s.SegmentLabel for s in written.SegmentSequence] == ["lesion"]
+
+
+def _flag_series_description_to_dicom_seg(tmp_path: Path, capsys: Any) -> None:
+    pytest.importorskip("highdicom")
+    import pydicom
+
+    case = _dicom(tmp_path)
+    _organs(case)
+    out = tmp_path / "seg.dcm"
+    _ok(
+        capsys, "convert", "to-dicom-seg", str(case.path), "organs", str(out),
+        *_sources(case), "--series-description", "liver, reviewed",
+    )  # fmt: skip
+    assert pydicom.dcmread(out).SeriesDescription == "liver, reviewed"
+
+
+def _flag_label_to_rtstruct(tmp_path: Path, capsys: Any) -> None:
+    import pydicom
+
+    case = _dicom(tmp_path)
+    rt = _gtv_rtstruct(case, tmp_path / "rt.dcm")
+    _ok(capsys, "convert", "from-rtstruct", str(rt), str(case.path))
+    out = tmp_path / "out.dcm"
+    _ok(
+        capsys, "convert", "to-rtstruct", str(case.path), "contours", str(out),
+        *_sources(case), "--label", "plan B",
+    )  # fmt: skip
+    assert pydicom.dcmread(out).StructureSetLabel == "plan B"
+
+
+def _flag_mask_id_from_rtstruct(tmp_path: Path, capsys: Any) -> None:
+    case = _dicom(tmp_path)
+    rt = _gtv_rtstruct(case, tmp_path / "rt.dcm")
+    _ok(
+        capsys, "convert", "from-rtstruct", str(rt), str(case.path),
+        "--rasterize", "--mask-id", "raster",
+    )  # fmt: skip
+    with medh5.open(case.path) as sample:
+        assert sorted(sample.annotations) == ["contours", "raster"]
+        assert sample.annotations["raster"].dense(["gtv"])[0].sum() == 36
+
+
+def _flag_coord_system_from_nnunet(tmp_path: Path, capsys: Any) -> None:
+    root = _nnunet_dataset(tmp_path)
+    out = tmp_path / "out"
+    _ok(capsys, "convert", "from-nnunet", str(root), str(out), "--coord-system", "RAS")
+    with medh5.open(out / "C1.medh5") as sample:
+        assert {g.coord_system for g in sample.grids.values()} == {"RAS"}
+
+
+def _flag_file_ending_to_nnunet(tmp_path: Path, capsys: Any) -> None:
+    files = _nifti_case(tmp_path, "liver")
+    case = tmp_path / "case.medh5"
+    _ok(
+        capsys, "convert", "from-nifti", str(case), "--image", f"CT={files['ct']}",
+        "--mask", f"liver={files['liver']}",
+    )  # fmt: skip
+    out = tmp_path / "nn"
+    _ok(capsys, "convert", "to-nnunet", str(out), str(case), "--file-ending", ".nii")
+    dataset = out / "Dataset001_medh5"
+    assert sorted(p.name for p in (dataset / "imagesTr").iterdir()) == ["case_0000.nii"]
+    document = json.loads((dataset / "dataset.json").read_text(encoding="utf-8"))
+    assert document["file_ending"] == ".nii"
+
+
+def _flag_value_units_from_nifti(tmp_path: Path, capsys: Any) -> None:
+    files = _nifti_case(tmp_path)
+    out = tmp_path / "case.medh5"
+    _ok(
+        capsys, "convert", "from-nifti", str(out), "--image", f"CT={files['ct']}",
+        "--value-units", "CT=HU",
+    )  # fmt: skip
+    with medh5.open(out) as sample:
+        assert sample.images["CT"].value_units == "HU"
+
+
+def _flag_label_set_from_nifti(tmp_path: Path, capsys: Any) -> None:
+    files = _nifti_case(tmp_path, "liver")
+    labels = tmp_path / "labels.json"
+    given = LabelSet(
+        "abdomen", version="2.0.0", classes=[LabelClass(7, "liver", "Liver")]
+    )
+    labels.write_text(json.dumps(given.to_json()), encoding="utf-8")
+    out = tmp_path / "case.medh5"
+    _ok(
+        capsys, "convert", "from-nifti", str(out), "--image", f"CT={files['ct']}",
+        "--mask", f"liver={files['liver']}", "--label-set", str(labels),
+    )  # fmt: skip
+    with medh5.open(out) as sample:
+        assert sample.label_set.id == "abdomen"
+        assert sample.annotations["seg"].class_ids == (7,)
+
+
+def _exported(tmp_path: Path, capsys: Any) -> tuple[Path, Path]:
+    files = _nifti_case(tmp_path)
+    case = tmp_path / "case.medh5"
+    _ok(capsys, "convert", "from-nifti", str(case), "--image", f"CT={files['ct']}")
+    return case, tmp_path / "back.nii.gz"
+
+
+def _flag_report_to_nifti(tmp_path: Path, capsys: Any) -> None:
+    case, out = _exported(tmp_path, capsys)
+    report = tmp_path / "report.json"
+    argv = ["convert", "to-nifti", str(case), "CT", str(out), "--report", str(report)]
+    printed = _ok(capsys, *argv)
+    assert printed.out == f"{out}\n", "stdout is the written path, as before"
+    written = json.loads(report.read_text(encoding="utf-8"))
+    assert written["converter"] == "to-nifti"
+    assert written["outputs"] == [str(out)]
+
+
+def _flag_json_to_nifti(tmp_path: Path, capsys: Any) -> None:
+    case, out = _exported(tmp_path, capsys)
+    printed = _ok(capsys, "convert", "to-nifti", str(case), "CT", str(out), "--json")
+    payload = json.loads(printed.out)
+    assert payload["converter"] == "to-nifti"
+    assert payload["outputs"] == [str(out)]
+    assert out.exists()
+
+
+_CONVERT_FLAGS = {
+    "annotated-classes/from-nifti": _flag_annotated_classes_from_nifti,
+    "annotated-classes/from-dicom-seg": _flag_annotated_classes_from_dicom_seg,
+    "annotated-classes/from-rtstruct": _flag_annotated_classes_from_rtstruct,
+    "annotated-classes/import-seg-nifti": _flag_annotated_classes_import_seg_nifti,
+    "codec/from-nifti": _flag_codec_from_nifti,
+    "codec/from-dicom": _flag_codec_from_dicom,
+    "codec/from-nnunet": _flag_codec_from_nnunet,
+    "codec/migrate": _flag_codec_migrate,
+    "class/to-dicom-seg": _flag_class_to_dicom_seg,
+    "series-description/to-dicom-seg": _flag_series_description_to_dicom_seg,
+    "label/to-rtstruct": _flag_label_to_rtstruct,
+    "mask-id/from-rtstruct": _flag_mask_id_from_rtstruct,
+    "coord-system/from-nnunet": _flag_coord_system_from_nnunet,
+    "file-ending/to-nnunet": _flag_file_ending_to_nnunet,
+    "value-units/from-nifti": _flag_value_units_from_nifti,
+    "label-set/from-nifti": _flag_label_set_from_nifti,
+    "report/to-nifti": _flag_report_to_nifti,
+    "json/to-nifti": _flag_json_to_nifti,
+}
+
+
+@pytest.mark.parametrize("row", sorted(_CONVERT_FLAGS))
+def test_convert_flags_reach_the_converter(tmp_path, capsys, row):
+    """Each converter parameter the Python API takes has its own flag, and
+    the flag changes what is written: the converters took more than the
+    command line could say, so a cohort converted from it had no way to say
+    which classes were examined, which codec to write, or what to name a
+    SEG's series."""
+    _CONVERT_FLAGS[row](tmp_path, capsys)
+
+
+def test_mask_id_needs_rasterize(capsys, tmp_path):
+    code, printed = run(
+        capsys, "convert", "from-rtstruct", str(tmp_path / "rt.dcm"),
+        str(tmp_path / "c.medh5"), "--mask-id", "m",
+    )  # fmt: skip
+    assert code == EXIT_USAGE
+    assert "--rasterize" in printed.err
+
+
+def _mint_nifti(tmp_path: Path, annotated: list[str]) -> tuple[Path, str, Any]:
+    from medh5.io.nifti import from_nifti
+
+    files = _nifti_case(tmp_path, "liver")
+    out = tmp_path / "case.medh5"
+    report = from_nifti(
+        {"CT": files["ct"]}, out, masks={"liver": files["liver"]},
+        annotated_classes=annotated,
+    )  # fmt: skip
+    return out, "seg", report
+
+
+def _mint_import_seg_nifti(
+    tmp_path: Path, annotated: list[str]
+) -> tuple[Path, str, Any]:
+    from medh5.io.nifti import from_nifti, import_seg_nifti
+
+    files = _nifti_case(tmp_path, "liver")
+    out = tmp_path / "case.medh5"
+    from_nifti({"CT": files["ct"]}, out)
+    report = import_seg_nifti(
+        out, {"liver": files["liver"]}, annotated_classes=annotated
+    )
+    return out, "seg", report
+
+
+def _mint_seg(tmp_path: Path, annotated: list[str]) -> tuple[Path, str, Any]:
+    from medh5.io.dicom_seg import from_dicom_seg
+
+    case = _dicom(tmp_path)
+    seg = _liver_seg(case, tmp_path / "liver.dcm")
+    report = from_dicom_seg(seg, case.path, annotated_classes=annotated)
+    return case.path, "seg", report
+
+
+def _mint_rtstruct(tmp_path: Path, annotated: list[str]) -> tuple[Path, str, Any]:
+    from medh5.io.rtstruct import from_rtstruct
+
+    case = _dicom(tmp_path)
+    rt = _gtv_rtstruct(case, tmp_path / "rt.dcm")
+    report = from_rtstruct(rt, case.path, annotated_classes=annotated, rasterize=True)
+    return case.path, "contours", report
+
+
+_MINTING = {
+    "nifti": (_mint_nifti, "liver"),
+    "import-seg-nifti": (_mint_import_seg_nifti, "liver"),
+    "seg": (_mint_seg, "liver"),
+    "rtstruct": (_mint_rtstruct, "gtv"),
+}
+
+
+@pytest.mark.parametrize("importer", sorted(_MINTING))
+def test_S11_3_annotated_classes_mint_an_examined_absent_class(tmp_path, importer):
+    """A class named in ``annotated_classes`` that the input does not supply
+    was examined and found absent: an importer that mints its label set
+    mints it too, after the classes the input supplies, and says so.  It
+    was a bare ``KeyError`` ("label set 'converted' has no class 'tumor'"),
+    so "searched for the tumour and found none" could not be imported."""
+    build, supplied = _MINTING[importer]
+    path, ann_id, report = build(tmp_path, [supplied, "tumor"])
+    with medh5.open(path) as sample:
+        label_set = sample.label_set
+        assert label_set[supplied].id == 1
+        assert label_set["tumor"].id == 2, "minted after the supplied ids"
+        ann = sample.annotations[ann_id]
+        assert set(ann.annotated_class_ids) == {1, 2}
+        if ann_id == "seg":
+            assert not ann.dense(["tumor"])[0].any()
+        else:
+            assert {int(p.class_id) for p in ann.polygons()} == {1}
+            mask = sample.annotations[f"{ann_id}_mask"]
+            assert set(mask.annotated_class_ids) == {1, 2}
+            assert not mask.dense(["tumor"])[0].any()
+    notes = [n for n in report.of_kind("label_set") if n.detail.get("examined_absent")]
+    assert len(notes) == 1 and notes[0].severity == "decision"
+    assert notes[0].detail["examined_absent"] == {"tumor": 2}
+    assert "tumor" in notes[0].message
+
+
+def _absent_nifti(tmp_path: Path) -> tuple[Path, Any]:
+    from medh5.io.nifti import from_nifti
+
+    files = _nifti_case(tmp_path, "liver")
+    given = LabelSet(
+        "given", version="1.0.0", classes=[LabelClass(4, "liver", "Liver")]
+    )
+    out = tmp_path / "case.medh5"
+    return out, lambda: from_nifti(
+        {"CT": files["ct"]}, out, masks={"liver": files["liver"]},
+        label_set=given, annotated_classes=["liver", "tumor"],
+    )  # fmt: skip
+
+
+def _absent_import_seg_nifti(tmp_path: Path) -> tuple[Path, Any]:
+    from medh5.io.nifti import from_nifti, import_seg_nifti
+
+    files = _nifti_case(tmp_path, "liver")
+    out = tmp_path / "case.medh5"
+    from_nifti({"CT": files["ct"]}, out)
+    _with_label_set(out, (1, "liver"))
+    return out, lambda: import_seg_nifti(
+        out, {"liver": files["liver"]}, annotated_classes=["liver", "tumor"]
+    )
+
+
+def _absent_seg(tmp_path: Path) -> tuple[Path, Any]:
+    from medh5.io.dicom_seg import from_dicom_seg
+
+    case = _dicom(tmp_path)
+    seg = _liver_seg(case, tmp_path / "liver.dcm")
+    _with_label_set(case.path, (1, "liver"))
+    return case.path, lambda: from_dicom_seg(
+        seg, case.path, annotated_classes=["liver", "tumor"]
+    )
+
+
+def _absent_rtstruct(tmp_path: Path) -> tuple[Path, Any]:
+    from medh5.io.rtstruct import from_rtstruct
+
+    case = _dicom(tmp_path)
+    rt = _gtv_rtstruct(case, tmp_path / "rt.dcm")
+    _with_label_set(case.path, (1, "gtv"))
+    return case.path, lambda: from_rtstruct(
+        rt, case.path, annotated_classes=["gtv", "tumor"]
+    )
+
+
+_ABSENT = {
+    "nifti": _absent_nifti,
+    "import-seg-nifti": _absent_import_seg_nifti,
+    "seg": _absent_seg,
+    "rtstruct": _absent_rtstruct,
+}
+
+
+@pytest.mark.parametrize("importer", sorted(_ABSENT))
+def test_S11_3_annotated_class_missing_from_label_set_is_E402(tmp_path, importer):
+    """Where the label set is given --- the sample's, or ``label_set=`` ---
+    an importer mints nothing: a class it is told was examined must be in
+    it.  Refused as E402, naming the class and the way out, with nothing
+    written."""
+    from medh5.errors import MEDH5ValidationError
+
+    path, attempt = _ABSENT[importer](tmp_path)
+    before = path.read_bytes() if path.exists() else None
+    with pytest.raises(MEDH5ValidationError, match="'tumor'") as caught:
+        attempt()
+    assert caught.value.code == "E402"
+    assert "annotated_classes" in str(caught.value)
+    assert (path.read_bytes() if path.exists() else None) == before
+
+
+def test_label_set_fixes_class_ids_across_imports(capsys, tmp_path):
+    """Minted, a class's id is its rank among the masks one case supplies:
+    a cohort whose cases segment different organs numbers them differently.
+    ``--label-set`` (``label_set=``) gives every case the same ids."""
+    pytest.importorskip("nibabel")
+    labels = tmp_path / "labels.json"
+    vocabulary = LabelSet(
+        "abdomen",
+        version="1.0.0",
+        classes=[LabelClass(1, "liver", "Liver"), LabelClass(2, "spleen", "Spleen")],
+    )
+    labels.write_text(json.dumps(vocabulary.to_json()), encoding="utf-8")
+    ids: dict[str, dict[str, tuple[int, ...]]] = {"minted": {}, "given": {}}
+    for case, masks in (("a", ("liver", "spleen")), ("b", ("spleen",))):
+        files = _nifti_case(tmp_path / case, *masks)
+        argv = ["--image", f"CT={files['ct']}"]
+        argv += [a for m in masks for a in ("--mask", f"{m}={files[m]}")]
+        for how, extra in (("minted", []), ("given", ["--label-set", str(labels)])):
+            out = tmp_path / case / f"{how}.medh5"
+            _ok(capsys, "convert", "from-nifti", str(out), *argv, *extra)
+            with medh5.open(out) as sample:
+                ids[how][case] = sample.annotations["seg"].class_ids
+    assert ids["minted"] == {"a": (1, 2), "b": (1,)}, "spleen is 2, then 1"
+    assert ids["given"] == {"a": (1, 2), "b": (2,)}, "spleen is 2 in both"
+
+
+def test_a_mask_the_given_label_set_has_no_class_for_is_E402(tmp_path):
+    from medh5.errors import MEDH5ValidationError
+    from medh5.io.nifti import from_nifti
+
+    files = _nifti_case(tmp_path, "liver")
+    given = LabelSet("given", version="1.0.0", classes=[LabelClass(1, "spleen", "S")])
+    out = tmp_path / "case.medh5"
+    with pytest.raises(MEDH5ValidationError, match="'liver'") as caught:
+        from_nifti(
+            {"CT": files["ct"]}, out, masks={"liver": files["liver"]}, label_set=given
+        )
+    assert caught.value.code == "E402"
+    assert not out.exists()
+
+
+def test_to_rtstruct_refuses_a_label_longer_than_16_characters(capsys, tmp_path):
+    """``StructureSetLabel`` is a DICOM SH, at most 16 characters: a longer
+    label was written, and the file was invalid DICOM."""
+    case = _dicom(tmp_path)
+    rt = _gtv_rtstruct(case, tmp_path / "rt.dcm")
+    _ok(capsys, "convert", "from-rtstruct", str(rt), str(case.path))
+    out = tmp_path / "out.dcm"
+    argv = ["convert", "to-rtstruct", str(case.path), "contours", str(out)]
+    argv += _sources(case)
+    code, printed = run(capsys, *argv, "--label", "a label of 17 ch.")
+    assert code == EXIT_ERROR
+    assert "16" in printed.err and "--label" in printed.err
+    assert not out.exists()
+    _ok(capsys, *argv, "--label", "a label of 16 ch")
+
+
+def test_to_dicom_seg_refuses_a_series_description_longer_than_64(capsys, tmp_path):
+    """``SeriesDescription`` is a DICOM LO, at most 64 characters."""
+    pytest.importorskip("highdicom")
+    case = _dicom(tmp_path)
+    _organs(case)
+    out = tmp_path / "seg.dcm"
+    argv = ["convert", "to-dicom-seg", str(case.path), "organs", str(out)]
+    argv += _sources(case)
+    code, printed = run(capsys, *argv, "--series-description", "x" * 65)
+    assert code == EXIT_ERROR
+    assert "64" in printed.err and "--series-description" in printed.err
+    assert not out.exists()
+    _ok(capsys, *argv, "--series-description", "x" * 64)
+
+
+def test_import_seg_nifti_adds_masks_to_a_sample(capsys, tmp_path):
+    """`import_seg_nifti` had no command."""
+    files = _nifti_case(tmp_path, "liver", "spleen")
+    case = tmp_path / "case.medh5"
+    _ok(capsys, "convert", "from-nifti", str(case), "--image", f"CT={files['ct']}")
+    report = tmp_path / "r.json"
+    printed = _ok(
+        capsys, "convert", "import-seg-nifti", str(case), "--mask",
+        f"liver={files['liver']}", "--mask", f"spleen={files['spleen']}",
+        "--id", "organs", "--grid", "ref", "--report", str(report),
+    )  # fmt: skip
+    assert "DECISION" in printed.out
+    written = json.loads(report.read_text(encoding="utf-8"))
+    assert written["converter"] == "import-seg-nifti"
+    with medh5.open(case) as sample:
+        organs = sample.annotations["organs"]
+        assert {organs.class_key(c) for c in organs.class_ids} == {"liver", "spleen"}
+    code, printed = run(capsys, "convert", "import-seg-nifti", str(case))
+    assert code == EXIT_USAGE and "--mask" in printed.err

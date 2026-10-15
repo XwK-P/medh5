@@ -23,20 +23,30 @@ from __future__ import annotations
 
 import errno
 import json
+import math
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
 
-from medh5._files import temporary_beside, write_text
+from medh5 import _core
+from medh5._files import write_text
 from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry import ORTHONORMAL_TOL, build_affine, decompose_affine
-from medh5.io._common import sanitize_ascii_stem, sanitize_key
+from medh5.geometry import (
+    MM_PER_UNIT,
+    ORTHONORMAL_TOL,
+    build_affine,
+    decompose_affine,
+)
+from medh5.io._common import examined_classes, sanitize_ascii_stem, sanitize_key
 from medh5.io.report import ConversionReport
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from medh5.labels import LabelSet
 
 RAS_TO_LPS = np.diag([-1.0, -1.0, 1.0, 1.0])
 """World-axis sign flip. ``LPS = RAS_TO_LPS @ RAS``, and it is its own inverse."""
@@ -190,14 +200,13 @@ def write_nifti(
     header.set_xyzt_units(xyz="mm" if scale is not None else "unknown", t=temporal)
     sidecar = _sidecar_for(target)
     fields = _volume_statements(sidecar, needed=bool(statements))
-    temporary, fd = temporary_beside(target)
-    os.close(fd)
-    try:
-        nib.save(image, str(temporary))
+    # Through the engine's replace (§14.4): nibabel writes a temporary
+    # beside the file, renamed over it once whole --- a link kept and the
+    # file it names replaced, with that file's mode --- and discarded if
+    # anything before the rename fails.
+    with _core.stage_file(target) as staged:
+        nib.save(image, str(staged.path))
         kept = _withdraw_volume_statements(target, sidecar, fields)
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
     if statements:
         _replace_text(sidecar, json.dumps({**kept, **statements}, indent=2) + "\n")
         if report is not None and "VolumeTiming" in statements:
@@ -397,7 +406,7 @@ def _sidecar_for(target: Path) -> Path:
 
 def _sidecar_path(target: Path, suffix: str) -> Path:
     """The file beside a NIfTI sharing its stem and ending in *suffix*."""
-    for extension in (".nii.gz", ".nii"):
+    for extension in NIFTI_SUFFIXES:
         if target.name.endswith(extension):
             return target.with_name(target.name[: -len(extension)] + suffix)
     return target.with_suffix(suffix)
@@ -449,7 +458,7 @@ def _geometry_notes(
         return notes
     if sform_code and qform_code:
         sform = np.asarray(header.get_sform(), dtype=np.float64)
-        qform = np.asarray(header.get_qform(), dtype=np.float64)
+        qform = _qform(header, path)
         if not np.allclose(sform, qform, atol=1e-4, rtol=0):
             notes.append(
                 (
@@ -467,6 +476,63 @@ def _geometry_notes(
     return notes
 
 
+def _affine(image: Any, path: str | os.PathLike[str]) -> npt.NDArray[np.float64]:
+    """The file's index-to-RAS affine, chosen as nibabel and NIfTI readers
+    choose it: the sform where ``sform_code`` is set, else the qform where
+    ``qform_code`` is, else nibabel's fallback from ``pixdim`` (which
+    :func:`_geometry_notes` refuses unless asked)."""
+    header = image.header
+    if int(header["sform_code"]) == 0 and int(header["qform_code"]) != 0:
+        return _qform(header, path)
+    return np.asarray(image.affine, dtype=np.float64)
+
+
+def _qform(header: Any, path: str | os.PathLike[str]) -> npt.NDArray[np.float64]:
+    """The qform affine, computed in float64 from the quaternion parameters
+    as NIfTI-1 defines it (``nifti1.h``).
+
+    nibabel builds it in ``np.longdouble``, which is 80-bit on x86-64 and
+    64-bit elsewhere, so a qform-only file's direction and spacing --- and the
+    ``content_id`` of what it was imported into --- differed in the last bit
+    between platforms.  ``a`` is ``sqrt(1 - (b² + c² + d²))``; within the
+    stored (float32) precision of zero it is zero, and (b, c, d) is
+    normalised, as ``nifti1_io`` does; beyond it below zero, the parameters
+    are no rotation, and the file is refused, as nibabel refused it.
+    """
+    b, c, d = (float(header[name]) for name in ("quatern_b", "quatern_c", "quatern_d"))
+    w2 = 1.0 - (b * b + c * c + d * d)
+    if abs(w2) < float(np.finfo(np.float32).eps):
+        norm = math.sqrt(b * b + c * c + d * d)
+        a, b, c, d = 0.0, b / norm, c / norm, d / norm
+    elif w2 < 0:
+        raise MEDH5ValidationError(
+            f"{os.fspath(path)}: the qform's quaternion parameters (b, c, d) = "
+            f"({b}, {c}, {d}) have b² + c² + d² > 1, so they are no rotation"
+        )
+    else:
+        a = math.sqrt(w2)
+    pixdim = [float(v) for v in header["pixdim"][:4]]
+    if any(v < 0 for v in pixdim[1:]):
+        raise MEDH5ValidationError(
+            f"{os.fspath(path)}: pixdim[1:4] = {pixdim[1:]} holds a negative "
+            "voxel size, which the qform cannot scale by"
+        )
+    qfac = -1.0 if pixdim[0] < 0 else 1.0
+    rotation = (
+        (a * a + b * b - c * c - d * d, 2 * b * c - 2 * a * d, 2 * b * d + 2 * a * c),
+        (2 * b * c + 2 * a * d, a * a + c * c - b * b - d * d, 2 * c * d - 2 * a * b),
+        (2 * b * d - 2 * a * c, 2 * c * d + 2 * a * b, a * a + d * d - c * c - b * b),
+    )
+    scale = (pixdim[1], pixdim[2], qfac * pixdim[3])
+    offset = [float(header[name]) for name in ("qoffset_x", "qoffset_y", "qoffset_z")]
+    out = np.eye(4, dtype=np.float64)
+    for row in range(3):
+        for column in range(3):
+            out[row, column] = rotation[row][column] * scale[column]
+        out[row, 3] = offset[row]
+    return out
+
+
 def _replay_notes(log: ConversionReport, name: str, geo: Mapping[str, Any]) -> None:
     """Put `read_nifti`'s geometry notes into the conversion report."""
     for kind, message, detail in geo.get("notes", ()):
@@ -480,6 +546,7 @@ def read_nifti(
     transpose: bool = True,
     fourth_axis: str = "auto",
     assume_geometry: bool = False,
+    plane_as_volume: bool = False,
 ) -> tuple[npt.NDArray[Any], dict[str, Any]]:
     """One NIfTI file as ``(array, geometry)`` in MEDH5 conventions.
 
@@ -493,6 +560,15 @@ def read_nifti(
     fallback from ``pixdim``.  It is off by default because that fallback is an
     invented grid, and a grid this library invented is indistinguishable
     downstream from one a scanner measured (§3.3).
+
+    A 2-D file is a 2-D grid (§3.6), which only a plane at z = 0 in the
+    world's x-y plane can be; any other is refused.  *plane_as_volume* reads
+    every 2-D file as ``(x, y, 1)`` instead --- the one-slice 3-D grid §3.6
+    makes of a plane that lies elsewhere --- keeping the full affine, whose
+    third column becomes the third axis: it must be non-zero and orthogonal
+    to the first two, since no normal or thickness is invented.  The
+    geometry's ``plane_as_volume`` then records the plane's ``z`` and
+    ``normal``, and is ``None`` for a file that was not reshaped.
 
     The returned geometry carries ``notes``: what the reader had to decide from
     ambiguous headers, for the caller to put in its conversion report.
@@ -546,7 +622,12 @@ def read_nifti(
     time_dim = [a for a in range(3, data.ndim) if a not in squeezed] == [3]
     for axis in squeezed:
         data = np.squeeze(data, axis=axis)
-    affine = convert_world(image.affine, source="RAS", target=coord_system)
+    affine = convert_world(_affine(image, path), source="RAS", target=coord_system)
+    plane: dict[str, Any] | None = None
+    if plane_as_volume and data.ndim == 2:
+        # What the file would be saved as (x, y, 1), before anything reads it.
+        plane = _plane_volume(affine, path, units)
+        data = data[:, :, np.newaxis]
     spacing, origin, direction = decompose_affine(affine)
     order = tuple(range(data.ndim))
     if transpose and data.ndim >= 3:
@@ -611,6 +692,7 @@ def read_nifti(
         "units": units,
         "dtype": str(data.dtype),
         "rescale": rescale,
+        "plane_as_volume": plane,
         "header": {
             "descrip": _text(image.header.get("descrip")),
             "scl_slope": _number(image.header.get("scl_slope")),
@@ -684,14 +766,13 @@ FOURTH_AXES = ("auto", "time", "channel")
 
 
 def _sidecar(path: str | os.PathLike[str], suffix: str) -> Path | None:
-    """The file beside a NIfTI sharing its stem and ending in *suffix*."""
+    """The existing file beside a NIfTI sharing its stem and ending in
+    *suffix*; ``None`` when there is none, or *path* is no NIfTI name."""
     name = Path(os.fspath(path))
-    stem = name.name
-    for extension in (".nii.gz", ".nii"):
-        if stem.endswith(extension):
-            candidate = name.with_name(stem[: -len(extension)] + suffix)
-            return candidate if candidate.exists() else None
-    return None
+    if not name.name.endswith(NIFTI_SUFFIXES):
+        return None
+    candidate = _sidecar_path(name, suffix)
+    return candidate if candidate.exists() else None
 
 
 def _bval_sidecar(path: str | os.PathLike[str]) -> Path | None:
@@ -860,6 +941,64 @@ is float32: a plane written at z = 0 stores exactly 0, and an offset anyone
 meant is orders of magnitude larger."""
 
 
+def _plane_volume(
+    affine: npt.NDArray[np.float64], path: str | os.PathLike[str], units: str
+) -> dict[str, Any]:
+    """Where a 2-D plane read as ``(x, y, 1)`` lies, or a refusal.
+
+    The third index axis is the affine's third column: a NIfTI plane carries
+    one, and it is the only normal and thickness the file states.  A zero
+    column, or one not orthogonal to the in-plane axes, states neither, and
+    none is invented.
+    """
+    name = os.fspath(path)
+    matrix = np.asarray(affine, dtype=np.float64)
+    third = matrix[:3, 2]
+    length = float(np.linalg.norm(third))
+    if not (math.isfinite(length) and length > 0.0):
+        raise MEDH5ValidationError(
+            f"{name} is a 2-D plane whose affine's third column is "
+            f"{[float(v) for v in third]}: read as (x, y, 1), that column is "
+            "the third axis, and a zero one gives the slice no normal and no "
+            "thickness, which are not invented; write them into the file's "
+            "affine, or import the plane without plane_as_volume"
+        )
+    normal = third / length
+    for k in (0, 1):
+        axis = matrix[:3, k]
+        size = float(np.linalg.norm(axis))
+        if size > 0.0 and abs(float(normal @ axis) / size) > ORTHONORMAL_TOL:
+            raise MEDH5ValidationError(
+                f"{name} is a 2-D plane whose affine's third column "
+                f"{[float(v) for v in third]} is not orthogonal to its in-plane "
+                "axes: read as (x, y, 1), the grid would be sheared, and no "
+                "other normal is invented; correct the file's affine, or import "
+                "the plane without plane_as_volume"
+            )
+    return {
+        "z": float(matrix[2, 3]),
+        "normal": [float(v) for v in normal],
+        "thickness": length,
+        "units": units,
+    }
+
+
+def _note_plane(log: ConversionReport, name: str, geo: Mapping[str, Any]) -> bool:
+    """Record a plane `read_nifti` read as ``(x, y, 1)``; whether it did."""
+    plane = geo.get("plane_as_volume")
+    if plane is None:
+        return False
+    log.decision(
+        "plane_as_volume",
+        f"{name}: the 2-D plane was imported as a one-slice 3-D grid, "
+        f"(x, y, 1), at z = {plane['z']:g} {plane['units']}, its third axis "
+        f"the affine's third column (normal {plane['normal']}, "
+        f"{plane['thickness']:g} {plane['units']} thick) (§3.6)",
+        {"file": name, **plane},
+    )
+    return True
+
+
 def _reduce_plane(
     spacing: npt.NDArray[np.float64],
     origin: npt.NDArray[np.float64],
@@ -886,16 +1025,18 @@ def _reduce_plane(
         raise MEDH5ValidationError(
             f"{name} is a 2-D plane not parallel to the x-y world plane, and "
             "§3.6 gives a 2-D grid a 2x2 direction on the first two world axes "
-            "--- no 2-D grid describes it; save it as (x, y, 1) to import it as "
-            "a single-slice 3-D volume"
+            "--- no 2-D grid describes it; save it as (x, y, 1), or pass "
+            "plane_as_volume=True (--plane-as-volume), to import it as a "
+            "single-slice 3-D volume"
         )
     offset = float(origin[2]) * MM_PER_UNIT.get(units, 1.0)
     if abs(offset) > PLANE_TOL_MM:
         raise MEDH5ValidationError(
             f"{name} is a 2-D plane at world z = {offset:g} mm, and a 2-D grid "
             "(§3.6) has no z to keep it at: imported, it would lie at z = 0, on "
-            "one grid with planes from any other slice; save it as (x, y, 1) to "
-            "import it as a single-slice 3-D volume, which keeps its z"
+            "one grid with planes from any other slice; save it as (x, y, 1), "
+            "or pass plane_as_volume=True (--plane-as-volume), to import it as "
+            "a single-slice 3-D volume, which keeps its z"
         )
     return spacing[:2], origin[:2], direction[:2, :2]
 
@@ -1071,6 +1212,8 @@ def from_nifti(
     annotated_classes: Sequence[str] | str = "all_given",
     assume_geometry: bool = False,
     report: ConversionReport | None = None,
+    plane_as_volume: bool = False,
+    label_set: LabelSet | str | os.PathLike[str] | None = None,
 ) -> ConversionReport:
     """Write one sample from a set of co-registered NIfTI volumes.
 
@@ -1078,10 +1221,32 @@ def from_nifti(
     resampled: resampling changes the data, and a converter that does it
     silently produces a file whose labels no longer sit on the voxels they were
     drawn on.  Resample first, deliberately, with a tool that records it.
+
+    *plane_as_volume* imports every 2-D image and mask as a one-slice 3-D
+    grid, ``(x, y, 1)``, where it lies (:func:`read_nifti`); each is a
+    ``plane_as_volume`` decision in the report.
+
+    Without *label_set*, the masks' classes are minted from their names, in
+    sorted order, so a class's id depends on which masks a case has.
+    *label_set* --- a :class:`~medh5.labels.LabelSet`, or a JSON file
+    :func:`medh5.labels.load_file` reads --- fixes them: each mask is the
+    class of the key its name makes (or of its name), the set is the
+    sample's, and a mask it has no class for is refused (E402).
+
+    A class *annotated_classes* names that no mask supplies was examined and
+    found absent (§11.3): minted after the masks' classes, with a
+    ``label_set`` decision, or, with *label_set*, one the set must hold
+    (E402).
     """
     import medh5
+    from medh5.labels import LabelSet, load_file
 
     log = report or ConversionReport(converter="from-nifti")
+    given = (
+        label_set
+        if label_set is None or isinstance(label_set, LabelSet)
+        else load_file(label_set)
+    )
     log.source = ", ".join(str(p) for p in images.values())
     if not images:
         raise MEDH5ValidationError("from_nifti needs at least one image")
@@ -1093,6 +1258,7 @@ def from_nifti(
     # in the set the first one's gradients without noticing.
     per_image: dict[str, dict[str, Any]] = {}
     geometry: dict[str, Any] | None = None
+    reshaped = False
     for name, path in images.items():
         data, geo = read_nifti(
             path,
@@ -1100,8 +1266,10 @@ def from_nifti(
             transpose=transpose,
             fourth_axis=fourth_axis,
             assume_geometry=assume_geometry,
+            plane_as_volume=plane_as_volume,
         )
         _replay_notes(log, name, geo)
+        reshaped = _note_plane(log, name, geo) or reshaped
         geometry = _same_grid(geometry, geo, name, log) if geometry else geo
         per_image[name] = geo
         arrays[name] = data
@@ -1115,8 +1283,10 @@ def from_nifti(
             coord_system=coord_system,
             transpose=transpose,
             assume_geometry=assume_geometry,
+            plane_as_volume=plane_as_volume,
         )
         _replay_notes(log, name, geo)
+        reshaped = _note_plane(log, name, geo) or reshaped
         _same_grid(geometry, geo, name, log)
         mask_arrays[name] = _as_mask(data, geo)
 
@@ -1212,10 +1382,44 @@ def from_nifti(
             "subject_id= (--subject-id) to file it under its subject",
             {"subject_id": subject},
         )
-    label_set = None
+    vocabulary = given
+    examined: Sequence[int | str] | str = annotated_classes
     if mask_arrays:
-        label_set = _mint_label_set(sorted(mask_arrays), log)
+        if given is None:
+            vocabulary = _mint_label_set(sorted(mask_arrays), log)
+        else:
+            unmatched = [n for n in mask_arrays if _class_of(given, n) is None]
+            if unmatched:
+                raise MEDH5ValidationError(
+                    f"label set {given.id!r} has no class for mask(s) "
+                    f"{sorted(unmatched)}: a mask is the class of the key its "
+                    "name makes, or of its name --- add the class, or rename "
+                    "the mask",
+                    code="E402",
+                )
+            log.decision(
+                "label_set",
+                f"the masks were matched to label set {given.id!r} by the keys "
+                "their names make; no class was minted",
+                {
+                    "label_set": given.id,
+                    "ids": {n: _class_of(given, n).id for n in sorted(mask_arrays)},
+                },
+            )
+        vocabulary, examined = examined_classes(
+            annotated_classes,
+            vocabulary,
+            mint=given is None,
+            log=log,
+            supplied="the masks",
+        )
 
+    params: dict[str, Any] = {
+        "coord_system": coord_system,
+        "transpose": bool(transpose),
+    }
+    if reshaped:
+        params["plane_as_volume"] = True
     with medh5.create(
         target, sample_id=stem, subject_id=subject, codec=codec
     ) as writer:
@@ -1227,10 +1431,10 @@ def from_nifti(
             # The files' names, not their paths: a local path often holds a
             # patient's name or MRN, and the sample's content_id followed it.
             inputs=[f"nifti:{Path(os.fspath(p)).name}" for p in images.values()],
-            params={"coord_system": coord_system, "transpose": bool(transpose)},
+            params=params,
         )
-        if label_set is not None:
-            writer.label_set(label_set)
+        if vocabulary is not None:
+            writer.label_set(vocabulary)
         # Whether the axes actually moved, read off what `read_nifti` recorded
         # rather than re-derived from `transpose`: the two differ for arrays
         # below 3-D, which are never reordered whatever the caller asked for.
@@ -1299,16 +1503,16 @@ def from_nifti(
                 rescale_intercept=None if rescale is None else rescale[1],
                 prov=activity,
             )
-        if mask_arrays and label_set is not None:
+        if mask_arrays and vocabulary is not None:
             resolved = {
-                _class_of(label_set, name).id: mask
+                _class_of(vocabulary, name).id: mask
                 for name, mask in mask_arrays.items()
             }
             kind, stats = writer.add_segmentation(
                 "seg",
                 grid="ref",
                 masks=resolved,
-                annotated_classes=annotated_classes,
+                annotated_classes=examined,
                 prov=activity,
             )
             log.decision(
@@ -1319,18 +1523,20 @@ def from_nifti(
                     "overlapping": None if stats is None else len(stats.edges),
                 },
             )
-            log.guess(
-                "coverage",
-                "annotated_class_ids was set to the masks supplied; NIfTI cannot "
-                "say which classes were searched for and not found",
-                {"classes": sorted(mask_arrays)},
-            )
+            if annotated_classes == "all_given":
+                log.guess(
+                    "coverage",
+                    "annotated_class_ids was set to the masks supplied; NIfTI "
+                    "cannot say which classes were searched for and not found "
+                    "--- pass annotated_classes= (--annotated-classes) to say",
+                    {"classes": sorted(mask_arrays)},
+                )
     log.outputs.append(str(target))
     return log
 
 
-# Millimetres in one §3.5 length unit; `px` has no physical size.
-MM_PER_UNIT = {"mm": 1.0, "m": 1000.0, "um": 1e-3}
+# `MM_PER_UNIT`, the millimetres in one §3.2 length unit, is the engine's
+# (`medh5.geometry`), imported above and still importable from here.
 # Seconds in one §3.2 time unit.
 SECONDS_PER_UNIT = {"s": 1.0, "ms": 1e-3}
 
@@ -1607,6 +1813,7 @@ def import_seg_nifti(
     assume_aligned: bool = False,
     assume_geometry: bool = False,
     report: ConversionReport | None = None,
+    plane_as_volume: bool = False,
 ) -> ConversionReport:
     """Add NIfTI masks to an existing sample, checking they sit on its grid.
 
@@ -1622,6 +1829,12 @@ def import_seg_nifti(
     *assume_geometry* and the report's guesses are :func:`from_nifti`'s: a
     mask declaring no spatial mapping is refused unless the fallback is
     taken on purpose, and what the reader assumed is in the report.
+    *plane_as_volume* reads a 2-D mask as ``(x, y, 1)``, so it can sit on
+    the one-slice 3-D grid a plane off z = 0 was imported as.
+
+    A class *annotated_classes* names that no mask supplies was examined and
+    found absent (§11.3): minted after the masks' classes when the sample has
+    no label set, else one its label set must hold (E402).
     """
     import medh5
 
@@ -1645,14 +1858,17 @@ def import_seg_nifti(
         )
 
     arrays: dict[str, npt.NDArray[np.bool_]] = {}
+    reshaped = False
     for name, mask_path in masks.items():
         data, geo = read_nifti(
             mask_path,
             coord_system=system,
             transpose=transpose,
             assume_geometry=assume_geometry,
+            plane_as_volume=plane_as_volume,
         )
         _replay_notes(log, name, geo)
+        reshaped = _note_plane(log, name, geo) or reshaped
         if tuple(geo["shape"]) != tuple(target_grid.spatial_shape):
             raise MEDH5ValidationError(
                 f"mask {name!r} has shape {geo['shape']}, but grid {grid_id!r} is "
@@ -1693,18 +1909,30 @@ def import_seg_nifti(
             "convert without an existing label set",
             code="E402",
         )
+    label_set, examined = examined_classes(
+        annotated_classes,
+        label_set,
+        mint=existing is None,
+        log=log,
+        supplied="the masks",
+    )
     with medh5.amend(path) as writer:
         if existing is None:
             writer.label_set(label_set)
         tool = writer.software("medh5", medh5.__version__)
+        # Params only when a plane was reshaped: an import that reshaped none
+        # records the activity it always did.
+        fields: dict[str, Any] = (
+            {"params": {"plane_as_volume": True}} if reshaped else {}
+        )
         activity = writer.activity(
-            "import", agent=tool, tool="medh5.io.nifti.import_seg_nifti"
+            "import", agent=tool, tool="medh5.io.nifti.import_seg_nifti", **fields
         )
         kind, _ = writer.add_segmentation(
             ann_id,
             grid=grid_id,
             masks={_class_of(label_set, k).id: v for k, v in arrays.items()},
-            annotated_classes=annotated_classes,
+            annotated_classes=examined,
             prov=activity,
         )
         log.decision("encoding", f"masks were stored as {kind!r}", {"kind": kind})
