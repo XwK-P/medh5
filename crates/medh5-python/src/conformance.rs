@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use medh5::bench;
 use medh5::conformance::{self as engine, suite};
 
-use crate::convert::{json_to_py, py_to_json};
+use crate::convert::{json_to_py, py_to_json, py_to_json_lenient, strings};
 use crate::errors::R;
 
 /// A result as the Python `CaseResult` is built from: the case record, the
@@ -97,7 +97,86 @@ fn conformance_score<'py>(py: Python<'py>, root: PathBuf, submitted: &Bound<'py,
     Ok(results_to_py(py, &results)?)
 }
 
+/// The engine value of a `Case` dataclass: what it expects, not how it is
+/// built.
+fn case_arg(obj: &Bound<'_, PyAny>) -> PyResult<engine::Case> {
+    Ok(engine::Case {
+        name: obj.getattr("name")?.extract()?,
+        description: obj.getattr("description")?.extract()?,
+        clause: obj.getattr("clause")?.extract()?,
+        build: None,
+        level: obj.getattr("level")?.extract()?,
+        errors: strings(&obj.getattr("errors")?)?,
+        warnings: strings(&obj.getattr("warnings")?)?,
+        suffix: obj.getattr("suffix")?.extract()?,
+        mutated: obj.getattr("mutated")?.is_truthy()?,
+    })
+}
+
+/// The engine value of a `CaseResult` dataclass.
+fn case_result_arg(obj: &Bound<'_, PyAny>) -> PyResult<engine::CaseResult> {
+    Ok(engine::CaseResult {
+        case: case_arg(&obj.getattr("case")?)?,
+        path: obj.getattr("path")?.extract()?,
+        got_errors: strings(&obj.getattr("got_errors")?)?,
+        got_warnings: strings(&obj.getattr("got_warnings")?)?,
+        missing: strings(&obj.getattr("missing")?)?,
+        unexpected: strings(&obj.getattr("unexpected")?)?,
+        error: obj.getattr("error")?.extract()?,
+        details: strings(&obj.getattr("details")?)?,
+    })
+}
+
+/// A case's entry in `expected.json`.
+#[pyfunction]
+fn conformance_case_json<'py>(py: Python<'py>, case: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    json_to_py(py, &case_arg(case)?.to_json())
+}
+
+/// A result as `conformance run --json` prints it.
+#[pyfunction]
+fn conformance_result_json<'py>(py: Python<'py>, result: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    json_to_py(py, &case_result_arg(result)?.to_json())
+}
+
+/// The `--json` summary of a run or a score.
+#[pyfunction]
+fn conformance_summary<'py>(py: Python<'py>, results: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    let mut all = Vec::new();
+    for r in results.try_iter()? {
+        all.push(case_result_arg(&r?)?);
+    }
+    json_to_py(py, &suite::summarize(&all))
+}
+
 // -- bench -------------------------------------------------------------------------------
+
+/// The engine value of a `Measurement` dataclass, or of its JSON form.
+/// A NaN value is a measurement (a metric that measured nothing), which the
+/// JSON form spells `null`.
+fn measurement_arg(obj: &Bound<'_, PyAny>) -> R<bench::Measurement> {
+    if obj.is_instance_of::<PyDict>() {
+        return Ok(bench::Measurement::from_json(&py_to_json(obj)?)?);
+    }
+    let detail = match py_to_json_lenient(&obj.getattr("detail")?)? {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    Ok(bench::Measurement {
+        name: obj.getattr("name")?.str()?.to_string(),
+        value: obj.getattr("value")?.extract()?,
+        unit: obj.getattr("unit")?.str()?.to_string(),
+        target: obj.getattr("target")?.extract()?,
+        description: obj.getattr("description")?.str()?.to_string(),
+        detail,
+    })
+}
+
+/// A measurement as `bench --json` prints it: a NaN as `null`.
+#[pyfunction]
+fn bench_measurement_json<'py>(py: Python<'py>, measurement: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    Ok(json_to_py(py, &measurement_arg(measurement)?.to_json())?)
+}
 
 /// A count from Python, where a negative one reaches the engine as 0, which
 /// it refuses for what 0 would measure: taken unsigned, it raised PyO3's
@@ -198,20 +277,22 @@ fn bench_many_class_measurement<'py>(py: Python<'py>, path: PathBuf, patch: i64,
     Ok(json_to_py(py, &found.to_json())?)
 }
 
-/// The text report of measurements given as their JSON form.
+/// The text report of measurements, given as `Measurement`s or their JSON
+/// form.
 #[pyfunction]
 fn bench_report(measurements: &Bound<'_, PyAny>) -> R<String> {
     let mut found = Vec::new();
     for item in measurements.try_iter()? {
-        found.push(bench::Measurement::from_json(&py_to_json(&item?)?)?);
+        found.push(measurement_arg(&item?)?);
     }
     Ok(bench::report(&found))
 }
 
-/// One measurement's report line (`str(measurement)`).
+/// One measurement's report line (`str(measurement)`), given as a
+/// `Measurement` or its JSON form.
 #[pyfunction]
 fn bench_line(measurement: &Bound<'_, PyAny>) -> R<String> {
-    Ok(bench::Measurement::from_json(&py_to_json(measurement)?)?.to_string())
+    Ok(measurement_arg(measurement)?.to_string())
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -224,6 +305,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(conformance_check_checksums, m)?,
         wrap_pyfunction!(conformance_load_manifest, m)?,
         wrap_pyfunction!(conformance_score, m)?,
+        wrap_pyfunction!(conformance_case_json, m)?,
+        wrap_pyfunction!(conformance_result_json, m)?,
+        wrap_pyfunction!(conformance_summary, m)?,
+        wrap_pyfunction!(bench_measurement_json, m)?,
         wrap_pyfunction!(bench_timed, m)?,
         wrap_pyfunction!(bench_benchmark_file, m)?,
         wrap_pyfunction!(bench_synthetic_pair, m)?,

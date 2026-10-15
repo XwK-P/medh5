@@ -256,6 +256,7 @@ __all__ = [
     "bench_benchmark_file",
     "bench_line",
     "bench_many_class_measurement",
+    "bench_measurement_json",
     "bench_report",
     "bench_synthetic_many_class_sample",
     "bench_synthetic_pair",
@@ -301,12 +302,15 @@ __all__ = [
     "compute_content_id",
     "conformance_build_case",
     "conformance_build_corpus",
+    "conformance_case_json",
     "conformance_cases",
     "conformance_check_checksums",
     "conformance_load_manifest",
     "conformance_publish",
+    "conformance_result_json",
     "conformance_run_corpus",
     "conformance_score",
+    "conformance_summary",
     "contains_at",
     "cost_model",
     "create",
@@ -404,6 +408,9 @@ __all__ = [
     "inside_extent",
     "instance_id_dtype",
     "instances_from_masks",
+    "integrity_diagnosis_json",
+    "integrity_repair_json",
+    "integrity_verify_json",
     "io_contradictions",
     "io_days_from_baseline",
     "io_group_by_subject",
@@ -500,6 +507,8 @@ __all__ = [
     "stage_file",
     "stale_index_entries",
     "storage_dtype",
+    "storage_recompress_json",
+    "storage_recompress_line",
     "subtrees_identical",
     "target_registration_error",
     "task_fingerprints",
@@ -517,7 +526,11 @@ __all__ = [
     "unpack",
     "validate_against_schema",
     "validate_file",
+    "validate_merge",
     "validate_paths",
+    "validate_report_format",
+    "validate_report_json",
+    "validate_report_positions",
     "validate_root",
     "validate_sample_key",
     "verify_object",
@@ -804,14 +817,22 @@ def bench_benchmark_file(
     repeats: int = 20,
 ) -> list[Any]: ...
 def bench_line(measurement: Any) -> str:
-    """One measurement's report line (`str(measurement)`)."""
+    """One measurement's report line (`str(measurement)`), given as a
+    `Measurement` or its JSON form.
+    """
     ...
 
 def bench_many_class_measurement(
     path: str | os.PathLike[str], *, patch: int = 64, repeats: int = 20
 ) -> Any: ...
+def bench_measurement_json(measurement: Any) -> Any:
+    """A measurement as `bench --json` prints it: a NaN as `null`."""
+    ...
+
 def bench_report(measurements: Any) -> str:
-    """The text report of measurements given as their JSON form."""
+    """The text report of measurements, given as `Measurement`s or their JSON
+    form.
+    """
     ...
 
 def bench_synthetic_many_class_sample(
@@ -986,6 +1007,10 @@ def conformance_build_case(name: str, path: str | os.PathLike[str]) -> None:
 def conformance_build_corpus(
     outdir: str | os.PathLike[str], *, names: Sequence[str] | None = None
 ) -> str: ...
+def conformance_case_json(case: Any) -> Any:
+    """A case's entry in `expected.json`."""
+    ...
+
 def conformance_cases() -> list[Any]:
     """Every case, as its manifest record, in corpus order."""
     ...
@@ -995,10 +1020,18 @@ def conformance_load_manifest(root: str | os.PathLike[str]) -> Any: ...
 def conformance_publish(
     outdir: str | os.PathLike[str], *, names: Sequence[str] | None = None
 ) -> str: ...
+def conformance_result_json(result: Any) -> Any:
+    """A result as `conformance run --json` prints it."""
+    ...
+
 def conformance_run_corpus(
     outdir: str | os.PathLike[str], *, names: Sequence[str] | None = None
 ) -> list[Any]: ...
 def conformance_score(root: str | os.PathLike[str], submitted: Any) -> list[Any]: ...
+def conformance_summary(results: Any) -> Any:
+    """The `--json` summary of a run or a score."""
+    ...
+
 def contains_at(values: npt.NDArray[Any], threshold: float) -> npt.NDArray[np.bool_]:
     """`values >= threshold`, decided in the stored precision (§7.5)."""
     ...
@@ -1421,6 +1454,18 @@ def instances_from_masks(masks: Any, *, start_id: int = 1) -> list[Any]:
     """
     ...
 
+def integrity_diagnosis_json(diagnosis: Any) -> Any:
+    """A diagnosis as `diagnose --json` prints it."""
+    ...
+
+def integrity_repair_json(repair: Any) -> Any:
+    """A repair as `fix --json` prints it."""
+    ...
+
+def integrity_verify_json(result: Any) -> Any:
+    """A verification's summary: its verdict, and what failed."""
+    ...
+
 def io_contradictions(occasions: Any) -> dict[Any, Any]:
     """Subject keys the sources contradict -> the facts that disagree."""
     ...
@@ -1799,6 +1844,14 @@ def stage_file(path: str | os.PathLike[str]) -> StagedFileHandle:
 
 def stale_index_entries(root: Group) -> tuple[str, ...]: ...
 def storage_dtype(planes: Any, threshold: float, requested: Any = None) -> Any: ...
+def storage_recompress_json(result: Any) -> Any:
+    """A re-encoding's result as `recompress --json` prints it."""
+    ...
+
+def storage_recompress_line(result: Any) -> str:
+    """A re-encoding's result in one line (`str(result)`)."""
+    ...
+
 def subtrees_identical(a: Group, b: Group) -> tuple[str, ...]: ...
 def target_registration_error(
     transform: Any,
@@ -1888,6 +1941,12 @@ def validate_file(
     profiles: Any = None,
     codes_revision: int | None = None,
 ) -> Any: ...
+def validate_merge(reports: Any, path: str = "<multiple>") -> Any:
+    """Several reports as one, each location prefixed with its file: the
+    merged report's JSON.
+    """
+    ...
+
 def validate_paths(
     paths: Sequence[str | os.PathLike[str]],
     *,
@@ -1895,6 +1954,20 @@ def validate_paths(
     profiles: Any = None,
     codes_revision: int | None = None,
 ) -> list[Any]: ...
+def validate_report_format(report: Any, *, verbose: bool = False) -> str:
+    """A report as `validate` prints it."""
+    ...
+
+def validate_report_json(report: Any) -> Any:
+    """A report as `validate --json` prints it."""
+    ...
+
+def validate_report_positions(report: Any) -> tuple[list[int], list[int], list[int]]:
+    """The positions in `report.diagnostics` of its errors, its warnings and
+    the warnings it promotes, at its level.
+    """
+    ...
+
 def validate_root(
     sample: Any,
     *,

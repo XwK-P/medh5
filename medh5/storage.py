@@ -274,37 +274,19 @@ class RecompressResult:
 
     @property
     def ratio(self) -> float:
-        return self.bytes_after / self.bytes_before if self.bytes_before else 1.0
+        return float(self.to_json()["ratio"])
 
     @property
     def ok(self) -> bool:
-        return self.verified and self.content_id_preserved
+        return bool(self.to_json()["ok"])
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "path": self.path,
-            "profile": self.profile,
-            "datasets": self.datasets,
-            "bytes_before": self.bytes_before,
-            "bytes_after": self.bytes_after,
-            "ratio": self.ratio,
-            "content_id": self.content_id,
-            "content_id_preserved": self.content_id_preserved,
-            "verified": self.verified,
-            "mismatched": list(self.mismatched),
-            "unattested": list(self.unattested),
-            "ok": self.ok,
-            "changed": [list(c) for c in self.changed],
-            "kept": list(self.kept),
-            "unverified": list(self.unverified),
-        }
+        """The result as ``recompress --json`` prints it."""
+        found: dict[str, Any] = _core.storage_recompress_json(self)
+        return found
 
     def __str__(self) -> str:
-        return (
-            f"{self.path}: {self.profile}, {self.datasets} datasets, "
-            f"{self.bytes_before} -> {self.bytes_after} bytes "
-            f"({self.ratio:.2f}×)"
-        )
+        return str(_core.storage_recompress_line(self))
 
 
 def recompress(

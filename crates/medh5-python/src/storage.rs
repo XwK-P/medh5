@@ -8,7 +8,7 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 
 use medh5::storage::{chunking, codecs, index, recompress as rc};
 
-use crate::convert::{array_to_py, bool_array, class_keys, json_to_py, typed_array};
+use crate::convert::{array_to_py, bool_array, class_keys, json_to_py, strings, typed_array};
 use crate::errors::{path_error, R};
 use crate::geometry::grid_arg;
 
@@ -403,8 +403,46 @@ fn recompress_paths<'py>(
     Ok(out)
 }
 
+/// The engine value of a `RecompressResult` dataclass.
+fn recompress_result_arg(obj: &Bound<'_, PyAny>) -> PyResult<rc::RecompressResult> {
+    let mut changed = Vec::new();
+    for item in obj.getattr("changed")?.try_iter()? {
+        let (path, before, after): (String, String, String) = item?.extract()?;
+        changed.push((path, before, after));
+    }
+    Ok(rc::RecompressResult {
+        path: obj.getattr("path")?.extract()?,
+        profile: obj.getattr("profile")?.extract()?,
+        datasets: obj.getattr("datasets")?.extract()?,
+        bytes_before: obj.getattr("bytes_before")?.extract()?,
+        bytes_after: obj.getattr("bytes_after")?.extract()?,
+        content_id: obj.getattr("content_id")?.extract()?,
+        content_id_preserved: obj.getattr("content_id_preserved")?.is_truthy()?,
+        verified: obj.getattr("verified")?.is_truthy()?,
+        mismatched: strings(&obj.getattr("mismatched")?)?,
+        unattested: strings(&obj.getattr("unattested")?)?,
+        changed,
+        kept: strings(&obj.getattr("kept")?)?,
+        unverified: strings(&obj.getattr("unverified")?)?,
+    })
+}
+
+/// A re-encoding's result as `recompress --json` prints it.
+#[pyfunction]
+fn storage_recompress_json<'py>(py: Python<'py>, result: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    json_to_py(py, &recompress_result_arg(result)?.to_json())
+}
+
+/// A re-encoding's result in one line (`str(result)`).
+#[pyfunction]
+fn storage_recompress_line(result: &Bound<'_, PyAny>) -> PyResult<String> {
+    Ok(recompress_result_arg(result)?.line())
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<IndexPayload>()?;
+    m.add_function(wrap_pyfunction!(storage_recompress_json, m)?)?;
+    m.add_function(wrap_pyfunction!(storage_recompress_line, m)?)?;
     for f in [
         wrap_pyfunction!(codec_profiles, m)?,
         wrap_pyfunction!(resolve_profile_name, m)?,

@@ -2814,3 +2814,160 @@ class TestConvert:
         code, printed = run(capsys, "migrate", str(broken), "-o", str(tmp_path / "m"))
         assert code == EXIT_ERROR
         assert "WARNING" in printed.out
+
+
+class TestResultTypesAreTheEngines:
+    """What a result type says of itself --- its verdict, its counts, its text
+    and its JSON --- is the engine's, which the command line prints.  Each was
+    computed twice, in Rust and in Python, and the copies drifted: a
+    measurement's NaN was ``null`` from one and ``NaN`` from the other."""
+
+    @staticmethod
+    def _printed(capsys, *argv: str) -> Any:
+        _, out = run(capsys, *argv, "--json")
+        return json.loads(out.out)
+
+    def test_S15_1_a_report_says_what_validate_prints(self, capsys, sample_path):
+        from medh5.validate import Report, validate_file
+
+        for level in ("semantic", "strict"):
+            report = validate_file(sample_path, level=level)
+            assert report.diagnostics
+            argv = ("validate", str(sample_path), "--level", level)
+            assert [report.to_json()] == self._printed(capsys, *argv)
+            _, out = run(capsys, *argv, "-v")
+            assert out.out.rstrip("\n") == report.format(verbose=True)
+            again = Report.from_json(report.to_json())
+            assert again.to_json() == report.to_json()
+            assert again.format() == report.format()
+            assert repr(again) == repr(report)
+
+    def test_S15_1_a_report_built_by_hand_counts_as_the_engine_does(
+        self, capsys, sample_path
+    ):
+        """At ``strict`` a warning is an error in the counts too; a report the
+        caller assembles is judged by the same rule as the validator's."""
+        from medh5.validate import Diagnostic, Report, merge
+
+        printed = self._printed(
+            capsys, "validate", str(sample_path), "--level", "strict"
+        )[0]
+        assert printed["warnings"] == 0 and printed["promoted"] > 0
+        mine = Report(
+            path=printed["path"],
+            level="strict",
+            profiles=tuple(printed["profiles"]),
+            diagnostics=[Diagnostic.from_json(d) for d in printed["diagnostics"]],
+            checked=printed["checked"],
+        )
+        assert (len(mine.errors), len(mine.warnings), len(mine.promoted)) == (
+            printed["errors"],
+            printed["warnings"],
+            printed["promoted"],
+        )
+        assert mine.ok is printed["ok"] is False
+        warning = Diagnostic("W903", "/x", "advice", severity="warning")
+        lenient = Report("p", level="semantic", diagnostics=[warning])
+        assert (lenient.errors, lenient.warnings, lenient.promoted) == (
+            (),
+            (warning,),
+            (),
+        )
+        assert lenient.ok
+        strict = Report("p", level="strict", diagnostics=[warning])
+        assert strict.errors == strict.promoted == (warning,)
+        assert strict.errors[0] is warning
+        merged = merge([lenient, strict], "both")
+        assert [d.location for d in merged.diagnostics] == ["p:/x", "p:/x"]
+        assert merged.level == "semantic"
+
+    def test_S13_a_verification_says_what_verify_prints(self, capsys, sample_path):
+        from medh5.integrity import VerifyResult
+
+        with medh5.open(sample_path) as s:
+            result = s.verify()
+        (printed,) = self._printed(capsys, "verify", str(sample_path))
+        assert printed.pop("path") == str(sample_path)
+        assert result.summary() == printed
+        assert result.ok is True and result.content_id_ok is True
+        broken = VerifyResult(
+            content_id_declared="sha256:a", content_id_computed="sha256:b"
+        )
+        assert broken.content_id_ok is False and broken.ok is False
+        assert VerifyResult().content_id_ok is None
+
+    def test_S13_3_a_diagnosis_and_a_repair_say_what_fix_prints(
+        self, capsys, sample_path
+    ):
+        from medh5.integrity import Diagnosis, Repair, diagnose, fix
+
+        diagnosis = diagnose(sample_path)
+        (printed,) = self._printed(capsys, "fix", str(sample_path))
+        assert printed["diagnosis"] == diagnosis.to_json()
+        assert Diagnosis.from_json(diagnosis.to_json()) == diagnosis
+        assert diagnosis.clean and not diagnosis.needs_index
+        repair = fix(sample_path)
+        assert Repair.from_json(repair.to_json()).to_json() == repair.to_json()
+        assert repair.changed is False
+        stale = Diagnosis("p", stale_index=("organs_tp0",), content_id_ok=False)
+        assert (stale.needs_index, stale.needs_digests, stale.clean) == (
+            True,
+            True,
+            False,
+        )
+        assert Repair("p", stale, rewrote_digests=True).changed
+
+    def test_S14_4_a_recompression_says_what_recompress_prints(
+        self, capsys, sample_path, tmp_path
+    ):
+        import shutil
+
+        from medh5.storage import RecompressResult, recompress
+
+        twin = tmp_path / "twin.medh5"
+        shutil.copyfile(sample_path, twin)
+        result = recompress(sample_path, "archive")
+        (printed,) = self._printed(
+            capsys, "recompress", str(twin), "--profile", "archive"
+        )
+        assert printed.pop("path") == str(twin)
+        mine = result.to_json()
+        assert mine.pop("path") == str(sample_path)
+        assert mine == printed
+        again = RecompressResult.from_json(result.to_json())
+        assert again == result and str(again) == str(result)
+        assert str(result) == (
+            f"{result.path}: archive, {result.datasets} datasets, "
+            f"{result.bytes_before} -> {result.bytes_after} bytes "
+            f"({result.ratio:.2f}×)"
+        )
+        assert RecompressResult("p", "archive").ratio == 1.0
+
+    def test_a_conformance_summary_is_the_engines(self, capsys, tmp_path):
+        from medh5.conformance import CASES, CaseResult, run_corpus, summarize
+
+        results = run_corpus(tmp_path / "py", names=["core-minimal"])
+        printed = self._printed(
+            capsys,
+            "conformance",
+            "run",
+            str(tmp_path / "cli"),
+            "--case",
+            "core-minimal",
+        )
+        assert {k: printed[k] for k in summarize(results)} == summarize(results)
+        failing = CaseResult(case=CASES[0], path="p", missing=("E101",))
+        assert failing.ok is False
+        assert summarize([*results, failing])["failures"] == [failing.to_json()]
+        assert [c.to_json()["valid"] for c in CASES] == [c.valid for c in CASES]
+
+    def test_a_measurement_of_nan_is_null_as_the_engine_writes_it(self):
+        from medh5.bench import Measurement
+
+        nan = Measurement("draw", float("nan"), target=1.0)
+        assert nan.to_json()["value"] is None
+        assert nan.ok is False
+        assert "draw" in str(nan)
+        met = Measurement("draw", 0.5, target=1.0, detail={"n": 3})
+        assert Measurement.from_json(met.to_json()) == met
+        assert met.ok and met.to_json()["ok"] is True

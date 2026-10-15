@@ -99,24 +99,27 @@ impl Report {
         }
     }
 
-    /// Severity at this level: `strict` promotes every warning to an error.
-    fn effective(&self, d: &Diagnostic) -> String {
+    /// Severity at this level, which is not always the table's: §15.1
+    /// defines `strict` as the other levels with warnings promoted to
+    /// errors, so at `strict` there are no warnings.  The diagnostic keeps
+    /// its measured `severity`.
+    pub fn effective_severity<'a>(&self, d: &'a Diagnostic) -> &'a str {
         if self.level == "strict" {
-            "error".into()
+            "error"
         } else {
-            d.severity.clone()
+            &d.severity
         }
     }
 
     /// The diagnostics that are errors at this level, warnings promoted at
     /// `strict` included.
     pub fn errors(&self) -> Vec<&Diagnostic> {
-        self.diagnostics.iter().filter(|d| self.effective(d) == "error").collect()
+        self.diagnostics.iter().filter(|d| self.effective_severity(d) == "error").collect()
     }
 
     /// The diagnostics that are warnings at this level (none at `strict`).
     pub fn warnings(&self) -> Vec<&Diagnostic> {
-        self.diagnostics.iter().filter(|d| self.effective(d) == "warning").collect()
+        self.diagnostics.iter().filter(|d| self.effective_severity(d) == "warning").collect()
     }
 
     /// Diagnostics the table calls warnings and this level treats as errors.

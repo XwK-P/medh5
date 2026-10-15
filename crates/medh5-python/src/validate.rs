@@ -1,7 +1,10 @@
 //! `medh5.validate`: the validator (spec §15) and the code table.
 //!
 //! Reports cross as their JSON form; `medh5/validate.py` turns them into
-//! the `Report` and `Diagnostic` dataclasses 1.x returned.
+//! the `Report` and `Diagnostic` dataclasses 1.x returned.  What a report
+//! says of itself --- its verdict, its counts at a level, its text and JSON
+//! --- is the engine's: the `validate_report_*` functions rebuild the engine
+//! report from the dataclass and ask it.
 
 use std::path::PathBuf;
 
@@ -10,7 +13,7 @@ use pyo3::types::PyList;
 
 use medh5::validate as engine;
 
-use crate::convert::{json_to_py, opt_strings};
+use crate::convert::{json_to_py, opt_strings, py_to_json_lenient, strings};
 use crate::errors::R;
 use crate::reader::SampleHandle;
 
@@ -137,7 +140,73 @@ fn rules_for(level: &str) -> R<Vec<&'static str>> {
     Ok(engine::rules::rules_for(level).into_iter().map(|(n, _)| n).collect())
 }
 
+/// The engine value of a `Diagnostic` dataclass.
+fn diagnostic_arg(obj: &Bound<'_, PyAny>) -> PyResult<engine::Diagnostic> {
+    Ok(engine::Diagnostic {
+        code: obj.getattr("code")?.extract()?,
+        location: obj.getattr("location")?.extract()?,
+        message: obj.getattr("message")?.extract()?,
+        severity: obj.getattr("severity")?.extract()?,
+        level: obj.getattr("level")?.extract()?,
+    })
+}
+
+/// The engine value of a `Report` dataclass.
+fn report_arg(obj: &Bound<'_, PyAny>) -> PyResult<engine::Report> {
+    let mut diagnostics = Vec::new();
+    for d in obj.getattr("diagnostics")?.try_iter()? {
+        diagnostics.push(diagnostic_arg(&d?)?);
+    }
+    Ok(engine::Report {
+        path: obj.getattr("path")?.extract()?,
+        level: obj.getattr("level")?.extract()?,
+        profiles: strings(&obj.getattr("profiles")?)?,
+        diagnostics,
+        checked: py_to_json_lenient(&obj.getattr("checked")?)?,
+    })
+}
+
+/// The positions in `report.diagnostics` of its errors, its warnings and
+/// the warnings it promotes, at its level.
+#[pyfunction]
+fn validate_report_positions(report: &Bound<'_, PyAny>) -> PyResult<(Vec<usize>, Vec<usize>, Vec<usize>)> {
+    let report = report_arg(report)?;
+    let at = |found: Vec<&engine::Diagnostic>| -> Vec<usize> {
+        found.iter().filter_map(|d| report.diagnostics.iter().position(|g| std::ptr::eq(g, *d))).collect()
+    };
+    Ok((at(report.errors()), at(report.warnings()), at(report.promoted())))
+}
+
+/// A report as `validate --json` prints it.
+#[pyfunction]
+fn validate_report_json<'py>(py: Python<'py>, report: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    json_to_py(py, &report_arg(report)?.to_json())
+}
+
+/// A report as `validate` prints it.
+#[pyfunction]
+#[pyo3(signature = (report, *, verbose=false))]
+fn validate_report_format(report: &Bound<'_, PyAny>, verbose: bool) -> PyResult<String> {
+    Ok(report_arg(report)?.format(verbose))
+}
+
+/// Several reports as one, each location prefixed with its file: the
+/// merged report's JSON.
+#[pyfunction]
+#[pyo3(signature = (reports, path="<multiple>"))]
+fn validate_merge<'py>(py: Python<'py>, reports: &Bound<'py, PyAny>, path: &str) -> PyResult<Bound<'py, PyAny>> {
+    let mut all = Vec::new();
+    for r in reports.try_iter()? {
+        all.push(report_arg(&r?)?);
+    }
+    json_to_py(py, &engine::merge(&all, path).to_json())
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(validate_report_positions, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_report_json, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_report_format, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_merge, m)?)?;
     m.add_function(wrap_pyfunction!(codes_table, m)?)?;
     m.add_function(wrap_pyfunction!(validate_file, m)?)?;
     m.add_function(wrap_pyfunction!(validate_paths, m)?)?;
