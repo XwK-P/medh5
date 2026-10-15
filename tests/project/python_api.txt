@@ -3570,7 +3570,8 @@ medh5.storage.SamplingIndex.summary	method	()
 medh5.storage.SamplingIndex.voxel_counts	property
 medh5.storage.build_index	function	(annotation, *, classes=None, max_coords=<value>, occupancy=<value>, seed=0, source_digest=None)
 medh5.storage.chunk_report	function	(shape, chunks, itemsize)
-medh5.storage.dataset_kwargs	function	(shape, dtype, *, profile=None, role='image', chunks=None)
+medh5.storage.dataset_kwargs	deprecated
+medh5.storage.dataset_layout	function	(shape, dtype, *, profile=None, role='image', chunks=None)
 medh5.storage.describe_filters	function	(dataset)
 medh5.storage.detect_l3_bytes	function	()
 medh5.storage.field_chunks	function	(grid, shape, itemsize)

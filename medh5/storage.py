@@ -39,6 +39,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
+from medh5._deprecation import module_getattr
 from medh5._optional import require
 
 # -- chunking (§14.1) -----------------------------------------------------------
@@ -153,7 +154,7 @@ def resolve_profile(profile: str | CodecProfile | None) -> CodecProfile:
     return PROFILES[_core.resolve_profile_name(profile)]
 
 
-def dataset_kwargs(
+def dataset_layout(
     shape: tuple[int, ...],
     dtype: npt.DTypeLike,
     *,
@@ -166,9 +167,10 @@ def dataset_kwargs(
     codec being *profile*'s for *role* --- a :class:`CodecProfile` of your own
     as much as a named one.
 
-    Since 2.0 this is the writer's layout, not the ``h5py`` keywords 1.x
-    returned; for those, pass ``resolve_profile(profile).codec(role).kwargs()``
-    and the ``chunks`` to ``create_dataset``.
+    These are not ``h5py`` keywords; for those, pass
+    ``resolve_profile(profile).codec(role).kwargs()`` and the ``chunks`` to
+    ``create_dataset``.  (``dataset_kwargs``, its name until 2.1, is
+    deprecated.)
     """
     # Only the codec depends on the profile, and a profile of one's own has
     # a name the engine does not know: it was refused as one.
@@ -363,7 +365,7 @@ __all__ = [
     "SamplingIndex",
     "build_index",
     "chunk_report",
-    "dataset_kwargs",
+    "dataset_layout",
     "describe_filters",
     "detect_l3_bytes",
     "field_chunks",
@@ -379,3 +381,12 @@ __all__ = [
     "resolve_profile",
     "spatial_chunk_for",
 ]
+
+_DEPRECATED = {
+    "dataset_kwargs": (
+        dataset_layout,
+        "medh5 3.0 removes dataset_kwargs: use dataset_layout; for h5py "
+        "keywords, resolve_profile(p).codec(role).kwargs()",
+    ),
+}
+__getattr__ = module_getattr(__name__, _DEPRECATED)
