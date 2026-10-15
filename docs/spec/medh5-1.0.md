@@ -1573,6 +1573,9 @@ tens of GiB and cannot exist.
   — following a chain of links — and renamed over that file, so the link is kept. A link another user
   owns in a sticky, world-writable directory is refused rather than followed, as the system would not
   follow it to open the file. Other hard links to the replaced file keep its previous content.
+  (Informative: the reference implementation carries the replaced file's permission bits and group
+  onto the replacement, granting the group only what others are granted where the writer cannot give
+  it that group; it does not carry access control lists or extended attributes.)
 * **File size scales with the record.** A subject-scoped sample holds every timepoint, so files are
   larger than a study-scoped equivalent and copy-on-write amend costs proportionally more. Writers
   curating long series **SHOULD** either accept the rewrite cost, use attribute-only in-place edits
