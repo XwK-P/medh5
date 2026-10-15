@@ -479,6 +479,7 @@ pub fn report(measurements: &[Measurement]) -> String {
 }
 
 /// The metrics that have a target, for documentation.
+#[deprecated(since = "2.1.0", note = "medh5 3.0 removes targeted_metrics: use the names in TARGETS")]
 pub fn targeted_metrics() -> BTreeSet<&'static str> {
     TARGETS.iter().map(|(n, _, _)| *n).collect()
 }

@@ -272,6 +272,7 @@ pub fn is_bulk(ds: &hdf5::Dataset) -> bool {
 }
 
 /// `repr_list` of the profile names, for messages.
+#[deprecated(since = "2.1.0", note = "medh5 3.0 removes profiles_repr: use repr_list(&profile_names())")]
 pub fn profiles_repr() -> String {
     repr_list(&profile_names())
 }

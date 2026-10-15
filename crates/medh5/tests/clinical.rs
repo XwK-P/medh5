@@ -393,3 +393,21 @@ fn s9_3_at_hour_24_the_preliminary_report_is_the_input() {
     let windowed = select(&c.events, &links, 24 * HOUR, &day).unwrap();
     assert_eq!(windowed.event_ids(&c.events), ["ct0", "report0_v1"]);
 }
+
+#[test]
+fn s6_links_from_and_to_are_the_links_leaving_and_arriving() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = open_sample(&worked(dir.path())).unwrap();
+    let clinical = s.clinical().unwrap().unwrap();
+    assert!(!clinical.links.is_empty());
+    for link in &clinical.links {
+        let leaving: Vec<&Link> = clinical.links_from(&link.source_type, &link.source_id).collect();
+        assert!(leaving.contains(&link));
+        assert!(leaving.iter().all(|l| l.source_type == link.source_type && l.source_id == link.source_id));
+        let arriving: Vec<&Link> = clinical.links_to(&link.target_type, &link.target_id).collect();
+        assert!(arriving.contains(&link));
+        assert!(arriving.iter().all(|l| l.target_type == link.target_type && l.target_id == link.target_id));
+    }
+    assert_eq!(clinical.links_from("event", "no-such-event").count(), 0);
+    assert_eq!(clinical.links_to("image", "no-such-image").count(), 0);
+}

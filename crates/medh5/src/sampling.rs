@@ -592,6 +592,11 @@ fn change_label(sample: &Sample, first: &str, second: &str) -> Result<Option<Str
 }
 
 /// What a paired dataset kept and what it skipped.
+#[deprecated(
+    since = "2.1.0",
+    note = "medh5 3.0 removes sampling::PairReport, which nothing fills: the paired dataset's report is \
+            Python's medh5.sampling.PairReport"
+)]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PairReport {
     pub files: usize,
@@ -599,6 +604,7 @@ pub struct PairReport {
     pub skipped: Vec<String>,
 }
 
+#[allow(deprecated)]
 impl PairReport {
     pub fn add_skip(&mut self, path: &str) {
         self.skipped.push(path.to_string());
@@ -614,6 +620,7 @@ impl PairReport {
     }
 }
 
+#[allow(deprecated)]
 impl std::fmt::Display for PairReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -684,6 +691,14 @@ pub fn grid_patches(shape: &[i64], patch_size: &PatchSize, overlap: i64, grid_id
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn s14_3_with_size_is_new_with_the_defaults() {
+        let size = PatchSize::Axes(vec![8, 16, 16]);
+        let defaults =
+            PatchSampler::new(size.clone(), "balanced", 0.5, None, ClassWeights::Named("uniform".into())).unwrap();
+        assert_eq!(PatchSampler::with_size(size), defaults);
+    }
 
     #[test]
     fn s14_3_windows_shift_inwards_and_pad_only_short_axes() {

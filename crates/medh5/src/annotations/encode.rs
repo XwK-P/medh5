@@ -1155,6 +1155,7 @@ pub fn check_roundtrip(payload: &Payload, to_kind: &str, spatial_shape: Option<&
 }
 
 /// A payload dataset as `PayloadData`, for writers building payloads by hand.
+#[deprecated(since = "2.1.0", note = "medh5 3.0 removes array_data: use PayloadData::Array(array)")]
 pub fn array_data(array: NdArray) -> PayloadData {
     PayloadData::Array(array)
 }
