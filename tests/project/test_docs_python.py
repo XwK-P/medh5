@@ -298,6 +298,9 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     manifest, _ = scan(root)
     manifest.save(root / "cohort.json")
 
+    # The SEG and RTSTRUCT import guide's DICOM, where the job has the extras.
+    _dicom_examples(root)
+
     nifti = None
     try:
         import nibabel as nib
@@ -325,6 +328,92 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         "paths": [str(case), str(other)],
         "nifti": nifti,
     }
+
+
+DICOM_FRAME = "1.2.826.0.1.3680043.8.498.4711"
+
+
+"""The frame of reference the guide's CT series, SEG and RTSTRUCT share."""
+
+
+def _dicom_examples(root: Path) -> None:
+    """``dicom/ct/``, a CT series; ``dicom/seg.dcm``, a SEG of a liver and a
+    lesion on it; and ``dicom/plan.dcm``, a structure set of two ROIs named
+    ``Lesion`` and one ``Liver``.  Nothing where pydicom or highdicom is not
+    installed: the guide that reads them is skipped there."""
+    try:
+        import highdicom  # noqa: F401
+        from pydicom.uid import generate_uid
+    except ImportError:
+        return
+    from medh5.io.dicom import from_dicom
+    from medh5.io.dicom_seg import to_dicom_seg
+    from tests.helpers import (
+        square_contour,
+        write_dicom_series,
+        write_structure_set,
+    )
+
+    shape = (6, 16, 16)
+    series = write_dicom_series(
+        root / "dicom" / "ct",
+        patient_id="PSEUDO-1",
+        study_uid=generate_uid(),
+        study_date="20260101",
+        shape=shape,
+        spacing=(2.0, 1.0, 1.0),
+        origin=(0.0, 0.0, 0.0),
+        frame_uid=DICOM_FRAME,
+    )
+    # The SEG is exported from a sample of the same series, as a viewer would
+    # write one, and the guide imports it onto a sample with none.
+    drawn = root / "dicom" / "drawn.medh5"
+    from_dicom(root / "dicom" / "ct", drawn, group_by="study")
+    liver = np.zeros(shape, dtype=bool)
+    liver[1:4, 2:8, 2:8] = True
+    tumour = np.zeros(shape, dtype=bool)
+    tumour[2:5, 9:13, 9:13] = True
+    with medh5.amend(drawn) as w:
+        w.label_set(
+            LabelSet(
+                "organs-v1",
+                version="1.0.0",
+                classes=[
+                    LabelClass(1, "liver", "Liver", category="organ"),
+                    LabelClass(2, "lesion", "Lesion", category="lesion"),
+                ],
+            )
+        )
+        w.add_segmentation(
+            "organs",
+            grid="ct_tp0",
+            masks={1: liver, 2: tumour},
+            annotated_classes="all",
+        )
+    to_dicom_seg(drawn, "organs", series["paths"], root / "dicom" / "seg.dcm")
+    with medh5.open(drawn) as sample:
+        grid = sample.grids["ct_tp0"]
+        rois = {
+            1: ("Lesion", [("CLOSED_PLANAR", square_contour(grid, 1, (2, 5), (2, 5)))]),
+            2: (
+                "Lesion",
+                [("CLOSED_PLANAR", square_contour(grid, 3, (8, 11), (8, 11)))],
+            ),
+            3: (
+                "Liver",
+                [("CLOSED_PLANAR", square_contour(grid, 2, (10, 13), (2, 6)))],
+            ),
+        }
+        write_structure_set(root / "dicom" / "plan.dcm", rois, [DICOM_FRAME])
+    drawn.unlink()
+
+
+NEEDS: dict[str, tuple[str, ...]] = {
+    "guides/import-seg-rtstruct.md": ("dicom/seg.dcm", "dicom/plan.dcm"),
+}
+
+
+"""Workspace files a sequential page reads that only some jobs can write."""
 
 
 def _clinical_example() -> Any:
@@ -683,6 +772,13 @@ def test_documented_pages_run_in_order(
     one scratch copy and one namespace, and the failure names the block that
     stopped the page.
     """
+    missing = [
+        name
+        for name in NEEDS.get(page.relative_to(DOCS).as_posix(), ())
+        if not (workspace["root"] / name).exists()
+    ]
+    if missing:
+        pytest.skip(f"this job does not write {missing}: pydicom or highdicom absent")
     with _scratch(workspace, tmp_path) as namespace:
         _run_in_order(page, page.read_text(encoding="utf-8"), namespace)
 

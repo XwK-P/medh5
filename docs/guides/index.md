@@ -20,6 +20,7 @@ minutes.
 |---|---|
 | **[Import from DICOM](import-dicom.md)** | A directory of studies to one sample per patient, every visit in one file. |
 | **[Import from NIfTI and nnU-Net](import-nifti.md)** | Volumes and masks as separate files; nnU-Net v2 datasets. |
+| **[Import DICOM SEG and RTSTRUCT](import-seg-rtstruct.md)** | Segments and structure sets onto the series they were drawn on; same-named ROIs; what is refused. |
 | **[Migrate from 0.x](migrate-0x.md)** | The one-way door, and the four decisions it cannot make for you. |
 
 ## Working across visits

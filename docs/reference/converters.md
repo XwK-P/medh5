@@ -254,6 +254,9 @@ study — with a warning and a record — when identity cannot be established.
 
 ### DICOM SEG
 
+[Import DICOM SEG and RTSTRUCT](../guides/import-seg-rtstruct.md) walks through an import, step by
+step.
+
 ```
 $ medh5 convert from-dicom-seg seg.dcm case.medh5 --id organs
 $ medh5 convert from-dicom-seg seg.dcm case.medh5 --annotated-classes liver,tumor
@@ -388,6 +391,9 @@ holds one segment per class: the export takes a `labelmap`, `layers`,
 Writing needs `highdicom` (`pip install "medh5[dicomseg]"`).
 
 ### RTSTRUCT
+
+The import, same-named ROIs included, is walked through in
+[Import DICOM SEG and RTSTRUCT](../guides/import-seg-rtstruct.md).
 
 ```
 $ medh5 convert from-rtstruct plan.dcm case.medh5 --id contours
