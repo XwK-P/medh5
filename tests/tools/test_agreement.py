@@ -570,6 +570,25 @@ class TestAcrossSamples:
             one = compare_voxel(s.annotations["seg"], s.annotations["seg"])
             assert one.to_record().against == "annotations/seg"
 
+    def test_S2_2_two_members_of_one_collection_are_two_samples(self, tmp_path: Path):
+        """One file holds every member of a collection, and each member is a
+        sample of its own: one file is not one sample."""
+        from medh5.collection import open_collection, pack
+
+        a = self._sample(tmp_path / "a.medh5")
+        b = self._sample(tmp_path / "b.medh5")
+        shard = pack([a, b], tmp_path / "pair.medh5c")
+        with open_collection(shard) as collection:
+            sa, sb = collection["a"], collection["b"]
+            across = compare_voxel(sa.annotations["seg"], sb.annotations["seg"])
+            assert across.against is None
+            with pytest.raises(MEDH5ValidationError, match="against"):
+                across.to_record()
+            one = compare_voxel(
+                sa.annotations["seg"], collection["a"].annotations["seg"]
+            )
+            assert one.to_record().against == "annotations/seg"
+
 
 class TestWorldUnits:
     """World coordinates are numbers in their grid's units (§3.5) and are

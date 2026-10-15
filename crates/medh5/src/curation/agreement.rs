@@ -836,12 +836,21 @@ const ACROSS_SAMPLES: &str = " --- in two samples, whose grid ids are each their
                               share a declared frame and are one lattice in it";
 
 /// Whether two annotations were read from one sample, whose grid ids name
-/// one set of grids: through one handle, or two on one file --- HDF5 shares
-/// one open file between them, so they report one file number (an amended
-/// file is a new inode, and another file).
+/// one set of grids: through one handle, or two on one sample root of one
+/// file.  HDF5 shares one open file between two handles, so they report one
+/// file number (an amended file is a new inode, and another file); a
+/// collection holds many samples in one file, so the root is compared too.
 fn one_sample(a: &Annotation, b: &Annotation) -> bool {
-    let file = |ann: &Annotation| ops::object_id_of(&ann.group).map(|(fileno, _)| fileno);
-    std::ptr::eq(a.grids(), b.grids()) || matches!((file(a), file(b)), (Some(x), Some(y)) if x == y)
+    std::ptr::eq(a.grids(), b.grids()) || matches!((sample_root(a), sample_root(b)), (Some(x), Some(y)) if x == y)
+}
+
+/// The file number and root path of the sample an annotation was read from:
+/// `<root>/annotations/<id>`.
+fn sample_root(ann: &Annotation) -> Option<(std::os::raw::c_ulong, String)> {
+    let (fileno, _) = ops::object_id_of(&ann.group)?;
+    let path = ann.group.name();
+    let root = path.rsplit_once('/')?.0.rsplit_once('/')?.0;
+    Some((fileno, root.to_string()))
 }
 
 /// Whether two annotations count voxels of one grid: within one sample, one
