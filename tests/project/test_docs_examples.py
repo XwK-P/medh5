@@ -824,4 +824,6 @@ def test_a_published_schema_is_the_embedded_bytes() -> None:
         module, attr = function.rsplit(".", 1)
         embedded = getattr(importlib.import_module(module), attr)()
         source = ROOT / "crates/medh5/data" / f"{name}.schema.json"
-        assert embedded == source.read_text(encoding="utf-8"), name
+        # The bytes, not the text: `include_str!` keeps a Windows checkout's
+        # CRLF, which reading in text mode would translate away.
+        assert embedded == source.read_bytes().decode("utf-8"), name
