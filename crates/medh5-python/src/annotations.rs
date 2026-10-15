@@ -1564,6 +1564,25 @@ fn check_contour_role(role: &str) -> R<String> {
     Ok(role.to_string())
 }
 
+/// Each of one class's polygons in one plane, its depth: how many of the
+/// others enclose it (§8.6).  Each is `(V, 2)` in-plane coordinates.
+#[pyfunction]
+fn polygon_depths(polygons: &Bound<'_, PyAny>) -> R<Vec<usize>> {
+    let mut found = Vec::new();
+    for item in polygons.try_iter()? {
+        let array = f64_array(&item?)?;
+        let flat = array
+            .into_dimensionality::<ndarray::Ix2>()
+            .map_err(|_| medh5::Error::coded("E405", "a polygon's in-plane vertices are (V, 2)"))?;
+        if flat.ncols() != 2 {
+            return Err(medh5::Error::coded("E405", "a polygon's in-plane vertices are (V, 2)").into());
+        }
+        found.push(flat);
+    }
+    let views: Vec<_> = found.iter().map(|a| a.view()).collect();
+    Ok(medh5::annotations::depth::polygon_depths(&views))
+}
+
 /// Pack a triangle surface mesh, `(V, 3)` vertices and `(F, 3)` faces, as a `mesh` payload (§8.7).
 ///
 /// `normals` and `vertex_class_ids` are per vertex. Several meshes share one
@@ -1744,6 +1763,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(encode_points, m)?,
         wrap_pyfunction!(encode_contours, m)?,
         wrap_pyfunction!(check_contour_role, m)?,
+        wrap_pyfunction!(polygon_depths, m)?,
         wrap_pyfunction!(encode_mesh, m)?,
         wrap_pyfunction!(check_slice_index, m)?,
         wrap_pyfunction!(check_space, m)?,

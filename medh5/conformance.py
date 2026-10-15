@@ -54,6 +54,11 @@ class Case:
     flag says so, rather than letting a consumer read "no expected errors" as
     "this file also verifies".
     """
+    format_version: str = "1.0"
+    """The format version the case is addressed to: the latest version among
+    the codes it expects, and ``1.1`` for a clause of 1.1.  Not what its file
+    declares: a 1.0-only implementation is scored on the cases addressed to
+    1.0 (``score(..., format_version="1.0")``)."""
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> Case:
@@ -67,6 +72,7 @@ class Case:
             warnings=tuple(record.get("expect_warnings") or ()),
             suffix=str(record.get("file_suffix", ".medh5")),
             mutated=bool(record.get("mutated", False)),
+            format_version=str(record.get("format_version", "1.0")),
         )
 
     @property
@@ -88,6 +94,7 @@ class Case:
             "mutated": self.mutated,
             "expect_errors": sorted(self.errors),
             "expect_warnings": sorted(self.warnings),
+            "format_version": self.format_version,
         }
 
 
@@ -206,16 +213,50 @@ def load_manifest(root: str | os.PathLike[str]) -> dict[str, Any]:
 
 
 def score(
-    root: str | os.PathLike[str], submitted: Sequence[dict[str, Any]]
+    root: str | os.PathLike[str],
+    submitted: Sequence[dict[str, Any]],
+    *,
+    format_version: str | None = None,
+    codes_revision: int | None = None,
 ) -> list[CaseResult]:
     """Score a foreign validator's results against the published expectations.
 
     A case with no submitted result is a failure, not a skip: silence about a
     file you were given is the same as failing to diagnose it.
+
+    *format_version* and *codes_revision* bound the score: a case addressed to
+    a later format version, or expecting a code a later revision of the code
+    table allocated, is left out of the results, and a submitted code of a
+    later revision is ignored.  An implementation of 1.0, or of the first
+    revision of the table, is then scored on what it was told about.
     """
     return [
         CaseResult.from_json(doc)
-        for doc in _core.conformance_score(os.fspath(root), list(submitted))
+        for doc in _core.conformance_score(
+            os.fspath(root),
+            list(submitted),
+            format_version=format_version,
+            codes_revision=codes_revision,
+        )
+    ]
+
+
+def score_companion(
+    root: str | os.PathLike[str], submitted: Sequence[dict[str, Any]]
+) -> list[CaseResult]:
+    """Score another implementation of the task-and-cache contract against the
+    fixtures under ``companion/`` of a published suite.
+
+    Each submitted report is what checking a fixture printed --- ``medh5 task
+    validate``, ``task preflight`` or ``cache validate`` with ``--json`` ---
+    naming the fixture by ``file`` (or ``path``): its ``findings``, and its
+    ``ok`` and ``rows`` where it has them.  A result's expected errors are the
+    fixture's findings; any other difference (a row, ``ok``) is its ``error``.
+    A fixture with no report fails.
+    """
+    return [
+        CaseResult.from_json(doc)
+        for doc in _core.conformance_score_companion(os.fspath(root), list(submitted))
     ]
 
 
@@ -245,5 +286,6 @@ __all__ = [
     "publish",
     "run_corpus",
     "score",
+    "score_companion",
     "summarize",
 ]

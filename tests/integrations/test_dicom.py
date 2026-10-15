@@ -379,6 +379,136 @@ def _rt_dose(path: Path, like: str, frames: int = 3) -> None:
     ds.save_as(str(path), enforce_file_format=True)
 
 
+class TestPerSliceRescale:
+    """A PET series whose slices each state their own rescale (§4.2).
+
+    §4.2 stores one modality LUT per image, so a series whose slices disagree
+    is refused --- unless ``per_slice_rescale="apply"`` turns each slice into
+    its physical values, which the image then stores with no LUT at all.
+    """
+
+    SLOPES = (0.5, 0.5, 0.75, 1.25, 1.25, 2.0)
+    INTERCEPTS = (0.0, 0.0, 0.0, -3.0, -3.0, 0.0)
+
+    @pytest.fixture
+    def pet(self, tmp_path: Path) -> dict[str, Any]:
+        root = tmp_path / "dicom"
+        series = write_dicom_series(
+            root / "pt", patient_id="P1", study_uid="1.2.826.0.1.3680043.8.498.7",
+            study_date="20240102", modality="PT", shape=(6, 4, 5),
+        )  # fmt: skip
+        # The files sort in geometric order: file k is slice k of the grid.
+        for path, slope, intercept in zip(
+            series["paths"], self.SLOPES, self.INTERCEPTS, strict=True
+        ):
+            ds = pydicom.dcmread(path)
+            ds.RescaleSlope, ds.RescaleIntercept = slope, intercept
+            ds.save_as(path)
+        return {"root": root, **series}
+
+    def test_S4_2_per_slice_rescale_is_refused_naming_the_option(self, pet, tmp_path):
+        from medh5.io.dicom import from_dicom, read_series, scan_dicom
+
+        with pytest.raises(MEDH5ValidationError) as caught:
+            read_series(scan_dicom(pet["root"])[0])
+        message = str(caught.value)
+        assert "RescaleSlope/Intercept" in message
+        assert 'per_slice_rescale="apply"' in message
+        assert "--per-slice-rescale apply" in message
+        with pytest.raises(MEDH5ValidationError, match="--per-slice-rescale apply"):
+            from_dicom(pet["root"], tmp_path / "s.medh5")
+        assert not (tmp_path / "s.medh5").exists()
+
+    def test_S4_2_per_slice_rescale_applied_stores_physical_values(self, pet, tmp_path):
+        from medh5.io.dicom import from_dicom
+
+        out = tmp_path / "s.medh5"
+        report = from_dicom(pet["root"], out, per_slice_rescale="apply")
+        stored = pet["volume"].astype(np.float64)
+        slope = np.asarray(self.SLOPES)[:, None, None]
+        intercept = np.asarray(self.INTERCEPTS)[:, None, None]
+        expected = (stored * slope + intercept).astype(np.float32)
+        with medh5.open(out) as sample:
+            image = sample.images["PT_tp0"]
+            assert not image.is_rescaled
+            values = image.read()
+            assert values.dtype == np.float32
+            assert np.array_equal(values, expected)
+            # SUV is never computed: what PET was, it stays.
+            assert image.value_type == "intensity"
+            assert image.value_units is None
+            (activity,) = sample.document.provenance.activities_by_type("import")
+            assert activity.params["per_slice_rescale"] == "applied"
+        (note,) = report.of_kind("per_slice_rescale")
+        assert note.severity == "decision"
+        assert note.detail["series_uid"] == pet["series_uid"]
+        assert note.detail["rescales"] == [
+            {"slope": 0.5, "intercept": 0.0, "slices": [0, 1]},
+            {"slope": 0.75, "intercept": 0.0, "slices": [2]},
+            {"slope": 1.25, "intercept": -3.0, "slices": [3, 4]},
+            {"slope": 2.0, "intercept": 0.0, "slices": [5]},
+        ]
+        (scale,) = report.of_kind("value_scale")
+        assert pet["series_uid"] in scale.message
+        assert report.ok
+        assert validate_file(out).ok
+
+    def test_S4_2_uniform_rescale_is_unchanged_by_apply(self, tmp_path):
+        from medh5.io.dicom import from_dicom
+
+        root = tmp_path / "dicom"
+        write_dicom_series(
+            root, patient_id="P1", study_uid="1.2.826.0.1.3680043.8.498.8",
+            study_date="20240102", modality="PT", shape=(3, 4, 5),
+        )  # fmt: skip
+        refused = from_dicom(root, tmp_path / "refuse.medh5")
+        applied = from_dicom(root, tmp_path / "apply.medh5", per_slice_rescale="apply")
+        assert not applied.of_kind("per_slice_rescale")
+        assert [str(n) for n in refused.notes] == [str(n) for n in applied.notes]
+        with (
+            medh5.open(tmp_path / "refuse.medh5") as one,
+            medh5.open(tmp_path / "apply.medh5") as other,
+        ):
+            assert other.images["PT_tp0"].is_rescaled
+            (activity,) = other.document.provenance.activities_by_type("import")
+            assert "per_slice_rescale" not in activity.params
+            assert one.content_id == other.content_id
+
+    @pytest.mark.parametrize("mode", ["refuse", "apply"])
+    def test_S4_2_slice_without_rescale_is_refused(self, pet, mode):
+        from medh5.io.dicom import read_series, scan_dicom
+
+        path = pet["paths"][2]
+        ds = pydicom.dcmread(path)
+        del ds.RescaleSlope
+        del ds.RescaleIntercept
+        ds.save_as(path)
+        with pytest.raises(MEDH5ValidationError, match="RescaleSlope") as caught:
+            read_series(scan_dicom(pet["root"])[0], per_slice_rescale=mode)
+        assert str(ds.SOPInstanceUID) in str(caught.value)
+        assert "states no RescaleSlope/Intercept" in str(caught.value)
+
+    def test_S4_2_the_command_line_applies_a_per_slice_rescale(
+        self, pet, tmp_path, capsys
+    ):
+        from medh5.cli import EXIT_ERROR, EXIT_OK, main
+
+        out = tmp_path / "s.medh5"
+        command = ["convert", "from-dicom", str(pet["root"]), str(out)]
+        assert main(command) == EXIT_ERROR
+        assert "--per-slice-rescale apply" in capsys.readouterr().err
+        assert not out.exists()
+        assert main([*command, "--per-slice-rescale", "apply"]) == EXIT_OK
+        with medh5.open(out) as sample:
+            assert sample.images["PT_tp0"].read().dtype == np.float32
+
+    def test_per_slice_rescale_must_be_refuse_or_apply(self, pet, tmp_path):
+        from medh5.io.dicom import from_dicom
+
+        with pytest.raises(ValueError, match="per_slice_rescale"):
+            from_dicom(pet["root"], tmp_path / "s.medh5", per_slice_rescale="yes")
+
+
 class TestOneSeriesDoesNotStopTheTree:
     """A series the importer cannot read is left out with a warning, and the
     series beside it are imported.  An RT Dose grid, a localizer, a transfer

@@ -339,6 +339,41 @@ fn one_visit_history(path: &Path) -> Result<()> {
     })
 }
 
+/// A `shifted_utc` clock whose shift `/meta` withholds (1.0 §11.4, D14):
+/// the record omits `date_shift_days`, and the de-identification's activity
+/// says the dates were shifted.  Valid --- the amount restores every date.
+fn shifted_clock_withheld_shift(path: &Path) -> Result<()> {
+    let mut rng = Rng::new(super::SEED);
+    write(path, Some("pseudo:5c2d0e8f6a1b4c3d9e7f1a2b3c4d5e6f"), |w| {
+        w.add_grid("ct", &dims(&SHAPE), &SPACING, GridOptions::default())?;
+        w.add_image("CT", &ct_volume(&mut rng, &SHAPE)?, "ct", "CT", quantitative(None))?;
+        w.deidentification(fields(json!({"method": "medh5-scrub", "id_mapping": "external"})))?;
+        let agent = w.software("medh5", None, serde_json::Map::new())?;
+        w.activity(
+            "deidentify",
+            Some(&agent.id),
+            None,
+            fields(json!({"tool": "medh5 scrub --profile basic", "params": {"dates": "shifted", "shift": "withheld"}})),
+        )?;
+        w.set_clock(Clock::shifted_utc("pseudo.clock.0d6b7c1e9f2a3b4c5d6e7f80"))?;
+        // 2019-11-04T09:30:00Z and two hours later, after a shift.
+        let at = 1_572_859_800 * 1_000_000;
+        let mut ct = point("ct", "ct", "imaging", at, Some(at + 2 * H), "final");
+        ct.prov = None;
+        ct.timepoint_id = Some("tp0".into());
+        w.add_event(ct)?;
+        w.add_link(Link::new(("event", "ct"), "describes", ("image", "CT")))?;
+        let mut lab = point("creatinine", "creatinine", "observation", at - DAY, Some(at - DAY + 6 * H), "final");
+        lab.prov = None;
+        lab.code_system = Some("http://loinc.org".into());
+        lab.code = Some("2160-0".into());
+        lab.value_num = Some(1.1);
+        lab.unit = Some("mg/dL".into());
+        w.add_event(lab)?;
+        Ok(())
+    })
+}
+
 /// Unknown availability, day precision, same-time ties, events before
 /// baseline, an interval whose end was recorded later, and a diagnosis
 /// assigned in retrospect --- each kept as the source knew it (§5.2).
@@ -566,6 +601,13 @@ pub(super) fn cases() -> Vec<Case> {
              value with its reason.",
             "§4, §6 (1.1)",
             text_encoding,
+        ),
+        case(
+            "clinical-shifted-clock-withheld-shift",
+            "A shifted_utc clock in a sample whose de-identification record withholds the amount of the shift and \
+             whose provenance says the dates were shifted.",
+            "§11.4 (1.0), §3 (1.1)",
+            shifted_clock_withheld_shift,
         ),
         case(
             "clinical-wide-vocabulary",

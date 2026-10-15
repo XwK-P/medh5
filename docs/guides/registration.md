@@ -57,13 +57,33 @@ Kinds: `identity`, `affine`, `displacement`, `bspline`, `composite`.
 t = s.transform_between("tp0", "tp1")
 t.kind, t.from_frame, t.to_frame, t.is_invertible
 t.transform_points(points)         # world -> world, in t.units
-t.inverse()                        # the *stored* inverse, when the file has one
+t.inverse()                        # the stored inverse, or a chain's inverted
 ```
 
-`is_invertible` says the mapping is invertible; `inverse()` returns another
-transform only when the file stores one under `inverse_id`. An affine computes
-its own inverse (`AffineTransform.inverse_matrix()`, `inverse_points()`); a
-displacement field does not, which is why the distinction exists.
+`is_invertible` is the file's *claim* that the mapping is invertible;
+`InverseTransform.can_invert(t)` says whether an inverse can be *evaluated*.
+`inverse()` returns the transform the file stores under `inverse_id`; for a
+chain, or a composite without a usable `inverse_id`, it returns the chain of
+its steps' inverses in reverse order, when every step can be inverted, and
+`None` otherwise. An affine computes its own inverse
+(`AffineTransform.inverse_matrix()`, `inverse_points()`); a displacement field
+does not, which is why the distinction exists: a composite of two affines
+inverts, one holding a displacement field without a stored inverse does not.
+
+```python
+from medh5.transforms import ChainTransform, InverseTransform
+
+with medh5.open("case.medh5") as s:
+    t = s.transforms["tp0_to_tp1"]
+    chain = ChainTransform([t])
+    back = chain.inverse()                     # t's analytic inverse, as a chain
+    assert InverseTransform.can_invert(chain)
+    assert (back.from_frame, back.to_frame) == (t.to_frame, t.from_frame)
+```
+
+A composite's inverse is not an edge of the frame graph: resolving backwards
+across a composite goes through its components' own inverses, as it always
+has, so an answer that resolved before does not change.
 
 `transform_between` searches the frame graph. It composes chains, uses an
 inverse where one can be **evaluated** — not merely where a transform declares
@@ -79,6 +99,13 @@ A registration with no landmark pair has no TRE: `mean`, `median` and `max`
 are NaN and `n` is 0, rather than a zero that reads as a perfect registration.
 `weights` are one per landmark, finite and non-negative, and not all zero;
 anything else is refused rather than averaged.
+
+A displacement field's `jacobian_determinant(roi)` and `folding_fraction(roi)`
+check it for folding (`det(I + du/dx) <= 0`). A region's determinant is the
+whole field's at the voxels it selects — its differences reach one voxel past
+the region — so tiles of a large field add up to the field, a strided region
+such as `np.s_[::2]` keeps a fold narrower than its step, and only the voxels
+the region needs are read.
 
 ## When there is no path
 
@@ -104,13 +131,21 @@ if t is None:
 ```
 
 For timepoints rather than grids, `frames_of_timepoint` gives the frames a visit
-spans, and a visit with several grids may span several.
-`transform_between("tp0", "tp1")` tries their pairs in grid-id order and
-answers for the first pair that is one frame (`None`) or that a path relates
-(that transform), so between visits of several frames its answer depends on
-how the grids are named, not on the images you will read. Resolve between the
-frames of those images instead, as the
-[longitudinal preflight](longitudinal.md#train-on-the-pairs) does.
+spans, and a visit with several grids may span several. Then no one transform
+relates the visit to another, and `transform_between("tp0", "tp1")` raises
+`MEDH5ValidationError` naming each visit's grids and frames, rather than
+answering for whichever pair of grids it met first. Ask about the grids of the
+images you will read (`by="grid"`), or about their frames
+(`resolve_frames`), as the
+[longitudinal preflight](longitudinal.md#train-on-the-pairs) does. A visit
+whose grids carry no `frame_uid` names no frame, and answers `None`.
+
+```python
+with medh5.open("case.medh5") as s:
+    t = s.transform_between("ct_tp0", "ct_tp1", by="grid")   # the grids' frames
+    same = s.resolve_frames(s.grids["pet"].frame_uid, s.grids["ct_tp1"].frame_uid)
+    assert t.transform_id == same.transform_id == "tp0_to_tp1"
+```
 
 What decides whether a path resolves depends on the direction.
 
@@ -178,6 +213,55 @@ w.add_transform("tp1_to_tp0", kind="displacement", field=back,
 Before 1.4.2 the linked form raised `E501` in both directions: the resolver
 counted the forward transform's delegated inverse as a second route beside the
 stored one, and refused to choose between them.
+
+## Storing a field in float16
+
+A displacement field is stored as `float32` unless you ask otherwise. §10.3
+permits `float16`, and recommends it below about 64 voxels of displacement,
+where it costs roughly 5·10⁻⁴ of relative precision and halves the field's size.
+`field_dtype=` chooses:
+
+```python
+w.add_transform("warp", kind="displacement", field=field, field_grid="ct_tp0",
+                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
+                field_dtype="auto")
+```
+
+| `field_dtype` | stores |
+|---|---|
+| `"float32"` (default) | `float32`, whatever the field holds |
+| `"float16"` | `float16`; a component beyond 65504, which `float16` cannot hold, is refused |
+| `"auto"` | `float16` when every displacement is finite, within float16's range and below 64 voxels (in the field grid's smallest spacing, for a `world` field), else `float32` |
+
+Only a displacement field has a field to store, so another kind given a
+`field_dtype` other than `"float32"` is refused.
+
+## From ITK and ANTs
+
+A registration computed with ITK, SimpleITK or ANTs need not be written by
+hand. ITK's convention is the format's — a transform maps fixed points to
+moving points — so the file is stored as it is, from the frame of the grid you
+name as fixed to that of the grid you name as moving:
+
+<!-- illustrative -->
+```python
+from medh5.io.itk import from_itk_transform, to_itk_transform
+
+from_itk_transform("out0GenericAffine.mat", "case.medh5", transform_id="syn",
+                   fixed="ct_tp0", moving="ct_tp1",
+                   warp="out1Warp.nii.gz", vectors="lps")
+to_itk_transform("case.medh5", "back.tfm", transform_id="syn",
+                 warp_out="back_warp.nii.gz", vectors="ras")
+```
+
+ITK's LPS millimetres are re-expressed in each grid's coordinate system and
+units. A composite's components are stored in reverse (ITK applies the last
+first). An ANTs affine and warp become the warp into an intermediate frame,
+the affine out of it, and a `composite` between the two grids' frames, which
+earns `reg`. `vectors` is required with a field, because the field's file does
+not say whether its vectors are LPS or RAS. See
+[Converters](../reference/converters.md#itk-transforms) for what is read and
+what is refused.
 
 ## Related
 

@@ -132,6 +132,24 @@ pub struct ImageOptions {
     pub codec: Option<String>,
 }
 
+/// The attributes [`SampleWriter::set_image_attrs`] changes.  For each
+/// field, `None` leaves the attribute as it is, `Some(None)` removes it and
+/// `Some(Some(value))` sets it.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct ImageEdit {
+    pub modality: Option<Option<String>>,
+    pub value_type: Option<Option<String>>,
+    pub value_units: Option<Option<String>>,
+    pub channel_names: Option<Option<Vec<String>>>,
+    pub rescale_slope: Option<Option<f64>>,
+    pub rescale_intercept: Option<Option<f64>>,
+    pub window_center: Option<Option<Vec<f64>>>,
+    pub window_width: Option<Option<Vec<f64>>>,
+    pub valid_mask: Option<Option<String>>,
+    pub prov: Option<Option<String>>,
+}
+
 /// Options for [`SampleWriter::add_grid`].
 #[derive(Debug, Clone, Default)]
 pub struct GridOptions {
@@ -172,6 +190,10 @@ pub struct SampleWriter {
     /// The algorithm the commit digests with: an amended file's own, so an
     /// amendment never mixes two (§13.1).
     digest_algo: String,
+    /// The `created` the commit writes in place of now: the conformance
+    /// corpus pins it, so a suite built twice is the same bytes, and a strict
+    /// scrub cuts it to its year.
+    pub(crate) created: Option<String>,
     /// Every path but `meta` at which the amended file held its `/meta` by a
     /// hard link.  Until the commit re-links each to the document it writes,
     /// the file being built holds a copy of the old document there.
@@ -495,6 +517,33 @@ fn meta_aliases(root: &hdf5::Group, without: &[&str]) -> Result<Vec<String>> {
     Ok(found)
 }
 
+/// The id a file gets when none is given: what 2.x takes, and what 3.0 will.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultIds {
+    /// The file name up to its first dot: the 2.x `sample_id` and pack key.
+    pub current: String,
+    /// The file stem, the name less its last suffix: 3.0's.
+    pub stem: String,
+}
+
+/// The default `sample_id` and pack key of `path` (the file name up to its
+/// first dot), and the stem 3.0 takes instead.  A name with nothing before
+/// its first dot gives no id, and is refused naming the file.
+#[doc(hidden)]
+pub fn default_ids(path: &Path) -> Result<DefaultIds> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let current = name.split('.').next().unwrap_or("").to_string();
+    if current.is_empty() {
+        return Err(Error::invalid(format!(
+            "{} gives no sample id: its name has nothing before its first dot; pass sample_id (and subject_id)",
+            repr_str(&path.to_string_lossy())
+        )));
+    }
+    let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(DefaultIds { current, stem })
+}
+
 impl SampleWriter {
     /// A writer for `path`; `source` copies an existing sample in (amend),
     /// but for the top-level members it names.
@@ -508,9 +557,13 @@ impl SampleWriter {
     ) -> Result<SampleWriter> {
         let codec = resolve_profile(Some(codec))?.name.to_string();
         let file = AtomicFile::create(path)?;
-        let stem = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let default_id =
-            sample_id.map(str::to_string).unwrap_or_else(|| stem.split('.').next().unwrap_or("").to_string());
+        // An amendment takes its identity from the source; a placeholder
+        // stands until it does.
+        let default_id = match (sample_id, &source) {
+            (Some(id), _) => id.to_string(),
+            (None, Some(_)) => "amended".to_string(),
+            (None, None) => default_ids(path)?.current,
+        };
         let identity =
             Identity::new(default_id.clone(), subject_id.map(str::to_string).unwrap_or_else(|| default_id.clone()));
         let mut writer = SampleWriter {
@@ -519,6 +572,7 @@ impl SampleWriter {
             file: Some(file),
             state: State::Open,
             digest_algo: crate::digest::DEFAULT_ALGO.to_string(),
+            created: None,
             meta_aliases: Vec::new(),
             grids: IndexMap::new(),
             images: IndexMap::new(),
@@ -539,7 +593,7 @@ impl SampleWriter {
         };
         let setup = (|| -> Result<()> {
             for name in ["grids", "images", "annotations"] {
-                writer.root()?.create_group(name)?;
+                ops::new_group(&writer.root()?, name)?;
             }
             if let Some((src, without)) = source {
                 writer.inherit(src, without)?;
@@ -728,7 +782,7 @@ impl SampleWriter {
         }
         for name in ["grids", "images", "annotations"] {
             if !ops::exists(&root, name) {
-                root.create_group(name)?;
+                ops::new_group(&root, name)?;
             }
         }
         self.grids = read_grids(&root)?.into_iter().collect();
@@ -1177,6 +1231,126 @@ impl SampleWriter {
         Ok(node)
     }
 
+    /// Drop an image, its `/meta` `acquisition` entry and its `series_uids`
+    /// mention in every timepoint.  What still names it --- a `valid_mask`,
+    /// an annotation's `derived_from` --- and the last image going (E201) are
+    /// checked at commit, so removals and additions may come in any order.
+    pub fn remove_image(&mut self, image_id: &str) -> Result<()> {
+        let node = self.group("images")?;
+        if !self.images.contains_key(image_id) || !ops::exists(&node, image_id) {
+            return Err(Error::invalid(format!("no image {} to remove", repr_str(image_id))));
+        }
+        ops::unlink(&node, image_id)?;
+        // Its bytes stay in the file being built until commit rewrites it.
+        self.compact = true;
+        self.images.shift_remove(image_id);
+        self.image_multiscale.remove(image_id);
+        self.document.acquisition.remove(image_id);
+        if self.document.timepoints.iter().any(|t| t.series_uids.contains_key(image_id)) {
+            let points = self
+                .document
+                .timepoints
+                .iter()
+                .cloned()
+                .map(|mut t| {
+                    t.series_uids.remove(image_id);
+                    t
+                })
+                .collect();
+            self.document.timepoints = Timeline::new(points)?;
+        }
+        Ok(())
+    }
+
+    /// Drop a grid.  What still names it --- an image, an annotation, a
+    /// transform's field (E101, E503) --- and the last grid going (E111) are
+    /// checked at commit.
+    pub fn remove_grid(&mut self, grid_id: &str) -> Result<()> {
+        let node = self.group("grids")?;
+        if !self.grids.contains_key(grid_id) || !ops::exists(&node, grid_id) {
+            return Err(Error::invalid(format!("no grid {} to remove", repr_str(grid_id))));
+        }
+        ops::unlink(&node, grid_id)?;
+        self.compact = true;
+        self.grids.shift_remove(grid_id);
+        Ok(())
+    }
+
+    /// Change an image's attributes without rewriting its samples (§4.1).
+    ///
+    /// The values are checked as [`add_image`](Self::add_image) checks them:
+    /// an unknown `value_type` (E203), `channel_names` that do not match the
+    /// grid's channel extent (E204), a rescale that is not finite, and a
+    /// required attribute removed (E205).  `grid`, `digest` and the pyramid
+    /// attributes are not attributes it edits.
+    pub fn set_image_attrs(&mut self, image_id: &str, edit: ImageEdit) -> Result<()> {
+        let images = self.group("images")?;
+        let Some((grid_id, _)) = self.images.get(image_id).cloned().filter(|_| ops::exists(&images, image_id)) else {
+            return Err(Error::invalid(format!("no image {} to edit", repr_str(image_id))));
+        };
+        let at = |name: &str| format!("image {}: {name}", repr_str(image_id));
+        for (name, removed) in
+            [("modality", matches!(edit.modality, Some(None))), ("value_type", matches!(edit.value_type, Some(None)))]
+        {
+            if removed {
+                return Err(Error::coded("E205", format!("{} is required (§4.1) and cannot be removed", at(name))));
+            }
+        }
+        if let Some(Some(value_type)) = &edit.value_type {
+            super::image::check_value_type(value_type)?;
+        }
+        if let Some(Some(names)) = &edit.channel_names {
+            let grid = self.grid_ref(&grid_id)?;
+            if !grid.channel_axis().is_some_and(|axis| names.len() as i64 == grid.shape[axis]) {
+                return Err(Error::coded("E204", format!("{} does not match the channel axis", at("channel_names"))));
+            }
+        }
+        for (name, value) in [("rescale_slope", edit.rescale_slope), ("rescale_intercept", edit.rescale_intercept)] {
+            if let Some(Some(v)) = value {
+                if !v.is_finite() {
+                    return Err(Error::invalid(format!("{} must be finite, not {v}", at(name))));
+                }
+            }
+        }
+        let strs = |v: Option<Option<String>>| v.map(|v| v.map(AttrValue::Str));
+        let floats = |v: Option<Option<Vec<f64>>>| v.map(|v| v.map(|v| AttrValue::floats(&v)));
+        let changes: Vec<(&str, Option<Option<AttrValue>>)> = vec![
+            ("modality", strs(edit.modality.clone())),
+            ("value_type", strs(edit.value_type)),
+            ("value_units", strs(edit.value_units)),
+            ("channel_names", edit.channel_names.map(|v| v.map(|v| AttrValue::strs(&v)))),
+            ("rescale_slope", edit.rescale_slope.map(|v| v.map(AttrValue::Float))),
+            ("rescale_intercept", edit.rescale_intercept.map(|v| v.map(AttrValue::Float))),
+            ("window_center", floats(edit.window_center)),
+            ("window_width", floats(edit.window_width)),
+            ("valid_mask", strs(edit.valid_mask)),
+            ("prov", strs(edit.prov)),
+        ];
+        let node: hdf5::Location = if ops::is_group(&images, image_id) {
+            (*images.group(image_id)?).clone()
+        } else {
+            (**images.dataset(image_id)?).clone()
+        };
+        for (name, change) in changes {
+            match change {
+                None => {}
+                Some(None) => {
+                    if attrs::has(&node, name) {
+                        attrs::delete(&node, name)?;
+                    }
+                }
+                Some(Some(value)) => attrs::write(&node, name, &value)?,
+            }
+        }
+        // An overwritten attribute's old value stays in the file's free
+        // space until the commit rewrites it.
+        self.compact = true;
+        if let Some(Some(modality)) = edit.modality {
+            self.images.insert(image_id.to_string(), (grid_id, modality));
+        }
+        Ok(())
+    }
+
     /// Write a multiscale image (§4.3); the level geometry is checked here.
     #[allow(clippy::too_many_arguments)]
     pub fn add_pyramid(
@@ -1257,7 +1431,7 @@ impl SampleWriter {
         }
         values.extend(pyramid.attrs());
         let parent = self.group("images")?;
-        let group = parent.create_group(image_id)?;
+        let group = ops::new_group(&parent, image_id)?;
         let written = levels
             .iter()
             .zip(&layouts)
@@ -1664,7 +1838,8 @@ impl SampleWriter {
         attrs::write(&root, "medh5_version", &AttrValue::Str(version))?;
         attrs::write(&root, "medh5_kind", &AttrValue::Str("sample".into()))?;
         attrs::write(&root, "medh5_profiles", &crate::annotations::header::list_attr(profiles))?;
-        attrs::write(&root, "created", &AttrValue::Str(utcnow()))?;
+        let created = self.created.clone().unwrap_or_else(utcnow);
+        attrs::write(&root, "created", &AttrValue::Str(created))?;
         attrs::write(&root, "generator", &AttrValue::Str(format!("medh5 {VERSION}")))?;
         attrs::write(&root, "digest_algo", &AttrValue::Str(algo.clone()))?;
         let stored = collect_digests(&root, &["index"])?;

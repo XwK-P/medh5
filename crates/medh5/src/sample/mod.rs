@@ -11,15 +11,17 @@ pub mod reader;
 pub use image::{Image, ImageNode, SPEC_IMAGE_ATTRS, VALUE_TYPES};
 pub use reader::{
     annotation_id, attr_name_map_of, frame_references, open_sample, read_document, read_document_text, repack,
-    require_major, Sample, FRAME_ATTRS, PROFILES, ROOT_DIGEST_ATTRS,
+    require_major, KeyKind, Sample, FRAME_ATTRS, PROFILES, ROOT_DIGEST_ATTRS,
 };
 pub mod writer;
 
-pub use writer::{amend, create, Annotated, ClinicalSource, GridOptions, ImageOptions, QualityArg, SampleWriter};
+pub use writer::{
+    amend, create, Annotated, ClinicalSource, GridOptions, ImageEdit, ImageOptions, QualityArg, SampleWriter,
+};
 pub mod writer_annotations;
 pub mod writer_clinical;
 
 pub use writer_annotations::{
-    annotation_to_masks, transcode, AnnotationOptions, ObjectFields, Placement, SegmentationOptions,
-    SegmentationSource, TransformSpec,
+    annotation_to_masks, transcode, AnnotationOptions, FieldDtype, LabelmapSource, ObjectFields, Placement,
+    SegmentationOptions, SegmentationSource, TransformSpec,
 };

@@ -369,22 +369,121 @@ fn scrub_scan(py: Python<'_>, path: PathBuf, profile: String) -> R<Bound<'_, PyD
     Ok(report_fields(py, &report)?)
 }
 
+/// The engine's options, from the Python API's keywords.  `date_shift_days`
+/// and `date_shift_range` are two shifts, so giving both is refused.
+#[allow(clippy::too_many_arguments)]
+fn scrub_options(
+    profile: String,
+    salt: String,
+    date_shift_days: Option<i64>,
+    date_shift_range: Option<(i64, i64)>,
+    performed_by: Option<String>,
+    pseudonymise_ids: bool,
+    withhold_shift: Option<bool>,
+    out: Option<PathBuf>,
+    out_dir: Option<PathBuf>,
+    attest_text: Option<String>,
+) -> R<sc::ScrubOptions> {
+    let mut options =
+        sc::ScrubOptions::default().with_profile(profile).with_salt(salt).with_pseudonymise_ids(pseudonymise_ids);
+    options =
+        match (date_shift_days, date_shift_range) {
+            (Some(_), Some(_)) => return Err(medh5::Error::invalid(
+                "--date-shift-days (date_shift_days) and --date-shift-range (date_shift_range) are two shifts for one \
+                 sample: give one",
+            )
+            .into()),
+            (Some(days), None) => options.with_date_shift(sc::DateShift::Days(days)),
+            (None, Some((min, max))) => options.with_date_shift(sc::DateShift::Range(min, max)),
+            (None, None) => options,
+        };
+    if let Some(by) = performed_by {
+        options = options.with_performed_by(by);
+    }
+    if let Some(withhold) = withhold_shift {
+        options = options.with_withhold_shift(withhold);
+    }
+    if let Some(out) = out {
+        options = options.with_out(out);
+    }
+    if let Some(dir) = out_dir {
+        options = options.with_out_dir(dir);
+    }
+    if let Some(tool) = attest_text {
+        options = options.with_attest_text(tool);
+    }
+    Ok(options)
+}
+
+/// Refuse what these options cannot do, before any file is read
+/// (`ScrubOptions::check`).
+#[pyfunction]
+#[pyo3(signature = (apply_changes, *, profile="basic".to_string(), salt="".to_string(), date_shift_days=None,
+    date_shift_range=None, performed_by=None, pseudonymise_ids=false, withhold_shift=None, out=None, out_dir=None,
+    attest_text=None))]
+#[allow(clippy::too_many_arguments)]
+fn scrub_check(
+    apply_changes: bool,
+    profile: String,
+    salt: String,
+    date_shift_days: Option<i64>,
+    date_shift_range: Option<(i64, i64)>,
+    performed_by: Option<String>,
+    pseudonymise_ids: bool,
+    withhold_shift: Option<bool>,
+    out: Option<PathBuf>,
+    out_dir: Option<PathBuf>,
+    attest_text: Option<String>,
+) -> R<()> {
+    let options = scrub_options(
+        profile,
+        salt,
+        date_shift_days,
+        date_shift_range,
+        performed_by,
+        pseudonymise_ids,
+        withhold_shift,
+        out,
+        out_dir,
+        attest_text,
+    )?;
+    Ok(options.check(apply_changes)?)
+}
+
 /// Act on the actionable findings and write the §11.4 attestation.  The
 /// report's fields.
 #[pyfunction]
 #[pyo3(signature = (path, *, profile="basic".to_string(), salt="".to_string(), date_shift_days=None,
-    performed_by=None, pseudonymise_ids=false))]
+    date_shift_range=None, performed_by=None, pseudonymise_ids=false, withhold_shift=None, out=None, out_dir=None,
+    attest_text=None))]
+#[allow(clippy::too_many_arguments)]
 fn scrub_apply(
     py: Python<'_>,
     path: PathBuf,
     profile: String,
     salt: String,
     date_shift_days: Option<i64>,
+    date_shift_range: Option<(i64, i64)>,
     performed_by: Option<String>,
     pseudonymise_ids: bool,
+    withhold_shift: Option<bool>,
+    out: Option<PathBuf>,
+    out_dir: Option<PathBuf>,
+    attest_text: Option<String>,
 ) -> R<Bound<'_, PyDict>> {
-    let options = sc::ApplyOptions { profile, salt, date_shift_days, performed_by, pseudonymise_ids };
-    let report = py.detach(move || sc::apply(&path, &options))?;
+    let options = scrub_options(
+        profile,
+        salt,
+        date_shift_days,
+        date_shift_range,
+        performed_by,
+        pseudonymise_ids,
+        withhold_shift,
+        out,
+        out_dir,
+        attest_text,
+    )?;
+    let report = py.detach(move || sc::apply_with(&path, &options))?;
     Ok(report_fields(py, &report)?)
 }
 
@@ -679,6 +778,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(agreement_box_iou, m)?,
         wrap_pyfunction!(scrub_scan, m)?,
         wrap_pyfunction!(scrub_apply, m)?,
+        wrap_pyfunction!(scrub_check, m)?,
         wrap_pyfunction!(scrub_scan_document, m)?,
         wrap_pyfunction!(scrub_finding, m)?,
         wrap_pyfunction!(scrub_finding_line, m)?,
@@ -718,7 +818,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SCRUB_INTERNAL_REFERENCES", tuple_of(py, &sc::INTERNAL_REFERENCES)?)?;
     m.add("SCRUB_FREE_TEXT", sc::FREE_TEXT)?;
     m.add("SCRUB_UNFIXABLE_LOCATIONS", tuple_of(py, &sc::UNFIXABLE_LOCATIONS)?)?;
-    m.add("SCRUB_STRICT_RULES", tuple_of(py, &sc::STRICT_RULES)?)?;
+    m.add("SCRUB_STRICT_RULES", tuple_of(py, sc::strict_rules())?)?;
     m.add("SCRUB_IDENTITY_RULES", tuple_of(py, &sc::IDENTITY_RULES)?)?;
     m.add("SCRUB_NOT_CHECKED", tuple_of(py, &sc::ScrubReport::new("", "basic").not_checked)?)?;
     Ok(())

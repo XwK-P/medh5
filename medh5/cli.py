@@ -4,7 +4,7 @@ One native application over the format engine (the ``medh5-cli`` crate): the
 same grammar, output and exit codes --- 0 success, 1 a handled error, 2 a usage
 error --- whether it runs as the standalone ``medh5`` binary or as this
 package's console script.  The commands only Python can run are handed back to
-the package: the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net),
+the package: the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, ITK, nnU-Net),
 which wrap nibabel, pydicom and highdicom, and the PyTorch dataloader
 benchmark.  The standalone binary reaches them by running this module's
 ``main`` in a Python interpreter that has the package (``python3`` --- ``python``
@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import signal
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -199,7 +198,7 @@ def _files(
             reads.append((what, path))
 
     out = given("out")
-    if command == "from-nifti":
+    if command in ("from-nifti", "import-seg-nifti"):
         for flag in ("image", "mask"):
             for entry in args.get(flag) or []:
                 name, _, value = str(entry).partition("=")
@@ -207,6 +206,9 @@ def _files(
                     reads.append(
                         (f"{flag} {name!r}, which this command reads", Path(value))
                     )
+        read("the label set this command reads", "label_set")
+        # `import-seg-nifti` amends its sample in place, like `from-dicom-seg`.
+        read("the sample this command amends", "sample")
     elif command in ("to-nifti", "to-dicom-seg", "to-rtstruct"):
         read("the sample this command reads", "path")
         for source in args.get("source") or []:
@@ -217,6 +219,15 @@ def _files(
         read("the SEG this command imports", "seg")
         read("the RTSTRUCT this command imports", "rtstruct")
         read("the sample this command amends", "sample")
+    elif command == "from-itk-transform":
+        read("the transform this command imports", "transform")
+        read("the warp this command imports", "warp")
+        read("the inverse warp this command imports", "inverse_warp")
+        read("the sample this command amends", "sample")
+    elif command == "to-itk-transform":
+        read("the sample this command reads", "sample")
+        if (warp_out := given("warp_out")) is not None:
+            writes.append(("the warp this command writes", warp_out))
     elif command == "from-dicom" and (root := given("root")) is not None:
         trees.append(("the DICOM tree this command reads", root))
         if out is not None and _inside(out, root) and _is_dicom(out):
@@ -224,7 +235,10 @@ def _files(
     elif command == "from-nnunet" and (root := given("root")) is not None:
         trees.append(("the nnU-Net dataset this command reads", root))
         if out is not None:
-            for case in _nnunet_cases(root, args.get("case_ids")):
+            cases = _nnunet_cases(
+                root, args.get("case_ids"), include_test=bool(args.get("include_test"))
+            )
+            for case in cases:
                 writes.append(
                     (
                         f"case {case!r}'s sample, which this command writes",
@@ -241,21 +255,27 @@ def _files(
                     out / str(args["dataset_name"]),
                 )
             )
+    elif command == "clinical-augment":
+        read("the sample this command amends", "path")
+        read("the FHIR Bundle this command imports", "from_fhir")
+        if (root := given("from_meds")) is not None:
+            trees.append(("the MEDS dataset this command reads", root))
     if out is not None:
         writes.append(("the output this command writes", out))
     return reads, writes, trees
 
 
 def _same_file(first: Path, second: Path) -> bool:
-    """Whether two paths name one file: equal once resolved, or one file on
-    disk (a hard link, or a name the resolution cannot see through)."""
+    """Whether two paths name one file: equal once resolved (an output not
+    written yet has no identity to compare), or one file on disk by the
+    engine's identity (a hard link, or a name the resolution cannot see
+    through)."""
+    from medh5 import _core
+
     with contextlib.suppress(OSError, RuntimeError):  # RuntimeError: a link loop
         if first.resolve() == second.resolve():
             return True
-    try:
-        return os.path.samefile(first, second)
-    except OSError:  # one of them does not exist
-        return False
+    return _core.same_file(first, second)
 
 
 def _inside(path: Path, tree: Path) -> bool:
@@ -275,7 +295,9 @@ def _is_dicom(path: Path) -> bool:
         return False
 
 
-def _nnunet_cases(root: Path, case_ids: Sequence[str] | None) -> list[str]:
+def _nnunet_cases(
+    root: Path, case_ids: Sequence[str] | None, *, include_test: bool = False
+) -> list[str]:
     """The cases ``from-nnunet`` would write, or none where the dataset is
     one the converter refuses itself."""
     if case_ids:
@@ -283,7 +305,7 @@ def _nnunet_cases(root: Path, case_ids: Sequence[str] | None) -> list[str]:
     from medh5.io.nnunetv2 import cases, read_dataset_json
 
     try:
-        return cases(root, read_dataset_json(root))
+        return cases(root, read_dataset_json(root), include_test=include_test)
     except (MEDH5Error, OSError, ValueError, KeyError, TypeError):
         return []
 
@@ -304,6 +326,19 @@ def _pairs(values: list[str] | None, what: str) -> dict[str, str]:
         name, _, value = entry.partition("=")
         out[name] = value
     return out
+
+
+def _numbered(values: list[str] | None, what: str) -> dict[int, str] | None:
+    """``NUMBER=VALUE`` pairs, keyed by the number; ``None`` for none."""
+    out: dict[int, str] = {}
+    for name, value in _pairs(values, what).items():
+        try:
+            out[int(name)] = value
+        except ValueError:
+            raise MEDH5Error(
+                f"--{what} expects NUMBER=VALUE, got {name}={value}"
+            ) from None
+    return out or None
 
 
 def _sample_file(path: str) -> str:
@@ -327,12 +362,28 @@ def _sample_file(path: str) -> str:
     )
 
 
-def _finish(report: ConversionReport, args: Any) -> int:
+def _annotated(value: str | None) -> Sequence[str] | str:
+    """``--annotated-classes``: ``all_given`` and ``all`` as they are, else
+    the comma-separated class keys as a list."""
+    if value is None or value in ("all_given", "all"):
+        return value or "all_given"
+    keys = [key.strip() for key in value.split(",")]
+    if not all(keys):
+        raise MEDH5Error(
+            "--annotated-classes expects all_given, all, or class keys separated "
+            f"by commas, got {value!r}"
+        )
+    return keys
+
+
+def _finish(report: ConversionReport, args: Any, text: str | None = None) -> int:
     """Keep the report where ``--report`` says, print it, and exit on it.
 
     An output the arguments could not name in advance --- a sample of a
     ``from-dicom`` directory --- is checked here: a report naming one is not
-    written, and the command fails rather than replace the sample.
+    written, and the command fails rather than replace the sample.  *text*,
+    when given, is printed in place of the report's text (``--json`` still
+    prints the report).
     """
     target = getattr(args, "report", None)
     refusal = None
@@ -350,7 +401,7 @@ def _finish(report: ConversionReport, args: Any) -> int:
     if getattr(args, "json", False):
         print(json.dumps(report.to_json(), indent=2, default=str))
     else:
-        print(report.format(verbose=True))
+        print(report.format(verbose=True) if text is None else text)
     if refusal is not None:
         return _fail(refusal)
     return EXIT_OK if report.ok else EXIT_ERROR
@@ -360,9 +411,9 @@ def _write_report(path: Path, text: str) -> None:
     """*text* as *path*, through the engine's replace (§14.4): a link at
     *path* is kept and the file it names replaced, and an error names
     *path*, not the temporary beside it."""
-    from medh5._files import write_text
+    from medh5 import _core
 
-    write_text(path, text)
+    _core.write_atomic(path, text)
 
 
 def _from_nifti(args: Any) -> int:
@@ -376,15 +427,40 @@ def _from_nifti(args: Any) -> int:
         coord_system=args.coord_system,
         fourth_axis=args.fourth_axis,
         assume_geometry=args.assume_geometry,
+        plane_as_volume=args.plane_as_volume,
         sample_id=args.sample_id,
         subject_id=args.subject_id,
+        value_units=_pairs(args.value_units, "value-units") or None,
+        codec=args.codec,
+        annotated_classes=_annotated(args.annotated_classes),
+        label_set=args.label_set,
+    )
+    return _finish(report, args)
+
+
+def _import_seg_nifti(args: Any) -> int:
+    from medh5.io.nifti import import_seg_nifti
+
+    report = import_seg_nifti(
+        _sample_file(args.sample),
+        _pairs(args.mask, "mask"),
+        ann_id=args.ann_id,
+        grid=args.grid,
+        annotated_classes=_annotated(args.annotated_classes),
+        assume_aligned=args.assume_aligned,
+        assume_geometry=args.assume_geometry,
+        plane_as_volume=args.plane_as_volume,
     )
     return _finish(report, args)
 
 
 def _to_nifti(args: Any) -> int:
+    """An export prints the file it wrote, as it always has; ``--json``
+    prints the report instead, and ``--report`` keeps it."""
     from medh5.io.nifti import to_nifti
+    from medh5.io.report import ConversionReport
 
+    report = ConversionReport(converter="to-nifti", source=args.path)
     written = to_nifti(
         _sample_file(args.path),
         args.image,
@@ -392,9 +468,10 @@ def _to_nifti(args: Any) -> int:
         physical=not args.stored,
         annotation=args.annotation,
         class_key=args.class_key,
+        report=report,
     )
-    print(written)
-    return EXIT_OK
+    report.outputs.append(str(written))
+    return _finish(report, args, text=str(written))
 
 
 def _from_dicom(args: Any) -> int:
@@ -406,6 +483,8 @@ def _from_dicom(args: Any) -> int:
         group_by=args.group_by,
         modalities=args.modalities,
         series_uids=args.series_uids,
+        per_slice_rescale=args.per_slice_rescale,
+        codec=args.codec,
     )
     return _finish(report, args)
 
@@ -419,6 +498,7 @@ def _from_dicom_seg(args: Any) -> int:
         ann_id=args.ann_id,
         grid=args.grid,
         frame_salt=args.frame_salt,
+        annotated_classes=_annotated(args.annotated_classes),
     )
     return _finish(report, args)
 
@@ -428,14 +508,24 @@ def _to_dicom_seg(args: Any) -> int:
     from medh5.io.report import ConversionReport
 
     report = ConversionReport(converter="to-dicom-seg")
+    # `--series-description`, where given: the default is the converter's.
+    described = (
+        {"series_description": args.series_description}
+        if args.series_description is not None
+        else {}
+    )
     to_dicom_seg(
         _sample_file(args.path),
         args.annotation,
         args.source,
         args.out,
+        classes=args.classes,
+        **described,
         # `--frame-salt`, where the grammar gives this command one.
         frame_salt=getattr(args, "frame_salt", None),
         report=report,
+        segmentation_type=getattr(args, "segmentation_type", None) or "binary",
+        fractional_type=getattr(args, "fractional_type", None) or "PROBABILITY",
     )
     return _finish(report, args)
 
@@ -451,6 +541,11 @@ def _from_rtstruct(args: Any) -> int:
         rasterize=args.rasterize,
         # `--frame-salt`, where the grammar gives this command one.
         frame_salt=getattr(args, "frame_salt", None),
+        roi_classes=_numbered(getattr(args, "roi_classes", None), "roi"),
+        points_id=getattr(args, "points_id", None),
+        open_curves=getattr(args, "open_curves", None) or "omit",
+        mask_id=args.mask_id,
+        annotated_classes=_annotated(args.annotated_classes),
     )
     return _finish(report, args)
 
@@ -460,13 +555,46 @@ def _to_rtstruct(args: Any) -> int:
     from medh5.io.rtstruct import to_rtstruct
 
     report = ConversionReport(converter="to-rtstruct")
+    # `--label`, where given: the default is the converter's.
+    labelled = {"label": args.label} if args.label is not None else {}
     to_rtstruct(
         _sample_file(args.path),
         args.annotation,
         args.source,
         args.out,
+        **labelled,
         frame_salt=args.frame_salt,
         report=report,
+        points=getattr(args, "points", None),
+    )
+    return _finish(report, args)
+
+
+def _from_itk_transform(args: Any) -> int:
+    from medh5.io.itk import from_itk_transform
+
+    report = from_itk_transform(
+        args.transform,
+        _sample_file(args.sample),
+        transform_id=args.transform_id,
+        fixed=args.fixed,
+        moving=args.moving,
+        warp=args.warp,
+        vectors=args.vectors,
+        inverse_warp=args.inverse_warp,
+    )
+    return _finish(report, args)
+
+
+def _to_itk_transform(args: Any) -> int:
+    from medh5.io.itk import to_itk_transform
+
+    report = to_itk_transform(
+        _sample_file(args.sample),
+        args.out,
+        transform_id=args.transform_id,
+        warp_out=args.warp_out,
+        vectors=args.vectors,
     )
     return _finish(report, args)
 
@@ -474,7 +602,14 @@ def _to_rtstruct(args: Any) -> int:
 def _from_nnunet(args: Any) -> int:
     from medh5.io.nnunetv2 import from_nnunetv2
 
-    report = from_nnunetv2(args.root, args.out, case_ids=args.case_ids)
+    report = from_nnunetv2(
+        args.root,
+        args.out,
+        case_ids=args.case_ids,
+        include_test=args.include_test,
+        coord_system=args.coord_system,
+        codec=args.codec,
+    )
     return _finish(report, args)
 
 
@@ -485,21 +620,102 @@ def _to_nnunet(args: Any) -> int:
         [_sample_file(p) for p in args.paths],
         args.out,
         dataset_name=args.dataset_name,
+        file_ending=args.file_ending,
         annotation=args.annotation,
         classes=args.classes,
         unlabeled=args.unlabeled,
+        split=args.split,
+        replace=args.replace,
     )
     return _finish(report, args)
 
 
+_MEDS_ONLY = ("code_system", "kind", "day_precision", "document_code", "both_values")
+"""``clinical augment`` options only a MEDS import reads."""
+
+
+def _clinical_augment(args: Any) -> int:
+    """``medh5 clinical augment SAMPLE --from-meds DIR | --from-fhir FILE``."""
+    if args.from_fhir:
+        given = [f"--{o.replace('_', '-')}" for o in _MEDS_ONLY if getattr(args, o)]
+        if given:
+            return _fail(
+                f"{', '.join(given)}: MEDS options, which --from-fhir does not take"
+            )
+    sample = _sample_file(args.path)
+    common = {
+        "clock": _import_clock(args, sample),
+        "timezone": args.timezone,
+        "origin": args.origin,
+        "texts": args.with_text,
+        "out": args.out,
+    }
+    if args.from_meds:
+        from medh5.io.meds import augment_from_meds
+
+        result, report = augment_from_meds(
+            sample,
+            args.from_meds,
+            subject_id=args.meds_subject,
+            code_systems=_pairs(args.code_system, "code-system"),
+            kinds=_pairs(args.kind, "kind"),
+            day_precision=args.day_precision or (),
+            document_codes=args.document_code or (),
+            both_values=args.both_values or "refuse",
+            **common,
+        )
+    else:
+        from medh5.io.fhir import augment_from_fhir
+
+        result, report = augment_from_fhir(
+            sample, args.from_fhir, subject=args.fhir_subject, **common
+        )
+    if args.report:
+        _write_report(Path(args.report), json.dumps(report.to_json(), indent=2) + "\n")
+    if args.json:
+        print(json.dumps({"augment": result, "report": report.to_json()}, indent=2))
+    else:
+        print(
+            f"{result['path']}: MEDH5 {result['version_before']} -> "
+            f"{result['version_after']}; {result['events']} events, "
+            f"{result['documents']} documents, {result['links']} links"
+        )
+        print(report.format(verbose=True))
+    return EXIT_OK if report.ok else EXIT_ERROR
+
+
+def _import_clock(args: Any, sample: str) -> Any:
+    """The clock ``--clock-id`` and ``--clock`` name, else the sample's."""
+    from medh5.clinical import Clock
+    from medh5.sample import open_sample
+
+    if args.clock_id:
+        if args.clock == "relative":
+            origin = args.origin or "an origin not given"
+            return Clock.relative(args.clock_id, f"{origin}, as given at import")
+        return Clock(args.clock_id, args.clock)
+    with open_sample(sample) as found:
+        clinical = found.clinical
+        if clinical is None:
+            raise MEDH5Error(
+                f"{sample} has no clinical clock to import onto: give --clock-id "
+                "and --clock"
+            )
+        return clinical.clock
+
+
 _HANDLERS: dict[str, Callable[[Any], int]] = {
+    "clinical-augment": _clinical_augment,
     "from-nifti": _from_nifti,
+    "import-seg-nifti": _import_seg_nifti,
     "to-nifti": _to_nifti,
     "from-dicom": _from_dicom,
     "from-dicom-seg": _from_dicom_seg,
     "to-dicom-seg": _to_dicom_seg,
     "from-rtstruct": _from_rtstruct,
     "to-rtstruct": _to_rtstruct,
+    "from-itk-transform": _from_itk_transform,
+    "to-itk-transform": _to_itk_transform,
     "from-nnunet": _from_nnunet,
     "to-nnunet": _to_nnunet,
 }

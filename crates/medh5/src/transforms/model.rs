@@ -236,6 +236,21 @@ pub enum Body {
     Chain(Vec<Transform>),
 }
 
+/// The cubic coefficients of the transforms one sample opened, by transform
+/// id: a composite's component, or an `inverse_id` target, opened again at
+/// each evaluation reuses the coefficients of the transform it names rather
+/// than reading and prefiltering its field again.  Each entry is held within
+/// the process-wide budget as any transform's are.
+#[derive(Debug, Default)]
+pub(crate) struct KeptCaches(std::sync::Mutex<HashMap<String, Arc<CubicCache>>>);
+
+impl KeptCaches {
+    fn cache(&self, transform_id: &str) -> Arc<CubicCache> {
+        let mut kept = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        kept.entry(transform_id.to_string()).or_default().clone()
+    }
+}
+
 /// A mapping between two frames of reference (§10).
 #[derive(Debug, Clone)]
 pub struct Transform {
@@ -250,6 +265,9 @@ pub struct Transform {
     /// handle reads a file that cannot change under it (an amendment
     /// replaces the inode).
     cubic: Arc<CubicCache>,
+    /// The caches of the sample's other transforms, which a component or a
+    /// named inverse opens through ([`Transform::open_kept`]).
+    kept: Arc<KeptCaches>,
 }
 
 fn points_of(points: &ArrayD<f64>, dim: usize) -> Result<Array2<f64>> {
@@ -261,12 +279,25 @@ fn reshape_like(values: Array2<f64>, like: &ArrayD<f64>) -> Result<ArrayD<f64>> 
 }
 
 impl Transform {
-    /// Open a stored transform group.
+    /// Open a stored transform group, with a cache of its own.
     pub fn open(
         transform_id: &str,
         group: hdf5::Group,
         grids: Arc<IndexMap<String, Grid>>,
         siblings: Arc<Siblings>,
+    ) -> Result<Transform> {
+        Transform::open_kept(transform_id, group, grids, siblings, Arc::default())
+    }
+
+    /// Open a stored transform group with the cache `kept` holds for its id,
+    /// so that every opening of one transform of a sample shares one set of
+    /// cubic coefficients.
+    pub(crate) fn open_kept(
+        transform_id: &str,
+        group: hdf5::Group,
+        grids: Arc<IndexMap<String, Grid>>,
+        siblings: Arc<Siblings>,
+        kept: Arc<KeptCaches>,
     ) -> Result<Transform> {
         let header = TransformHeader::read(&group)?;
         Ok(Transform {
@@ -276,8 +307,14 @@ impl Transform {
             grids,
             siblings,
             body: Body::Stored,
-            cubic: Arc::default(),
+            cubic: kept.cache(transform_id),
+            kept,
         })
+    }
+
+    /// Open the sibling `name`, through this transform's kept caches.
+    fn open_sibling(&self, name: &str, group: &hdf5::Group) -> Result<Transform> {
+        Transform::open_kept(name, group.clone(), self.grids.clone(), self.siblings.clone(), self.kept.clone())
     }
 
     /// `T⁻¹` of `inner`, which the caller has checked [`can_invert`].
@@ -301,6 +338,7 @@ impl Transform {
             header,
             grids: inner.grids.clone(),
             siblings: inner.siblings.clone(),
+            kept: inner.kept.clone(),
             body: Body::Inverse(Box::new(inner)),
             cubic: Arc::default(),
         }
@@ -364,6 +402,7 @@ impl Transform {
             header,
             grids: first.grids.clone(),
             siblings: first.siblings.clone(),
+            kept: first.kept.clone(),
             body: Body::Chain(steps),
             cubic: Arc::default(),
         })
@@ -433,7 +472,9 @@ impl Transform {
         }
     }
 
-    /// Whether an inverse is available --- declared, analytic, or neither.
+    /// Whether the mapping is *claimed* invertible: declared (`invertible`,
+    /// `inverse_id`), analytic, or true of every step of a chain.  A claim is
+    /// not an inverse that can be evaluated: that is [`can_invert`].
     pub fn is_invertible(&self) -> bool {
         match &self.body {
             Body::Inverse(_) => true,
@@ -491,8 +532,32 @@ impl Transform {
         self.grids.values().find(|g| g.frame_uid.as_deref() == Some(frame))
     }
 
-    /// The stored inverse transform, when the file carries one.
+    /// The inverse: the stored one, when the file carries one (`inverse_id`);
+    /// for a chain, or a stored composite without a usable `inverse_id`, the
+    /// chain of its steps' inverses in reverse order, when every step can be
+    /// inverted ([`can_invert`]); otherwise `None`.
     pub fn inverse(&self) -> Result<Option<Transform>> {
+        if matches!(self.body, Body::Stored) && !(self.kind() == "composite" && stored_inverse(self)?.is_none()) {
+            return self.named_inverse();
+        }
+        if !self.is_invertible() {
+            return Ok(None);
+        }
+        let Some(steps) = self.steps_to_invert()? else {
+            return Ok(None);
+        };
+        let mut inverted = Vec::with_capacity(steps.len());
+        for step in steps.iter().rev() {
+            match inverse_step(step)? {
+                Some(found) => inverted.push(found),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(Transform::chain(inverted)?))
+    }
+
+    /// The transform `inverse_id` names, when the file carries it.
+    fn named_inverse(&self) -> Result<Option<Transform>> {
         let Some(target) = self.header.inverse_id.as_deref() else {
             return Ok(None);
         };
@@ -501,7 +566,22 @@ impl Transform {
         }
         match self.siblings.get(target) {
             None => Ok(None),
-            Some(group) => Ok(Some(Transform::open(target, group.clone(), self.grids.clone(), self.siblings.clone())?)),
+            Some(group) => Ok(Some(self.open_sibling(target, group)?)),
+        }
+    }
+
+    /// The steps a chain's or a stored composite's inverse inverts, in
+    /// application order; `None` for any other transform.
+    fn steps_to_invert(&self) -> Result<Option<Vec<Transform>>> {
+        match &self.body {
+            Body::Chain(steps) => Ok(Some(steps.clone())),
+            Body::Stored if self.kind() == "composite" => {
+                if !self.check_chain().is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some(self.components()?))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -524,6 +604,11 @@ impl Transform {
                 }
                 if inner.kind() == "affine" && matches!(inner.body, Body::Stored) {
                     return inner.inverse_points(points);
+                }
+                if inner.steps_to_invert()?.is_some() {
+                    if let Some(steps) = inner.inverse()? {
+                        return steps.transform_points(points);
+                    }
                 }
                 Err(Error::invalid(format!(
                     "transform {} of kind {} has no analytic inverse and declares no `inverse_id`; approximating \
@@ -812,25 +897,70 @@ impl Transform {
     ///
     /// `roi` is resolved as [`Transform::read_field`] resolves it: one slice
     /// per spatial axis of the field grid, whole axes after the last one
-    /// given, NumPy's negative and out-of-range bounds.  The determinant is
-    /// differenced on the region's own lattice, its edges one-sidedly as the
-    /// field's are, so a slice with a step other than 1 is refused --- the
-    /// step was ignored, and a strided region reported folding where there
-    /// is none --- and so is an axis of fewer than 2 voxels.
+    /// given, NumPy's negative and out-of-range bounds, and a positive step.
+    /// The region's determinant is the whole field's at the voxels it
+    /// selects: the differences reach one voxel past the region and are
+    /// one-sided only at the field's own edges, so a region's edges do not
+    /// depend on where it was cut, a strided region keeps a fold narrower
+    /// than its step, and an axis of one voxel is accepted.  The field itself
+    /// needs at least 2 voxels on every axis.  Only the voxels the region
+    /// needs are read, in slabs along the first axis.
     pub fn jacobian_determinant(&self, roi: Option<&[Slice]>) -> Result<ArrayD<f64>> {
+        self.jacobian_within(roi, JACOBIAN_SLAB_BYTES)
+    }
+
+    /// [`Transform::jacobian_determinant`], reading windows of at most
+    /// `budget` bytes of `f64` field values, or three planes when one plane
+    /// is more.
+    fn jacobian_within(&self, roi: Option<&[Slice]>, budget: usize) -> Result<ArrayD<f64>> {
+        use ndarray::SliceInfoElem;
+
         let grid = self.field_grid()?;
         let owner = format!("transform {}", repr_str(&self.transform_id));
-        let bounds = roi_bounds(grid, roi.unwrap_or_default(), &owner)?;
-        if let Some((axis, _)) = bounds.iter().enumerate().find(|(_, (a, b))| b - a < 2) {
+        let spatial = grid.spatial_shape();
+        if let Some(axis) = spatial.iter().position(|n| *n < 2) {
             return Err(Error::Value(format!(
-                "{owner}: the {} spans 1 voxel on axis {axis}, and a Jacobian takes a difference along every axis, \
-                 which needs at least 2",
-                if roi.is_some() { "region" } else { "field" }
+                "{owner}: the field spans {} voxel on axis {axis}, and a Jacobian takes a difference along every \
+                 axis, which needs at least 2",
+                spatial[axis]
             )));
         }
-        let window: Vec<Slice> = bounds.iter().map(|(a, b)| Slice::new(*a as i64, *b as i64)).collect();
-        let field = self.read_field(Some(&window), None)?.to_f64();
-        jacobian_determinant(&field, &cropped_grid(grid, &window)?, &self.vector_space()?)
+        let selection = roi_selection(grid, roi.unwrap_or_default(), &owner)?;
+        let vector_space = self.vector_space()?;
+        let counts: Vec<usize> = selection.iter().map(|(a, b, step)| (b - a).div_ceil(*step)).collect();
+        let mut out = ArrayD::<f64>::zeros(IxDyn(&counts));
+        // The window on the other axes is the same for every slab.
+        let rest: Vec<(usize, usize)> =
+            selection.iter().zip(&spatial).skip(1).map(|((a, b, step), n)| halo(*a, *b, *step, *n)).collect();
+        let plane = rest.iter().map(|(a, b)| b - a).product::<usize>() * spatial.len() * size_of::<f64>();
+        let planes = (budget / plane.max(1)).max(3);
+        let (start, _, step) = selection[0];
+        let per_slab = ((planes - 2) / step).max(1);
+        let mut done = 0;
+        while done < counts[0] {
+            let take = per_slab.min(counts[0] - done);
+            let first = start + done * step;
+            let stop = first + (take - 1) * step + 1;
+            let (w0, w1) = halo(first, stop, step, spatial[0]);
+            let mut window = vec![Slice::new(w0 as i64, w1 as i64)];
+            window.extend(rest.iter().map(|(a, b)| Slice::new(*a as i64, *b as i64)));
+            let field = self.read_field(Some(&window), None)?.to_f64();
+            let determinant = jacobian_determinant(&field, &cropped_grid(grid, &window)?, &vector_space)?;
+            // Ended past the last voxel selected rather than at the stop,
+            // which can lie past the window.
+            let local = |a: usize, b: usize, step: usize, w: usize| SliceInfoElem::Slice {
+                start: (a - w) as isize,
+                end: Some((a + (b - a - 1) / step * step + 1 - w) as isize),
+                step: step as isize,
+            };
+            let mut pick = vec![local(first, stop, step, w0)];
+            pick.extend(selection.iter().skip(1).zip(&rest).map(|((a, b, step), (w, _))| local(*a, *b, *step, *w)));
+            let mut into = vec![local(done, done + take, 1, 0)];
+            into.extend(rest.iter().map(|_| SliceInfoElem::from(..)));
+            out.slice_mut(into.as_slice()).assign(&determinant.slice(pick.as_slice()));
+            done += take;
+        }
+        Ok(out)
     }
 
     /// Fraction of voxels that fold.
@@ -1031,7 +1161,7 @@ impl Transform {
                         repr_str(name)
                     ),
                 )),
-                Some(group) => Transform::open(name, group.clone(), self.grids.clone(), self.siblings.clone()),
+                Some(group) => self.open_sibling(name, group),
             })
             .collect()
     }
@@ -1168,13 +1298,16 @@ pub fn basis(order: i64, t: f64) -> Result<Vec<f64>> {
     }
 }
 
-/// The `(start, stop)` voxels `roi` selects on each spatial axis of `grid`,
-/// resolved as [`Transform::read_field`] resolves it: NumPy's negative and
-/// out-of-range bounds, and whole axes after the last slice given.  A region
-/// is a block of the grid's own lattice, so more slices than spatial axes, a
-/// step other than 1 and an axis left without a voxel are refused, the error
-/// naming `owner`.
-fn roi_bounds(grid: &Grid, roi: &[Slice], owner: &str) -> Result<Vec<(usize, usize)>> {
+/// The bytes of `f64` field values a Jacobian reads at once: a larger region
+/// is read and differenced in slabs along its first axis.
+const JACOBIAN_SLAB_BYTES: usize = 64 << 20;
+
+/// The `(start, stop, step)` voxels `roi` selects on each spatial axis of
+/// `grid`, resolved as [`Transform::read_field`] resolves it: NumPy's
+/// negative and out-of-range bounds, a positive step, and whole axes after
+/// the last slice given.  More slices than spatial axes and an axis left
+/// without a voxel are refused, the error naming `owner`.
+fn roi_selection(grid: &Grid, roi: &[Slice], owner: &str) -> Result<Vec<(usize, usize, usize)>> {
     let spatial = grid.spatial_shape();
     if roi.len() > spatial.len() {
         return Err(Error::Value(format!(
@@ -1189,14 +1322,35 @@ fn roi_bounds(grid: &Grid, roi: &[Slice], owner: &str) -> Result<Vec<(usize, usi
         .enumerate()
         .map(|(axis, n)| {
             let (a, b, step) = roi.get(axis).copied().unwrap_or_default().resolve(*n)?;
+            if a == b {
+                return Err(Error::Value(format!("{owner}: roi selects no voxel on axis {axis}, which has {n}")));
+            }
+            Ok((a, b, step))
+        })
+        .collect()
+}
+
+/// The window the selection `start..stop` by `step` (not empty) is
+/// differenced in, on an axis of `n` voxels: one voxel past the first and
+/// the last voxel it selects, where the axis has one, so that each takes
+/// the difference the whole field gives it.  At least 2 voxels when `n` is.
+fn halo(start: usize, stop: usize, step: usize, n: usize) -> (usize, usize) {
+    let last = start + (stop - start - 1) / step * step;
+    (start.saturating_sub(1), (last + 2).min(n))
+}
+
+/// The `(start, stop)` voxels `roi` selects on each spatial axis of `grid`,
+/// as [`roi_selection`] resolves them.  A region is a block of the grid's
+/// own lattice, so a step other than 1 is refused.
+fn roi_bounds(grid: &Grid, roi: &[Slice], owner: &str) -> Result<Vec<(usize, usize)>> {
+    roi_selection(grid, roi, owner)?
+        .into_iter()
+        .map(|(a, b, step)| {
             if step != 1 {
                 return Err(Error::Value(format!(
                     "{owner}: a region of interest is a block of the grid's own lattice, so a slice with step \
                      {step} is refused; take the region, then slice the result with the step"
                 )));
-            }
-            if a == b {
-                return Err(Error::Value(format!("{owner}: roi selects no voxel on axis {axis}, which has {n}")));
             }
             Ok((a, b))
         })
@@ -1449,7 +1603,7 @@ fn cycle_within(start: usize, next: &[Vec<usize>], scc: &[usize]) -> Vec<usize> 
 /// One whose frames are not this transform's reversed is not its inverse
 /// whatever the attribute says (E505).
 pub fn stored_inverse(transform: &Transform) -> Result<Option<Transform>> {
-    let Some(other) = transform.inverse()? else {
+    let Some(other) = transform.named_inverse()? else {
         return Ok(None);
     };
     if other.from_frame() != transform.to_frame() || other.to_frame() != transform.from_frame() {
@@ -1458,8 +1612,35 @@ pub fn stored_inverse(transform: &Transform) -> Result<Option<Transform>> {
     Ok(Some(other))
 }
 
-/// Whether an inverse can be *evaluated*, not merely declared.
+/// Whether an inverse can be *evaluated*, not merely declared: analytic (an
+/// identity or affine), stored (`inverse_id`), or --- for a chain, or a
+/// stored composite without a usable `inverse_id` --- every step's, applied
+/// in reverse ([`Transform::inverse`]).
 pub fn can_invert(inner: &Transform) -> Result<bool> {
+    if has_reverse_edge(inner)? {
+        return Ok(true);
+    }
+    if !inner.is_invertible() {
+        return Ok(false);
+    }
+    match inner.steps_to_invert()? {
+        Some(steps) => {
+            for step in &steps {
+                if !can_invert(step)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Whether the frame graph walks `inner` backwards (§10.1): its inverse is
+/// analytic or stored.  A chain's or composite's inverse through its steps is
+/// no edge of its own --- it would tie with the route through those steps'
+/// own reverse edges (E501), or shorten a route that resolved before.
+pub(crate) fn has_reverse_edge(inner: &Transform) -> Result<bool> {
     if !inner.is_invertible() {
         return Ok(false);
     }
@@ -1467,6 +1648,21 @@ pub fn can_invert(inner: &Transform) -> Result<bool> {
         return Ok(true);
     }
     Ok(stored_inverse(inner)?.is_some())
+}
+
+/// `T⁻¹` of one step of a chain being inverted: the stored inverse, the
+/// analytic one, or the step's own steps inverted; `None` when it has none.
+fn inverse_step(step: &Transform) -> Result<Option<Transform>> {
+    if let Some(stored) = stored_inverse(step)? {
+        return Ok(Some(stored));
+    }
+    if has_reverse_edge(step)? {
+        return Ok(Some(Transform::inverse_of(step.clone())));
+    }
+    if can_invert(step)? {
+        return step.inverse();
+    }
+    Ok(None)
 }
 
 /// Every transform group under `<sample root>/transforms`, by id.  A closed
@@ -1487,12 +1683,17 @@ pub fn transform_groups(root: &hdf5::Group) -> Result<Siblings> {
 }
 
 /// Open each of `groups` as a transform: an `inverse_id` or a composite's
-/// component resolves among them alone.
+/// component resolves among them alone, and shares the cubic coefficients of
+/// the transform of that id.
 pub fn open_transforms(groups: Siblings, grids: Arc<IndexMap<String, Grid>>) -> Result<IndexMap<String, Transform>> {
     let siblings = Arc::new(groups);
+    let kept = Arc::new(KeptCaches::default());
     siblings
         .iter()
-        .map(|(name, group)| Ok((name.clone(), Transform::open(name, group.clone(), grids.clone(), siblings.clone())?)))
+        .map(|(name, group)| {
+            let opened = Transform::open_kept(name, group.clone(), grids.clone(), siblings.clone(), kept.clone())?;
+            Ok((name.clone(), opened))
+        })
         .collect()
 }
 
@@ -1535,6 +1736,101 @@ mod tests {
         // Each of these was a panic or an underflow wherever it was used.
         for shape in [&[5, 2][..], &[4, 3], &[0, 0], &[1, 1], &[2, 2], &[5, 5], &[16], &[]] {
             assert_eq!(affine_dimension(shape).unwrap_err().code(), Some("E504"), "{shape:?}");
+        }
+    }
+
+    /// A composite opened its components with `Transform::open` at every
+    /// evaluation, each with a cache of its own, so a cubic field inside one
+    /// was read and prefiltered per call.  Opened through the sample, every
+    /// opening of one transform shares one cache: the transform of that id,
+    /// the composite's component, and that component opened again.
+    #[test]
+    fn s10_5_a_composite_shares_its_components_coefficients() {
+        use crate::sample::writer_annotations::TransformSpec;
+
+        let dir = tempfile::tempdir().unwrap();
+        let shape = [8usize, 12, 10];
+        let pair = crate::bench::synthetic_pair(dir.path(), &shape, "portable", 7).unwrap();
+        let mut writer = crate::sample::amend(&pair, None).unwrap();
+        let n: usize = 3 * shape.iter().product::<usize>();
+        let values: Vec<f32> = (0..n).map(|i| ((i % 17) as f32 - 8.0) / 16.0).collect();
+        let cubic = TransformSpec {
+            field: Some(NdArray::from_vec(&[3, 8, 12, 10], values).unwrap()),
+            field_grid: Some("g_tp0".into()),
+            interpolation: Some("cubic".into()),
+            ..Default::default()
+        };
+        writer.add_transform("cwarp", "displacement", "bench:frame-0", "bench:mid", cubic).unwrap();
+        let lift = TransformSpec { matrix: Some(Array2::<f64>::eye(4).into_dyn()), ..Default::default() };
+        writer.add_transform("lift", "affine", "bench:mid", "bench:frame-2", lift).unwrap();
+        let both = TransformSpec { components: Some(vec!["cwarp".into(), "lift".into()]), ..Default::default() };
+        writer.add_transform("both", "composite", "bench:frame-0", "bench:frame-2", both).unwrap();
+        writer.commit(true).unwrap();
+
+        let sample = crate::sample::open_sample(&pair).unwrap();
+        let (both, cwarp) = (sample.transform("both").unwrap(), sample.transform("cwarp").unwrap());
+        let (once, again) = (both.components().unwrap(), both.components().unwrap());
+        assert_eq!(once[0].transform_id, "cwarp");
+        assert!(Arc::ptr_eq(&once[0].cubic, &cwarp.cubic), "the component is the sample's cwarp");
+        assert!(Arc::ptr_eq(&once[0].cubic, &again[0].cubic), "and stays it");
+        assert!(!Arc::ptr_eq(&once[0].cubic, &once[1].cubic), "each id has its own");
+        let points = ndarray::arr2(&[[2.0, 3.0, 4.0], [5.5, 6.0, 1.5]]).into_dyn();
+        let first = both.transform_points(&points).unwrap();
+        assert_eq!(both.transform_points(&points).unwrap(), first);
+        assert_eq!(cwarp.transform_points(&points).unwrap(), first);
+        // A transform opened alone, outside a sample, keeps a cache of its own.
+        let alone = Transform::open("cwarp", cwarp.group.clone(), cwarp.grids.clone(), cwarp.siblings.clone()).unwrap();
+        assert!(!Arc::ptr_eq(&alone.cubic, &cwarp.cubic));
+        let inverse = Transform::inverse_of(both.clone());
+        assert!(Arc::ptr_eq(&inverse.kept, &both.kept), "an inverse opens through the sample's caches");
+    }
+
+    /// A region was read and differenced as if it were the whole field, one-
+    /// sidedly at its own edges.  Its window reaches one voxel past the first
+    /// and the last voxel selected, stopping only at the field's edges, and a
+    /// region read in slabs of a plane or two is the region read at once.
+    #[test]
+    fn s10_the_roi_window_reads_one_voxel_beyond() {
+        assert_eq!(halo(2, 6, 1, 12), (1, 7));
+        assert_eq!(halo(0, 12, 1, 12), (0, 12));
+        assert_eq!(halo(0, 6, 1, 12), (0, 7));
+        assert_eq!(halo(6, 12, 1, 12), (5, 12));
+        assert_eq!(halo(5, 6, 1, 12), (4, 7), "one voxel, and one either side");
+        assert_eq!(halo(0, 1, 1, 12), (0, 2), "two voxels at the field's edge");
+        assert_eq!(halo(11, 12, 1, 12), (10, 12));
+        assert_eq!(halo(1, 12, 2, 12), (0, 12), "the last selected is 11");
+        assert_eq!(halo(0, 12, 5, 12), (0, 12), "the last selected is 10");
+        assert_eq!(halo(1, 9, 4, 12), (0, 7), "the last selected is 5");
+
+        let dir = tempfile::tempdir().unwrap();
+        let pair = crate::bench::synthetic_pair(dir.path(), &[9, 7, 6], "portable", 3).unwrap();
+        let sample = crate::sample::open_sample(&pair).unwrap();
+        let warp = sample.transform("warp").unwrap();
+        let whole = warp.jacobian_determinant(None).unwrap();
+        // On an axis of 7, `::4` selects 0 and 4: its stop, 7, lies past
+        // the window, 0..6, which panicked.
+        let regions: [&[Slice]; 5] = [
+            &[Slice { start: None, stop: Some(-1), step: Some(3) }, Slice { start: None, stop: None, step: Some(4) }],
+            &[],
+            &[Slice::new(2, 6)],
+            &[Slice { start: Some(1), stop: None, step: Some(2) }, Slice::new(3, 4)],
+            &[Slice { start: Some(-2), stop: None, step: Some(3) }, Slice::full(), Slice::new(0, 1)],
+        ];
+        for roi in regions {
+            let at_once = warp.jacobian_within(Some(roi), usize::MAX).unwrap();
+            for budget in [0, 1, 7 * 6 * 3 * 8 * 4] {
+                assert_eq!(warp.jacobian_within(Some(roi), budget).unwrap(), at_once, "{roi:?} in {budget}");
+            }
+            let mut pick: Vec<ndarray::SliceInfoElem> = roi
+                .iter()
+                .zip([9, 7, 6])
+                .map(|(s, n)| {
+                    let (a, b, step) = s.resolve(n).unwrap();
+                    ndarray::SliceInfoElem::Slice { start: a as isize, end: Some(b as isize), step: step as isize }
+                })
+                .collect();
+            pick.resize(3, ndarray::SliceInfoElem::from(..));
+            assert_eq!(at_once, whole.slice(pick.as_slice()).to_owned(), "{roi:?}");
         }
     }
 

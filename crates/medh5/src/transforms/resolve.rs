@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use indexmap::IndexMap;
 
-use super::model::{can_invert, stored_inverse, Transform};
+use super::model::{has_reverse_edge, stored_inverse, Transform};
 use crate::geometry::grid::Grid;
 use crate::json::repr_str;
 use crate::{Error, Result};
@@ -43,7 +43,7 @@ fn edges(transforms: &IndexMap<String, Transform>) -> Result<IndexMap<String, Ve
         if paired.contains(id) {
             continue;
         }
-        if can_invert(transform)? {
+        if has_reverse_edge(transform)? {
             out.get_mut(transform.to_frame())
                 .expect("inserted above")
                 .push((transform.from_frame().to_string(), Transform::inverse_of(transform.clone())));

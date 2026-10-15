@@ -139,6 +139,7 @@ nav:
       - Registration between visits: guides/registration.md
       - Clinical history beside the images: guides/clinical.md
       - Train on clinical tasks: guides/clinical-training.md
+      - Import from MEDS or FHIR: guides/clinical-import.md
       - Classification and change labels: guides/classification.md
       - Record review, provenance and agreement: guides/review-and-provenance.md
       - Import from DICOM: guides/import-dicom.md

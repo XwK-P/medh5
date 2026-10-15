@@ -475,8 +475,10 @@ class TestContours:
         outer = np.array(
             [[4.0, 4.0, 4.0], [4.0, 4.0, 9.0], [4.0, 9.0, 9.0]], dtype=np.float32
         )
+        # Strictly inside: a reader takes the role from depth (§8.6), and a
+        # vertex on the outer's edge is not enclosed by it.
         hole = np.array(
-            [[4.0, 6.0, 6.0], [4.0, 6.0, 7.0], [4.0, 7.0, 7.0]], dtype=np.float32
+            [[4.0, 6.0, 7.0], [4.0, 6.0, 8.0], [4.0, 7.0, 8.0]], dtype=np.float32
         )
         path = tmp_path / "rt.medh5"
         with medh5.create(path, codec="portable") as w:
@@ -503,6 +505,61 @@ class TestContours:
     def test_an_unknown_role_is_refused(self):
         with pytest.raises(MEDH5ValidationError):
             Polygon(np.zeros((3, 3)), class_id=1, role="inner")
+
+    @staticmethod
+    def _nested(path: Path, label_set: Any, roles: tuple[str, str]) -> Path:
+        """A square on plane (0, 4) with a smaller one strictly inside it,
+        stored with *roles*, and an out-of-plane hole of another class."""
+        outer = [[4.0, 2.0, 2.0], [4.0, 2.0, 9.0], [4.0, 9.0, 9.0], [4.0, 9.0, 2.0]]
+        inner = [[4.0, 4.0, 4.0], [4.0, 4.0, 6.0], [4.0, 6.0, 6.0], [4.0, 6.0, 4.0]]
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("ct", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, dtype=np.int16), grid="ct", modality="CT")
+            w.add_contours(
+                "rt",
+                [
+                    Polygon(np.array(outer), class_id=1, plane=(0, 4), role=roles[0]),
+                    Polygon(np.array(inner), class_id=1, plane=(0, 4), role=roles[1]),
+                    Polygon(np.array(inner), class_id=2, plane=(-1, 0), role="hole"),
+                ],
+                grid="ct",
+            )
+        return path
+
+    def test_S8_6_a_reader_takes_the_depth_not_the_role(self, tmp_path, label_set):
+        """The region is fixed by depth; a polygon out of any plane takes part
+        in no combination and keeps the role stored for it."""
+        path = self._nested(tmp_path / "rt.medh5", label_set, ("outer", "outer"))
+        with medh5.open(path) as sample:
+            contours = sample.annotations["rt"]
+            assert contours.roles == ("outer", "hole", "hole")
+            assert [p.role for p in contours.polygons()] == ["outer", "hole", "hole"]
+        with h5py.File(path, "r") as f:
+            assert f["annotations/rt/contour_role"][()].tolist() == [0, 0, 1]
+
+    def test_S8_6_role_disagreeing_with_depth_is_W919(self, tmp_path, label_set):
+        agreeing = self._nested(tmp_path / "ok.medh5", label_set, ("outer", "hole"))
+        assert "W919" not in [w.code for w in validate_file(agreeing).warnings]
+        path = self._nested(tmp_path / "rt.medh5", label_set, ("outer", "outer"))
+        report = validate_file(path)
+        assert report.ok, "a warning: the text was ambiguous, so the file stays valid"
+        [found] = [w for w in report.warnings if w.code == "W919"]
+        assert found.location == "/annotations/rt/contour_role"
+        assert "polygon 1: role 0 at depth 1" in found.message
+
+    def test_S8_6_unknown_role_is_E404(self, tmp_path, label_set):
+        """A role of 2 is no value the format defines: an error to the
+        validator, and nothing a reader fails on (§16).  The reader raised
+        an index error."""
+        path = self._nested(tmp_path / "rt.medh5", label_set, ("outer", "hole"))
+        with h5py.File(path, "r+") as f:
+            f["annotations/rt/contour_role"][1:] = [2, 7]
+        report = validate_file(path, level="semantic")
+        assert [e.code for e in report.errors] == ["E404"]
+        assert "W919" not in [w.code for w in report.warnings]
+        with medh5.open(path) as sample:
+            assert sample.annotations["rt"].roles == ("outer", "hole", "outer")
 
     def test_S8_6_a_polygon_without_a_stored_plane_is_out_of_plane(
         self, tmp_path, label_set

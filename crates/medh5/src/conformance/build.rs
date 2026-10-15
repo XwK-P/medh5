@@ -256,6 +256,10 @@ pub(super) fn psi() -> Map<String, Value> {
     fields(json!({"method": "dicom-psi-profile"}))
 }
 
+/// The `created` every corpus sample records, in place of when it was
+/// built: a suite built twice is the same bytes.
+pub(super) const CREATED: &str = "2000-01-01T00:00:00Z";
+
 /// Create, fill, commit: `with medh5.create(...) as w:`.
 pub(super) fn write(
     path: &Path,
@@ -263,6 +267,7 @@ pub(super) fn write(
     body: impl FnOnce(&mut SampleWriter) -> Result<()>,
 ) -> Result<()> {
     let mut writer = create(path, Some(&stem(path)), subject, "portable", &[])?;
+    writer.created = Some(CREATED.to_string());
     body(&mut writer)?;
     writer.commit(true)?;
     Ok(())
@@ -778,9 +783,9 @@ fn longitudinal(path: &Path) -> Result<()> {
     mutate(path, |root| {
         let transforms = match ops::child_group(root, "transforms") {
             Some(g) => g,
-            None => root.create_group("transforms")?,
+            None => ops::new_group(root, "transforms")?,
         };
-        let group = transforms.create_group("tp0_to_tp1")?;
+        let group = ops::new_group(&transforms, "tp0_to_tp1")?;
         data::create(&group, "matrix", &NdArray::from(eye4()), &Layout::contiguous())?;
         // `units` is a MUST (§10.1); this file lacked it until E506 said so.
         for (key, value) in [("kind", "affine"), ("from_frame", FRAME0), ("to_frame", FRAME1), ("units", "mm")] {
@@ -996,6 +1001,12 @@ fn cls_base(path: &Path) -> Result<()> {
 
 /// Contours and a surface mesh, the two non-voxel shape representations.
 fn shape_base(path: &Path) -> Result<()> {
+    shapes(path, "hole")
+}
+
+/// [`shape_base`], its nested contour stored with `hole_role`: `"outer"`
+/// disagrees with its depth (W919).
+fn shapes(path: &Path, hole_role: &str) -> Result<()> {
     let mut rng = Rng::new(SEED);
     let shape = [12, 16, 16];
     let square = matrix(&[&[4.0, 4.0, 4.0], &[4.0, 4.0, 9.0], &[4.0, 9.0, 9.0], &[4.0, 9.0, 4.0]])?;
@@ -1015,7 +1026,7 @@ fn shape_base(path: &Path) -> Result<()> {
         w.add_image("CT", &ct_volume(&mut rng, &shape)?, "ct", "CT", quantitative(None))?;
         w.add_contours(
             "rtstruct",
-            &[Polygon::new(square, 1, (0, 4), "outer")?, Polygon::new(hole, 1, (0, 4), "hole")?],
+            &[Polygon::new(square, 1, (0, 4), "outer")?, Polygon::new(hole, 1, (0, 4), hole_role)?],
             on_ct(),
             AnnotationOptions::default(),
         )?;
@@ -1383,7 +1394,7 @@ fn instances_two_classes(root: &hdf5::Group) -> Result<()> {
     root.unlink("annotations/organs")?;
     let annotations = root.group("annotations")?;
     for (name, (lo, hi), class_id) in [("organs", (1.5f32, 5.5f32), 1u16), ("organs_rater2", (6.5, 9.5), 2)] {
-        let group = annotations.create_group(name)?;
+        let group = ops::new_group(&annotations, name)?;
         let contiguous = Layout::contiguous();
         data::create(&group, "boxes", &NdArray::from_vec(&[1, 3, 2], vec![lo, hi, lo, hi, lo, hi])?, &contiguous)?;
         data::create(&group, "class_ids", &NdArray::from_vec(&[1], vec![class_id])?, &contiguous)?;
@@ -1455,7 +1466,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(169);
+    let mut cases = Vec::with_capacity(172);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -2023,6 +2034,23 @@ fn geometric_cases(cases: &mut Vec<Case>) {
             crowd_one_scope_unit,
         )
         .warnings(&["W911", "W912"]),
+        case(
+            "W919-contour-role-depth",
+            "A contour nested inside another of its class on one plane, stored as an outer boundary: readers \
+             take its depth, a hole.",
+            "§8.6",
+            |p| shapes(p, "outer"),
+        )
+        .warnings(&["W912", "W919"]),
+        invalid(
+            "E404-contour-role-value",
+            "A `contour_role` of 2, which the format does not define.",
+            "§8.6",
+            &["E404"],
+            shape_base,
+            |f| edit_values(f, "annotations/rtstruct/contour_role", |r| r[IxDyn(&[1])] = 2.0),
+        )
+        .warnings(&["W912"]),
         invalid(
             "E408-contour-offsets",
             "Contour offsets that do not end at the vertex count.",
@@ -2357,7 +2385,7 @@ fn seventh_batch(cases: &mut Vec<Case>) {
             &["E004"],
             |f| {
                 f.unlink("meta")?;
-                f.create_group("meta")?;
+                ops::new_group(f, "meta")?;
                 Ok(())
             },
         ),
@@ -2381,7 +2409,11 @@ fn seventh_batch(cases: &mut Vec<Case>) {
             |f| {
                 let images = f.group("images")?;
                 let old = images.dataset("CT")?;
-                let text = images.new_dataset::<hdf5::types::FixedAscii<4>>().shape(SHAPE).create("CT.text")?;
+                let text = images
+                    .new_dataset::<hdf5::types::FixedAscii<4>>()
+                    .obj_track_times(false)
+                    .shape(SHAPE)
+                    .create("CT.text")?;
                 for attr in attrs::names(&old)? {
                     attrs::copy_raw(&old, &text, &attr)?;
                 }
@@ -2588,11 +2620,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 169);
+        assert_eq!(cases.len(), 172);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 169);
+        assert_eq!(names.len(), 172);
     }
 
     #[test]

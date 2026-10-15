@@ -726,7 +726,7 @@ fn empty_instances(ndim: usize, class_ids: &[i64], store_masks: bool) -> Result<
 
 /// The id minted for the `i`-th class from `start_id`, refused (E404) past
 /// the largest `uint64` rather than wrapped to 0 --- another object's id.
-fn minted_id(start_id: u64, i: usize) -> Result<u64> {
+pub(crate) fn minted_id(start_id: u64, i: usize) -> Result<u64> {
     start_id.checked_add(i as u64).ok_or_else(|| {
         Error::coded(
             "E404",

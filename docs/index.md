@@ -44,7 +44,7 @@ twenty minutes, start to finish, then
 clinical profile and for how a reader opens a later minor version, and the
 separately versioned [task and cache contract](spec/task-cache-1.md) for the
 companions training builds on. The [conformance suite](spec/conformance.md) is
-169 cases you can run against your implementation, and the
+172 cases you can run against your implementation, and the
 [diagnostic codes](reference/diagnostic-codes.md) are the stable contract
 between the two.
 
@@ -72,7 +72,7 @@ signal from a class nobody examined. See
 
 **Every claim is checkable.** Per-object SHA-256 over decompressed content and a
 Merkle `content_id` that survives recompression; a validator with a
-[stable diagnostic-code table](reference/diagnostic-codes.md); and a 169-case
+[stable diagnostic-code table](reference/diagnostic-codes.md); and a 172-case
 conformance corpus, at least one case per code, that any implementation can run.
 
 **What was known, when.** From format 1.1 a sample may carry the subject's

@@ -1530,8 +1530,10 @@ impl SampleHandle {
     fn transform(&self, transform_id: &str) -> R<TransformHandle> {
         Ok(TransformHandle::wrap(self.sample()?.transform(transform_id)?.clone()))
     }
-    fn transform_between(&self, source: &str, target: &str) -> R<Option<TransformHandle>> {
-        Ok(self.sample()?.transform_between(source, target)?.map(TransformHandle::wrap))
+    #[pyo3(signature = (source, target, by=None))]
+    fn transform_between(&self, source: &str, target: &str, by: Option<&str>) -> R<Option<TransformHandle>> {
+        let by = by.map(medh5::sample::KeyKind::parse).transpose()?;
+        Ok(self.sample()?.transform_between_as(source, target, by)?.map(TransformHandle::wrap))
     }
     fn frames_for(&self, key: &str) -> R<Vec<String>> {
         Ok(self.sample()?.frames_for(key)?)

@@ -40,6 +40,40 @@ pub const ROOT_DIGEST_ATTRS: [&str; 3] = ["medh5_version", "medh5_kind", "medh5_
 pub const FRAME_ATTRS: [(&str, &[&str]); 3] =
     [("grids", &["frame_uid"]), ("annotations", &["frame_uid"]), ("transforms", &["from_frame", "to_frame"])];
 
+/// How [`Sample::transform_between_as`] reads a key.  The three namespaces
+/// are separate (§2.3), so a grid may share its id with a timepoint.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum KeyKind {
+    /// A timepoint id: the frames of every grid of that visit.
+    Timepoint,
+    /// A grid id: the grid's own frame.
+    Grid,
+    /// A frame-of-reference uid.
+    Frame,
+}
+
+impl KeyKind {
+    /// `"timepoint"`, `"grid"` or `"frame"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeyKind::Timepoint => "timepoint",
+            KeyKind::Grid => "grid",
+            KeyKind::Frame => "frame",
+        }
+    }
+
+    /// The kind [`KeyKind::as_str`] spells `name`; a `ValueError` otherwise.
+    pub fn parse(name: &str) -> Result<KeyKind> {
+        match name {
+            "timepoint" => Ok(KeyKind::Timepoint),
+            "grid" => Ok(KeyKind::Grid),
+            "frame" => Ok(KeyKind::Frame),
+            other => Err(Error::Value(format!("by must be 'timepoint', 'grid' or 'frame', not {}", repr_str(other)))),
+        }
+    }
+}
+
 /// The `KeyError` a collection raises for a missing name.
 pub fn missing_key(what: &str, key: &str, available: impl IntoIterator<Item = String>) -> Error {
     let mut names: Vec<String> = available.into_iter().collect();
@@ -750,25 +784,67 @@ impl Sample {
             .ok_or_else(|| lookup_failure(&listing.left_out, "transform", transform_id, listing.items.keys()))
     }
 
-    /// The transform relating two timepoints, grids or frames (§10).
-    ///
-    /// A key is read as a timepoint first, then as a grid, then as a frame
-    /// uid.  `None` when the two already share a frame or no path exists; an
-    /// unknown key is a `KeyError`.
+    /// The transform relating two timepoints, grids or frames (§10), each
+    /// key read as [`Sample::frames_for`] reads it: the same as
+    /// [`Sample::transform_between_as`] with `by = None`.
     pub fn transform_between(&self, source: &str, target: &str) -> Result<Option<Transform>> {
-        let sources = self.frames_for(source)?;
-        let targets = self.frames_for(target)?;
-        for a in &sources {
-            for b in &targets {
-                if a == b {
-                    return Ok(None);
-                }
-                if let Some(found) = self.resolve_frames(a, b)? {
-                    return Ok(Some(found));
+        self.transform_between_as(source, target, None)
+    }
+
+    /// The transform relating two timepoints, grids or frames (§10), each key
+    /// read as `by` says, or, with `None`, as a timepoint first, then a grid,
+    /// then a frame uid.
+    ///
+    /// A visit has an answer only when its framed grids share one frame of
+    /// reference: when either key names a visit holding several, no one
+    /// transform relates the two, and this is an uncoded validation error
+    /// naming each such visit's grids and frames (ask by grid, or resolve the
+    /// frames).  Otherwise `None` when the two share a frame, when a side
+    /// names no frame, or when no path relates them (1.0 §3.4: alignment is
+    /// never assumed); E501 when two shortest paths tie.  An unknown key is a
+    /// `KeyError`.
+    pub fn transform_between_as(&self, source: &str, target: &str, by: Option<KeyKind>) -> Result<Option<Transform>> {
+        let (source_kind, sources) = self.read_key(source, by)?;
+        let (target_kind, targets) = self.read_key(target, by)?;
+        let mut several: Vec<String> = Vec::new();
+        for (key, kind, frames) in [(source, source_kind, &sources), (target, target_kind, &targets)] {
+            if kind == KeyKind::Timepoint && frames.len() > 1 {
+                let described = self.describe_visit(key)?;
+                if !several.contains(&described) {
+                    several.push(described);
                 }
             }
         }
-        Ok(None)
+        if !several.is_empty() {
+            return Err(Error::invalid(format!(
+                "no one transform relates {} to {}: {}; a visit has an answer only when its grids share one frame \
+                 of reference, so ask about two grids (by=\"grid\") or two frames (resolve_frames)",
+                repr_str(source),
+                repr_str(target),
+                several.join("; ")
+            )));
+        }
+        match (sources.first(), targets.first()) {
+            (Some(a), Some(b)) if a == b => Ok(None),
+            (Some(a), Some(b)) => self.resolve_frames(a, b),
+            _ => Ok(None),
+        }
+    }
+
+    /// `visit 'tp0' holds grids 'ct0' (frame 'F0'), 'pet0' (frame 'F1')`.
+    fn describe_visit(&self, timepoint: &str) -> Result<String> {
+        let grids: Vec<String> = self
+            .grids()?
+            .iter()
+            .filter(|(_, g)| g.timepoint.as_deref() == Some(timepoint))
+            .filter_map(|(id, g)| {
+                g.frame_uid
+                    .as_deref()
+                    .filter(|f| !f.is_empty())
+                    .map(|f| format!("{} (frame {})", repr_str(id), repr_str(f)))
+            })
+            .collect();
+        Ok(format!("visit {} holds grids {}", repr_str(timepoint), grids.join(", ")))
     }
 
     /// The transform relating two frame uids, resolved once per handle.
@@ -791,25 +867,42 @@ impl Sample {
     /// because the namespaces are separate (§2.3) and may collide.  A grid a
     /// later minor's projection leaves out names no frame: W913.
     pub fn frames_for(&self, key: &str) -> Result<Vec<String>> {
+        Ok(self.read_key(key, None)?.1)
+    }
+
+    /// What a key is read as, and the frames it names: as `by` says, or the
+    /// first of a timepoint, a grid and a frame uid that it is.
+    fn read_key(&self, key: &str, by: Option<KeyKind>) -> Result<(KeyKind, Vec<String>)> {
         let timeline = self.timepoints()?;
-        if timeline.contains(key) {
-            return Ok(frames_of_timepoint(self.grids()?, key));
+        if matches!(by, None | Some(KeyKind::Timepoint)) && timeline.contains(key) {
+            return Ok((KeyKind::Timepoint, frames_of_timepoint(self.grids()?, key)));
         }
         let grids = self.grid_listing()?;
-        if let Some(grid) = grids.items.get(key) {
-            return Ok(grid.frame_uid.iter().filter(|f| !f.is_empty()).cloned().collect());
+        if matches!(by, None | Some(KeyKind::Grid)) {
+            if let Some(grid) = grids.items.get(key) {
+                return Ok((KeyKind::Grid, grid.frame_uid.iter().filter(|f| !f.is_empty()).cloned().collect()));
+            }
+            if let Some(left_out) = grids.left_out.get(key) {
+                return Err(left_out.clone());
+            }
         }
-        if let Some(left_out) = grids.left_out.get(key) {
-            return Err(left_out.clone());
+        if matches!(by, None | Some(KeyKind::Frame)) && self.known_frames()?.contains(key) {
+            return Ok((KeyKind::Frame, vec![key.to_string()]));
         }
-        if self.known_frames()?.contains(key) {
-            return Ok(vec![key.to_string()]);
-        }
-        Err(Error::Key(format!(
-            "{} is not a timepoint, a grid or a frame of reference in this sample (timepoints: {})",
-            repr_str(key),
-            repr_list(&timeline.ids())
-        )))
+        Err(match by {
+            None => Error::Key(format!(
+                "{} is not a timepoint, a grid or a frame of reference in this sample (timepoints: {})",
+                repr_str(key),
+                repr_list(&timeline.ids())
+            )),
+            Some(KeyKind::Timepoint) => Error::Key(format!(
+                "{} is not a timepoint of this sample (timepoints: {})",
+                repr_str(key),
+                repr_list(&timeline.ids())
+            )),
+            Some(KeyKind::Grid) => missing_key("grid", key, grids.items.keys().cloned()),
+            Some(KeyKind::Frame) => missing_key("frame of reference", key, self.known_frames()?),
+        })
     }
 
     fn known_frames(&self) -> Result<BTreeSet<String>> {

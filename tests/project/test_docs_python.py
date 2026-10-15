@@ -78,6 +78,7 @@ OPTIONAL = frozenset(
         "monai",
         "nibabel",
         "pydicom",
+        "pyarrow",
         "scipy",
         "torch",
     }

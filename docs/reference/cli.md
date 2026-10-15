@@ -54,7 +54,9 @@ replaced at the path given only, and its other names keep the old version —
 after `scrub --apply`, remove them. A link in a directory anyone can write to,
 such as `/tmp`, that neither you nor the directory's owner owns is not
 followed: the command refuses the file, as the system would refuse to open it
-through the link.
+through the link. Every other file a command writes — a manifest, a split, a
+report, an export — is replaced the same way, so an interrupted command leaves
+the old file whole.
 
 ## Inspecting
 
@@ -295,7 +297,9 @@ fails the audit.
 ### `medh5 scrub`
 
 ```
-medh5 scrub PATH... [--profile basic|strict] [--apply [--date-shift-days N] [--salt S] [--by WHO] [--pseudonymise-ids]] [--json]
+medh5 scrub PATH... [--profile basic|strict] [--json]
+    [--apply [--salt S] [--date-shift-days N | --date-shift-range MIN:MAX] [--withhold-shift]
+             [--by WHO] [--pseudonymise-ids] [--out FILE | --out-dir DIR] [--attest-text TOOL]]
 ```
 
 Find identifiers in the container. Without `--apply` nothing is written and the
@@ -325,12 +329,30 @@ pseudonyms. A file still named after the old id is reported: `scrub` does not
 rename files.
 
 ```
-$ medh5 scrub out/*.medh5 --apply --date-shift-days -117 --by RAD-07
+$ medh5 scrub out/*.medh5 --apply --date-shift-days -117 --withhold-shift --salt "$SALT" --by RAD-07
 ```
 
 Running it twice does not shift dates twice: a second run with a different
-shift is refused, as is a shift of zero. `--date-shift-days`, `--salt` and
-`--by` act only with `--apply`, and are refused without it.
+shift is refused, as is a shift of zero. `--withhold-shift` leaves the amount
+out of the record (one known date restores every other) and records that the
+dates were shifted, with a salted commitment to the amount; `--profile strict`
+withholds by default, and `basic` notes that medh5 3.0 will.
+`--date-shift-range MIN:MAX` takes a nonzero shift in the range from `--salt`
+and the subject id, the same for every file of one subject, and always
+withheld. `--out FILE` writes the result to a new file and leaves the source as
+it is; `--out-dir DIR` does that for each path. A name pseudonymised under
+`strict` needs `--salt`.
+
+On a clinical sample (format 1.1) the scan reads the clock, the ids and each
+document's text, and `--apply` refuses while text is unattested or holds a
+name, a UID or one of the sample's ids. `--attest-text TOOL` records that TOOL
+de-identified the text, with the digests of the bytes it covers. A `utc` clock,
+or `--pseudonymise-ids`, writes the history again as new versions: times moved
+by the shift, the clock `shifted_utc`, every id re-minted from `--salt` (see
+the [de-identification guide](../guides/deidentify.md#4-a-clinical-sample)).
+
+Every option but `--profile` and `--json` acts only with `--apply`, and is
+refused without it.
 
 ## Collections
 
@@ -342,7 +364,9 @@ medh5 pack PATH... -o SHARD.medh5c [--key K ...] [--json]
 
 Bundle samples into one `.medh5c`. Chunks move as raw bytes, so packing is
 byte-identical and `content_id` is preserved. Each member's key is its file
-stem unless `--key` is repeated once per source, in order. An output that is
+name up to its first dot unless `--key` is repeated once per source, in order.
+Where that differs from the file stem (`case.v2.medh5` is keyed `case`), a note
+says so: medh5 3.0 keys it by the stem, `case.v2`. An output that is
 one of the samples being packed is refused, as is a directory.
 
 ### `medh5 unpack`
@@ -458,36 +482,59 @@ Cross-file consistency. Findings carry
 
 ## Converting
 
-Every `convert` command except `to-nifti` writes a report of what it
-**decided** (determined from the data) and where it **guessed** (assumed
-something it could not read). `--report FILE` keeps it as JSON and `--json`
-prints it; without either, guesses and warnings still print.
+Every `convert` command writes a report of what it **decided** (determined
+from the data) and where it **guessed** (assumed something it could not read).
+`--report FILE` keeps it as JSON and `--json` prints it; without either,
+guesses and warnings still print. `to-nifti` prints the file it wrote instead,
+unless `--json` asks for the report.
 
 ```
 medh5 convert from-nifti OUT --image NAME=PATH [--image ...] [--mask NAME=PATH ...]
-                             [--modality NAME=CODE ...] [--coord-system LPS|RAS]
-                             [--fourth-axis auto|time|channel] [--assume-geometry]
-                             [--sample-id ID] [--subject-id ID]
+                             [--modality NAME=CODE ...] [--value-units NAME=UNIT ...]
+                             [--coord-system LPS|RAS] [--fourth-axis auto|time|channel]
+                             [--assume-geometry] [--plane-as-volume]
+                             [--label-set FILE] [--annotated-classes all_given|all|K1,K2]
+                             [--codec PROFILE] [--sample-id ID] [--subject-id ID]
+medh5 convert import-seg-nifti SAMPLE --mask NAME=PATH [--mask ...] [--id ANN] [--grid G]
+                                      [--assume-aligned] [--assume-geometry]
+                                      [--plane-as-volume]
+                                      [--annotated-classes all_given|all|K1,K2]
 medh5 convert to-nifti PATH IMAGE OUT [--annotation A --class K] [--stored]
 
 medh5 convert from-dicom ROOT OUT [--group-by subject|study]
                                   [--modality M ...] [--series UID ...]
+                                  [--per-slice-rescale refuse|apply] [--codec PROFILE]
 
 medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G] [--frame-salt S]
+                                        [--annotated-classes all_given|all|K1,K2]
 medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
+                                               [--class K ...] [--series-description TEXT]
+                                               [--segmentation-type binary|fractional]
+                                               [--fractional-type PROBABILITY|OCCUPANCY]
                                                [--frame-salt S]
 
-medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G] [--rasterize]
+medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G]
+                                            [--rasterize [--mask-id ID]]
+                                            [--roi NUMBER=KEY ...] [--points-id ID]
+                                            [--annotated-classes all_given|all|K1,K2]
                                             [--frame-salt S]
 medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
+                                              [--label TEXT] [--points ANN]
                                               [--frame-salt S]
 
-medh5 convert from-nnunet ROOT OUT [--case ID ...]
+medh5 convert from-itk-transform TRANSFORM SAMPLE --id ID --fixed GRID --moving GRID
+                                 [--warp FILE --vectors lps|ras] [--inverse-warp FILE]
+medh5 convert to-itk-transform SAMPLE OUT --id ID [--warp-out FILE --vectors lps|ras]
+
+medh5 convert from-nnunet ROOT OUT [--case ID ...] [--include-test]
+                                   [--coord-system LPS|RAS] [--codec PROFILE]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
                                     [--class K ...] [--unlabeled refuse|test]
+                                    [--file-ending .nii.gz|.nii]
+                                    [--split SET_ID] [--replace]
 ```
 
-All but `to-nifti` also take `[--report FILE] [--json]`. A report never
+All of them also take `[--report FILE] [--json]`. A report never
 replaces a file the command reads or writes: a `--report` naming one — through
 `..` or a link included — or lying inside the tree or nnU-Net dataset the
 command reads or the nnU-Net dataset it writes is refused before anything is
@@ -500,12 +547,47 @@ files: a collection is refused before anything is converted, and
 cine, DCE and 4-D CT, `channel` for multi-b-value DWI and multi-echo; `auto`
 (the default) reads the file's sidecars and header and records a guess when they
 do not say. `--assume-geometry` imports a file that declares no spatial mapping,
-recorded as a guess; without it such a file is refused.
+recorded as a guess; without it such a file is refused. `--plane-as-volume`
+imports every 2-D file as a one-slice 3-D grid, `(x, y, 1)`, keeping its
+affine, so a plane off z = 0 or not parallel to x-y is imported where it lies
+rather than refused. `--value-units CT=HU` says what an image's values are in,
+which makes them quantitative.
+
+`--annotated-classes` says which classes an import examined: `all_given` (the
+default) the classes the input supplies, `all` every class of the label set,
+or class keys separated by commas. A class it names that the input does not
+supply was examined and found absent. An import that mints its classes —
+`from-nifti`, and `import-seg-nifti`, `from-dicom-seg` or `from-rtstruct` into a
+sample without a label set — mints it after the classes the input supplies,
+with a `label_set` decision in the report; otherwise the label set must hold
+it, and the import is refused (E402). `from-nifti --label-set FILE` matches the
+masks to the classes of a label-set JSON file by key instead of minting them,
+so every case of a cohort gets the same class ids; a mask it has no class for
+is refused (E402).
+
+`import-seg-nifti` adds NIfTI masks to an existing sample, amended in place, as
+annotation `seg` unless `--id` names another, on the sample's reference grid
+unless `--grid` names another. Each mask must sit on the grid in shape and
+geometry; `--assume-aligned` takes its voxels anyway, for a header known to be
+wrong, and records a guess. The masks are classes of the sample's label set,
+found by the keys their names make, or minted when it has none.
+
+`--codec PROFILE` (`from-nifti`, `from-dicom`, `from-nnunet` and `migrate`) is
+the codec profile the samples are written with — `training`, `balanced` (the
+default), `archive` or `portable`, as for `medh5 recompress`.
 
 `to-nifti` writes `OUT`, a `.nii` or `.nii.gz` file. With `--annotation` it
 writes that annotation's labelmap, each ignored voxel as its ignore id; with
 `--class` too, one class as a 0/1 mask, refused for an annotation with an ignore
 region, which a mask has no value for.
+
+`to-dicom-seg --class` exports only the classes named, each of them one the
+annotation examined, and `--series-description` is the SEG's
+`SeriesDescription`, a DICOM LO of at most 64 characters. `to-rtstruct --label`
+is the `StructureSetLabel`, a DICOM SH of at most 16 characters; a longer one
+is refused rather than written into an invalid file. `from-rtstruct --mask-id`
+names the voxel annotation `--rasterize` derives (the contours' id and `_mask`
+by default).
 
 `from-dicom --group-by subject` (the default) merges a patient's studies into
 one multi-timepoint sample. Identity is never inferred from filenames, dates or
@@ -513,12 +595,23 @@ accession numbers; when it cannot be established the command falls back to one
 sample per study, warns, and records the fallback. `OUT` is the file the one
 sample is written to, or a directory of samples named for their subjects: when
 several samples result, when it is an existing directory, or when it ends in a
-path separator (`out/`).
+path separator (`out/`). A series whose slices state different
+`RescaleSlope`/`RescaleIntercept` — ordinary in PET — is refused unless
+`--per-slice-rescale apply` stores each slice's physical values instead, as
+float32 with no rescale; a series with one rescale is written the same either
+way.
 
 `--frame-salt` is for a sample `medh5 scrub` pseudonymised: given the salt the
 scrub used, the DICOM side's frame of reference (the SEG's or the RTSTRUCT's on
 import, the source images' on export) is compared with the sample's as the
 scrub wrote it, rather than refused as another frame.
+
+`from-itk-transform` stores an ITK `.tfm`, `.txt` or ANTs `.mat` transform as
+`--id`, from grid `--fixed`'s frame to grid `--moving`'s (ITK's fixed and moving
+images); `--warp` adds a displacement field applied before it, as ANTs pairs
+them, and needs `--vectors`, which the field's file does not say.
+`to-itk-transform` writes `--id` back, its displacement to `--warp-out` in the
+`--vectors` convention.
 
 `from-dicom-seg` writes annotation `seg` and `from-rtstruct` writes `contours`
 unless `--id` names another; `to-nnunet` exports annotation `seg` unless
@@ -526,6 +619,17 @@ unless `--id` names another; `to-nnunet` exports annotation `seg` unless
 `--dataset-name` does, with every class the cases carry unless `--class` names
 the ones to export — each of them examined by every case. A case without the
 annotation is refused unless `--unlabeled test` writes it to `imagesTs`.
+`--split SET_ID` places each case by its claim in that split set — `test` in
+`imagesTs` and `labelsTs`, `train` or `val` in `imagesTr` — and refuses a case
+the set does not place. `--replace` replaces an existing dataset (a
+directory holding a `dataset.json`, not a link) in place, file by file,
+`dataset.json` last, then removes the NIfTI files it no longer writes; files
+that are not the export's are left where they are. `from-nnunet
+--include-test` imports `imagesTs`'s cases too, each case claiming its
+partition in split `nnunetv2:<dataset>`; without it the cases left out are a
+warning. `from-nnunet --coord-system` is the world coordinate system the grids
+are stored in (`LPS` by default), and `to-nnunet --file-ending` writes `.nii`
+files instead of `.nii.gz`.
 
 See [Converters](converters.md).
 
@@ -542,6 +646,7 @@ medh5 migrate PATH... -o OUTDIR [options]
 --subject-key extra.patient_id
 --write-labels FILE        mint the cohort's label set for review, then stop
 --label-set FILE           reuse a reviewed label set
+--codec PROFILE            codec profile to write, balanced by default
 --report FILE
 --json
 ```
@@ -638,6 +743,11 @@ is written.
 
 ```
 medh5 clinical augment PATH RECORDS.json [--out OUT] [--json]
+medh5 clinical augment PATH (--from-meds DIR --meds-subject N | --from-fhir FILE --fhir-subject REF)
+                       [--clock-id ID --clock {utc,shifted_utc,relative}] [--origin ISO]
+                       [--timezone TZ] [--code-system PREFIX=URI]... [--kind PREFIX=KIND]...
+                       [--day-precision PREFIX]... [--document-code CODE]... [--with-text]
+                       [--both-values {refuse,numeric,text}] [--report FILE] [--out OUT] [--json]
 ```
 
 Add a record bundle to a sample, in place or into `--out`: images and
@@ -645,6 +755,18 @@ annotations are copied as stored (their digests do not change), the sample
 becomes 1.1 with a new `content_id`, and what the records leave unknown is
 reported. A `clinical` group the profile did not write is refused, never
 reinterpreted.
+
+`--from-meds` and `--from-fhir` import one subject's MEDS rows or FHIR R4
+resources in place of `RECORDS.json`, through the Python package (MEDS needs
+`pip install "medh5[meds]"`); see
+[Import from MEDS or FHIR](../guides/clinical-import.md). The records go on
+the clock `--clock-id` and `--clock` name, else on the sample's own.
+`--timezone` reads times without an offset, and a relative clock needs
+`--origin`. `--code-system`, `--kind`, `--day-precision`, `--document-code`
+and `--both-values` read MEDS codes and rows; `--with-text` imports free text.
+The conversion report prints after the augmentation, `--report` keeps it as
+JSON, and the command exits 1 when it holds a warning, as `medh5 convert`
+does.
 
 ### `medh5 clinical strip`
 
@@ -852,7 +974,7 @@ Schemas (`/meta`, the clinical profile, and the task and cache contract's),
 ### `medh5 conformance score`
 
 ```
-medh5 conformance score SUITE RESULTS.json [--json]
+medh5 conformance score SUITE RESULTS.json [--format-version V] [--codes-revision N] [--companion] [--json]
 ```
 
 Score any implementation's results against a published suite. See
@@ -860,6 +982,16 @@ Score any implementation's results against a published suite. See
 `SHA256SUMS` fails the score, whatever the cases say — a score over files
 that are not the published ones is not a score — and `--json` names those
 files under `changed`.
+
+`--format-version` scores only the cases addressed to that format version or
+an earlier one, and `--codes-revision` only those whose codes that revision of
+the code table holds, ignoring any later code reported. Cases left out are
+counted under `skipped`.
+
+`--companion` scores the task-and-cache fixtures under `companion/` instead:
+`RESULTS.json` holds what `task validate`, `task preflight` and `cache
+validate` reported on each with `--json`, naming its fixture by `file` or
+`path`. No version or revision bounds them.
 
 ## Related
 

@@ -18,7 +18,7 @@ format **1.1**, the clinical history around the images, with *when each fact
 became known*, so a model trained at a cutoff reads only what was available
 then. Format versions [**1.0**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/) and
 [**1.1**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/), with normative specifications and a
-[169-case conformance suite](https://medh5.readthedocs.io/en/stable/spec/conformance/) any implementation can run.
+[172-case conformance suite](https://medh5.readthedocs.io/en/stable/spec/conformance/) any implementation can run.
 
 ```python
 import medh5
@@ -54,6 +54,7 @@ Add an extra for each tool you connect medh5 to:
 | import or export NIfTI and nnU-Net | `pip install "medh5[nifti]"` |
 | import DICOM series, SEG and RTSTRUCT | `pip install "medh5[dicom]"` |
 | export DICOM SEG | `pip install "medh5[dicomseg]"` |
+| import a clinical history from MEDS | `pip install "medh5[meds]"` |
 | open files directly with `h5py` | `pip install "medh5[h5py]"` |
 
 Extras combine: `pip install "medh5[torch,nifti,dicom]"`.
@@ -92,7 +93,7 @@ Specification [1.0](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/),
 - **Absence is not silence** — a class examined and not found is recorded as
   such, which is a different training signal from one nobody examined.
 - **Every claim is checkable** — per-object digests, a Merkle `content_id` that
-  survives recompression, a stable diagnostic-code table, and a 169-case
+  survives recompression, a stable diagnostic-code table, and a 172-case
   conformance corpus.
 - **Reading a patch is fast** — a 64³ multi-class patch in ~2.3 ms, and O(1)
   foreground sampling once `build_index()` has run.

@@ -48,6 +48,7 @@ the commands and the contracts.
 
 ```
 $ medh5 convert from-nifti case.medh5 --image CT=ct.nii.gz --mask liver=liver.nii.gz
+$ medh5 convert import-seg-nifti case.medh5 --mask spleen=spleen.nii.gz --id organs
 $ medh5 convert to-nifti case.medh5 CT out.nii.gz
 $ medh5 convert to-nifti case.medh5 CT liver.nii.gz --annotation organs --class liver
 ```
@@ -73,7 +74,20 @@ stored voxels and the scale, as the file had them.
 axes and has no z, so a 2-D NIfTI must lie in the x-y world plane at z = 0
 (to 10⁻³ mm), which is where `to_nifti` writes one back. A plane off it, or not
 parallel to it, is refused rather than moved; saved as `(x, y, 1)` it imports
-as a one-slice volume that keeps its z.
+as a one-slice volume that keeps its z, and the refusal names the option that
+does this for you.
+
+**`plane_as_volume=True` imports a plane where it lies** (`--plane-as-volume`;
+`read_nifti`, `from_nifti` and `import_seg_nifti` all take it). Every 2-D
+image and mask — planes at z = 0 too, so a cohort comes out uniform — is read
+as `(x, y, 1)` before the transpose and keeps its full 4×4 affine, giving a
+`(1, y, x)` grid: byte for byte the import of the plane re-saved as
+`(x, y, 1)`. The third axis is the affine's third column, which must be
+non-zero and orthogonal to the first two (within `ORTHONORMAL_TOL`), or the
+file is refused: no normal or thickness is invented. A `plane_as_volume`
+decision records each plane's z and normal, and the import activity's params
+gain `"plane_as_volume": true` when a plane was reshaped. A 3-D or 4-D file is
+read the same with or without it.
 
 **An export says what its numbers are in.** Lengths are written in millimetres
 — a grid in `m` or `um` is scaled to them, and an uncalibrated `px` grid gets
@@ -121,6 +135,21 @@ letters, digits and underscores — and the name as given is the class's
 display name: `--mask GTV-1=gtv.nii.gz` is the class `gtv_1`, named `GTV-1`.
 Two names that make one key are refused. A mask added with `import_seg_nifti`
 is found in the sample's label set by the key its name makes.
+
+**`label_set=` fixes the class ids** (`--label-set FILE`). Minted, a class's id
+is its rank among the masks one case has, so two cases of a cohort that
+segment different organs number them differently. Given a `LabelSet`, or a
+JSON file `medh5.labels.load_file` reads, `from_nifti` matches each mask to the
+class of the key its name makes (or of its name), mints nothing, and writes
+that label set into the sample; a mask it has no class for is refused (E402).
+
+**A class examined and found absent is named, not dropped.** A class
+`annotated_classes=` (`--annotated-classes K1,K2`) names that no mask supplies
+was searched for and not found (§11.3). Where the import mints its classes it
+mints that one too, after the masks' ids, with a `label_set` decision naming
+it; with `label_set=`, or in `import_seg_nifti` into a sample that has a label
+set, the class must be in it, and the import is refused (E402) otherwise. The
+DICOM SEG and RTSTRUCT importers do the same. It was a bare `KeyError`.
 
 **A sample is one subject**, and NIfTI names none: without `--subject-id`
 (`subject_id=`) the sample is a subject of its own, its id the sample's, and
@@ -171,6 +200,24 @@ policy.
 become the image's `rescale`, so `read(physical=True)` gives HU and `read()`
 gives what the scanner stored.
 
+**A per-slice rescale is refused, or applied when asked.** An image stores one
+modality LUT (§4.2), and a PET series often states one per slice; taking the
+first slice's for all of them would misscale the rest, so such a series is
+refused, naming `per_slice_rescale`. With `per_slice_rescale="apply"`
+(`--per-slice-rescale apply`), each slice becomes `stored × slope + intercept`,
+computed in float64 and stored as float32 with no rescale attributes; a
+`per_slice_rescale` decision lists the distinct slopes and intercepts with the
+slices (grid indices along the first axis) that state each, and the import
+activity's params gain `"per_slice_rescale": "applied"`. SUV is never
+computed, and `value_type` and units do not change. A slice that states no
+rescale among slices that do is refused either way, and a series with one
+rescale is written byte for byte the same whatever the option.
+
+<!-- illustrative -->
+```python
+report = from_dicom("/pet", "pet.medh5", per_slice_rescale="apply")
+```
+
 **Tags are an explicit allow-list.** Imaging physics goes to `acquisition`;
 everything else stays out (§11.4). The importer does not de-identify, and
 writes no de-identification record: the report says so, and the validator
@@ -209,9 +256,15 @@ study — with a warning and a record — when identity cannot be established.
 
 ```
 $ medh5 convert from-dicom-seg seg.dcm case.medh5 --id organs
+$ medh5 convert from-dicom-seg seg.dcm case.medh5 --annotated-classes liver,tumor
 $ medh5 convert to-dicom-seg case.medh5 organs out.dcm \
     --source ct/1.dcm --source ct/2.dcm ...
 ```
+
+`to-dicom-seg --class K` (`classes=`) exports only the classes named, each one
+the annotation examined; `--series-description TEXT` (`series_description=`)
+is the SEG's `SeriesDescription`, a DICOM LO of at most 64 characters, and a
+longer one is refused.
 
 **Frames are placed by geometry**, from each frame's `PlanePositionSequence` —
 not by frame index. Each frame must lie on one of the grid's slices and start at
@@ -226,9 +279,23 @@ another convention is refused (`E414`). **Segments match by label, not by
 number**, and segments that share a label — one `Lesion` segment per lesion is
 common — are one class: a `BINARY` SEG's are combined as their union and a
 `FRACTIONAL` one's as their maximum, recorded as a `segment_union` decision.
-Two segments whose labels make one class but code different concepts are
-refused. A `BINARY` or `FRACTIONAL` SEG is read; a `LABELMAP` one, whose frames
-hold every segment by pixel value, is refused by name.
+Two segments whose labels make one class but code different concepts, or
+carry different type modifiers (Left and Right Kidney, both labelled
+`Kidney`), are refused. A `BINARY` or `FRACTIONAL` SEG is read; a `LABELMAP`
+one, whose frames hold every segment by pixel value, is refused by name.
+
+**Concepts come in with the segments.** A class minted from a SEG takes its
+property type as an ontology binding, with the system spelled as §5.2 spells
+it where the designator is one the converters know (`SCT` → `SNOMED-CT`,
+`RADLEX` → `RadLex`, `FMA`, `UBERON`, `LN` → `LOINC`, `I10` → `ICD-10`,
+`DCM`) and as the file states it where it is not. Its property category is
+kept as `properties["dicom_category"]`, and becomes `category` where the
+concept stands for one: SCT 49755003 is `lesion`, SCT 260787004 `device`, SCT
+309825002 `region`; "Anatomical Structure" is an organ's, a vessel's and a
+bone's alike, so it sets none. A laterality modifier becomes `laterality`
+(the report's `concepts` decision lists both); a modifier that is not a
+laterality has no field to go in, and the report's `modifier` decision names
+it.
 
 **Frames of reference come first.** A SEG is matched to the grid that shares
 its `FrameOfReferenceUID`, and a grid — matched or named with `--grid` — whose
@@ -275,10 +342,39 @@ from_dicom_seg("seg.dcm", "case.medh5", ann_id="organs")
 to_dicom_seg("case.medh5", "organs", ["ct/1.dcm", "ct/2.dcm"], "out.dcm")
 ```
 
-Import preserves overlapping segments and `FRACTIONAL` values. **Export does
-not**: `to_dicom_seg` writes `BINARY` from `dense()`, which for a `probmap`
-applies the stored threshold, so fractional data is thresholded on the way out.
-A binary segment cannot mark an ignore region either — its 0 says examined
+Import preserves overlapping segments and `FRACTIONAL` values. Export writes
+`BINARY` by default (`segmentation_type="binary"`), from `dense()`, which for
+a `probmap` applies the stored threshold — recorded as a `threshold`
+decision. `segmentation_type="fractional"`
+(`--segmentation-type fractional`) writes a `probmap`'s probabilities as a
+`FRACTIONAL` SEG of `fractional_type` `"PROBABILITY"` (the default) or
+`"OCCUPANCY"` (`--fractional-type`), each value stored out of 255 and so
+within 1/510; any other kind is refused (`E401`). Its `fractional` decision
+gives the largest error, how many voxels moved across the stored threshold,
+and says that `threshold` and `normalized` are not carried, a SEG having no
+field for either.
+
+| `to_dicom_seg` keyword | Values | Default |
+|---|---|---|
+| `segmentation_type` | `"binary"`, `"fractional"` | `"binary"` |
+| `fractional_type` | `"PROBABILITY"`, `"OCCUPANCY"` | `"PROBABILITY"` |
+
+**Each segment carries its class's concepts.** The property type is the
+class's first code whose system has a designator; the property category
+`properties["dicom_category"]`, else the concept its `category` stands for
+(`organ`, `vessel`, `bone` → SCT 91723000 "Anatomical Structure", `lesion` →
+SCT 49755003, `device` → SCT 260787004, `region` → SCT 309825002); its
+`laterality` the type modifier (SCT 7771000, 24028007, 51440002). The
+algorithm type follows the annotation's `prov`: a `predict` activity by a
+software agent of stated version is `AUTOMATIC`, identified by that software
+with family DCM 123110 "Artificial Intelligence"; `annotate` and `review` are
+`MANUAL`. DICOM requires all three, so where the sample states none the
+export writes the generic one — SCT 91723000, `MANUAL` — and records a guess
+(`property_type`, `property_category`, `algorithm_type`) naming the classes.
+A more specific concept than the sample states is never written, and a
+designator is never invented.
+
+A segment cannot mark an ignore region either — its 0 says examined
 and absent — so an annotation that ignores any voxel (§7.7) is refused;
 `to_nifti` with `annotation=` writes its labelmap, ignore id included. A SEG
 holds one segment per class: the export takes a `labelmap`, `layers`,
@@ -292,8 +388,9 @@ Writing needs `highdicom` (`pip install "medh5[dicomseg]"`).
 ```
 $ medh5 convert from-rtstruct plan.dcm case.medh5 --id contours
 $ medh5 convert from-rtstruct plan.dcm case.medh5 --rasterize
+$ medh5 convert from-rtstruct plan.dcm case.medh5 --points-id markers
 $ medh5 convert to-rtstruct case.medh5 contours out.dcm \
-    --source ct/1.dcm --source ct/2.dcm ...
+    --points markers --source ct/1.dcm --source ct/2.dcm ...
 ```
 
 <!-- illustrative -->
@@ -306,19 +403,34 @@ from_rtstruct("plan.dcm", "case.medh5", rasterize=False)
 **Contours stay contours** (§8.6), in world coordinates. `--rasterize` is opt-in,
 and the rule it used goes into the provenance graph; a class whose contours
 enclose no voxel centre is a warning, since its empty mask reads as examined
-and absent.
+and absent. The mask is annotation `<id>_mask` unless `--mask-id ID`
+(`mask_id=`) names another.
 
-**Only areas import.** A medh5 contour is a closed polygon, so an ROI drawn as
-`CLOSED_PLANAR` contours imports, and so does one drawn as `CLOSEDPLANAR_XOR`
-contours that are nested or apart on every slice, where their exclusive-or is
-the holes the import marks. Exclusive-or contours that cross are refused,
-naming the ROI and the slice, and so is an ROI mixing exclusive-or with another
-type (PS3.3 C.8.8.6.1). An ROI of `POINT`, `OPEN_PLANAR` or `OPEN_NONPLANAR`
-contours — a marker, a brachytherapy applicator — is left out with a warning
-per type (`contour_type`), so no class is minted or marked examined for it; an
-ROI mixing areas with points or curves is refused. A contour stating no type
-is read as `CLOSED_PLANAR`, on a recorded guess, and one of fewer than three
-points is dropped with a warning.
+**`--label TEXT` (`label=`) is the export's `StructureSetLabel`**, a DICOM SH
+of at most 16 characters. A longer one is refused before anything is read; it
+was written, and the file was not valid DICOM.
+
+**Areas import as contours, markers as points.** A medh5 contour is a closed
+polygon, so an ROI drawn as `CLOSED_PLANAR` contours imports, and so does one
+drawn as `CLOSEDPLANAR_XOR` contours that are nested or apart on every slice,
+where their exclusive-or is the holes the import marks. Exclusive-or contours
+that cross are refused, naming the ROI and the slice, and so is an ROI mixing
+exclusive-or with another type (PS3.3 C.8.8.6.1). An ROI of `POINT` contours —
+a marker — imports as rows of a `points` annotation (§8.5), `--points-id ID`
+(`points_id=`, `<id>_points` by default): one row per contour, in the grid's
+world coordinates and the contours' frame, of the ROI's class and named for
+the ROI, with `task` `other`, since a marker is no detection finding; a POINT
+contour of more than one point is refused, and a structure set of points
+alone writes no contours annotation. An explicit `annotated_classes=` list
+is split between the two: a class drawn as points is examined in the points
+annotation, every other class it names in the contours one; `all` applies to
+the contours only. An ROI of `OPEN_PLANAR` or `OPEN_NONPLANAR` contours — a
+brachytherapy applicator — is left out with a warning per type
+(`contour_type`), so no class is minted or marked examined for it:
+`--open-curves omit` (`open_curves="omit"`) is the only value until open
+curves arrive as `polylines` in 2.2.0. An ROI mixing areas with points or
+curves is refused. A contour stating no type is read as `CLOSED_PLANAR`, on a
+recorded guess, and one of fewer than three points is dropped with a warning.
 
 **Every contour lies in a slice of the grid**, along its first axis, within a
 tenth of a slice and at least 0.01 mm, the bound the DICOM import holds slices
@@ -341,6 +453,22 @@ grid's pseudonym. Where the RTSTRUCT or the grid states no frame, the report
 records a guess. Into a sample with a label set, an ROI takes the class its
 `ROIName` names, by key or by display name.
 
+**ROIs of one class are combined.** ROIs whose names make one key — two
+called "GTV", or "GTV" and "gtv" — are one class, minted or found in the
+label set, and the report records a `merged_rois` decision naming their ROI
+numbers. Their contours combine as §8.6 defines: each polygon's role is its
+nesting depth among the class's polygons on its slice, so outlines of two
+ROIs that cross are their union. An import where one ROI's contour lies
+inside another's on a slice is refused, naming the ROIs and the slice:
+combined, the inner one would be a hole in what both drew as an area.
+`--roi NUMBER=KEY` (`roi_classes={NUMBER: KEY}`, repeatable) puts an ROI in
+the class of that key instead — minted, or one the sample's label set holds
+(`E402` otherwise) — which imports same-named ROIs apart:
+
+```
+$ medh5 convert from-rtstruct plan.dcm case.medh5 --roi 2=bladder_inner
+```
+
 Each imported polygon records the slice it lies on as `contour_plane`
 `(0, k)`, in the grid's index space, so `by_plane()` on the result groups the
 structure set the way the planner drew it.
@@ -362,12 +490,15 @@ that combine an ROI's contours by exclusive-or or even-odd fill read as medh5
 does. **Crossing contours mean their union** in medh5, and those readers cancel
 the overlap, so two contours of one class that cross on a plane are a warning
 (`crossing_contours`) naming the planes: merge them into one outline where
-such a reader matters.
+such a reader matters. `--points ANN` (`points=`) also writes a `points`
+annotation, one ROI per class of `POINT` contours of one point each, with
+`RTROIInterpretedType` `MARKER` (contour ROIs are `ORGAN`); a row with no
+class (`E402`) and a class in both annotations are refused.
 
 ### nnU-Net v2
 
 ```
-$ medh5 convert from-nnunet /Dataset001_Liver out/
+$ medh5 convert from-nnunet /Dataset001_Liver out/ --coord-system LPS --codec archive
 $ medh5 convert to-nnunet /out case1.medh5 case2.medh5 --dataset-name Dataset001_Liver
 ```
 
@@ -387,6 +518,15 @@ An image is named for its channel; nnU-Net reads `channel_names` as
 normalisation schemes, so two channels may share a name (`zscore`), and those
 images are named for their channel index as well (`zscore_0000`).
 
+**Test cases are imported on request.** By default the cases are
+`imagesTr`'s, and the `imagesTs` cases left out are counted in a warning
+(`test_cases`). With `include_test=True` (`--include-test`) they are
+imported too, labeled from `labelsTs` where it has their labels, and every
+case records its folder as a §12.3 split claim: set `nnunetv2:<dataset>` (the
+dataset directory's name), partition `train` or `test`, `assigned_by` "nnU-Net
+v2 dataset layout" and the SHA-256 of `dataset.json` as `manifest_sha256`. A
+case in both folders is refused.
+
 **nnU-Net's class ids are kept**, so a model trained against the original
 dataset still means the same thing. A file's `scl_slope`/`scl_inter` mean what
 they mean to nnU-Net: an image keeps them as its rescale, and label ids are read
@@ -396,7 +536,10 @@ is a class whose components name it as a parent, which is exactly what the
 hierarchy is for. **nnU-Net's `ignore` label is the annotation's ignore
 region** (§7.7), both ways: never a class, and never background. **A label
 volume holds only what `labels` declares**: a value it does not is refused, as
-nnU-Net refuses it, rather than read as background for every class.
+nnU-Net refuses it, rather than read as background for every class. **A label
+volume is written as it is**, through `add_segmentation(labelmap=...)`, each
+value naming its class and every region holding it: no mask per class is
+built, so a case of 104 classes costs its label volume, not 104 copies of it.
 
 The parsed `dataset.json` is stashed in `extra["nnunetv2"]`, so `to-nnunet`
 reproduces the original dataset definition rather than inventing one: its
@@ -415,17 +558,37 @@ classes, one name per id. **Every case must have examined every class
 exported** (`annotated_class_ids`): a class one case never looked for would be
 written as its background, a negative nobody observed; `classes=` exports a
 subset all of them examined. **A dataset directory that already exists may
-hold only what the export writes**: a NIfTI file in `imagesTr`, `labelsTr` or
-`imagesTs` the export would not write — an earlier export's dropped case or
-channel, a case since moved between `imagesTr` and `imagesTs`, the other file
-ending — refuses it, since nnU-Net trains on every case file it finds. An
-identical re-export replaces its own files, and other files are left alone.
+hold only what the export writes**: a NIfTI file in `imagesTr`, `labelsTr`,
+`imagesTs` or `labelsTs` the export would not write — an earlier export's
+dropped case or channel, a case since moved between `imagesTr` and
+`imagesTs`, the other file ending — refuses it, since nnU-Net trains on every
+case file it finds. An identical re-export replaces its own files, and other
+files are left alone. **`replace=True` (`--replace`) replaces a dataset
+instead**: the directory must be a directory, not a link, holding a
+`dataset.json`; the new dataset is written over it in place, file by file,
+`dataset.json` last, and the NIfTI files of those four folders that the
+export does not write are removed after it. Every other file is left where it
+is. The `replace` note lists the files removed and, as `carried_over`, those
+left. Every file an export writes goes through the engine's replace (§14.4):
+written beside its name and renamed over it once whole, so an export
+interrupted part way leaves each file whole — the old one or the new — but
+the dataset a mix of the two until it is run again.
+
+**A split places the cases.** With `split="SET_ID"` (`--split SET_ID`) each
+case goes where its claim in that set says (§12.3): `test` to `imagesTs`, its
+labels to `labelsTs`; `train` or `val` to `imagesTr`, where nnU-Net
+cross-validates. A case the set does not place, places twice, or holds out
+(`holdout`, `unassigned`) is refused. Test cases are not counted in
+`numTraining`, and an unlabeled case claiming `test` needs no `--unlabeled
+test`; an unlabeled case claiming `train` or `val` is refused, even with
+`--unlabeled test`, which would move it out of the partition it claims.
 
 **Every file is a name under the dataset.** A case's files are named by its
 `sample_id`, which must be a sample key (`[A-Za-z0-9_.-]`, not `.` or `..`),
 and no two cases may differ only in case — one would overwrite the other on a
 case-insensitive file system; `--dataset-name` is held to the same rule, and
-`file_ending=` is `.nii.gz` (the default) or `.nii`: every file is NIfTI. **Every
+`file_ending=` (`--file-ending`) is `.nii.gz` (the default) or `.nii`: every
+file is NIfTI. **Every
 case is a training case**: one without the annotation is refused, or with
 `unlabeled="test"` (`--unlabeled test`) written to `imagesTs` and left out of
 `numTraining`. **Label values are consecutive**, as nnU-Net requires: class ids
@@ -444,6 +607,68 @@ back — a region its components do not cover, a voxel two classes share — is
 refused before any file is written. These refusals carry no §15.2 code: the
 samples are valid, and what they fail is nnU-Net's layout.
 
+### ITK transforms
+
+```
+$ medh5 convert from-itk-transform reg.tfm case.medh5 --id tp0_to_tp1 --fixed ct_tp0 --moving ct_tp1
+$ medh5 convert from-itk-transform out0GenericAffine.mat case.medh5 --id syn \
+      --fixed ct_tp0 --moving ct_tp1 --warp out1Warp.nii.gz --vectors lps
+$ medh5 convert to-itk-transform case.medh5 back.tfm --id syn --warp-out back_warp.nii.gz --vectors ras
+```
+
+<!-- illustrative -->
+```python
+from medh5.io.itk import from_itk_transform, read_itk_transform, to_itk_transform
+
+from_itk_transform("reg.tfm", "case.medh5", transform_id="tp0_to_tp1",
+                   fixed="ct_tp0", moving="ct_tp1")
+to_itk_transform("case.medh5", "back.mat", transform_id="tp0_to_tp1")
+read_itk_transform("back.mat").matrix     # LPS mm, x_moving = T(x_fixed)
+```
+
+ITK's convention is the format's (§10.2): a registration of a *moving* image
+to a *fixed* one maps fixed points to moving points. **The caller names the
+two grids**, in ITK's words, because a transform file names no image; the
+transform is stored from the fixed grid's frame to the moving grid's. ITK's
+points are LPS millimetres, so the matrix is re-expressed in each grid's
+coordinate system and units — an RAS grid flips two axes, a grid in metres
+scales the translation — and a grid in `px`, which has no millimetres, is
+refused. The importer reads text files (`.tfm`, `.txt`) and ANTs' MATLAB
+`.mat`, holding `AffineTransform`, `MatrixOffsetTransformBase`,
+`TranslationTransform`, `IdentityTransform`, `Euler3DTransform` (with its
+ZYX order where the file sets it), `Euler2DTransform`,
+`VersorRigid3DTransform`, `Similarity3DTransform`, `Similarity2DTransform`,
+`ScaleTransform`, or a `CompositeTransform` of them; the centre in the fixed
+parameters folds into the translation. ITK's HDF5 transform files and
+B-splines are refused (they wait for 2.2), as is a transform whose input and
+output dimensions differ.
+
+**A composite is listed in reverse.** ITK applies the last transform it lists
+first; §10.5 applies the first component first. Each component is stored as an
+`affine` between intermediate frames `pseudo:<id>.mid…`, and a `composite`
+`<id>` relates the two grids' frames.
+
+**A displacement field needs `--vectors`.** Some versions of ITK write a
+field's vectors in LPS and others in RAS, and the file does not say which:
+SimpleITK 2.5 writes a vector image's components as they are (LPS) under
+NIfTI's `vector` intent, and reads a `DISPVECT` file's as RAS. An ANTs pair —
+the affine and its `Warp.nii.gz`, the warp applied first — is stored as the
+warp from the fixed frame to `pseudo:<id>.mid`, the affine from there to the
+moving frame, and a `composite` `<id>` between the grids' frames, which earns
+`reg` and is the one shortest route between them. The field is stored on the
+fixed grid when its geometry is that grid's, otherwise on a new grid
+`<id>_field` in the fixed frame. `--inverse-warp` (ANTs' `InverseWarp`) is
+stored linked to the warp by `inverse_id`; its field lies in the intermediate
+frame, so it is refused where that would give the fixed grid's visit a second
+frame.
+
+The export writes each matrix as `AffineTransform_double_3_3` to a `.tfm`,
+`.txt` or `.mat` file (several linear steps as an ITK composite in a text
+file, or multiplied into one affine in a `.mat`), and a displacement applied
+first to `--warp-out`, a `DISPVECT` NIfTI (intent 1006) in the `--vectors`
+convention. Each file is written to a temporary beside it and renamed over
+it.
+
 ### 0.x files
 
 ```
@@ -461,6 +686,25 @@ half a voxel, the encoding is chosen by measurement, and grouping by subject is
 opt-in because a 0.x file carries no subject key — each reported per file. The
 procedure is [Migrate from 0.x](../guides/migrate-0x.md).
 
+### MEDS and FHIR R4
+
+```
+$ medh5 clinical augment case.medh5 --from-meds meds/ --meds-subject 1001 --clock-id ehr --clock utc --timezone UTC
+$ medh5 clinical augment case.medh5 --from-fhir bundle.json --fhir-subject Patient/p1
+```
+
+```python
+from medh5.io.fhir import augment_from_fhir, read_fhir
+from medh5.io.meds import augment_from_meds, read_meds
+```
+
+One subject's clinical history, added to a sample's clinical profile (format
+1.1): MEDS rows (`pip install "medh5[meds]"`) or FHIR R4 Observations and
+DiagnosticReports. No zone, origin, unit, code or availability is invented,
+so the report holds no guess; free text and birth instants are imported only
+when asked. The mapping tables and refusals are in
+[Import from MEDS or FHIR](../guides/clinical-import.md).
+
 ### COCO
 
 Not supported, deliberately —
@@ -472,4 +716,5 @@ Not supported, deliberately —
 - **[Import from NIfTI and nnU-Net](../guides/import-nifti.md)** — volumes and masks as separate files.
 - **[Export to other formats](../guides/export.md)** — getting data back out.
 - **[Migrate from 0.x](../guides/migrate-0x.md)** — the one-way door.
+- **[Import from MEDS or FHIR](../guides/clinical-import.md)** — a clinical history beside the images.
 - **[What the converters refuse, and why](../explanation/refusals.md)** — every refusal, with the reasoning.

@@ -111,7 +111,9 @@ def write_sample(
                 )
         if index and masks is not None:
             w.build_index(max_coords=64)
-        w.deidentification(method="dicom-psi-profile", date_shift_days=-117)
+        # No amount of shift stated: a file shared beyond whoever holds the
+        # key does not state one (§11.4), and a scrub reports one that does.
+        w.deidentification(method="dicom-psi-profile")
     return path
 
 
@@ -413,6 +415,30 @@ def encode_attr(value: Any) -> Any:
     raise TypeError(f"cannot encode attribute value of type {type(value)!r}")
 
 
+def group_contents(path: Path, name: str) -> dict[str, Any]:
+    """Every attribute, and every dataset's type, chunks and bytes, below
+    group *name* of the file at *path*: what two writes of one thing hold
+    alike, read by h5py rather than by the engine that wrote them."""
+    out: dict[str, Any] = {}
+
+    def attrs(obj: Any) -> dict[str, Any]:
+        return {k: np.asarray(v).tolist() for k, v in obj.attrs.items()}
+
+    def visit(key: str, obj: Any) -> None:
+        if isinstance(obj, h5py.Dataset):
+            stored = np.asarray(obj[()])
+            held = stored.tolist() if stored.dtype.kind == "O" else stored.tobytes()
+            out[key] = (obj.dtype.str, obj.shape, obj.chunks, attrs(obj), held)
+        else:
+            out[key] = attrs(obj)
+
+    with h5py.File(path, "r") as handle:
+        group = handle[name]
+        out[""] = attrs(group)
+        group.visititems(visit)
+    return out
+
+
 def attested_as_written(path: Path) -> None:
     """Write the `content_id` that *path* now recomputes to.
 
@@ -424,3 +450,20 @@ def attested_as_written(path: Path) -> None:
         content_id = sample.compute_content_id()
     with h5py.File(path, "r+") as handle:
         handle.attrs["content_id"] = encode_attr(content_id)
+
+
+def crash_save_as(monkeypatch: Any, before: bytes) -> list[Path]:
+    """Make pydicom's ``save_as`` stop half way through the file it is given
+    --- half of *before*, then an ``OSError`` --- as a full disk or a killed
+    process would; the files it was asked to write, in order."""
+    from pydicom.dataset import Dataset
+
+    asked: list[Path] = []
+
+    def crashed(self: Any, filename: Any, *args: Any, **kwargs: Any) -> None:
+        asked.append(Path(filename))
+        Path(filename).write_bytes(before[: len(before) // 2])
+        raise OSError("interrupted")
+
+    monkeypatch.setattr(Dataset, "save_as", crashed)
+    return asked
