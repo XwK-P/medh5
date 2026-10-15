@@ -8,7 +8,6 @@
 use clap::{Arg, ArgAction, ArgGroup, Command};
 
 use medh5::annotations::encode::TRANSCODABLE;
-use medh5::clinical::model::HOUR;
 use medh5::collection::SUFFIX;
 use medh5::sample::reader::PROFILES;
 use medh5::storage::index::{DEFAULT_MAX_COORDS, DEFAULT_OCCUPANCY_FACTOR};
@@ -733,13 +732,9 @@ fn iou_threshold(text: &str) -> Result<f64, String> {
 /// `int64` holds.  NaN and infinity would saturate to a cutoff nobody gave.
 fn clock_hours(text: &str) -> Result<f64, String> {
     let hours: f64 = text.trim().parse().map_err(|_| format!("{text:?} is not a number"))?;
-    let us = (hours * HOUR as f64).round();
-    // Every int64 lies in [-2^63, 2^63), and both ends are exact in an f64.
-    let bound = 2f64.powi(63);
-    if us.is_finite() && (-bound..bound).contains(&us) {
-        Ok(hours)
-    } else {
-        Err(format!("{text} hours is no time on the subject clock: its microseconds must be a finite int64"))
+    match medh5::clinical::hours(hours) {
+        Ok(_) => Ok(hours),
+        Err(_) => Err(format!("{text} hours is no time on the subject clock: its microseconds must be a finite int64")),
     }
 }
 
@@ -754,9 +749,13 @@ fn clinical() -> Command {
             sample(Command::new("select").about("what strict prospective selection admits at a cutoff"))
                 .arg(int("cutoff_us", "cutoff-us", "the cutoff, in microseconds on the subject clock"))
                 .arg(
-                    opt("cutoff_hours", "cutoff-hours", "the cutoff, in hours on the subject clock")
-                        .value_parser(clock_hours)
-                        .allow_negative_numbers(true),
+                    opt(
+                        "cutoff_hours",
+                        "cutoff-hours",
+                        "the cutoff, in hours on the subject clock (to the microsecond, half to even)",
+                    )
+                    .value_parser(clock_hours)
+                    .allow_negative_numbers(true),
                 )
                 .group(ArgGroup::new("cutoff").args(["cutoff_us", "cutoff_hours"]).required(true))
                 .arg(
@@ -788,46 +787,130 @@ fn clinical() -> Command {
         )
 }
 
+/// `--source-root DIR` and `--any-source-path`: where a task's sources may be
+/// opened from (task-cache-1 §2).
+fn confinement(cmd: Command) -> Command {
+    cmd.arg(
+        opt(
+            "source_root",
+            "source-root",
+            "open sources only inside this directory: a URI outside it, its . and .. resolved as text, is T301",
+        )
+        .conflicts_with("any_source_path"),
+    )
+    .arg(flag(
+        "any_source_path",
+        "any-source-path",
+        "open sources wherever the manifest's URIs point, without the note on those outside its directory",
+    ))
+}
+
 fn task() -> Command {
     let manifest = || positional("manifest", "a medh5.task/1 manifest (JSON)");
     group("task", "task manifests: rows, cutoffs, sources and what they admit (medh5.task/1)")
+        .subcommand(
+            Command::new("new")
+                .about("draw a task from a cohort manifest: its subjects, pinned sources and partitions")
+                .arg(positional("out", "the task manifest to write; its directory is the base of the source URIs"))
+                .arg(opt("cohort", "cohort", "the cohort manifest (medh5 dataset index)").required(true))
+                .arg(
+                    opt("split", "split", "partition by this split (medh5 dataset split -o)")
+                        .conflicts_with("claims")
+                        .required_unless_present("claims"),
+                )
+                .arg(count("fold", "fold", "with a k-fold split: this fold is val, every other train", 0))
+                .arg(opt("claims", "claims", "partition by the claims the samples carry for this set id"))
+                .arg(opt("definition", "definition", "a JSON document supplying task, policy, slots and target"))
+                .arg(opt("id", "id", "the task id (default: the definition's)"))
+                .arg(opt("version", "version", "the task version (default: the definition's)"))
+                .arg(opt("namespace", "namespace", "the identity namespace (default: the definition's)"))
+                .arg(opt("description", "description", "the task's description"))
+                .arg(opt(
+                    "training_partition",
+                    "training-partition",
+                    "the partition preprocessing is fitted on (default: train)",
+                ))
+                .arg(opt("rows", "rows", "a CSV of rows: row_id,subject_id,cutoff_us"))
+                .arg(int("min_follow_up_us", "min-follow-up-us", "the target's minimum follow-up for a negative"))
+                .arg(json()),
+        )
         .subcommand(
             Command::new("validate")
                 .about("check a manifest without opening its sources (T1xx, T2xx)")
                 .arg(manifest())
                 .arg(json()),
         )
-        .subcommand(
+        .subcommand(confinement(
             Command::new("preflight")
                 .about("open and check every source, and report each row: eligible, uncertifiable, excluded or error")
                 .arg(manifest())
                 .arg(opt("base", "base", "resolve relative source URIs here (default: the manifest's directory)"))
                 .arg(flag("deep", "deep", "re-verify every dataset of every source, not only the clinical ones"))
                 .arg(json()),
-        )
-        .subcommand(
+        ))
+        .subcommand(confinement(
+            Command::new("repin")
+                .about(
+                    "pin sources to the samples they name now, refusing any that is not a whole version of its subject",
+                )
+                .arg(manifest())
+                .arg(opt("base", "base", "resolve relative source URIs here (default: the manifest's directory)"))
+                .arg(
+                    opt("source", "source", "repin only this source id (repeatable; default: every source)")
+                        .action(clap::ArgAction::Append),
+                )
+                .arg(flag("dry_run", "dry-run", "report what would change and write nothing"))
+                .arg(opt("out", "out", "write the repinned manifest here (default: in place)").short('o'))
+                .arg(json()),
+        ))
+        .subcommand(confinement(
             Command::new("reconcile")
                 .about("record the events several fragments of a subject share, and their digests")
                 .arg(manifest())
                 .arg(opt("base", "base", "resolve relative source URIs here (default: the manifest's directory)"))
                 .arg(opt("out", "out", "write the reconciled manifest here (default: in place)").short('o')),
-        )
+        ))
 }
 
 fn cache() -> Command {
-    group("cache", "feature caches derived from MEDH5 sources (medh5.cache/1)").subcommand(
+    let cache = || positional("path", "a .medh5cache file");
+    group("cache", "feature caches derived from MEDH5 sources (medh5.cache/1)")
+        .subcommand(
+            Command::new("info")
+                .about("what a cache holds: its level, encoder, output, task and how many entries and sources")
+                .arg(cache())
+                .arg(json()),
+        )
+        .subcommand(
+            Command::new("ls")
+                .about("list a cache's entries: id, source pins, event and document or row and cutoff, digest")
+                .arg(cache())
+                .arg(opt("source", "source", "only the entries reading this source version (its content_id)"))
+                .arg(opt("row", "row", "only the entry of this row"))
+                .arg(json()),
+        )
+        .subcommand(confinement(
         Command::new("validate")
             .about("check a cache's checksums and pins, and --- given a task --- its admissibility (T4xx)")
             .arg(positional("path", "a .medh5cache file"))
             .arg(opt("task", "task", "also check the cache against this task manifest (T404-T406)"))
+            .arg(
+                opt(
+                    "task_base",
+                    "task-base",
+                    "resolve the task's relative source URIs here (default: the task manifest's directory); an entry \
+                     source the task pins is opened where the task says",
+                )
+                .requires("task"),
+            )
             .arg(opt(
                 "base",
                 "base",
-                "resolve the entries' relative source URIs here (default: the manifest's directory with --task, else \
-                 the cache's)",
+                "resolve the relative URIs of entry sources the task does not pin here (default: the task's base \
+                 with --task, else the cache's directory)",
             ))
             .arg(json()),
-    )
+    ))
 }
 
 #[cfg(test)]

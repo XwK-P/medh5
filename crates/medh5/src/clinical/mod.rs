@@ -31,9 +31,9 @@ pub use check::{
 };
 pub use columns::TextColumn;
 pub use model::{
-    Bounds, ClinicalRecords, Clock, Descriptor, Document, Event, Link, ASSESSMENT_SYSTEM, CLOCK_REFERENCES,
-    COMPARATORS, DAY, ENDPOINT_TYPES, EVENT_KINDS, GROUP, HOUR, LESION_PRESENCE, LESION_VALUES, MEDIA_TYPES,
-    MIN_VERSION, PROFILE, RELATIONS, SCHEMA, SECOND, STATUSES, TEMPORAL_TYPES,
+    days, hours, round_micros, Bounds, ClinicalRecords, Clock, Descriptor, Document, Event, Link, ASSESSMENT_SYSTEM,
+    CLOCK_REFERENCES, COMPARATORS, DAY, ENDPOINT_TYPES, EVENT_KINDS, GROUP, HOUR, LESION_PRESENCE, LESION_VALUES,
+    MEDIA_TYPES, MIN_VERSION, PROFILE, RELATIONS, SCHEMA, SECOND, STATUSES, TEMPORAL_TYPES,
 };
 pub use select::{select, Chains, Selected, Selection, SelectionPolicy, POLICIES};
 pub use table::{recognised, Clinical, DocumentInfo, Documents};
