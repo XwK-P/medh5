@@ -144,6 +144,7 @@ _BY_NAME: dict[str, Case] = {c.name: c for c in CASES}
 
 
 def case_by_name(name: str) -> Case:
+    """The conformance case called *name*; a ``KeyError`` names an unknown one."""
     try:
         return _BY_NAME[name]
     except KeyError:

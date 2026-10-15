@@ -1,0 +1,88 @@
+"""Every public name has a reference entry, and the hand-written pages catch up.
+
+`docs/reference/api-index.md` is generated from the installed package by
+`.github/scripts/api_index.py`, as `THIRD_PARTY_NOTICES` is from the lock: a
+row per name in a public module's `__all__`, with its docstring's first
+sentence and the section of the pages that documents it.  At 2.0.2, 470 of the
+names were named on no page outside the specification.
+`tests/project/undocumented_api.txt` lists the ones still without a section,
+and may only shrink: a pull request that adds a public name documents it.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+from types import ModuleType
+
+import pytest
+
+from tests.helpers import ROOT
+
+# The index covers `medh5.torch`, whose classes are what PyTorch makes them.
+pytest.importorskip("torch")
+
+
+def _api_index() -> ModuleType:
+    path = ROOT / ".github" / "scripts" / "api_index.py"
+    spec = importlib.util.spec_from_file_location("api_index", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["api_index"] = module  # dataclasses resolves the module by name
+    spec.loader.exec_module(module)
+    return module
+
+
+api_index = _api_index()
+
+
+@pytest.fixture(scope="module")
+def rows() -> list:
+    return api_index.rows()
+
+
+def test_the_api_index_is_current() -> None:
+    assert api_index.main(["--check"]) == 0, (
+        "docs/reference/api-index.md is stale: run python .github/scripts/api_index.py"
+    )
+
+
+def test_every_public_name_is_documented_or_listed(rows: list) -> None:
+    listed = set(api_index.listed())
+    missing = sorted(
+        row.path for row in rows if row.section is None and row.path not in listed
+    )
+    assert not missing, (
+        "public names no page documents; name each in the section of "
+        f"docs/reference/ that covers it: {missing}"
+    )
+
+
+def test_the_undocumented_list_only_shrinks(rows: list) -> None:
+    """No listed name is now documented, or gone: either is a line to delete."""
+    by_path = {row.path: row for row in rows}
+    stale = [
+        path
+        for path in api_index.listed()
+        if path not in by_path or by_path[path].section is not None
+    ]
+    assert not stale, f"delete from tests/project/undocumented_api.txt: {stale}"
+    assert api_index.listed() == sorted(set(api_index.listed()))
+
+
+def test_every_public_name_has_a_docstring(rows: list) -> None:
+    """A constant is exempt: its `__doc__` is its type's."""
+    bare = sorted(
+        row.path
+        for row in rows
+        if not row.summary and not row.kind.startswith("constant")
+    )
+    assert not bare, f"public names without a docstring: {bare}"
+
+
+def test_a_command_does_not_document_the_function_of_its_name() -> None:
+    """`medh5 pack` on the command line's page is the command, not
+    `medh5.collection.pack`; the function's entry links the Python pages."""
+    found = api_index.sections({"pack", "fix"})
+    for name in ("pack", "fix"):
+        assert found[name].page not in ("reference/cli.md", "reference/rust.md")

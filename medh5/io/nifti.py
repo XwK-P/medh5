@@ -53,6 +53,7 @@ COORD_SYSTEMS = ("LPS", "RAS")
 
 
 def require_nibabel() -> Any:
+    """Import nibabel, or raise an ``ImportError`` naming the extra to install."""
     return require("nibabel", extra="nifti", purpose="NIfTI conversion")
 
 

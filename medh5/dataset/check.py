@@ -34,6 +34,9 @@ which re-reads every ``content_id``; ``C204`` is ``dataset split``'s refusal."""
 
 @dataclass(slots=True)
 class Finding:
+    """One cohort check's finding: its `C`-code, severity, message and the
+    samples or paths it concerns."""
+
     code: str
     severity: str
     message: str
@@ -57,6 +60,9 @@ class Finding:
 
 @dataclass(slots=True)
 class CohortReport:
+    """What `medh5.dataset.check` found in a cohort: the manifest it read, the
+    number of samples, every finding and each class's coverage."""
+
     manifest_sha256: str
     samples: int
     findings: list[Finding] = field(default_factory=list)

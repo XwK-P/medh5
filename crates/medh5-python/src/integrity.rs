@@ -29,6 +29,11 @@ pub fn verify_result_to_py<'py>(py: Python<'py>, r: &verify::VerifyResult) -> Py
     Ok(out.into_any())
 }
 
+/// Return the `"<algo>:<hex>"` digest of an in-memory array stored at `path` (§13.1).
+///
+/// The digest covers the canonical byte stream --- the path, the dtype, the
+/// shape and the little-endian bytes --- so it equals the digest of a dataset
+/// holding the same array, however that is compressed.
 #[pyfunction]
 #[pyo3(signature = (path, array, algo="sha256"))]
 fn array_digest(py: Python<'_>, path: &str, array: &Bound<'_, PyAny>, algo: &str) -> R<String> {
@@ -36,6 +41,9 @@ fn array_digest(py: Python<'_>, path: &str, array: &Bound<'_, PyAny>, algo: &str
     Ok(py.detach(|| digest::array_digest(path, &array, algo))?)
 }
 
+/// Return the `"<algo>:<hex>"` digest of a byte string.
+///
+/// `algo` is one of `DIGEST_ALGOS`; another is refused.
 #[pyfunction]
 #[pyo3(signature = (payload, algo="sha256"))]
 fn digest_bytes(py: Python<'_>, payload: &[u8], algo: &str) -> R<String> {
@@ -43,6 +51,7 @@ fn digest_bytes(py: Python<'_>, payload: &[u8], algo: &str) -> R<String> {
     Ok(py.detach(|| medh5::digest::digest_bytes(payload, algo))?)
 }
 
+/// Split a `"<algo>:<hex>"` digest into `(algo, hex)`, raising E703 when it is malformed (§13.1).
 #[pyfunction]
 fn parse_digest(value: &str) -> R<(String, String)> {
     Ok(medh5::digest::parse_digest(value)?)
@@ -151,6 +160,10 @@ fn canonical_attrs(obj: &Bound<'_, PyAny>, names: Vec<String>) -> R<String> {
     })
 }
 
+/// Return the digest of the canonical JSON of an object's named attributes (§13.2).
+///
+/// `obj` is a `Dataset`, a `Group` or a `Sample` (its root). Only those of
+/// `names` the object carries are hashed, in sorted order.
 #[pyfunction]
 #[pyo3(signature = (obj, names, algo="sha256"))]
 fn attrs_digest(obj: &Bound<'_, PyAny>, names: Vec<String>, algo: &str) -> R<String> {
@@ -206,12 +219,21 @@ fn compute_content_id(
     Ok(py.detach(move || digest::compute_content_id(&g, &names, &algo, None))?)
 }
 
+/// Whether the dataset at `path` under `root` matches its stored `digest` attribute (§13.1).
+///
+/// The digest is recomputed over the decompressed content. A dataset without a
+/// `digest` is `False`; a malformed one raises (E703).
 #[pyfunction]
 fn verify_object(py: Python<'_>, root: &Bound<'_, PyAny>, path: &str) -> R<bool> {
     let g = group_of(root)?;
     Ok(py.detach(move || verify::verify_object(&g, path))?)
 }
 
+/// Return the names of the sampling index entries whose `source_digest` no longer matches (§13.3).
+///
+/// An entry is stale when it declares no `source_digest`, when its annotation
+/// is gone, or when the annotation's digest has changed. A stale entry is not a
+/// file error: readers ignore it and rebuild.
 #[pyfunction]
 fn stale_index_entries<'py>(py: Python<'py>, root: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
     let g = group_of(root)?;
@@ -233,6 +255,10 @@ fn verify_root<'py>(
     Ok(verify_result_to_py(py, &result)?)
 }
 
+/// Return every stored chunk of a dataset as `bytes`, exactly as it sits on disk.
+///
+/// The chunks are still compressed, in storage order; a dataset that is not
+/// chunked gives an empty list.
 #[pyfunction]
 fn raw_chunks<'py>(py: Python<'py>, dataset: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
     let ds = crate::nodes::dataset_arg(dataset)?.get().ds().clone();
@@ -240,6 +266,11 @@ fn raw_chunks<'py>(py: Python<'py>, dataset: &Bound<'py, PyAny>) -> R<Bound<'py,
     Ok(PyList::new(py, chunks.iter().map(|c| PyBytes::new(py, c)))?)
 }
 
+/// Return the paths at which two group trees differ byte for byte; empty means a pure copy.
+///
+/// Structure, attributes and *stored* chunk bytes are compared, so a
+/// recompressed copy differs. Links are compared as a copy keeps them: a soft
+/// link by the path it holds, not followed.
 #[pyfunction]
 fn subtrees_identical<'py>(py: Python<'py>, a: &Bound<'py, PyAny>, b: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
     let (a, b) = (group_of(a)?, group_of(b)?);

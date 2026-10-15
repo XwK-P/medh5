@@ -101,6 +101,7 @@ de-identified.
 
 
 def require_pydicom() -> Any:
+    """Import pydicom, or raise an ``ImportError`` naming the extra to install."""
     return require("pydicom", extra="dicom", purpose="DICOM conversion")
 
 

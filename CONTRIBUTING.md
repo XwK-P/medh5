@@ -46,6 +46,7 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
   && python .github/scripts/third_party_notices.py --check \
   && python .github/scripts/changelog.py check \
   && ruff check . && ruff format --check . && mypy medh5 \
+  && python .github/scripts/api_index.py --check \
   && pytest tests/ --cov=medh5 --cov-fail-under=90 \
   && medh5 conformance run /tmp/corpus \
   && cargo run --release -p medh5-cli -- conformance run /tmp/corpus-native \
@@ -220,6 +221,13 @@ working, and goes in 3.0.
   API as text: a change to it regenerates the file
   (`python .github/scripts/public_api.py write`), so the diff shows reviewers
   what changed.
+- **The API index.** `docs/reference/api-index.md` lists every public name
+  with its docstring's first sentence and the section of the docs that covers
+  it; `python .github/scripts/api_index.py` regenerates it, and `--check`
+  fails while it is stale. A new public name gets a docstring and a mention in
+  the reference page that covers it, in code; it is not added to
+  `tests/project/undocumented_api.txt`, which lists the names still waiting
+  for one and may only shrink.
 
 ## Changelog and releases
 

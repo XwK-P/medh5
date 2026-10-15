@@ -117,11 +117,21 @@ fn patch_arg(patch: Option<&Bound<'_, PyAny>>) -> PyResult<chunking::Patch> {
     }
 }
 
+/// Return one CPU's share of the L3 cache in bytes, best effort, with a fallback of ~1.375 MiB.
+///
+/// The size the platform reports is divided by the number of CPUs that share
+/// the cache. The chunk optimiser sizes chunks against it (§14.1).
 #[pyfunction]
 fn detect_l3_bytes() -> u64 {
     chunking::detect_l3_bytes()
 }
 
+/// Return chunk extents for the spatial axes alone, sized to a training patch and the L3 cache.
+///
+/// `patch` is `None` (64 per axis), one size, or one per axis. The patch is
+/// rounded up to a power of two, then grown on the axis least ahead of it
+/// toward a budget of 80% of `l3_bytes` (detected by default), held within
+/// 512 KiB to 4 MiB, for `itemsize`-byte voxels (§14.1).
 #[pyfunction]
 #[pyo3(signature = (spatial_shape, patch=None, *, itemsize=4, l3_bytes=None))]
 fn spatial_chunk_for<'py>(
@@ -134,6 +144,11 @@ fn spatial_chunk_for<'py>(
     Ok(PyTuple::new(py, chunking::spatial_chunk_for(&spatial_shape, &patch_arg(patch)?, itemsize, l3_bytes)?)?)
 }
 
+/// Return a full chunk shape for an array whose axes are described by `axis_kinds` (§14.1).
+///
+/// Spatial axes take `spatial_chunk_for`'s extents and every other axis 1;
+/// `leading` prepends that many size-1 axes, the `(1, *spatial_chunk)` of a
+/// stacked encoding.
 #[pyfunction]
 #[pyo3(signature = (shape, axis_kinds, patch=None, *, itemsize=4, l3_bytes=None, leading=0))]
 fn optimize_chunks<'py>(
@@ -149,6 +164,11 @@ fn optimize_chunks<'py>(
     Ok(PyTuple::new(py, chunking::optimize_chunks(&shape, &kinds, &patch_arg(patch)?, itemsize, l3_bytes, leading)?)?)
 }
 
+/// Return the chunk shape the writer gives an array laid out on `grid` (§14.1).
+///
+/// The grid's `chunk_hint` wins, clipped to the array; otherwise the chunks are
+/// optimised for its `patch_hint`. `leading` prepends size-1 axes for a stacked
+/// encoding.
 #[pyfunction]
 #[pyo3(signature = (grid, itemsize, *, leading=0))]
 fn grid_chunks<'py>(
@@ -160,11 +180,18 @@ fn grid_chunks<'py>(
     Ok(PyTuple::new(py, chunking::grid_chunks(&grid_arg(grid)?, itemsize, leading)?)?)
 }
 
+/// Return the trailing `len(shape)` entries of `proposed` clipped to `shape`, or `None`.
+///
+/// `None` when `proposed` has fewer entries than `shape` has axes.
 #[pyfunction]
 fn fit_chunks<'py>(py: Python<'py>, proposed: Vec<usize>, shape: Vec<usize>) -> PyResult<Option<Bound<'py, PyTuple>>> {
     chunking::fit_chunks(&proposed, &shape).map(|c| PyTuple::new(py, c)).transpose()
 }
 
+/// Return the chunks of a displacement field on `grid`: one vector component per chunk, or `None`.
+///
+/// The chunk is `(1, *spatial_chunk)` of `grid_chunks`, clipped to `shape`;
+/// `None` when `shape` is not `(S, *spatial)` for the grid (§10.4, §14.1).
 #[pyfunction]
 fn field_chunks<'py>(
     py: Python<'py>,
@@ -175,6 +202,10 @@ fn field_chunks<'py>(
     Ok(chunking::field_chunks(&grid_arg(grid)?, &shape, itemsize)?.map(|c| PyTuple::new(py, c)).transpose()?)
 }
 
+/// Return a dict describing a chunking: `chunks`, `chunk_bytes`, `chunk_mib` and `n_chunks`.
+///
+/// The diagnostics `medh5 info` prints for a dataset of `shape` and
+/// `itemsize`-byte elements.
 #[pyfunction]
 fn chunk_report<'py>(
     py: Python<'py>,

@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 Severity = Literal["error", "warning"]
+"""A diagnostic code's severity: an error fails validation, a warning does not."""
 
 Domain = Literal[
     "container",
@@ -47,6 +48,7 @@ Domain = Literal[
     "integrity",
     "clinical",
 ]
+"""The area of the specification a diagnostic code belongs to (§15.2)."""
 
 
 class MEDH5Error(Exception):
