@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -2821,6 +2822,109 @@ class TestConvert:
         code, printed = run(capsys, "migrate", str(broken), "-o", str(tmp_path / "m"))
         assert code == EXIT_ERROR
         assert "WARNING" in printed.out
+
+
+def _clinical_export(inputs: Path, target: Path) -> list[str]:
+    from tests.kits import History
+
+    history = inputs / "history.medh5"
+    History.write(history)
+    return ["clinical", "export", str(history), "-o", str(target)]
+
+
+def _migrate_report(inputs: Path, target: Path) -> list[str]:
+    old = inputs / "old.medh5"
+    write_legacy_sample(old, images={"CT": np.zeros((4, 4, 4), np.int16)})
+    return ["migrate", str(old), "-o", str(inputs / "m"), "--report", str(target)]
+
+
+def _cohort_manifest(inputs: Path) -> Path:
+    """A manifest of three subjects, one sample each."""
+    for subject in ("A", "B", "C"):
+        path = write_sample(inputs / f"{subject}.medh5", sample_id=f"case-{subject}")
+        with medh5.amend(path) as writer:
+            writer.identity(subject_id=f"subj-{subject}")
+    manifest = inputs / "m.json"
+    assert main(["dataset", "index", str(inputs), "-o", str(manifest)]) == EXIT_OK
+    return manifest
+
+
+def _dataset_split(inputs: Path, target: Path) -> list[str]:
+    return ["dataset", "split", str(_cohort_manifest(inputs)), "-o", str(target)]
+
+
+def _dataset_stats(inputs: Path, target: Path) -> list[str]:
+    return ["dataset", "stats", str(_cohort_manifest(inputs)), "-o", str(target)]
+
+
+# Every file the command line writes, each through the engine's replace.
+_COMMAND_SITES = {
+    "clinical export -o": _clinical_export,
+    "migrate --report": _migrate_report,
+    "dataset split -o": _dataset_split,
+    "dataset stats -o": _dataset_stats,
+}
+
+
+@pytest.mark.parametrize("site", _COMMAND_SITES.values(), ids=list(_COMMAND_SITES))
+class TestCommandLineReplaces:
+    """Every file the command line writes is replaced as an amendment
+    replaces a sample (§14.4, D23): until 2.1 these four wrote in place,
+    through a link and not atomically, where `convert --report` replaced
+    one."""
+
+    @staticmethod
+    def _write(tmp_path: Path, target: Path, site: Any) -> bytes:
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        assert main(site(inputs, target)) == EXIT_OK
+        return target.read_bytes()
+
+    def test_S14_4_a_link_is_kept_and_the_file_it_names_replaced(
+        self, tmp_path: Path, site: Any
+    ):
+        real = tmp_path / "data" / "real.json"
+        real.parent.mkdir()
+        real.write_bytes(b"before\n")
+        link = tmp_path / "given.json"
+        try:
+            link.symlink_to(Path("data", "real.json"))
+        except OSError as exc:  # pragma: no cover - no links on this file system
+            pytest.skip(str(exc))
+        inode = real.stat().st_ino
+        written = self._write(tmp_path, link, site)
+        assert link.is_symlink() and os.readlink(link) == str(Path("data", "real.json"))
+        assert real.read_bytes() == written and json.loads(written)
+        assert real.stat().st_ino != inode  # replaced, not written in place
+        assert [p.name for p in real.parent.iterdir()] == ["real.json"]
+        beside = sorted(p.name for p in tmp_path.iterdir())
+        assert beside == ["data", "given.json", "in"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    def test_S14_4_the_file_s_mode_is_kept(self, tmp_path: Path, site: Any):
+        target = tmp_path / "private.json"
+        target.write_bytes(b"before\n")
+        target.chmod(0o600)
+        assert json.loads(self._write(tmp_path, target, site))
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_S14_4_a_read_only_file_is_replaced_and_stays_read_only(
+        self, tmp_path: Path, site: Any
+    ):
+        target = tmp_path / "read-only.json"
+        target.write_bytes(b"before\n")
+        target.chmod(stat.S_IREAD)
+        try:
+            assert json.loads(self._write(tmp_path, target, site))
+            assert not target.stat().st_mode & stat.S_IWRITE
+        finally:
+            target.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    def test_S14_4_lines_end_in_a_line_feed_on_every_platform(
+        self, tmp_path: Path, site: Any
+    ):
+        written = self._write(tmp_path, tmp_path / "lines.json", site)
+        assert written.endswith(b"\n") and b"\r" not in written
 
 
 # The commands that take ``--workers``, with options that make each do work.

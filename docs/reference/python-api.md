@@ -487,8 +487,10 @@ file, the other writer's work was lost without an error. Amend it again.
 On POSIX, anything holding the file open across an amend keeps reading the old
 version; Windows cannot replace a file that is open, so close every reader of
 it before the commit, whose rename otherwise fails and leaves the file as it
-was. The file's permission bits, read-only included, are carried onto the
-replacement. Through a symbolic link, the file the link names is rewritten and
+was. The file's permission bits, read-only included, and its group are
+carried onto the replacement; where you are not in the file's group, the
+replacement grants its own group only what it grants everyone. Access control
+lists and extended attributes are not carried. Through a symbolic link, the file the link names is rewritten and
 the link kept; a file with several hard links is replaced at the path given
 only, and its other names keep the old version. A link in a directory anyone
 can write to, such as `/tmp`, that neither you nor the directory's owner owns

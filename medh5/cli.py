@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import signal
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -267,15 +266,16 @@ def _files(
 
 
 def _same_file(first: Path, second: Path) -> bool:
-    """Whether two paths name one file: equal once resolved, or one file on
-    disk (a hard link, or a name the resolution cannot see through)."""
+    """Whether two paths name one file: equal once resolved (an output not
+    written yet has no identity to compare), or one file on disk by the
+    engine's identity (a hard link, or a name the resolution cannot see
+    through)."""
+    from medh5 import _core
+
     with contextlib.suppress(OSError, RuntimeError):  # RuntimeError: a link loop
         if first.resolve() == second.resolve():
             return True
-    try:
-        return os.path.samefile(first, second)
-    except OSError:  # one of them does not exist
-        return False
+    return _core.same_file(first, second)
 
 
 def _inside(path: Path, tree: Path) -> bool:
@@ -411,9 +411,9 @@ def _write_report(path: Path, text: str) -> None:
     """*text* as *path*, through the engine's replace (§14.4): a link at
     *path* is kept and the file it names replaced, and an error names
     *path*, not the temporary beside it."""
-    from medh5._files import write_text
+    from medh5 import _core
 
-    write_text(path, text)
+    _core.write_atomic(path, text)
 
 
 def _from_nifti(args: Any) -> int:

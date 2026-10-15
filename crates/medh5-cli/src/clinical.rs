@@ -249,7 +249,7 @@ fn export(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let text = pretty(&records.to_json()) + "\n";
     match get_str(m, "out") {
         Some(out) => {
-            std::fs::write(out, text).map_err(|e| medh5::error::os_error(&e, out))?;
+            medh5::h5::file::write_atomic(Path::new(out), text.as_bytes())?;
             ctx.print(format!(
                 "wrote {} events, {} documents and {} links to {out}",
                 records.events.len(),
