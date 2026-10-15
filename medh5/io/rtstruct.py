@@ -46,7 +46,7 @@ import numpy.typing as npt
 from medh5 import _core
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry import MM_PER_UNIT
-from medh5.io._common import sanitize_key
+from medh5.io._common import examined_classes, sanitize_key
 from medh5.io._patient import (
     _one_frame,
     _require_same_frame,
@@ -67,6 +67,9 @@ _POINT = "POINT"
 # What `from_rtstruct(open_curves=...)` takes.  Open curves need a kind of
 # their own, `polylines`, which format 1.2 adds (medh5 2.2.0).
 _OPEN_CURVES = ("omit",)
+
+# A DICOM Short String (SH) holds at most 16 characters: `StructureSetLabel`.
+_SH_LENGTH = 16
 
 
 def read_rtstruct(
@@ -202,6 +205,9 @@ def from_rtstruct(
     annotation.  An explicit *annotated_classes* list is split: a class
     drawn as points is examined in the points annotation, every other class
     it names in the contours one; ``"all"`` applies to the contours only.
+    A class the list names that no ROI supplies was examined and found
+    absent (§11.3): minted after the ROIs' classes when the sample has no
+    label set, else one its label set must hold (E402).
 
     Every contour must lie in a slice of the grid, along its first axis: one
     between two slices, across several (drawn on another orientation, or not
@@ -343,8 +349,15 @@ def from_rtstruct(
 
     polygons = _combine(contours, ids, names, label_set, target, log, xor)
     points_id = points_id or f"{ann_id}_points"
-    on_contours, on_points = _split_examined(
+    label_set, examined = examined_classes(
         annotated_classes,
+        label_set,
+        mint=existing is None,
+        log=log,
+        supplied="the ROIs",
+    )
+    on_contours, on_points = _split_examined(
+        examined,
         [ids[n] for n in sorted(contours)],
         [ids[n] for n in sorted(marked)],
         label_set,
@@ -475,19 +488,24 @@ def from_rtstruct(
 
 
 def _split_examined(
-    annotated_classes: Sequence[str] | str,
+    annotated_classes: Sequence[int | str] | str,
     on_contours: Sequence[int],
     on_points: Sequence[int],
     label_set: Any,
     log: ConversionReport,
-) -> tuple[Sequence[str] | str, Sequence[str] | str]:
+) -> tuple[Sequence[int | str] | str, Sequence[int | str] | str]:
     """*annotated_classes* for the contours annotation and for the points one.
 
     A list is split: a class drawn as points is examined in the points
     annotation, every other class it names in the contours annotation (and a
     class drawn both ways in both).  ``"all"`` is the contours annotation's:
     a structure set's markers are not a search of every class for points.
+    A structure set of points alone writes no contours annotation, so there
+    every class a list names is the points annotation's: one drawn nowhere
+    was examined and found absent, and would otherwise be lost.
     """
+    if not isinstance(annotated_classes, str) and on_points and not on_contours:
+        return [], list(annotated_classes)
     if isinstance(annotated_classes, str):
         if annotated_classes == "all" and on_points:
             log.decision(
@@ -504,6 +522,9 @@ def _split_examined(
         found = label_set.get(entry)
         return None if found is None else int(found.id)
 
+    def shown(entries: Sequence[int | str]) -> list[str]:
+        return [label_set[c].key if c in label_set else str(c) for c in entries]
+
     to_points = [c for c in annotated_classes if class_id(c) in points]
     to_contours = [
         c
@@ -513,13 +534,10 @@ def _split_examined(
     if to_points:
         log.decision(
             "annotated_classes",
-            f"class(es) {[str(c) for c in to_points]} are drawn as points, so "
-            "they are examined in the points annotation; the others named, in "
-            "the contours annotation",
-            {
-                "points": [str(c) for c in to_points],
-                "contours": [str(c) for c in to_contours],
-            },
+            f"class(es) {shown(to_points)} are drawn as points, so they are "
+            "examined in the points annotation; the others named, in the "
+            "contours annotation",
+            {"points": shown(to_points), "contours": shown(to_contours)},
         )
     return to_contours, to_points
 
@@ -1175,6 +1193,10 @@ def to_rtstruct(
     with ``RTROIInterpretedType`` ``"MARKER"`` (a contours ROI is
     ``"ORGAN"``).  Its rows must each have a class, and a class drawn in both
     annotations is refused: one ROI is areas or points, not both.
+
+    *label* is the ``StructureSetLabel``, a DICOM SH: one longer than 16
+    characters is refused before anything is read, where it was written and
+    the file was not valid DICOM.
     """
     import medh5
     from medh5.io.dicom import _dcmread, require_pydicom
@@ -1183,6 +1205,12 @@ def to_rtstruct(
     from pydicom.dataset import Dataset, FileMetaDataset
     from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
+    if len(label) > _SH_LENGTH:
+        raise MEDH5ValidationError(
+            f"label={label!r} (--label) is {len(label)} characters, and the "
+            f"StructureSetLabel it is written as is a DICOM SH of at most "
+            f"{_SH_LENGTH}: shorten it"
+        )
     log = report or ConversionReport(converter="to-rtstruct")
     log.source = os.fspath(sample)
     datasets = [_dcmread(p) for p in source_images]

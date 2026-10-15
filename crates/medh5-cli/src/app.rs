@@ -92,6 +92,27 @@ fn group(name: &'static str, help: &'static str) -> Command {
         .arg_required_else_help(true)
 }
 
+/// `--codec PROFILE`: the codec profile a converter writes with.
+fn codec() -> Arg {
+    opt("codec", "codec", "codec profile to write: training, balanced (default), archive or portable")
+        .value_name("PROFILE")
+        .value_parser(CODEC_PROFILES)
+        .default_value("balanced")
+}
+
+/// `--annotated-classes`: which classes an import examined (§11.3).
+fn annotated_classes() -> Arg {
+    opt(
+        "annotated_classes",
+        "annotated-classes",
+        "the classes that were examined: all_given (default), the classes the input supplies; all, every class \
+         of the label set; or K1,K2,... --- a class named that the input does not supply was examined and found \
+         absent",
+    )
+    .value_name("all_given|all|K1,K2")
+    .default_value("all_given")
+}
+
 fn report_args(cmd: Command) -> Command {
     cmd.arg(Arg::new("report").long("report").value_name("FILE").help("write the report as JSON")).arg(json())
 }
@@ -518,10 +539,52 @@ fn convert() -> Vec<Command> {
                     "import every 2-D input as a one-slice 3-D grid, (x, y, 1), keeping its full affine: a plane off \
                      z = 0 or not parallel to x-y is imported where it lies instead of refused",
                 ))
+                .arg(pairs(
+                    "value_units",
+                    "value-units",
+                    "NAME=UNIT",
+                    "the unit an image's values are in (it is then quantitative); repeatable",
+                ))
+                .arg(
+                    opt(
+                        "label_set",
+                        "label-set",
+                        "a label-set JSON file the masks are matched to by key, instead of minting classes",
+                    )
+                    .value_name("FILE"),
+                )
+                .arg(annotated_classes())
+                .arg(codec())
                 .arg(opt("sample_id", "sample-id", "sample id to write; defaults to the output filename"))
                 .arg(opt("subject_id", "subject-id", "subject id to write")),
         ))
-        .subcommand(
+        .subcommand(report_args(
+            Command::new("import-seg-nifti")
+                .about("NIfTI masks -> an annotation of a sample")
+                .arg(positional("sample", "the sample to add the annotation to"))
+                .arg(pairs("mask", "mask", "NAME=PATH", "a mask on the sample's grid; repeatable").required(true))
+                .arg(opt("ann_id", "id", "id for the new annotation").default_value("seg"))
+                .arg(opt("grid", "grid", "grid the masks sit on (default: the sample's reference grid)"))
+                .arg(flag(
+                    "assume_aligned",
+                    "assume-aligned",
+                    "take a mask's voxels as the grid's although its header places them elsewhere: for a header \
+                     known to be wrong. Recorded as a guess.",
+                ))
+                .arg(flag(
+                    "assume_geometry",
+                    "assume-geometry",
+                    "import a mask that declares no spatial mapping (sform_code = qform_code = 0) by taking the \
+                     pixdim fallback. Recorded as a guess.",
+                ))
+                .arg(flag(
+                    "plane_as_volume",
+                    "plane-as-volume",
+                    "read every 2-D mask as a one-slice 3-D grid, (x, y, 1), keeping its full affine",
+                ))
+                .arg(annotated_classes()),
+        ))
+        .subcommand(report_args(
             Command::new("to-nifti")
                 .about("one image or class -> NIfTI")
                 .arg(positional("path", "the sample to read"))
@@ -530,7 +593,7 @@ fn convert() -> Vec<Command> {
                 .arg(opt("annotation", "annotation", "export this annotation instead of the image"))
                 .arg(opt("class_key", "class", "with --annotation, the single class to export"))
                 .arg(flag("stored", "stored", "skip the rescale")),
-        )
+        ))
         .subcommand(report_args(
             Command::new("from-dicom")
                 .about("a DICOM tree -> samples")
@@ -561,7 +624,8 @@ fn convert() -> Vec<Command> {
                     )
                     .value_parser(["refuse", "apply"])
                     .default_value("refuse"),
-                ),
+                )
+                .arg(codec()),
         ))
         .subcommand(report_args(
             Command::new("from-dicom-seg")
@@ -575,7 +639,8 @@ fn convert() -> Vec<Command> {
                     "frame-salt",
                     "the salt `medh5 scrub` pseudonymised the sample's frames with: the SEG's frame is compared as the \
                      scrub wrote it",
-                )),
+                ))
+                .arg(annotated_classes()),
         ))
         .subcommand(report_args(
             Command::new("to-dicom-seg")
@@ -584,6 +649,23 @@ fn convert() -> Vec<Command> {
                 .arg(positional("annotation", "the annotation to export"))
                 .arg(positional("out", "the DICOM SEG file to write"))
                 .arg(append("source", "source", "a source DICOM file").required(true))
+                .arg(
+                    append(
+                        "classes",
+                        "class",
+                        "export only this class (id or key), which the annotation examined; repeatable",
+                    )
+                    .value_name("K"),
+                )
+                .arg(
+                    opt(
+                        "series_description",
+                        "series-description",
+                        "the SEG's SeriesDescription, a DICOM LO of at most 64 characters (default: medh5 \
+                         segmentation)",
+                    )
+                    .value_name("TEXT"),
+                )
                 .arg(opt(
                     "frame_salt",
                     "frame-salt",
@@ -623,6 +705,16 @@ fn convert() -> Vec<Command> {
                     "rasterize",
                     "also derive a voxel annotation; the rule is recorded in provenance",
                 ))
+                .arg(
+                    opt(
+                        "mask_id",
+                        "mask-id",
+                        "with --rasterize: id for the voxel annotation (default: the contours' id + _mask)",
+                    )
+                    .value_name("ID")
+                    .requires("rasterize"),
+                )
+                .arg(annotated_classes())
                 .arg(pairs(
                     "roi_classes",
                     "roi",
@@ -659,6 +751,14 @@ fn convert() -> Vec<Command> {
                 .arg(positional("annotation", "the contour annotation to export"))
                 .arg(positional("out", "the RTSTRUCT file to write"))
                 .arg(append("source", "source", "a source DICOM file; repeat once per slice").required(true))
+                .arg(
+                    opt(
+                        "label",
+                        "label",
+                        "the StructureSetLabel, a DICOM SH of at most 16 characters (default: medh5 export)",
+                    )
+                    .value_name("TEXT"),
+                )
                 .arg(opt("points", "points", "a points annotation to write as POINT ROIs (MARKER)"))
                 .arg(opt(
                     "frame_salt",
@@ -673,6 +773,12 @@ fn convert() -> Vec<Command> {
                 .arg(positional("root", "the nnU-Net v2 dataset directory"))
                 .arg(positional("out", "directory to write the samples into"))
                 .arg(append("case_ids", "case", "only import these case ids; repeatable").value_name("CASE"))
+                .arg(
+                    opt("coord_system", "coord-system", "world coordinate system to store: LPS (default) or RAS")
+                        .value_parser(["LPS", "RAS"])
+                        .default_value("LPS"),
+                )
+                .arg(codec())
                 .arg(flag(
                     "include_test",
                     "include-test",
@@ -690,6 +796,11 @@ fn convert() -> Vec<Command> {
                         .default_value("Dataset001_medh5"),
                 )
                 .arg(opt("annotation", "annotation", "the annotation to export as labels").default_value("seg"))
+                .arg(
+                    opt("file_ending", "file-ending", "the NIfTI files' ending: .nii.gz (default) or .nii")
+                        .value_parser([".nii.gz", ".nii"])
+                        .default_value(".nii.gz"),
+                )
                 .arg(
                     append(
                         "classes",
@@ -738,7 +849,8 @@ fn convert() -> Vec<Command> {
             .arg(
                 opt("write_labels", "write-labels", "mint the cohort's label set, write it for review, and stop")
                     .value_name("FILE"),
-            ),
+            )
+            .arg(codec()),
     );
     vec![convert, migrate]
 }
@@ -1035,6 +1147,7 @@ mod tests {
             (&["fix", "x.medh5", "--rewrite-digests"], "--reason"),
             (&["dataset", "split", "m.json", "--k-folds", "5", "--fold", "0"], "--write-claims"),
             (&["dataset", "split", "m.json", "--assigned-by", "me"], "--write-claims"),
+            (&["convert", "from-rtstruct", "rt.dcm", "c.medh5", "--mask-id", "m"], "--rasterize"),
         ] {
             let error = refused(args);
             assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument, "{args:?}");

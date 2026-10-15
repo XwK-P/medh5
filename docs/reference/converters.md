@@ -48,6 +48,7 @@ the commands and the contracts.
 
 ```
 $ medh5 convert from-nifti case.medh5 --image CT=ct.nii.gz --mask liver=liver.nii.gz
+$ medh5 convert import-seg-nifti case.medh5 --mask spleen=spleen.nii.gz --id organs
 $ medh5 convert to-nifti case.medh5 CT out.nii.gz
 $ medh5 convert to-nifti case.medh5 CT liver.nii.gz --annotation organs --class liver
 ```
@@ -134,6 +135,21 @@ letters, digits and underscores — and the name as given is the class's
 display name: `--mask GTV-1=gtv.nii.gz` is the class `gtv_1`, named `GTV-1`.
 Two names that make one key are refused. A mask added with `import_seg_nifti`
 is found in the sample's label set by the key its name makes.
+
+**`label_set=` fixes the class ids** (`--label-set FILE`). Minted, a class's id
+is its rank among the masks one case has, so two cases of a cohort that
+segment different organs number them differently. Given a `LabelSet`, or a
+JSON file `medh5.labels.load_file` reads, `from_nifti` matches each mask to the
+class of the key its name makes (or of its name), mints nothing, and writes
+that label set into the sample; a mask it has no class for is refused (E402).
+
+**A class examined and found absent is named, not dropped.** A class
+`annotated_classes=` (`--annotated-classes K1,K2`) names that no mask supplies
+was searched for and not found (§11.3). Where the import mints its classes it
+mints that one too, after the masks' ids, with a `label_set` decision naming
+it; with `label_set=`, or in `import_seg_nifti` into a sample that has a label
+set, the class must be in it, and the import is refused (E402) otherwise. The
+DICOM SEG and RTSTRUCT importers do the same. It was a bare `KeyError`.
 
 **A sample is one subject**, and NIfTI names none: without `--subject-id`
 (`subject_id=`) the sample is a subject of its own, its id the sample's, and
@@ -240,9 +256,15 @@ study — with a warning and a record — when identity cannot be established.
 
 ```
 $ medh5 convert from-dicom-seg seg.dcm case.medh5 --id organs
+$ medh5 convert from-dicom-seg seg.dcm case.medh5 --annotated-classes liver,tumor
 $ medh5 convert to-dicom-seg case.medh5 organs out.dcm \
     --source ct/1.dcm --source ct/2.dcm ...
 ```
+
+`to-dicom-seg --class K` (`classes=`) exports only the classes named, each one
+the annotation examined; `--series-description TEXT` (`series_description=`)
+is the SEG's `SeriesDescription`, a DICOM LO of at most 64 characters, and a
+longer one is refused.
 
 **Frames are placed by geometry**, from each frame's `PlanePositionSequence` —
 not by frame index. Each frame must lie on one of the grid's slices and start at
@@ -381,7 +403,12 @@ from_rtstruct("plan.dcm", "case.medh5", rasterize=False)
 **Contours stay contours** (§8.6), in world coordinates. `--rasterize` is opt-in,
 and the rule it used goes into the provenance graph; a class whose contours
 enclose no voxel centre is a warning, since its empty mask reads as examined
-and absent.
+and absent. The mask is annotation `<id>_mask` unless `--mask-id ID`
+(`mask_id=`) names another.
+
+**`--label TEXT` (`label=`) is the export's `StructureSetLabel`**, a DICOM SH
+of at most 16 characters. A longer one is refused before anything is read; it
+was written, and the file was not valid DICOM.
 
 **Areas import as contours, markers as points.** A medh5 contour is a closed
 polygon, so an ROI drawn as `CLOSED_PLANAR` contours imports, and so does one
@@ -471,7 +498,7 @@ class (`E402`) and a class in both annotations are refused.
 ### nnU-Net v2
 
 ```
-$ medh5 convert from-nnunet /Dataset001_Liver out/
+$ medh5 convert from-nnunet /Dataset001_Liver out/ --coord-system LPS --codec archive
 $ medh5 convert to-nnunet /out case1.medh5 case2.medh5 --dataset-name Dataset001_Liver
 ```
 
@@ -554,7 +581,8 @@ test`; an unlabeled case claiming `train` or `val` is refused, even with
 `sample_id`, which must be a sample key (`[A-Za-z0-9_.-]`, not `.` or `..`),
 and no two cases may differ only in case — one would overwrite the other on a
 case-insensitive file system; `--dataset-name` is held to the same rule, and
-`file_ending=` is `.nii.gz` (the default) or `.nii`: every file is NIfTI. **Every
+`file_ending=` (`--file-ending`) is `.nii.gz` (the default) or `.nii`: every
+file is NIfTI. **Every
 case is a training case**: one without the annotation is refused, or with
 `unlabeled="test"` (`--unlabeled test`) written to `imagesTs` and left out of
 `numTraining`. **Label values are consecutive**, as nnU-Net requires: class ids

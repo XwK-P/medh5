@@ -199,7 +199,7 @@ def _files(
             reads.append((what, path))
 
     out = given("out")
-    if command == "from-nifti":
+    if command in ("from-nifti", "import-seg-nifti"):
         for flag in ("image", "mask"):
             for entry in args.get(flag) or []:
                 name, _, value = str(entry).partition("=")
@@ -207,6 +207,9 @@ def _files(
                     reads.append(
                         (f"{flag} {name!r}, which this command reads", Path(value))
                     )
+        read("the label set this command reads", "label_set")
+        # `import-seg-nifti` amends its sample in place, like `from-dicom-seg`.
+        read("the sample this command amends", "sample")
     elif command in ("to-nifti", "to-dicom-seg", "to-rtstruct"):
         read("the sample this command reads", "path")
         for source in args.get("source") or []:
@@ -345,12 +348,28 @@ def _sample_file(path: str) -> str:
     )
 
 
-def _finish(report: ConversionReport, args: Any) -> int:
+def _annotated(value: str | None) -> Sequence[str] | str:
+    """``--annotated-classes``: ``all_given`` and ``all`` as they are, else
+    the comma-separated class keys as a list."""
+    if value is None or value in ("all_given", "all"):
+        return value or "all_given"
+    keys = [key.strip() for key in value.split(",")]
+    if not all(keys):
+        raise MEDH5Error(
+            "--annotated-classes expects all_given, all, or class keys separated "
+            f"by commas, got {value!r}"
+        )
+    return keys
+
+
+def _finish(report: ConversionReport, args: Any, text: str | None = None) -> int:
     """Keep the report where ``--report`` says, print it, and exit on it.
 
     An output the arguments could not name in advance --- a sample of a
     ``from-dicom`` directory --- is checked here: a report naming one is not
-    written, and the command fails rather than replace the sample.
+    written, and the command fails rather than replace the sample.  *text*,
+    when given, is printed in place of the report's text (``--json`` still
+    prints the report).
     """
     target = getattr(args, "report", None)
     refusal = None
@@ -368,7 +387,7 @@ def _finish(report: ConversionReport, args: Any) -> int:
     if getattr(args, "json", False):
         print(json.dumps(report.to_json(), indent=2, default=str))
     else:
-        print(report.format(verbose=True))
+        print(report.format(verbose=True) if text is None else text)
     if refusal is not None:
         return _fail(refusal)
     return EXIT_OK if report.ok else EXIT_ERROR
@@ -397,13 +416,37 @@ def _from_nifti(args: Any) -> int:
         plane_as_volume=args.plane_as_volume,
         sample_id=args.sample_id,
         subject_id=args.subject_id,
+        value_units=_pairs(args.value_units, "value-units") or None,
+        codec=args.codec,
+        annotated_classes=_annotated(args.annotated_classes),
+        label_set=args.label_set,
+    )
+    return _finish(report, args)
+
+
+def _import_seg_nifti(args: Any) -> int:
+    from medh5.io.nifti import import_seg_nifti
+
+    report = import_seg_nifti(
+        _sample_file(args.sample),
+        _pairs(args.mask, "mask"),
+        ann_id=args.ann_id,
+        grid=args.grid,
+        annotated_classes=_annotated(args.annotated_classes),
+        assume_aligned=args.assume_aligned,
+        assume_geometry=args.assume_geometry,
+        plane_as_volume=args.plane_as_volume,
     )
     return _finish(report, args)
 
 
 def _to_nifti(args: Any) -> int:
+    """An export prints the file it wrote, as it always has; ``--json``
+    prints the report instead, and ``--report`` keeps it."""
     from medh5.io.nifti import to_nifti
+    from medh5.io.report import ConversionReport
 
+    report = ConversionReport(converter="to-nifti", source=args.path)
     written = to_nifti(
         _sample_file(args.path),
         args.image,
@@ -411,9 +454,10 @@ def _to_nifti(args: Any) -> int:
         physical=not args.stored,
         annotation=args.annotation,
         class_key=args.class_key,
+        report=report,
     )
-    print(written)
-    return EXIT_OK
+    report.outputs.append(str(written))
+    return _finish(report, args, text=str(written))
 
 
 def _from_dicom(args: Any) -> int:
@@ -426,6 +470,7 @@ def _from_dicom(args: Any) -> int:
         modalities=args.modalities,
         series_uids=args.series_uids,
         per_slice_rescale=args.per_slice_rescale,
+        codec=args.codec,
     )
     return _finish(report, args)
 
@@ -439,6 +484,7 @@ def _from_dicom_seg(args: Any) -> int:
         ann_id=args.ann_id,
         grid=args.grid,
         frame_salt=args.frame_salt,
+        annotated_classes=_annotated(args.annotated_classes),
     )
     return _finish(report, args)
 
@@ -448,11 +494,19 @@ def _to_dicom_seg(args: Any) -> int:
     from medh5.io.report import ConversionReport
 
     report = ConversionReport(converter="to-dicom-seg")
+    # `--series-description`, where given: the default is the converter's.
+    described = (
+        {"series_description": args.series_description}
+        if args.series_description is not None
+        else {}
+    )
     to_dicom_seg(
         _sample_file(args.path),
         args.annotation,
         args.source,
         args.out,
+        classes=args.classes,
+        **described,
         # `--frame-salt`, where the grammar gives this command one.
         frame_salt=getattr(args, "frame_salt", None),
         report=report,
@@ -476,6 +530,8 @@ def _from_rtstruct(args: Any) -> int:
         roi_classes=_numbered(getattr(args, "roi_classes", None), "roi"),
         points_id=getattr(args, "points_id", None),
         open_curves=getattr(args, "open_curves", None) or "omit",
+        mask_id=args.mask_id,
+        annotated_classes=_annotated(args.annotated_classes),
     )
     return _finish(report, args)
 
@@ -485,11 +541,14 @@ def _to_rtstruct(args: Any) -> int:
     from medh5.io.rtstruct import to_rtstruct
 
     report = ConversionReport(converter="to-rtstruct")
+    # `--label`, where given: the default is the converter's.
+    labelled = {"label": args.label} if args.label is not None else {}
     to_rtstruct(
         _sample_file(args.path),
         args.annotation,
         args.source,
         args.out,
+        **labelled,
         frame_salt=args.frame_salt,
         report=report,
         points=getattr(args, "points", None),
@@ -501,7 +560,12 @@ def _from_nnunet(args: Any) -> int:
     from medh5.io.nnunetv2 import from_nnunetv2
 
     report = from_nnunetv2(
-        args.root, args.out, case_ids=args.case_ids, include_test=args.include_test
+        args.root,
+        args.out,
+        case_ids=args.case_ids,
+        include_test=args.include_test,
+        coord_system=args.coord_system,
+        codec=args.codec,
     )
     return _finish(report, args)
 
@@ -513,6 +577,7 @@ def _to_nnunet(args: Any) -> int:
         [_sample_file(p) for p in args.paths],
         args.out,
         dataset_name=args.dataset_name,
+        file_ending=args.file_ending,
         annotation=args.annotation,
         classes=args.classes,
         unlabeled=args.unlabeled,
@@ -524,6 +589,7 @@ def _to_nnunet(args: Any) -> int:
 
 _HANDLERS: dict[str, Callable[[Any], int]] = {
     "from-nifti": _from_nifti,
+    "import-seg-nifti": _import_seg_nifti,
     "to-nifti": _to_nifti,
     "from-dicom": _from_dicom,
     "from-dicom-seg": _from_dicom_seg,

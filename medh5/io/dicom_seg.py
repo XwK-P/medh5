@@ -36,7 +36,7 @@ from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
 from medh5.io import _codes
 from medh5.io._codes import same_concept
-from medh5.io._common import sanitize_key
+from medh5.io._common import examined_classes, sanitize_key
 from medh5.io._frames import _direction, _frame_placement
 
 # Where it was defined, and is still imported from.
@@ -51,6 +51,9 @@ from medh5.io.report import ConversionReport
 
 BINARY = "BINARY"
 FRACTIONAL = "FRACTIONAL"
+
+# A DICOM Long String (LO) holds at most 64 characters: `SeriesDescription`.
+_LO_LENGTH = 64
 
 
 def require_highdicom() -> Any:
@@ -445,6 +448,10 @@ def from_dicom_seg(
     label set, or minted, by the key their labels make --- are combined into
     it: their union, or for ``FRACTIONAL`` their maximum, recorded as a
     decision.
+
+    A class *annotated_classes* names that no segment supplies was examined
+    and found absent (§11.3): minted after the segments' classes when the
+    sample has no label set, else one its label set must hold (E402).
     """
     import medh5
     from medh5.labels import LabelSet
@@ -510,6 +517,13 @@ def from_dicom_seg(
                 {"unbound": [c.key for c in classes if not c.codes]},
             )
     volumes = _by_class(volumes, mapping, segments, label_set, log, geometry)
+    label_set, examined = examined_classes(
+        annotated_classes,
+        label_set,
+        mint=existing is None,
+        log=log,
+        supplied="the SEG's segments",
+    )
 
     with medh5.amend(sample) as writer:
         if existing is None:
@@ -527,7 +541,7 @@ def from_dicom_seg(
                 ann_id,
                 grid=grid_id,
                 probabilities=payload,
-                annotated_classes=annotated_classes,
+                annotated_classes=examined,
                 prov=activity,
             )
         else:
@@ -535,7 +549,7 @@ def from_dicom_seg(
                 ann_id,
                 grid=grid_id,
                 masks=payload,
-                annotated_classes=annotated_classes,
+                annotated_classes=examined,
                 prov=activity,
             )
             if stats is not None and stats.edges:
@@ -869,12 +883,22 @@ def to_dicom_seg(
     by default the others are left out, and *classes* naming one is refused.
     Every class went out, and one nobody looked for became an empty segment ---
     a verified negative to whoever read it back.
+
+    *series_description* is the ``SeriesDescription``, a DICOM LO: one longer
+    than 64 characters is refused before anything is read.
     """
     import medh5
 
     hd = require_highdicom()
     from medh5.io.dicom import _dcmread
 
+    if len(series_description) > _LO_LENGTH:
+        raise MEDH5ValidationError(
+            f"series_description={series_description!r} "
+            f"(--series-description) is {len(series_description)} characters, "
+            "and the SeriesDescription it is written as is a DICOM LO of at "
+            f"most {_LO_LENGTH}: shorten it"
+        )
     log = report or ConversionReport(converter="to-dicom-seg")
     log.source = os.fspath(sample)
     fractional = _segmentation_type(segmentation_type, fractional_type)

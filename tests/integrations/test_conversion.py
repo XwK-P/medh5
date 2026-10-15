@@ -130,6 +130,7 @@ class TestConverterDiagnosticCodes:
         ("dicom_seg.py", "E405"),  # SEG shape vs. the target grid's
         ("dicom_seg.py", "E414"),  # SEG frame of reference vs. the target grid's
         ("_patient.py", "E414"),  # the target grid has no patient coordinates
+        ("_common.py", "E402"),  # an examined class absent from the label set
         ("nifti.py", "E402"),  # mask name absent from the sample's label set
         ("nifti.py", "E405"),  # mask shape vs. the target grid's
         ("nnunetv2.py", "E402"),  # class absent from the annotation

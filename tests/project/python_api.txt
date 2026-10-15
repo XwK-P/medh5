@@ -3065,7 +3065,7 @@ medh5.io.dicom_seg.require_highdicom	function	()
 medh5.io.dicom_seg.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None, segmentation_type='binary', fractional_type='PROBABILITY')
 medh5.io.from_dicom	function	(root, out, *, group_by='subject', modalities=None, series_uids=None, codec='balanced', report=None, per_slice_rescale='refuse')
 medh5.io.from_dicom_seg	function	(path, sample, *, ann_id='seg', grid=None, annotated_classes='all_given', frame_salt=None, report=None)
-medh5.io.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None, plane_as_volume=False)
+medh5.io.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None, plane_as_volume=False, label_set=None)
 medh5.io.from_nnunetv2	function	(root, out, *, case_ids=None, coord_system='LPS', codec='balanced', report=None, include_test=False)
 medh5.io.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None, roi_classes=None, points_id=None, open_curves='omit')
 medh5.io.group_by_subject	function	(occasions, *, mode='subject', report=None)
@@ -3135,7 +3135,7 @@ medh5.io.nifti	module
 medh5.io.nifti.COORD_SYSTEMS	constant	tuple
 medh5.io.nifti.RAS_TO_LPS	constant	<external>
 medh5.io.nifti.convert_world	function	(affine, *, source, target)
-medh5.io.nifti.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None, plane_as_volume=False)
+medh5.io.nifti.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None, plane_as_volume=False, label_set=None)
 medh5.io.nifti.import_seg_nifti	function	(path, masks, *, ann_id='seg', grid=None, coord_system=None, transpose=True, annotated_classes='all_given', assume_aligned=False, assume_geometry=False, report=None, plane_as_volume=False)
 medh5.io.nifti.read_nifti	function	(path, *, coord_system='LPS', transpose=True, fourth_axis='auto', assume_geometry=False, plane_as_volume=False)
 medh5.io.nifti.require_nibabel	function	()

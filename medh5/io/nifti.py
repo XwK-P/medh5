@@ -27,7 +27,7 @@ import math
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -41,8 +41,11 @@ from medh5.geometry import (
     build_affine,
     decompose_affine,
 )
-from medh5.io._common import sanitize_ascii_stem, sanitize_key
+from medh5.io._common import examined_classes, sanitize_ascii_stem, sanitize_key
 from medh5.io.report import ConversionReport
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from medh5.labels import LabelSet
 
 RAS_TO_LPS = np.diag([-1.0, -1.0, 1.0, 1.0])
 """World-axis sign flip. ``LPS = RAS_TO_LPS @ RAS``, and it is its own inverse."""
@@ -1210,6 +1213,7 @@ def from_nifti(
     assume_geometry: bool = False,
     report: ConversionReport | None = None,
     plane_as_volume: bool = False,
+    label_set: LabelSet | str | os.PathLike[str] | None = None,
 ) -> ConversionReport:
     """Write one sample from a set of co-registered NIfTI volumes.
 
@@ -1221,10 +1225,28 @@ def from_nifti(
     *plane_as_volume* imports every 2-D image and mask as a one-slice 3-D
     grid, ``(x, y, 1)``, where it lies (:func:`read_nifti`); each is a
     ``plane_as_volume`` decision in the report.
+
+    Without *label_set*, the masks' classes are minted from their names, in
+    sorted order, so a class's id depends on which masks a case has.
+    *label_set* --- a :class:`~medh5.labels.LabelSet`, or a JSON file
+    :func:`medh5.labels.load_file` reads --- fixes them: each mask is the
+    class of the key its name makes (or of its name), the set is the
+    sample's, and a mask it has no class for is refused (E402).
+
+    A class *annotated_classes* names that no mask supplies was examined and
+    found absent (§11.3): minted after the masks' classes, with a
+    ``label_set`` decision, or, with *label_set*, one the set must hold
+    (E402).
     """
     import medh5
+    from medh5.labels import LabelSet, load_file
 
     log = report or ConversionReport(converter="from-nifti")
+    given = (
+        label_set
+        if label_set is None or isinstance(label_set, LabelSet)
+        else load_file(label_set)
+    )
     log.source = ", ".join(str(p) for p in images.values())
     if not images:
         raise MEDH5ValidationError("from_nifti needs at least one image")
@@ -1360,9 +1382,37 @@ def from_nifti(
             "subject_id= (--subject-id) to file it under its subject",
             {"subject_id": subject},
         )
-    label_set = None
+    vocabulary = given
+    examined: Sequence[int | str] | str = annotated_classes
     if mask_arrays:
-        label_set = _mint_label_set(sorted(mask_arrays), log)
+        if given is None:
+            vocabulary = _mint_label_set(sorted(mask_arrays), log)
+        else:
+            unmatched = [n for n in mask_arrays if _class_of(given, n) is None]
+            if unmatched:
+                raise MEDH5ValidationError(
+                    f"label set {given.id!r} has no class for mask(s) "
+                    f"{sorted(unmatched)}: a mask is the class of the key its "
+                    "name makes, or of its name --- add the class, or rename "
+                    "the mask",
+                    code="E402",
+                )
+            log.decision(
+                "label_set",
+                f"the masks were matched to label set {given.id!r} by the keys "
+                "their names make; no class was minted",
+                {
+                    "label_set": given.id,
+                    "ids": {n: _class_of(given, n).id for n in sorted(mask_arrays)},
+                },
+            )
+        vocabulary, examined = examined_classes(
+            annotated_classes,
+            vocabulary,
+            mint=given is None,
+            log=log,
+            supplied="the masks",
+        )
 
     params: dict[str, Any] = {
         "coord_system": coord_system,
@@ -1383,8 +1433,8 @@ def from_nifti(
             inputs=[f"nifti:{Path(os.fspath(p)).name}" for p in images.values()],
             params=params,
         )
-        if label_set is not None:
-            writer.label_set(label_set)
+        if vocabulary is not None:
+            writer.label_set(vocabulary)
         # Whether the axes actually moved, read off what `read_nifti` recorded
         # rather than re-derived from `transpose`: the two differ for arrays
         # below 3-D, which are never reordered whatever the caller asked for.
@@ -1453,16 +1503,16 @@ def from_nifti(
                 rescale_intercept=None if rescale is None else rescale[1],
                 prov=activity,
             )
-        if mask_arrays and label_set is not None:
+        if mask_arrays and vocabulary is not None:
             resolved = {
-                _class_of(label_set, name).id: mask
+                _class_of(vocabulary, name).id: mask
                 for name, mask in mask_arrays.items()
             }
             kind, stats = writer.add_segmentation(
                 "seg",
                 grid="ref",
                 masks=resolved,
-                annotated_classes=annotated_classes,
+                annotated_classes=examined,
                 prov=activity,
             )
             log.decision(
@@ -1473,12 +1523,14 @@ def from_nifti(
                     "overlapping": None if stats is None else len(stats.edges),
                 },
             )
-            log.guess(
-                "coverage",
-                "annotated_class_ids was set to the masks supplied; NIfTI cannot "
-                "say which classes were searched for and not found",
-                {"classes": sorted(mask_arrays)},
-            )
+            if annotated_classes == "all_given":
+                log.guess(
+                    "coverage",
+                    "annotated_class_ids was set to the masks supplied; NIfTI "
+                    "cannot say which classes were searched for and not found "
+                    "--- pass annotated_classes= (--annotated-classes) to say",
+                    {"classes": sorted(mask_arrays)},
+                )
     log.outputs.append(str(target))
     return log
 
@@ -1779,6 +1831,10 @@ def import_seg_nifti(
     taken on purpose, and what the reader assumed is in the report.
     *plane_as_volume* reads a 2-D mask as ``(x, y, 1)``, so it can sit on
     the one-slice 3-D grid a plane off z = 0 was imported as.
+
+    A class *annotated_classes* names that no mask supplies was examined and
+    found absent (§11.3): minted after the masks' classes when the sample has
+    no label set, else one its label set must hold (E402).
     """
     import medh5
 
@@ -1853,6 +1909,13 @@ def import_seg_nifti(
             "convert without an existing label set",
             code="E402",
         )
+    label_set, examined = examined_classes(
+        annotated_classes,
+        label_set,
+        mint=existing is None,
+        log=log,
+        supplied="the masks",
+    )
     with medh5.amend(path) as writer:
         if existing is None:
             writer.label_set(label_set)
@@ -1869,7 +1932,7 @@ def import_seg_nifti(
             ann_id,
             grid=grid_id,
             masks={_class_of(label_set, k).id: v for k, v in arrays.items()},
-            annotated_classes=annotated_classes,
+            annotated_classes=examined,
             prov=activity,
         )
         log.decision("encoding", f"masks were stored as {kind!r}", {"kind": kind})
