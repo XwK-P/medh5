@@ -1786,7 +1786,7 @@ a patient's name, and the sample's `content_id` would follow the machine.
 
 Sections §2–§15 are **implemented** by the `medh5` format engine — the Rust crate `medh5`, which the
 Python package and the `medh5` command line wrap — and exercised by a conformance corpus (§15) of
-163 files: valid samples covering every encoding, annotation kind, transform kind,
+169 files: valid samples covering every encoding, annotation kind, transform kind,
 dimensionality, profile and container kind, plus at least one case per diagnostic code: a
 deliberately invalid file for each error, and a file drawing each warning.
 The corpus includes the cases of the [1.1](medh5-1.1.md) `clinical` profile, which the same engine
@@ -1795,7 +1795,7 @@ Running the corpus against a validator is how a third-party implementation demon
 
 ```
 $ medh5 conformance run ./corpus
-163/163 cases pass
+169/169 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `cargo clippy` and `rustfmt`
