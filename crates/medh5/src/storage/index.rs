@@ -470,6 +470,11 @@ impl SamplingIndex {
     }
 
     /// Whether this entry was built from the annotation with this digest.
+    ///
+    /// The caller computes `annotation_digest` under the algorithm the
+    /// entry's `source_digest` names, its prefix (§13.3) ---
+    /// `group_digest(group, root, algo)` --- which need not be the file's
+    /// `digest_algo`.
     pub fn is_current(&self, annotation_digest: &str) -> Result<bool> {
         Ok(self.source_digest()?.as_deref() == Some(annotation_digest))
     }

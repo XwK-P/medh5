@@ -308,6 +308,58 @@ class TestIndexCurrency:
         with medh5.open(longitudinal_path) as sample:
             assert "organs_tp0" in stale_index_entries(sample.root)
 
+    @staticmethod
+    def _pinned(path: Path, pin) -> None:
+        """Every index entry of *path* pinned to ``pin(group, root)``."""
+        with medh5.open(path) as sample:
+            pins = {
+                name: pin(sample.root[f"annotations/{name}"], sample.root)
+                for name in sample.root["index"]
+            }
+        with h5py.File(path, "r+") as handle:
+            for name, value in pins.items():
+                handle[f"index/{name}"].attrs["source_digest"] = encode_attr(value)
+
+    def test_S13_3_an_index_in_the_files_algorithm_is_current(
+        self, tmp_path, label_set, masks
+    ):
+        """§13.3: the prefix names the hash, as a dataset digest's does.  A
+        sha512 file's sha512 index was stale (W905), so it failed strict."""
+        from tests.format.test_sample import restamped_in
+
+        path = write_sample(
+            tmp_path / "case.medh5", label_set=label_set, masks=masks, index=True
+        )
+        restamped_in(path, "sha512")
+        self._pinned(path, lambda group, root: group_digest(group, "sha512", root=root))
+        with medh5.open(path) as sample:
+            assert stale_index_entries(sample.root) == ()
+            assert set(sample.fresh_indices) == set(sample.root["index"])
+            assert sample.verify().ok
+        report = validate_file(path, level="strict")
+        assert not {"W905", "E701", "E702", "E703"} & set(report.codes)
+        # The writer's own pin, sha256, is as current in the same file.
+        self._pinned(path, lambda group, root: group_digest(group, "sha256", root=root))
+        with medh5.open(path) as sample:
+            assert stale_index_entries(sample.root) == ()
+
+    @pytest.mark.parametrize(
+        "spelling", ["md5:" + "0" * 32, "sha3:" + "0" * 64, "sha256", "SHA256:00"]
+    )
+    def test_S13_3_an_unknown_source_digest_algorithm_is_W905_not_an_error(
+        self, tmp_path, label_set, masks, spelling
+    ):
+        path = write_sample(
+            tmp_path / "case.medh5", label_set=label_set, masks=masks, index=True
+        )
+        self._pinned(path, lambda group, root: spelling)
+        with medh5.open(path) as sample:
+            assert set(stale_index_entries(sample.root)) == set(sample.root["index"])
+            assert not sample.fresh_indices
+            assert sample.verify().ok
+        report = validate_file(path, level="integrity")
+        assert report.ok and "W905" in report.codes
+
 
 class TestVerifyRoot:
     def test_undigested_datasets_are_listed(self, sample_path):

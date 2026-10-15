@@ -21,7 +21,7 @@ use crate::geometry::multiscale::derive_level_grid;
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::data::{self, Layout};
 use crate::h5::ops;
-use crate::integrity::digest::{compute_content_id, stamp_digests};
+use crate::integrity::digest::{compute_content_id, group_digest, stamp_digests};
 use crate::json::{dumps, Style};
 use crate::labels::{ClassKey, LabelClass, LabelSet, Skeleton};
 use crate::rng::Rng;
@@ -450,8 +450,14 @@ fn base(path: &Path, shape: &[usize]) -> Result<()> {
 
 /// A valid sample carrying one voxel annotation, `organs`.
 fn seg_base(path: &Path, encoding: &str, classes: &[(i64, [usize; 3])], index: bool) -> Result<()> {
+    seg_base_in(path, crate::digest::DEFAULT_ALGO, encoding, classes, index)
+}
+
+/// [`seg_base`], every digest and the root in `algo`.
+fn seg_base_in(path: &Path, algo: &str, encoding: &str, classes: &[(i64, [usize; 3])], index: bool) -> Result<()> {
     let mut rng = Rng::new(SEED);
     write(path, Some("subj-A"), |w| {
+        w.set_digest_algo(algo);
         w.identity(fields(json!({"sex": "F", "bodypart": "abdomen"})))?;
         w.add_timepoint("tp0", fields(json!({"label": "baseline"})))?;
         w.label_set(label_set()?);
@@ -1440,7 +1446,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(165);
+    let mut cases = Vec::with_capacity(166);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -2459,6 +2465,23 @@ fn cases_2_1(cases: &mut Vec<Case>) {
         )
         .level("integrity"),
     );
+    cases.push(
+        case(
+            "integrity-index-sha512",
+            "A sha512 file whose sampling index is pinned in sha512: the prefix names the hash, so the index is \
+             current.",
+            "§13.3",
+            |p| {
+                seg_base_in(p, "sha512", "auto", &ORGANS, true)?;
+                mutate(p, |f| {
+                    let pin = group_digest(&f.group("annotations/organs")?, f, "sha512")?;
+                    set_str(f, "index/organs", "source_digest", &pin)
+                })
+            },
+        )
+        .level("integrity")
+        .warnings(&["W912"]),
+    );
 }
 
 fn fifth_batch(cases: &mut Vec<Case>) {
@@ -2480,11 +2503,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 165);
+        assert_eq!(cases.len(), 166);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 165);
+        assert_eq!(names.len(), 166);
     }
 
     #[test]

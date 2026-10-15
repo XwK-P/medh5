@@ -607,6 +607,13 @@ impl SampleWriter {
         &self.digest_algo
     }
 
+    /// Digest a new file in `algo`, an algorithm of §2.1: what the corpus
+    /// builds a sha512 file with.  The reference writer offers no such
+    /// option.
+    pub(crate) fn set_digest_algo(&mut self, algo: &str) {
+        self.digest_algo = algo.to_string();
+    }
+
     pub fn document(&self) -> &SampleDocument {
         &self.document
     }

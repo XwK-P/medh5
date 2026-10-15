@@ -10,7 +10,7 @@ use super::digest::{
     AttrNameMap, Inspect, STREAM_BYTES,
 };
 use crate::array::NdArray;
-use crate::digest::{parse_canonical_digest, DEFAULT_ALGO};
+use crate::digest::parse_canonical_digest;
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::ops::{self, LinkKind, Node, NodeKind};
 use crate::json::repr_str;
@@ -255,7 +255,11 @@ pub fn failing_digests(root: &hdf5::Group, paths: &[String]) -> Result<Vec<Strin
 
 /// Index entries whose `source_digest` no longer matches their source (§13.3).
 ///
-/// A stale entry is **not** a file error: readers ignore it and rebuild.
+/// The current digest is computed under the algorithm the entry names, as a
+/// dataset's is (§13.1): a sha512 file's sha512 index is current.  An entry
+/// whose `source_digest` is malformed, or names an algorithm outside §2.1, is
+/// stale.  A stale entry is **not** a file error: readers ignore it and
+/// rebuild.
 pub fn stale_index_entries(root: &hdf5::Group) -> Result<Vec<String>> {
     let Some(index) = ops::child_group(root, "index") else {
         return Ok(Vec::new());
@@ -273,7 +277,8 @@ pub fn stale_index_entries(root: &hdf5::Group) -> Result<Vec<String>> {
             }
             _ => None,
         };
-        let Some(declared) = declared else {
+        let Some((algo, declared)) = declared.and_then(|d| parse_canonical_digest(&d).ok().map(|(algo, _)| (algo, d)))
+        else {
             stale.push(name);
             continue;
         };
@@ -283,7 +288,7 @@ pub fn stale_index_entries(root: &hdf5::Group) -> Result<Vec<String>> {
                 stale.push(name);
                 continue;
             }
-            Some(NodeKind::Group) => Some(group_digest(&root.group(&source_path)?, root, DEFAULT_ALGO)?),
+            Some(NodeKind::Group) => Some(group_digest(&root.group(&source_path)?, root, &algo)?),
             Some(NodeKind::Dataset) => {
                 let d = root.dataset(&source_path)?;
                 attrs::get_str(&d, "digest")?.or(Some(String::new()))
@@ -830,5 +835,32 @@ mod tests {
         });
         file.create_group("index").unwrap().link_hard("/transforms/t/matrix", "alias").unwrap();
         assert_eq!(bindings(&file), vec![("transforms/t/matrix".into(), Binding::Unlisted)]);
+    }
+
+    /// An index entry is read under the algorithm its `source_digest` names,
+    /// whatever the file's: a sha256 and a sha512 entry over the same
+    /// annotation are both current, and one naming an algorithm outside §2.1,
+    /// or spelt otherwise than §13.1 spells a digest, is stale.
+    #[test]
+    fn s13_3_a_source_digest_is_read_under_the_algorithm_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = crate::h5::file::create_truncate(&dir.path().join("index.h5")).unwrap();
+        let root = file.as_group().unwrap();
+        let annotations = file.create_group("annotations").unwrap();
+        let index = file.create_group("index").unwrap();
+        let entry = |name: &str, pin: &dyn Fn(&hdf5::Group) -> String| {
+            let source = annotations.create_group(name).unwrap();
+            source.new_dataset::<u8>().shape([4]).create("data").unwrap().write(&[0u8, 1, 1, 0]).unwrap();
+            let g = index.create_group(name).unwrap();
+            attrs::write(&g, "source_digest", &AttrValue::Str(pin(&source))).unwrap();
+        };
+        let under = |g: &hdf5::Group, algo: &str| group_digest(g, &root, algo).unwrap();
+        let hex = |g: &hdf5::Group| under(g, "sha256").split_once(':').unwrap().1.to_string();
+        entry("a256", &|g| under(g, "sha256"));
+        entry("a512", &|g| under(g, "sha512"));
+        entry("md5", &|g| format!("md5:{}", &hex(g)[..32]));
+        entry("upper", &|g| format!("sha256:{}", hex(g).to_uppercase()));
+        entry("wrong", &|g| format!("sha512:{0}{0}", hex(g)));
+        assert_eq!(stale_index_entries(&root).unwrap(), ["md5", "upper", "wrong"]);
     }
 }
