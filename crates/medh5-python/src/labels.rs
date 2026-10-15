@@ -834,6 +834,13 @@ fn registry_describe<'py>(py: Python<'py>) -> R<Bound<'py, PyDict>> {
     Ok(map_to_py(py, &registry::describe()?)?)
 }
 
+/// Sample files grouped by vocabulary, as `medh5 labels check --json` writes it.
+#[pyfunction]
+fn labels_check<'py>(py: Python<'py>, paths: Vec<std::path::PathBuf>) -> R<Bound<'py, PyAny>> {
+    let found = py.detach(move || engine::check_vocabularies(&paths));
+    Ok(json_to_py(py, &found.to_json())?)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<OntologyCode>()?;
     m.add_class::<Relation>()?;
@@ -842,6 +849,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<LabelSet>()?;
     m.add_function(wrap_pyfunction!(canonical_json, m)?)?;
     m.add_function(wrap_pyfunction!(from_keys, m)?)?;
+    m.add_function(wrap_pyfunction!(labels_check, m)?)?;
     m.add_function(wrap_pyfunction!(registry_available, m)?)?;
     m.add_function(wrap_pyfunction!(registry_load, m)?)?;
     m.add_function(wrap_pyfunction!(registry_load_file, m)?)?;

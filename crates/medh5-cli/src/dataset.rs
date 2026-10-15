@@ -11,7 +11,10 @@ use serde_json::{json, Map, Value};
 
 use medh5::dataset::check::check;
 use medh5::dataset::manifest::{scan, Manifest, PathStyle, MANIFEST_SCHEMA};
-use medh5::dataset::split::{locator, make_splits, write_claims, Split, SplitOptions};
+use medh5::dataset::split::{
+    default_algorithm_warning, locator, make_splits_asked, write_claims, Split, SplitAlgorithm, SplitOptions,
+    SplitRecord, SplitRequest,
+};
 use medh5::dataset::stats::{compute_stats, StatsOptions};
 use medh5::error::os_error;
 use medh5::json::{py_float, repr_str};
@@ -182,17 +185,24 @@ fn split(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         k_folds: get_i64(m, "k_folds"),
         seed: get_i64(m, "seed").unwrap_or(0),
     };
-    let split = make_splits(&manifest, &options)?;
+    let previous = get_str(m, "previous").map(|p| SplitRecord::load(Path::new(p))).transpose()?;
+    let algorithm = get_str(m, "algorithm").map(SplitAlgorithm::parse).transpose()?;
+    let request = SplitRequest::from(options).with_previous(previous);
+    let (record, moved) = make_splits_asked(&manifest, &request, algorithm)?;
+    if let Some(moved) = moved.filter(|n| *n > 0) {
+        ctx.eprint(format!("warning: {}", default_algorithm_warning(moved, "pass --algorithm 1")));
+    }
+    let split = &record.split;
     let written = if flag(m, "write_claims") {
-        write_claims(&split, &manifest, get_str(m, "assigned_by"), get_i64(m, "fold"))?
+        write_claims(split, &manifest, get_str(m, "assigned_by"), get_i64(m, "fold"))?
     } else {
         Vec::new()
     };
     if let Some(out) = get_str(m, "out") {
-        std::fs::write(out, medh5::json::pretty(&split.to_json()) + "\n").map_err(|e| os_error(&e, out))?;
+        std::fs::write(out, medh5::json::pretty(&record.to_json()) + "\n").map_err(|e| os_error(&e, out))?;
     }
     if flag(m, "json") {
-        let mut payload = match split.to_json() {
+        let mut payload = match record.to_json() {
             Value::Object(m) => m,
             _ => Map::new(),
         };
@@ -202,16 +212,26 @@ fn split(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         let rows: Vec<Vec<String>> = split
             .counts()
             .iter()
-            .map(|(partition, n)| vec![partition.clone(), n.to_string(), balance_cell(&split, partition)])
+            .map(|(partition, n)| vec![partition.clone(), n.to_string(), balance_cell(split, partition)])
             .collect();
         let stratify = get_str(m, "stratify_by").unwrap_or("-");
         ctx.print(table(&rows, &["partition", "samples", stratify]));
         ctx.print(format!(
-            "{} group(s) by {}, manifest {}",
+            "{} group(s) by {}, manifest {}, {}",
             split.assignments.len(),
             req_str(m, "group_by"),
-            &split.manifest_sha256[..12.min(split.manifest_sha256.len())]
+            &split.manifest_sha256[..12.min(split.manifest_sha256.len())],
+            record.algorithm.as_str()
         ));
+        if let Some(lineage) = &record.lineage {
+            ctx.print(format!(
+                "continued a split of manifest {}: {} group(s) kept, {} added, {} dropped",
+                &lineage.manifest_sha256[..12.min(lineage.manifest_sha256.len())],
+                lineage.kept,
+                lineage.added.len(),
+                lineage.dropped.len()
+            ));
+        }
         if !written.is_empty() {
             ctx.print(format!("wrote split claims into {} file(s)", written.len()));
         }
@@ -312,7 +332,8 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                         s.key.clone().unwrap_or_else(|| "-".into()),
                         thousands(i128::from(s.voxels)),
                         format!("{}/{}", s.present_in, s.examined_in),
-                        percent(s.prevalence(), 0, false),
+                        // A class nobody examined has no prevalence to print.
+                        s.examined_prevalence().map(|p| percent(p, 0, false)).unwrap_or_else(|| "-".into()),
                     ]
                 })
                 .collect();

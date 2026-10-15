@@ -224,19 +224,168 @@ fn may_follow(_link: &Path, _meta: &fs::Metadata) -> bool {
     true
 }
 
-/// A sibling name no other writer in any process is using.
-fn temporary_name(target: &Path) -> PathBuf {
+/// A random part for a temporary name: a name taken is passed over, so it
+/// need only make a collision unlikely.
+fn unique() -> u32 {
+    #[cfg(test)]
+    if let Some(next) = NEXT_UNIQUE.with(|queue| queue.borrow_mut().pop()) {
+        return next;
+    }
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = RandomState::new().build_hasher();
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    h.finish() as u32
+}
+
+/// How a temporary beside its target is named.
+#[derive(Debug, Clone, Copy)]
+enum Naming {
+    /// `.{name}.tmp-{pid}-{hex}`: an HDF5 file or a document.  A cohort walk
+    /// skips only `._*`, and would scan a temporary ending in `.medh5` as a
+    /// sample.
+    Hidden,
+    /// `.{pid}-{hex}-{name}`: the target's suffix kept, for a foreign writer
+    /// that picks a format by it (nibabel).
+    Suffixed,
+}
+
+/// A sibling name for `target`'s temporary, under `naming`.
+fn temporary_name_as(target: &Path, naming: Naming) -> PathBuf {
     let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let unique: u32 = {
-        use std::collections::hash_map::RandomState;
-        use std::hash::{BuildHasher, Hasher};
-        let mut h = RandomState::new().build_hasher();
-        h.write_u128(
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0),
-        );
-        h.finish() as u32
-    };
-    target.with_file_name(format!(".{name}.tmp-{}-{unique:08x}", std::process::id()))
+    let (pid, unique) = (std::process::id(), unique());
+    target.with_file_name(match naming {
+        Naming::Hidden => format!(".{name}.tmp-{pid}-{unique:08x}"),
+        Naming::Suffixed => format!(".{pid}-{unique:08x}-{name}"),
+    })
+}
+
+/// The most names a staged file tries before it gives up: each one taken is
+/// another writer's temporary, or something planted where one would go.
+const NAME_TRIES: usize = 64;
+
+/// The one way the engine replaces a file (§14.4): a temporary created
+/// exclusively beside the file a path names --- its symbolic links followed,
+/// so a link is kept and the file it names rewritten --- flushed, given that
+/// file's mode, renamed over it, and the directory flushed.  A link or a file
+/// already at a temporary's name is passed over for another name, never
+/// written through.  Dropped without a commit, the temporary goes and the
+/// target is untouched.
+#[derive(Debug)]
+struct Staged {
+    /// The path asked for, which an error names.
+    given: PathBuf,
+    /// The file the commit replaces: `given`, its links followed.
+    target: PathBuf,
+    /// The temporary; empty once committed or discarded.
+    tmp: PathBuf,
+    /// The target's mode, carried onto the replacement; `None` for a new file.
+    mode: Option<u32>,
+}
+
+impl Staged {
+    fn create(given: &Path, naming: Naming) -> Result<Staged> {
+        let target = resolve_links(given)?;
+        let mode = existing_mode(&target);
+        let named = |e: std::io::Error| crate::error::os_error(&e, given);
+        for _ in 0..NAME_TRIES {
+            let tmp = temporary_name_as(&target, naming);
+            match precreate(&tmp, mode) {
+                Ok(()) => return Ok(Staged { given: given.to_path_buf(), target, tmp, mode }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(named(e)),
+            }
+        }
+        Err(Error::File(format!(
+            "could not create a temporary file beside {}: {NAME_TRIES} names were taken",
+            repr_str(&given.to_string_lossy())
+        )))
+    }
+
+    /// Flush the closed temporary, give it the target's mode and rename it
+    /// over the target.  `before_replace` runs last, and its refusal leaves
+    /// the target as it was.  Whatever happens, the temporary is gone after.
+    fn commit(&mut self, before_replace: impl FnOnce() -> Result<()>) -> Result<()> {
+        let named = |e: std::io::Error| crate::error::os_error(&e, &self.given);
+        let result = (|| -> Result<()> {
+            // Flushed before the mode is set: a read-only file refuses the
+            // writable handle Windows flushes through.
+            fsync_path(&self.tmp).map_err(named)?;
+            if let Some(mode) = self.mode {
+                set_mode(&self.tmp, mode);
+            }
+            #[cfg(test)]
+            BEFORE_RENAME.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().as_mut() {
+                    hook(&self.target)
+                }
+            });
+            before_replace()?;
+            replace(&self.tmp, &self.target).map_err(named)?;
+            if let Some(parent) = self.target.parent() {
+                fsync_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent });
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            remove_temporary(&self.tmp);
+        }
+        // Nothing is left for a drop to clean up.
+        self.tmp = PathBuf::new();
+        result
+    }
+
+    fn discard(&mut self) {
+        if !self.tmp.as_os_str().is_empty() {
+            remove_temporary(&self.tmp);
+        }
+        self.tmp = PathBuf::new();
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        self.discard();
+    }
+}
+
+/// A file a foreign writer writes whole, then renamed over its target as the
+/// engine renames its own (§14.4): a symbolic link at the target is kept and
+/// the file it names replaced, that file's mode kept, and the data flushed.
+/// The temporary keeps the target's suffix, for a writer that picks a format
+/// by it.  Dropped without a commit, it is aborted.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct StagedFile {
+    staged: Staged,
+}
+
+impl StagedFile {
+    /// Stage a replacement of `target`: a new, empty temporary beside the
+    /// file it names, created exclusively.
+    pub fn create(target: &Path) -> Result<StagedFile> {
+        Ok(StagedFile { staged: Staged::create(target, Naming::Suffixed)? })
+    }
+
+    /// The temporary, which the foreign writer writes and closes.
+    pub fn path(&self) -> &Path {
+        &self.staged.tmp
+    }
+
+    /// The file the commit replaces: the target, its links followed.
+    pub fn target(&self) -> &Path {
+        &self.staged.target
+    }
+
+    /// Rename the written temporary over the target.
+    pub fn commit(mut self) -> Result<()> {
+        self.staged.commit(|| Ok(()))
+    }
+
+    /// Remove the temporary, leaving the target as it was.
+    pub fn abort(mut self) {
+        self.staged.discard();
+    }
 }
 
 /// The permission bits of `target`, or `None` when it does not exist.
@@ -492,6 +641,9 @@ pub(crate) fn before_rename(hook: Option<RenameHook>) {
 #[cfg(test)]
 thread_local! {
     static BEFORE_RENAME: std::cell::RefCell<Option<RenameHook>> = const { std::cell::RefCell::new(None) };
+    /// The random parts the next temporary names take, last first: what a
+    /// test plants something at.
+    static NEXT_UNIQUE: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Set by a test to have the next close report the failure HDF5 reports
     /// of a close it could not finish.
     static CLOSE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -596,9 +748,7 @@ impl Snapshot {
 /// target; dropping it without committing removes the temporary file and leaves
 /// the target untouched.
 pub struct AtomicFile {
-    target: PathBuf,
-    tmp: PathBuf,
-    mode: Option<u32>,
+    staged: Staged,
     handle: Option<hdf5::File>,
     /// A file the commit refuses to replace the target over if it changed
     /// since it was read: the source of an amendment or a rewrite.
@@ -614,17 +764,10 @@ impl AtomicFile {
                 fs::create_dir_all(parent)?;
             }
         }
-        let target = resolve_links(target)?;
-        let tmp = temporary_name(&target);
-        let mode = existing_mode(&target);
-        precreate(&tmp, mode)?;
-        match create_truncate(&tmp) {
-            Ok(handle) => Ok(AtomicFile { target, tmp, mode, handle: Some(handle), unchanged: None }),
-            Err(err) => {
-                let _ = fs::remove_file(&tmp);
-                Err(err)
-            }
-        }
+        let staged = Staged::create(target, Naming::Hidden)?;
+        // A failed create drops `staged`, and the temporary with it.
+        let handle = create_truncate(&staged.tmp)?;
+        Ok(AtomicFile { staged, handle: Some(handle), unchanged: None })
     }
 
     /// The file being written.
@@ -635,12 +778,12 @@ impl AtomicFile {
     /// The path that will be replaced: the file the target given named,
     /// its symbolic links followed.
     pub fn target(&self) -> &Path {
-        &self.target
+        &self.staged.target
     }
 
     /// The temporary path being written.
     pub fn temporary(&self) -> &Path {
-        &self.tmp
+        &self.staged.tmp
     }
 
     /// Have [`commit`](AtomicFile::commit) refuse, just before it replaces
@@ -660,34 +803,11 @@ impl AtomicFile {
         if let Some(handle) = self.handle.take() {
             close_everything(handle, true)?;
         }
-        let result = (|| -> Result<()> {
-            // Flushed before the mode is set: a read-only file refuses the
-            // writable handle Windows flushes through.
-            fsync_path(&self.tmp)?;
-            if let Some(mode) = self.mode {
-                set_mode(&self.tmp, mode);
-            }
-            #[cfg(test)]
-            BEFORE_RENAME.with(|hook| {
-                if let Some(hook) = hook.borrow_mut().as_mut() {
-                    hook(&self.target)
-                }
-            });
-            if let Some((source, seen)) = &self.unchanged {
-                seen.check(source)?;
-            }
-            replace(&self.tmp, &self.target)?;
-            if let Some(parent) = self.target.parent() {
-                fsync_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent });
-            }
-            Ok(())
-        })();
-        if result.is_err() {
-            remove_temporary(&self.tmp);
-        }
-        // Nothing is left for Drop to clean up.
-        self.tmp = PathBuf::new();
-        result
+        let unchanged = self.unchanged.take();
+        self.staged.commit(|| match &unchanged {
+            Some((source, seen)) => seen.check(source),
+            None => Ok(()),
+        })
     }
 
     /// Rewrite the file being built into a fresh temporary file, `copy`
@@ -699,27 +819,24 @@ impl AtomicFile {
         if let Some(handle) = self.handle.take() {
             close_everything(handle, true)?;
         }
-        let fresh = temporary_name(&self.target);
-        precreate(&fresh, self.mode)?;
+        let mut fresh = Staged::create(&self.staged.given, Naming::Hidden)?;
+        // The target the first temporary was staged for, whatever its links
+        // lead to now.
+        fresh.target = self.staged.target.clone();
+        fresh.mode = self.staged.mode;
         let built = (|| -> Result<hdf5::File> {
-            let src = open_read(&self.tmp)?;
-            let dst = create_truncate(&fresh)?;
+            let src = open_read(&self.staged.tmp)?;
+            let dst = create_truncate(&fresh.tmp)?;
             copy(&src.as_group()?, &dst.as_group()?)?;
             close_everything(src, false)?;
             Ok(dst)
         })();
-        match built {
-            Ok(handle) => {
-                let _ = fs::remove_file(&self.tmp);
-                self.tmp = fresh;
-                self.handle = Some(handle);
-                Ok(self)
-            }
-            Err(err) => {
-                let _ = fs::remove_file(&fresh);
-                Err(err)
-            }
-        }
+        // On failure `fresh` drops, and its temporary with it.
+        let handle = built?;
+        self.staged.discard();
+        self.staged = fresh;
+        self.handle = Some(handle);
+        Ok(self)
     }
 
     /// Discard the in-progress file, leaving any existing one untouched.
@@ -731,10 +848,7 @@ impl AtomicFile {
         if let Some(handle) = self.handle.take() {
             let _ = close_everything(handle, false);
         }
-        if !self.tmp.as_os_str().is_empty() && self.tmp.exists() {
-            let _ = fs::remove_file(&self.tmp);
-        }
-        self.tmp = PathBuf::new();
+        self.staged.discard();
     }
 }
 
@@ -772,31 +886,15 @@ pub fn atomic_rewrite<T>(
 /// temporary sibling, flushed, its mode the target's, renamed into place
 /// through the target's symbolic links.  A write cut short leaves the
 /// previous file whole --- what a text file written over its input needs.
-pub(crate) fn write_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
-    let given = target;
-    let target = resolve_links(target)?;
-    let tmp = temporary_name(&target);
-    let mode = existing_mode(&target);
+/// The bytes are written as given: a text's `\n` stays `\n` on every
+/// platform.
+#[doc(hidden)]
+pub fn write_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
+    let mut staged = Staged::create(target, Naming::Hidden)?;
     // An I/O error names the file asked for, as the engine words one; the
     // temporary's name would tell the caller nothing.
-    let named = |e: std::io::Error| crate::error::os_error(&e, given);
-    precreate(&tmp, mode).map_err(named)?;
-    let result = (|| -> std::io::Result<()> {
-        fs::write(&tmp, bytes)?;
-        fsync_path(&tmp)?;
-        if let Some(mode) = mode {
-            set_mode(&tmp, mode);
-        }
-        replace(&tmp, &target)?;
-        if let Some(parent) = target.parent() {
-            fsync_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent });
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        remove_temporary(&tmp);
-    }
-    result.map_err(named)
+    fs::write(&staged.tmp, bytes).map_err(|e| crate::error::os_error(&e, target))?;
+    staged.commit(|| Ok(()))
 }
 
 #[cfg(test)]
@@ -1005,7 +1103,8 @@ mod tests {
 
     #[test]
     fn s14_4_temporary_names_are_unique_within_a_process() {
-        let names: std::collections::HashSet<PathBuf> = (0..50).map(|_| temporary_name(Path::new("x.medh5"))).collect();
+        let names: std::collections::HashSet<PathBuf> =
+            (0..50).map(|_| temporary_name_as(Path::new("x.medh5"), Naming::Hidden)).collect();
         assert_eq!(names.len(), 50);
         assert!(names.iter().all(|n| n.to_string_lossy().starts_with(".x.medh5.tmp-")));
     }
@@ -1277,5 +1376,84 @@ mod tests {
         })
         .unwrap();
         assert_eq!(read_value(&path), 2);
+    }
+
+    /// A link, or a file, already at a temporary's name is passed over for
+    /// another name, never written through; and a staged file keeps its
+    /// target's suffix, for a writer that picks a format by it.
+    #[cfg(unix)]
+    #[test]
+    fn s14_4_a_link_at_the_next_temporary_name_is_passed_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = dir.path().join("other.txt");
+        fs::write(&other, b"someone else's").unwrap();
+        let target = dir.path().join("image.nii.gz");
+        let planted = dir.path().join(format!(".{}-00000000-image.nii.gz", std::process::id()));
+        std::os::unix::fs::symlink(&other, &planted).unwrap();
+        NEXT_UNIQUE.with(|queue| *queue.borrow_mut() = vec![1, 0]);
+        let staged = StagedFile::create(&target).unwrap();
+        NEXT_UNIQUE.with(|queue| queue.borrow_mut().clear());
+        assert_eq!(staged.path(), dir.path().join(format!(".{}-00000001-image.nii.gz", std::process::id())));
+        assert!(staged.path().to_string_lossy().ends_with(".nii.gz"));
+        fs::write(staged.path(), b"the image").unwrap();
+        staged.commit().unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"the image");
+        assert_eq!(fs::read(&other).unwrap(), b"someone else's");
+    }
+
+    /// Every way the engine writes a file keeps a link at the target, and
+    /// replaces the file it names, with that file's mode; a document's bytes
+    /// are written as given.
+    #[cfg(unix)]
+    #[test]
+    fn s14_4_every_replace_keeps_the_link_and_the_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        type Write = fn(&Path) -> Result<()>;
+        let writes: [(&str, Write); 3] = [
+            ("write_atomic", |t| write_atomic(t, b"one\ntwo\n")),
+            ("staged", |t| {
+                let staged = StagedFile::create(t)?;
+                fs::write(staged.path(), b"one\ntwo\n")?;
+                staged.commit()
+            }),
+            ("hdf5", |t| write_value(t, 7)),
+        ];
+        for (name, write) in writes {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("file");
+            fs::write(&file, b"old").unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink("file", &link).unwrap();
+            write(&link).unwrap();
+            assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "{name}");
+            assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "{name}");
+            if name != "hdf5" {
+                assert_eq!(fs::read(&file).unwrap(), b"one\ntwo\n", "{name}");
+            } else {
+                assert_eq!(read_value(&file), 7);
+            }
+            let mut left: Vec<String> = fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            left.sort();
+            assert_eq!(left, ["file", "link"], "{name}");
+        }
+    }
+
+    /// A staged file dropped or aborted leaves its target as it was, and no
+    /// temporary behind.
+    #[test]
+    fn s14_4_an_aborted_staged_file_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("r.json");
+        fs::write(&target, b"before").unwrap();
+        let staged = StagedFile::create(&target).unwrap();
+        fs::write(staged.path(), b"after").unwrap();
+        staged.abort();
+        drop(StagedFile::create(&target).unwrap());
+        assert_eq!(fs::read(&target).unwrap(), b"before");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }

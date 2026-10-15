@@ -61,11 +61,12 @@ Class prevalence accounts for this already:
 ```python
 stats = compute_stats(paths, images=["CT"])
 lesion = stats.classes[3]
-lesion.present_in, lesion.examined_in, lesion.prevalence
+lesion.present_in, lesion.examined_in, lesion.examined_prevalence
 ```
 
-`prevalence` is over the samples that actually examined the class, so a class
-annotated in a tenth of the cohort does not look ten times rarer than it is.
+`examined_prevalence` is over the samples that actually examined the class, so
+a class annotated in a tenth of the cohort does not look ten times rarer than it
+is, and it is `None` for a class no sample examined: a measurement nobody made.
 
 ## "Some voxels I cannot label either way"
 

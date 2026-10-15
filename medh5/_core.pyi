@@ -54,6 +54,7 @@ __all__ = [
     "CACHE_SCHEMA",
     "CACHE_SUFFIX",
     "CHECK_CODES",
+    "CHECK_CODE_SEVERITY",
     "CHECK_SEVERITIES",
     "CLINICAL_PROFILE",
     "CLINICAL_SCHEMA",
@@ -196,6 +197,7 @@ __all__ = [
     "SamplingIndex",
     "Skeleton",
     "SplitClaim",
+    "StagedFileHandle",
     "TARGET_STATUSES",
     "TASKS",
     "TASK_CENSORING",
@@ -322,6 +324,7 @@ __all__ = [
     "dataset_check",
     "dataset_check_format",
     "dataset_check_json",
+    "dataset_class_stats_json",
     "dataset_compute_stats",
     "dataset_counts",
     "dataset_default_ratios",
@@ -354,6 +357,7 @@ __all__ = [
     "dataset_split_json",
     "dataset_split_leaks",
     "dataset_split_load",
+    "dataset_split_moved_from",
     "dataset_split_partition_of",
     "dataset_split_paths",
     "dataset_split_underfilled",
@@ -429,6 +433,7 @@ __all__ = [
     "is_proper_rotation",
     "jacobian_determinant",
     "label_dtype_size",
+    "labels_check",
     "layers_from_colouring",
     "legacy_build_label_set",
     "legacy_is",
@@ -475,6 +480,7 @@ __all__ = [
     "resolve_between",
     "resolve_profile_name",
     "rules_for",
+    "same_file",
     "sample_field",
     "sampling_check_pair_mode",
     "sampling_coerce_patch_size",
@@ -502,6 +508,7 @@ __all__ = [
     "source_resolve",
     "spatial_chunk_for",
     "splits_from_json",
+    "stage_file",
     "stale_index_entries",
     "storage_dtype",
     "subtrees_identical",
@@ -534,6 +541,7 @@ __all__ = [
     "verify_root",
     "voxel_volume",
     "world_to_index",
+    "write_atomic",
     "written_version",
 ]
 
@@ -560,6 +568,7 @@ CACHE_SAFETY: float
 CACHE_SCHEMA: str
 CACHE_SUFFIX: str
 CHECK_CODES: dict[str, str]
+CHECK_CODE_SEVERITY: dict[str, str]
 CHECK_SEVERITIES: tuple[str, ...]
 CLINICAL_PROFILE: str
 CLINICAL_SCHEMA: str
@@ -1065,6 +1074,10 @@ def dataset_check(
 ) -> Any: ...
 def dataset_check_format(report: Any) -> str: ...
 def dataset_check_json(report: Any) -> Any: ...
+def dataset_class_stats_json(s: Any) -> Any:
+    """`ClassStats.to_json`: the engine's JSON for one class."""
+    ...
+
 def dataset_compute_stats(
     paths: Sequence[str | os.PathLike[str]],
     *,
@@ -1120,7 +1133,14 @@ def dataset_make_splits(
     ratios: Any = None,
     k_folds: int | None = None,
     seed: int = 0,
-) -> Any: ...
+    algorithm: str | None = None,
+    previous: Any = None,
+) -> tuple[Any, int | None]:
+    """`(split JSON, groups medh5.split/2 places elsewhere)`: the count only when
+    `algorithm` is left out and there is no `previous` split, else `None`.
+    """
+    ...
+
 def dataset_manifest_json(doc: Any) -> Any:
     """The full manifest JSON (with its `sha256`)."""
     ...
@@ -1177,6 +1197,10 @@ def dataset_split_fold_of(doc: Any, entry: Any) -> int | None: ...
 def dataset_split_json(doc: Any) -> Any: ...
 def dataset_split_leaks(doc: Any) -> list[str]: ...
 def dataset_split_load(path: str | os.PathLike[str]) -> Any: ...
+def dataset_split_moved_from(doc: Any, other: Any) -> dict[str, tuple[str, str]]:
+    """The groups `doc` places elsewhere than `other` does: `{group: (was, now)}`."""
+    ...
+
 def dataset_split_partition_of(doc: Any, entry: Any) -> str | None: ...
 def dataset_split_paths(doc: Any, partition: str) -> list[str]: ...
 def dataset_split_underfilled(doc: Any) -> list[str]: ...
@@ -1503,6 +1527,7 @@ def is_proper_rotation(matrix: npt.ArrayLike, tol: float = ...) -> bool: ...
 def jacobian_determinant(
     field: npt.NDArray[Any], grid: Grid, *, vector_space: str = "world"
 ) -> npt.NDArray[np.float64]: ...
+def labels_check(paths: Sequence[str | os.PathLike[str]]) -> dict[str, Any]: ...
 def label_dtype_size(class_ids: Sequence[int], *, ignore: bool = False) -> int: ...
 def layers_from_colouring(
     colouring: Mapping[int, int],
@@ -1674,6 +1699,12 @@ def rules_for(level: str) -> list[str]:
     """Every rule run at `level`, in order."""
     ...
 
+def same_file(a: str | os.PathLike[str], b: str | os.PathLike[str]) -> bool:
+    """Whether two paths name one existing file, through `..`, a symbolic or a
+    hard link.
+    """
+    ...
+
 def sample_field(
     field: npt.NDArray[Any],
     coords: npt.NDArray[np.float64],
@@ -1823,6 +1854,12 @@ def spatial_chunk_for(
 def splits_from_json(
     docs: Sequence[Mapping[str, Any]] | None,
 ) -> tuple[SplitClaim, ...]: ...
+def stage_file(path: str | os.PathLike[str]) -> StagedFileHandle:
+    """Stage a replacement of `path`: a new, empty temporary beside the file it
+    names, keeping its suffix.
+    """
+    ...
+
 def stale_index_entries(root: Group) -> tuple[str, ...]: ...
 def storage_dtype(planes: Any, threshold: float, requested: Any = None) -> Any: ...
 def subtrees_identical(a: Group, b: Group) -> tuple[str, ...]: ...
@@ -2009,6 +2046,12 @@ def voxel_volume(spacing: Sequence[float]) -> float: ...
 def world_to_index(
     affine: npt.ArrayLike, points: npt.ArrayLike
 ) -> npt.NDArray[np.float64]: ...
+def write_atomic(path: str | os.PathLike[str], data: str | bytes) -> None:
+    """`data` as `path`'s whole content: a `str` as UTF-8, its `\\n` kept on
+    every platform, `bytes` as given.
+    """
+    ...
+
 def written_version(source: str | None, profiles: Sequence[str] = ...) -> str:
     """The `medh5_version` a commit writes: the lowest version `profiles` need
     (`1.0`, or `1.1` with `clinical`), and never below `source`, the version
@@ -3677,6 +3720,36 @@ class Skeleton:
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Skeleton: ...
     def to_json(self) -> dict[str, Any]: ...
+
+@final
+class StagedFileHandle:
+    """A replacement of a file being written by someone else: write `path`,
+    then `commit()`.  As a context manager it commits when the block ends
+    without an exception, and aborts otherwise.
+    """
+    @property
+    def path(self) -> Path:
+        """The temporary, which the foreign writer writes."""
+        ...
+    @property
+    def target(self) -> Path:
+        """The file the commit replaces: the target, its links followed."""
+        ...
+    def abort(self) -> None:
+        """Remove the temporary, leaving the target as it was.  Aborting a
+        committed or aborted file does nothing.
+        """
+        ...
+    def commit(self) -> None:
+        """Rename the written temporary over the target."""
+        ...
+    def __enter__(self) -> Self: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        _exc: BaseException | None = None,
+        _tb: TracebackType | None = None,
+    ) -> bool: ...
 
 @final
 @dataclass(frozen=True)

@@ -161,6 +161,22 @@ identical to standalone samples, so packing and unpacking are pure copies and
 every rule in the specification is written once, against "the sample root"
 (§2.2).
 
+### A split that grows without moving anyone (`medh5.split/2`)
+
+`medh5.split/1` dealt each group to whichever partition was furthest below its
+share, walking the strata round-robin. That meets the ratios, but a group's
+partition then depends on every group dealt before it: one group added to a
+cohort of 115 moved a median of 19 of the others, test subjects into training
+among them, and a model retrained on the re-split has trained on part of its
+old test set. `medh5.split/2` decides the counts first (largest remainder for
+the totals, a controlled rounding for each stratum's share of them) and only
+then which groups fill them, by hash rank within the stratum. A group's place
+depends on its stratum's counts and its own rank, so one new group moves one or
+two others; `previous=` moves none, because what a split promised is that a
+test subject stays one. /1 stays the 2.x default, with a warning only where
+the two disagree, because changing a deterministic split's answer under a
+minor release is exactly the leak it exists to prevent.
+
 ### Why not an existing format
 
 | Format | Why not, on its own | What medh5 takes from it |

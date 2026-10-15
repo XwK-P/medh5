@@ -4,7 +4,7 @@ use clap::ArgMatches;
 use indexmap::IndexMap;
 use serde_json::{json, Value};
 
-use medh5::labels::registry;
+use medh5::labels::{registry, VocabularyCheck};
 
 use crate::common::*;
 
@@ -65,46 +65,45 @@ fn show(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 
 fn check(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let paths = get_paths(m, "paths");
-    let mut seen: IndexMap<String, Vec<String>> = IndexMap::new();
-    let mut unreadable = serde_json::Map::new();
-    let mut files = Vec::new();
-    let mut rows = Vec::new();
+    // Grouped as `dataset check`'s C101 groups (D25); only the failures are
+    // worded as the command line words them.
+    let mut found = VocabularyCheck::default();
+    let mut failed = IndexMap::new();
     for path in &paths {
-        let label_set = match sample_file(path).and_then(|s| Ok(s.label_set()?.cloned())) {
-            Ok(ls) => ls,
+        let sample = sample_file(path);
+        match sample.as_ref().map_err(Clone::clone).and_then(|s| s.label_set()) {
+            Ok(label_set) => found.add(path.clone(), Ok(label_set)),
             Err(e) => {
-                let failed = ctx.file_failed(path, &e);
-                unreadable.insert(path.clone(), failed["error"].clone());
-                files.push(failed);
-                rows.push(vec![path.clone(), "(unreadable)".to_string()]);
-                continue;
+                failed.insert(path.clone(), ctx.file_failed(path, &e));
+                found.add(path.clone(), Err(e));
             }
-        };
-        let key = match &label_set {
-            Some(ls) if !ls.is_empty() || ls.declared_sha256().is_some() => {
-                let digest = ls.sha256();
-                format!("{}@{}#{}", ls.id, ls.version, &digest[..16.min(digest.len())])
-            }
-            _ => "<none>".to_string(),
-        };
-        seen.entry(key.clone()).or_default().push(path.clone());
-        files.push(json!({"path": path, "ok": true, "vocabulary": key}));
-        rows.push(vec![path.clone(), key]);
+        }
     }
-    let ok = seen.len() <= 1 && unreadable.is_empty();
+    let ok = found.ok();
     if flag(m, "json") {
-        let vocabularies: serde_json::Map<String, Value> = seen.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+        let mut payload = found.to_json();
         // `files` gives each file an entry, a failure the one every batch
         // command gives it; `unreadable` keeps the same failures by path.
-        let payload = json!({"ok": ok, "vocabularies": vocabularies, "unreadable": unreadable, "files": files});
+        payload["unreadable"] = failed.iter().map(|(path, f)| (path.clone(), f["error"].clone())).collect();
+        payload["files"] = paths
+            .iter()
+            .map(|path| match failed.get(path) {
+                Some(f) => f.clone(),
+                None => json!({"path": path, "ok": true, "vocabulary": found.key_of(path)}),
+            })
+            .collect();
         ctx.emit(&payload, true);
     } else {
+        let rows: Vec<Vec<String>> = paths
+            .iter()
+            .map(|path| vec![path.clone(), found.key_of(path).unwrap_or("(unreadable)").to_string()])
+            .collect();
         ctx.print(table(&rows, &["file", "vocabulary"]));
-        if seen.len() > 1 {
+        if found.groups.len() > 1 {
             ctx.print(format!(
                 "\n{} distinct vocabularies across {} files; class ids are not comparable between them.",
-                seen.len(),
-                paths.len() - unreadable.len()
+                found.groups.len(),
+                paths.len() - found.unreadable.len()
             ));
         }
     }

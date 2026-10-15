@@ -144,6 +144,27 @@ impl Split {
         bad.into_iter().collect()
     }
 
+    /// Groups this split places elsewhere than `other` does, each with
+    /// where `other` put it and where this one does: a partition, or
+    /// `fold N`.  Groups only one of the two places are not listed.
+    pub fn moved_from(&self, other: &Split) -> IndexMap<String, (String, String)> {
+        let place = |a: &Assignment| match a.fold {
+            Some(fold) => format!("fold {fold}"),
+            None => a.partition.clone(),
+        };
+        let before: IndexMap<&str, String> = other.assignments.iter().map(|a| (a.group.as_str(), place(a))).collect();
+        let mut out = IndexMap::new();
+        for a in &self.assignments {
+            if let Some(was) = before.get(a.group.as_str()) {
+                let now = place(a);
+                if *was != now && !out.contains_key(&a.group) {
+                    out.insert(a.group.clone(), (was.clone(), now));
+                }
+            }
+        }
+        out
+    }
+
     pub fn to_json(&self) -> Value {
         let ratios: Map<String, Value> = self.ratios.iter().map(|(k, v)| (k.clone(), num(*v))).collect();
         json!({
@@ -288,12 +309,17 @@ impl Default for SplitOptions {
 
 /// One stratum's groups, keyed by the stratum value.
 type Stratum<'a> = (Option<String>, Vec<(String, Vec<&'a Entry>)>);
-/// Assign every group in `manifest` to a partition, or to a fold.
-///
-/// With `k_folds` the folds are recorded as `holdout` assignments with a fold
-/// number, and every fold gets at least one group; without it, groups go to
-/// `train`/`val`/`test` in the ratios.
-pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split> {
+
+/// What every algorithm starts from: the checked options, the split without
+/// assignments, the normalised shares, and the strata in key order, each
+/// stratum's groups in rank order.
+struct Prepared<'a> {
+    split: Split,
+    shares: IndexMap<String, f64>,
+    ordered: Vec<Stratum<'a>>,
+}
+
+fn prepare<'a>(manifest: &'a Manifest, options: &SplitOptions) -> Result<Prepared<'a>> {
     if manifest.is_empty() {
         return Err(Error::invalid("cannot split an empty manifest"));
     }
@@ -358,7 +384,7 @@ pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split>
             grouped.len()
         )));
     }
-    let mut split = Split {
+    let split = Split {
         set_id: options.set_id.clone(),
         manifest_sha256: manifest.sha256(),
         assignments: Vec::new(),
@@ -368,11 +394,10 @@ pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split>
         k_folds: options.k_folds,
         ratios: shares.clone(),
     };
-
     let mut strata: IndexMap<Option<String>, Vec<(String, Vec<&Entry>)>> = IndexMap::new();
-    for (group, entries) in &grouped {
-        let stratum = stratum_of(entries, options.stratify_by.as_deref())?;
-        strata.entry(stratum).or_default().push((group.clone(), entries.clone()));
+    for (group, entries) in grouped {
+        let stratum = stratum_of(&entries, options.stratify_by.as_deref())?;
+        strata.entry(stratum).or_default().push((group, entries));
     }
     // `str(None)` is "None": the unstratified stratum sorts as that word.
     let mut ordered: Vec<Stratum<'_>> = strata.into_iter().collect();
@@ -383,6 +408,24 @@ pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split>
     for (_, members) in ordered.iter_mut() {
         members.sort_by_cached_key(|(group, _)| rank(&options.set_id, options.seed, group));
     }
+    Ok(Prepared { split, shares, ordered })
+}
+
+fn sort_assignments(split: &mut Split) {
+    split.assignments.sort_by(|a, b| {
+        (&a.partition, a.fold.unwrap_or(0), &a.group).cmp(&(&b.partition, b.fold.unwrap_or(0), &b.group))
+    });
+}
+
+/// Assign every group in `manifest` to a partition, or to a fold, by
+/// `medh5.split/1`.
+///
+/// With `k_folds` the folds are recorded as `holdout` assignments with a fold
+/// number, and every fold gets at least one group; without it, groups go to
+/// `train`/`val`/`test` in the ratios.  [`make_splits_with`] deals by
+/// `medh5.split/2`, and continues a split.
+pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split> {
+    let Prepared { mut split, shares, ordered } = prepare(manifest, options)?;
     // Interleave the strata round-robin, rotating which leads each round, so
     // every stratum spreads over the partitions and the global ratios hold.
     let depth = ordered.iter().map(|(_, m)| m.len()).max().unwrap_or(0);
@@ -420,10 +463,436 @@ pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split>
             }
         }
     }
-    split.assignments.sort_by(|a, b| {
-        (&a.partition, a.fold.unwrap_or(0), &a.group).cmp(&(&b.partition, b.fold.unwrap_or(0), &b.group))
-    });
+    sort_assignments(&mut split);
     Ok(split)
+}
+
+/// How a split dealt its groups: the algorithm a split JSON names under
+/// `algorithm`, `medh5.split/1` when it names none.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SplitAlgorithm {
+    /// `medh5.split/1`: strata interleaved, groups dealt by the largest
+    /// deficit against the global shares, so one group's partition depends
+    /// on every other group.  The default in 2.x.
+    #[default]
+    V1,
+    /// `medh5.split/2`: totals by largest remainder, each stratum's counts by
+    /// controlled rounding, groups filling partitions in hash-rank order
+    /// within their stratum.  Adding a group moves few others.
+    V2,
+}
+
+impl SplitAlgorithm {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SplitAlgorithm::V1 => "medh5.split/1",
+            SplitAlgorithm::V2 => "medh5.split/2",
+        }
+    }
+
+    /// `"medh5.split/1"` or `"medh5.split/2"`, or `"1"` or `"2"` as the
+    /// command line spells them.
+    pub fn parse(text: &str) -> Result<SplitAlgorithm> {
+        match text {
+            "medh5.split/1" | "1" => Ok(SplitAlgorithm::V1),
+            "medh5.split/2" | "2" => Ok(SplitAlgorithm::V2),
+            other => Err(Error::Value(format!(
+                "the split algorithm is 'medh5.split/1' or 'medh5.split/2', not {}",
+                repr_str(other)
+            ))),
+        }
+    }
+}
+
+/// What a split continued from: the previous split's manifest digest, how
+/// many of its groups kept their place, and the groups added and dropped.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Lineage {
+    pub manifest_sha256: String,
+    pub kept: usize,
+    pub added: Vec<String>,
+    pub dropped: Vec<String>,
+}
+
+impl Lineage {
+    pub fn new(manifest_sha256: impl Into<String>, kept: usize, added: Vec<String>, dropped: Vec<String>) -> Self {
+        Lineage { manifest_sha256: manifest_sha256.into(), kept, added, dropped }
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "manifest_sha256": self.manifest_sha256,
+            "kept": self.kept,
+            "added": self.added,
+            "dropped": self.dropped,
+        })
+    }
+
+    pub fn from_json(doc: &Value) -> Result<Lineage> {
+        let strings = |k: &str| -> Vec<String> {
+            doc.get(k)
+                .and_then(Value::as_array)
+                .map(|a| a.iter().map(crate::json::py_str).collect())
+                .unwrap_or_default()
+        };
+        Ok(Lineage {
+            manifest_sha256: doc
+                .get("manifest_sha256")
+                .map(crate::json::py_str)
+                .ok_or_else(|| Error::Key("'manifest_sha256'".into()))?,
+            kept: doc.get("kept").and_then(Value::as_u64).unwrap_or(0) as usize,
+            added: strings("added"),
+            dropped: strings("dropped"),
+        })
+    }
+}
+
+/// A split with the algorithm that dealt it and, when it continued another,
+/// its lineage: what a split JSON holds.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplitRecord {
+    pub split: Split,
+    pub algorithm: SplitAlgorithm,
+    pub lineage: Option<Lineage>,
+}
+
+impl SplitRecord {
+    pub fn new(split: Split, algorithm: SplitAlgorithm) -> Self {
+        SplitRecord { split, algorithm, lineage: None }
+    }
+
+    pub fn with_lineage(mut self, lineage: Option<Lineage>) -> Self {
+        self.lineage = lineage;
+        self
+    }
+
+    /// The split's JSON with `algorithm`, and `previous` when it continued
+    /// another split.
+    pub fn to_json(&self) -> Value {
+        let Value::Object(fields) = self.split.to_json() else { unreachable!("a split is an object") };
+        let mut out = Map::new();
+        for (key, value) in fields {
+            let after = key == "ratios";
+            out.insert(key, value);
+            if after {
+                out.insert("algorithm".into(), json!(self.algorithm.as_str()));
+                out.insert("previous".into(), self.lineage.as_ref().map(Lineage::to_json).unwrap_or(Value::Null));
+            }
+        }
+        Value::Object(out)
+    }
+
+    /// A split JSON; one without `algorithm`, written before 2.1, was dealt
+    /// by `medh5.split/1`.
+    pub fn from_json(doc: &Value) -> Result<SplitRecord> {
+        let algorithm = match doc.get("algorithm") {
+            None | Some(Value::Null) => SplitAlgorithm::V1,
+            Some(Value::String(text)) => SplitAlgorithm::parse(text)?,
+            Some(other) => SplitAlgorithm::parse(&crate::json::repr(other))?,
+        };
+        let lineage = match doc.get("previous") {
+            None | Some(Value::Null) => None,
+            Some(previous) => Some(Lineage::from_json(previous)?),
+        };
+        Ok(SplitRecord { split: Split::from_json(doc)?, algorithm, lineage })
+    }
+
+    /// Read a split written by `medh5 dataset split -o`.
+    pub fn load(path: &Path) -> Result<SplitRecord> {
+        let text = std::fs::read_to_string(path).map_err(|e| crate::error::os_error(&e, path))?;
+        SplitRecord::from_json(&crate::json::loads(&text).map_err(|e| Error::Value(e.to_string()))?)
+    }
+}
+
+/// What [`make_splits_with`] makes: [`SplitOptions`]' fields, the algorithm,
+/// and a previous split to continue.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct SplitRequest {
+    pub set_id: String,
+    pub group_by: String,
+    pub stratify_by: Option<String>,
+    pub ratios: Option<IndexMap<String, f64>>,
+    pub k_folds: Option<i64>,
+    pub seed: i64,
+    pub algorithm: SplitAlgorithm,
+    /// Continue this split: every group it placed keeps its partition or
+    /// fold, new groups are dealt by `medh5.split/2`, and `algorithm` is
+    /// not consulted.
+    pub previous: Option<SplitRecord>,
+}
+
+impl Default for SplitRequest {
+    fn default() -> Self {
+        SplitRequest::from(SplitOptions::default())
+    }
+}
+
+impl From<SplitOptions> for SplitRequest {
+    fn from(options: SplitOptions) -> Self {
+        SplitRequest {
+            set_id: options.set_id,
+            group_by: options.group_by,
+            stratify_by: options.stratify_by,
+            ratios: options.ratios,
+            k_folds: options.k_folds,
+            seed: options.seed,
+            algorithm: SplitAlgorithm::default(),
+            previous: None,
+        }
+    }
+}
+
+impl SplitRequest {
+    pub fn with_algorithm(mut self, algorithm: SplitAlgorithm) -> Self {
+        self.algorithm = algorithm;
+        self
+    }
+
+    pub fn with_previous(mut self, previous: Option<SplitRecord>) -> Self {
+        self.previous = previous;
+        self
+    }
+
+    fn options(&self) -> SplitOptions {
+        SplitOptions {
+            set_id: self.set_id.clone(),
+            group_by: self.group_by.clone(),
+            stratify_by: self.stratify_by.clone(),
+            ratios: self.ratios.clone(),
+            k_folds: self.k_folds,
+            seed: self.seed,
+        }
+    }
+}
+
+/// [`make_splits`] by the algorithm `request` names, or continuing
+/// `request.previous` (D22).
+///
+/// `medh5.split/2` deals the partitions' totals by the largest remainder of
+/// `N·r`, each stratum's counts by a controlled rounding of `n_s·r_p` (every
+/// count its floor or ceiling, every stratum and every total met), and fills a
+/// stratum's partitions with its groups in hash-rank order.  A group's place
+/// then depends on its stratum's count and its rank, so adding a group moves
+/// few others; `medh5.split/1` moved a third of them.
+///
+/// With `previous`, every group the previous split placed keeps its
+/// partition or fold; each new group fills its stratum's largest deficit
+/// against `medh5.split/2`'s counts for the whole cohort, in rank order.  The
+/// set id, seed, ratios, grouping, stratification and folds must be the
+/// previous split's: anything else is another split.
+pub fn make_splits_with(manifest: &Manifest, request: &SplitRequest) -> Result<SplitRecord> {
+    let options = request.options();
+    if let Some(previous) = &request.previous {
+        return continue_split(manifest, &options, previous);
+    }
+    match request.algorithm {
+        SplitAlgorithm::V1 => Ok(SplitRecord::new(make_splits(manifest, &options)?, SplitAlgorithm::V1)),
+        SplitAlgorithm::V2 => {
+            let prepared = prepare(manifest, &options)?;
+            let mut split = prepared.split.clone();
+            let targets = targets_v2(&prepared)?;
+            let places = labels(&prepared);
+            let layout = layout(&prepared, places.len());
+            for ((stratum, members), counts) in prepared.ordered.iter().zip(&targets) {
+                let mut members = members.iter();
+                for &i in &layout {
+                    for (group, entries) in members.by_ref().take(counts[i] as usize) {
+                        split.assignments.push(assignment(&places[i], stratum, group, entries));
+                    }
+                }
+            }
+            sort_assignments(&mut split);
+            Ok(SplitRecord::new(split, SplitAlgorithm::V2))
+        }
+    }
+}
+
+/// A partition or fold: `(partition, fold)`.
+type Place = (String, Option<i64>);
+
+/// The places groups are dealt to, in order: the partitions with a positive
+/// share, in [`PARTITIONS`] order, or the folds.
+fn labels(prepared: &Prepared<'_>) -> Vec<Place> {
+    match prepared.split.k_folds {
+        Some(k) => (0..k).map(|f| ("holdout".to_string(), Some(f))).collect(),
+        None => PARTITIONS
+            .iter()
+            .filter(|p| prepared.shares.get(**p).is_some_and(|s| *s > 0.0))
+            .map(|p| (p.to_string(), None))
+            .collect(),
+    }
+}
+
+/// The order a stratum's groups, in rank order, fill the places: the place
+/// with the largest share in the middle, the next on its left, the next on
+/// its right, and so on outwards --- `val`, `train`, `test` at 70/15/15.  A
+/// count that moves between the middle place and a neighbour then moves one
+/// group across one boundary, and a group added to a stratum moves another
+/// only where it lands outside the middle block.
+fn layout(prepared: &Prepared<'_>, n: usize) -> Vec<usize> {
+    let share = |i: usize| match prepared.split.k_folds {
+        Some(_) => 1.0,
+        None => prepared.shares[labels(prepared)[i].0.as_str()],
+    };
+    let mut by_share: Vec<usize> = (0..n).collect();
+    by_share.sort_by(|a, b| share(*b).total_cmp(&share(*a)).then(a.cmp(b)));
+    let mut out = std::collections::VecDeque::new();
+    for (k, i) in by_share.into_iter().enumerate() {
+        if k % 2 == 1 {
+            out.push_front(i);
+        } else {
+            out.push_back(i);
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// `medh5.split/2`'s count of each stratum's groups in each place, strata in
+/// key order, places in [`labels`] order.
+fn targets_v2(prepared: &Prepared<'_>) -> Result<Vec<Vec<u64>>> {
+    let places = labels(prepared);
+    let shares: Vec<f64> = match prepared.split.k_folds {
+        Some(k) => vec![1.0 / k as f64; places.len()],
+        None => places.iter().map(|(p, _)| prepared.shares[p.as_str()]).collect(),
+    };
+    let rows: Vec<u64> = prepared.ordered.iter().map(|(_, m)| m.len() as u64).collect();
+    let totals = super::rounding::largest_remainder(rows.iter().sum(), &shares);
+    super::rounding::controlled(&rows, &shares, &totals)
+}
+
+fn assignment(place: &Place, stratum: &Option<String>, group: &str, entries: &[&Entry]) -> Assignment {
+    Assignment {
+        group: group.to_string(),
+        partition: place.0.clone(),
+        fold: place.1,
+        stratum: stratum.clone(),
+        entries: entries.iter().map(|e| locator(e)).collect(),
+    }
+}
+
+fn continue_split(manifest: &Manifest, options: &SplitOptions, previous: &SplitRecord) -> Result<SplitRecord> {
+    let prepared = prepare(manifest, options)?;
+    let old = &previous.split;
+    let mut differs: Vec<&str> = Vec::new();
+    if old.set_id != options.set_id {
+        differs.push("set_id");
+    }
+    if old.seed != options.seed {
+        differs.push("seed");
+    }
+    if old.group_by != options.group_by {
+        differs.push("group_by");
+    }
+    if old.stratify_by != options.stratify_by {
+        differs.push("stratify_by");
+    }
+    if old.k_folds != options.k_folds {
+        differs.push("k_folds");
+    }
+    let positive = |m: &IndexMap<String, f64>| -> BTreeMap<String, f64> {
+        m.iter().filter(|(_, v)| **v > 0.0).map(|(k, v)| (k.clone(), *v)).collect()
+    };
+    let (was, now) = (positive(&old.ratios), positive(&prepared.shares));
+    if old.k_folds.is_none()
+        && (was.len() != now.len() || was.iter().zip(&now).any(|(a, b)| a.0 != b.0 || (a.1 - b.1).abs() > 1e-9))
+    {
+        differs.push("ratios");
+    }
+    if !differs.is_empty() {
+        return Err(Error::invalid(format!(
+            "the previous split was made with another {}: continuing it with these would be another split; use a \
+             new set_id",
+            differs.join(", ")
+        )));
+    }
+    let places = labels(&prepared);
+    let targets = targets_v2(&prepared)?;
+    let placed: IndexMap<&str, Place> =
+        old.assignments.iter().map(|a| (a.group.as_str(), (a.partition.clone(), a.fold))).collect();
+    let mut split = prepared.split.clone();
+    let (mut kept, mut added) = (0usize, Vec::new());
+    let mut present: BTreeSet<&str> = BTreeSet::new();
+    for ((stratum, members), counts) in prepared.ordered.iter().zip(&targets) {
+        let mut have: Vec<i64> = vec![0; places.len()];
+        let mut fresh = Vec::new();
+        for (group, entries) in members {
+            present.insert(group.as_str());
+            match placed.get(group.as_str()) {
+                Some(place) => {
+                    if let Some(i) = places.iter().position(|p| p == place) {
+                        have[i] += 1;
+                    }
+                    kept += 1;
+                    split.assignments.push(assignment(place, stratum, group, entries));
+                }
+                None => fresh.push((group, entries)),
+            }
+        }
+        // In rank order, each new group to the place furthest below its
+        // count, the earlier place on a tie.
+        for (group, entries) in fresh {
+            let mut best = 0;
+            for i in 1..places.len() {
+                if counts[i] as i64 - have[i] > counts[best] as i64 - have[best] {
+                    best = i;
+                }
+            }
+            have[best] += 1;
+            added.push(group.clone());
+            split.assignments.push(assignment(&places[best], stratum, group, entries));
+        }
+    }
+    added.sort();
+    let mut dropped: Vec<String> = placed.keys().filter(|g| !present.contains(**g)).map(|g| g.to_string()).collect();
+    dropped.sort();
+    dropped.dedup();
+    sort_assignments(&mut split);
+    let lineage = Lineage::new(old.manifest_sha256.clone(), kept, added, dropped);
+    Ok(SplitRecord::new(split, SplitAlgorithm::V2).with_lineage(Some(lineage)))
+}
+
+/// The frontends' split: `algorithm` as the caller gave it, or `None`.
+///
+/// Left to its 2.x default without a previous split, the cohort is dealt
+/// both ways and the `medh5.split/1` split comes back with how many of its
+/// groups `medh5.split/2` places elsewhere, which the frontends warn of when
+/// it is not 0.  A previous split with `medh5.split/1` named is refused: /1
+/// has no continuation.
+#[doc(hidden)]
+pub fn make_splits_asked(
+    manifest: &Manifest,
+    request: &SplitRequest,
+    algorithm: Option<SplitAlgorithm>,
+) -> Result<(SplitRecord, Option<usize>)> {
+    match (algorithm, &request.previous) {
+        (Some(SplitAlgorithm::V1), Some(_)) => Err(Error::invalid(
+            "medh5.split/1 cannot continue a split: a previous split's new groups are dealt by medh5.split/2, so \
+             leave the algorithm out or name medh5.split/2",
+        )),
+        (Some(algorithm), _) => Ok((make_splits_with(manifest, &request.clone().with_algorithm(algorithm))?, None)),
+        (None, Some(_)) => Ok((make_splits_with(manifest, request)?, None)),
+        (None, None) => {
+            let v1 = make_splits_with(manifest, &request.clone().with_algorithm(SplitAlgorithm::V1))?;
+            let v2 = make_splits_with(manifest, &request.clone().with_algorithm(SplitAlgorithm::V2))?;
+            let moved = v2.split.moved_from(&v1.split).len();
+            Ok((v1, Some(moved)))
+        }
+    }
+}
+
+/// What the frontends warn of when the algorithm was left out and
+/// `medh5.split/2` would place `moved` groups elsewhere; `keep` says how to
+/// keep this split in the frontend's spelling.
+#[doc(hidden)]
+pub fn default_algorithm_warning(moved: usize, keep: &str) -> String {
+    format!(
+        "medh5 3.0 splits with medh5.split/2 by default, which places {moved} of these groups differently: {keep} \
+         to keep this split"
+    )
 }
 
 type Dealt<'a> = (Option<String>, String, Vec<&'a Entry>, String);
@@ -622,4 +1091,81 @@ pub fn locator(entry: &Entry) -> String {
 pub fn load(path: &Path) -> Result<Split> {
     let text = std::fs::read_to_string(path)?;
     Split::from_json(&crate::json::loads(&text).map_err(|e| Error::Value(e.to_string()))?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The split cohort of the plan: three strata of 60 %, 30 % and 10 % of
+    /// `n`, and rare strata of 3, 5 and 7 groups, one entry per group.
+    pub(crate) fn cohort(n: usize, extra: usize) -> Manifest {
+        let sizes = [("a", n * 6 / 10), ("b", n * 3 / 10), ("c", n / 10), ("r3", 3), ("r5", 5), ("r7", 7)];
+        let entry = |id: String, site: &str| Entry {
+            path: format!("{id}.medh5"),
+            sample_id: id.clone(),
+            subject_id: id.clone(),
+            group_id: id,
+            site_id: Some(site.into()),
+            ..Default::default()
+        };
+        let mut entries = Vec::new();
+        for (site, count) in sizes {
+            for i in 0..count {
+                entries.push(entry(format!("{site}-{i:03}"), site));
+            }
+        }
+        // Added groups join the largest stratum, every other id unchanged.
+        for i in 0..extra {
+            entries.push(entry(format!("new-{i:03}"), "a"));
+        }
+        Manifest { entries, ..Default::default() }
+    }
+
+    fn request(seed: i64, algorithm: SplitAlgorithm) -> SplitRequest {
+        let mut r = SplitRequest::default().with_algorithm(algorithm);
+        r.seed = seed;
+        r.stratify_by = Some("site_id".into());
+        r
+    }
+
+    /// One group added to the largest stratum of 115, over seeds 0--19:
+    /// `medh5.split/1` moves a median of 15 existing groups (up to 29),
+    /// `medh5.split/2` a median of 1 (at most 2).
+    #[test]
+    fn s12_3_split2_one_new_group_moves_few() {
+        let mut moved = [Vec::new(), Vec::new()];
+        for seed in 0..20 {
+            for (i, algorithm) in [SplitAlgorithm::V1, SplitAlgorithm::V2].into_iter().enumerate() {
+                let before = make_splits_with(&cohort(100, 0), &request(seed, algorithm)).unwrap();
+                let after = make_splits_with(&cohort(100, 1), &request(seed, algorithm)).unwrap();
+                moved[i].push(after.split.moved_from(&before.split).len());
+            }
+        }
+        for m in &mut moved {
+            m.sort();
+        }
+        assert!(moved[0][10] >= 10, "{:?}", moved[0]);
+        assert!(moved[1][10] <= 2, "{:?}", moved[1]);
+    }
+
+    #[test]
+    fn s12_3_previous_moves_no_group_and_meets_the_shares() {
+        let before = make_splits_with(&cohort(100, 0), &request(3, SplitAlgorithm::V1)).unwrap();
+        let grown = cohort(100, 200);
+        let after =
+            make_splits_with(&grown, &request(3, SplitAlgorithm::V1).with_previous(Some(before.clone()))).unwrap();
+        assert!(after.split.moved_from(&before.split).is_empty());
+        assert_eq!(after.algorithm, SplitAlgorithm::V2);
+        let lineage = after.lineage.clone().unwrap();
+        assert_eq!((lineage.kept, lineage.added.len(), lineage.dropped.len()), (115, 200, 0));
+        assert_eq!(lineage.manifest_sha256, before.split.manifest_sha256);
+        let counts = after.split.counts();
+        assert!((counts["train"] as f64 / 315.0 - 0.7).abs() < 0.02, "{counts:?}");
+        // The JSON carries both, and reads back.
+        assert_eq!(SplitRecord::from_json(&after.to_json()).unwrap(), after);
+        // Another seed is another split.
+        let err = make_splits_with(&grown, &request(4, SplitAlgorithm::V2).with_previous(Some(before))).unwrap_err();
+        assert!(err.to_string().contains("seed"), "{err}");
+    }
 }
