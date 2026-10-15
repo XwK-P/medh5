@@ -31,6 +31,7 @@ use crate::annotations::{Annotation, Instance};
 use crate::array::Slice;
 use crate::curation::quality::Agreement;
 use crate::curation::tracking::carries_instance_ids;
+use crate::h5::ops;
 use crate::json::{num, py_float, repr, repr_int_list, repr_int_tuple, repr_str};
 use crate::labels::{ClassKey, LabelClass, LabelSet};
 use crate::numeric::mean;
@@ -409,13 +410,18 @@ fn recorded_against(against: Option<&str>) -> Result<String> {
     })
 }
 
-/// An `against` path as a record stores it: a path from the sample root.
+/// An `against` path as a record stores it: `annotations/<id>`, from the
+/// sample root (§11.2).
 fn checked_against(against: &str) -> Result<String> {
     let path = against.trim_start_matches('/');
-    if path.is_empty() {
-        return Err(Error::invalid("an agreement's `against` is the path of an annotation of the recording sample"));
+    match path.strip_prefix("annotations/") {
+        Some(id) if !id.is_empty() && !id.contains('/') => Ok(path.to_string()),
+        _ => Err(Error::invalid(format!(
+            "an agreement's `against` is the path of an annotation of the recording sample, \
+             'annotations/<id>' (§11.2), not {}",
+            repr_str(against)
+        ))),
     }
-    Ok(path.to_string())
 }
 
 /// Which class of `b` each class of `a` is compared with.
@@ -612,11 +618,14 @@ fn inline_label_sets<'a>(a: &'a Annotation, b: &'a Annotation) -> Result<(&'a La
 
 /// Refuse one key whose two classes name two codes in one ontology (C102):
 /// matched by key, they would be scored as one class though their codes say
-/// they are two.
+/// they are two.  Either side's code in an ontology both use must be on the
+/// other side too, so the answer does not depend on which is `a`.
 fn check_codes(left: &LabelClass, right: &LabelClass, a: &Annotation, b: &Annotation) -> Result<()> {
+    let holds =
+        |class: &LabelClass, system: &str, code: &str| class.codes.iter().any(|c| c.system == system && c.code == code);
     for x in &left.codes {
         for y in right.codes.iter().filter(|y| y.system == x.system) {
-            if !left.codes.iter().any(|c| c.system == y.system && c.code == y.code) {
+            if !holds(left, &y.system, &y.code) || !holds(right, &x.system, &x.code) {
                 return Err(Error::coded(
                     "C102",
                     format!(
@@ -827,9 +836,12 @@ const ACROSS_SAMPLES: &str = " --- in two samples, whose grid ids are each their
                               share a declared frame and are one lattice in it";
 
 /// Whether two annotations were read from one sample, whose grid ids name
-/// one set of grids.
+/// one set of grids: through one handle, or two on one file --- HDF5 shares
+/// one open file between them, so they report one file number (an amended
+/// file is a new inode, and another file).
 fn one_sample(a: &Annotation, b: &Annotation) -> bool {
-    std::ptr::eq(a.grids(), b.grids())
+    let file = |ann: &Annotation| ops::object_id_of(&ann.group).map(|(fileno, _)| fileno);
+    std::ptr::eq(a.grids(), b.grids()) || matches!((file(a), file(b)), (Some(x), Some(y)) if x == y)
 }
 
 /// Whether two annotations count voxels of one grid: within one sample, one

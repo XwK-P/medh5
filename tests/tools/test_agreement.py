@@ -546,6 +546,8 @@ class TestAcrossSamples:
         with medh5.open(a) as first, medh5.open(a) as second:
             same = compare_voxel(first.annotations["seg"], second.annotations["seg"])
             assert same.value == 1.0
+            # ... and one sample, so its `against` is the other's own path.
+            assert same.to_record().against == "annotations/seg"
 
     def test_S11_2_a_cross_sample_record_needs_against(self, tmp_path: Path):
         """A record's `against` is a path of the recording sample: across two
@@ -558,8 +560,9 @@ class TestAcrossSamples:
             for result in (voxel, boxes):
                 with pytest.raises(MEDH5ValidationError, match="against"):
                     result.to_record()
-                with pytest.raises(MEDH5ValidationError, match="against"):
-                    result.to_record(against="/")
+                for path in ("/", "images/CT", "annotations/", "annotations/a/b"):
+                    with pytest.raises(MEDH5ValidationError, match="against"):
+                        result.to_record(against=path)
                 record = result.to_record(against="/annotations/reference")
                 assert record.against == "annotations/reference"
         # Within one sample, `against` is the other annotation's own path.
@@ -827,6 +830,33 @@ class TestClassesAcrossVocabularies:
             )
             assert agreed.value == 1.0
 
+    def test_S11_2_codes_are_compared_both_ways(self, tmp_path: Path):
+        """A key whose codes in one ontology differ on the two sides is C102
+        whichever side holds the extra code: the check read only b's codes
+        against a's, so swapping the annotations changed the answer."""
+        snomed = ("10200004", "181268008")
+        both = [
+            LabelClass(
+                1,
+                "liver",
+                "Liver",
+                codes=tuple(OntologyCode("SNOMED-CT", c) for c in snomed),
+            )
+        ]
+        one = [
+            LabelClass(
+                1, "liver", "Liver", codes=(OntologyCode("SNOMED-CT", snomed[0]),)
+            )
+        ]
+        a = self._rater(tmp_path / "a.medh5", both, 1)
+        b = self._rater(tmp_path / "b.medh5", one, 1)
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            seg = (sa.annotations["seg"], sb.annotations["seg"])
+            for x, y in (seg, seg[::-1]):
+                with pytest.raises(MEDH5ValidationError) as caught:
+                    compare_voxel(x, y, map_classes="key")
+                assert caught.value.code == "C102"
+
     def test_S11_2_an_explicit_map_must_be_injective(self, tmp_path: Path):
         a = self._rater(tmp_path / "a.medh5", self._organs("liver", "spleen"), 1)
         b = self._rater(tmp_path / "b.medh5", self._organs("organ"), 1)
@@ -918,12 +948,12 @@ class TestInstanceIdsAreSampleScoped:
             assert result.matched_by == "instance_id"
             assert result.value == pytest.approx(0.5)
             assert result.to_json()["threshold"] is None
+        # One file opened twice is still one sample, whose ids are one set.
         with medh5.open(path) as first, medh5.open(path) as second:
-            across = compare_instances(
-                first.annotations["r1"], second.annotations["r2"]
-            )
-            assert across.matched_by == "iou"
-            assert across.to_json()["threshold"] == pytest.approx(0.5)
+            again = compare_instances(first.annotations["r1"], second.annotations["r2"])
+            assert again.matched_by == "instance_id"
+            assert again.value == pytest.approx(0.5)
+            assert again.to_record().against == "annotations/r2"
 
     def test_the_command_line_reports_no_threshold_for_an_id_match(
         self, tmp_path: Path, capsys
