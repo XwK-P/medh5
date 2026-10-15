@@ -2918,3 +2918,137 @@ class TestCommandLineReplaces:
     ):
         written = self._write(tmp_path, tmp_path / "lines.json", site)
         assert written.endswith(b"\n") and b"\r" not in written
+
+
+# The commands that take ``--workers``, with options that make each do work.
+WORKER_COMMANDS = {
+    "validate": ["validate"],
+    "verify": ["verify"],
+    "fix": ["fix", "--rebuild-index"],
+    "index-build": ["index", "build"],
+    "recompress": ["recompress", "--profile", "balanced"],
+}
+
+
+class TestWorkers:
+    """``--workers N`` runs a batch command's files in up to N processes,
+    and prints what one process prints, byte for byte: each file's output in
+    input order, the same ``--json`` document, the same exit code."""
+
+    @pytest.fixture
+    def batch(self, tmp_path, label_set, masks) -> dict[str, bytes]:
+        """Five files as bytes: three clean, one whose digest no longer
+        matches its data, and one that is not HDF5 at all."""
+        made = tmp_path / "made"
+        made.mkdir()
+        for name in ("a", "b", "c", "d"):
+            write_sample(made / f"{name}.medh5", label_set=label_set, masks=masks)
+        with h5py.File(made / "d.medh5", "r+") as handle:
+            data = handle["annotations/organs_tp0/data"]
+            data[0, 0, 0, 0] = ~data[0, 0, 0, 0]
+        (made / "e.medh5").write_bytes(b"not an HDF5 file")
+        return {path.name: path.read_bytes() for path in sorted(made.iterdir())}
+
+    @staticmethod
+    def fresh(tmp_path: Path, batch: dict[str, bytes], names: Any = None) -> list[str]:
+        """The batch written again, at the same paths, for a run of its own."""
+        where = tmp_path / "run"
+        where.mkdir(exist_ok=True)
+        for name, data in batch.items():
+            (where / name).write_bytes(data)
+        return [str(where / name) for name in (names or batch)]
+
+    def runs(self, capsys, tmp_path, batch, argv, names=None) -> set[Any]:
+        seen = set()
+        for workers in (None, 1, 2, 3):
+            paths = self.fresh(tmp_path, batch, names)
+            flags = [] if workers is None else ["--workers", str(workers)]
+            code, printed = run(capsys, *argv, *paths, *flags)
+            seen.add((code, printed.out, printed.err))
+        return seen
+
+    @pytest.mark.parametrize("command", list(WORKER_COMMANDS))
+    def test_output_does_not_depend_on_the_worker_count(
+        self, capsys, tmp_path, batch, command
+    ):
+        argv = WORKER_COMMANDS[command]
+        for extra in ([], ["--json"]):
+            seen = self.runs(capsys, tmp_path, batch, [*argv, *extra])
+            assert len(seen) == 1, sorted(seen)
+            ((code, out, _),) = seen
+            assert code == EXIT_ERROR
+            assert out
+
+    def test_the_exit_code_does_not_depend_on_the_worker_count(
+        self, capsys, tmp_path, batch
+    ):
+        clean = ["a.medh5", "b.medh5", "c.medh5"]
+        seen = self.runs(capsys, tmp_path, batch, ["verify"], clean)
+        assert {code for code, _, _ in seen} == {EXIT_OK}
+        assert len(seen) == 1
+        seen = self.runs(capsys, tmp_path, batch, ["verify"], [*clean, "d.medh5"])
+        assert {code for code, _, _ in seen} == {EXIT_ERROR}
+        assert len(seen) == 1
+
+    def test_a_file_named_twice_is_written_by_one_worker(self, capsys, tmp_path, batch):
+        """A file named twice, or by a second name (a hard link), goes to one
+        worker, in order: two workers writing it at once would race, and the
+        second name's report would depend on which won."""
+        where = tmp_path / "run"
+        names = ["a.medh5", "a.medh5", "b.medh5", "link.medh5", "c.medh5"]
+        seen = set()
+        for workers in ("1", "3"):
+            paths = self.fresh(tmp_path, batch, names[:3])
+            link = where / "link.medh5"
+            link.unlink(missing_ok=True)
+            os.link(where / "b.medh5", link)
+            paths += [str(link), str(where / "c.medh5")]
+            code, printed = run(capsys, "index", "build", *paths, "--workers", workers)
+            seen.add((code, printed.out, printed.err))
+            assert code == EXIT_OK
+            assert run(capsys, "verify", *paths)[0] == EXIT_OK
+        assert len(seen) == 1
+        ((_, out, _),) = seen
+        lines = out.splitlines()
+        assert lines[0].endswith("a.medh5: built index for organs_tp0")
+        assert lines[1].endswith(
+            "a.medh5: index current for organs_tp0; the file is unchanged"
+        )
+
+    def test_a_dying_worker_fails_only_its_file(
+        self, capsys, tmp_path, batch, monkeypatch
+    ):
+        monkeypatch.setenv("MEDH5_TEST_WORKERS", "exit:b.medh5")
+        paths = self.fresh(tmp_path, batch, ["a.medh5", "b.medh5", "c.medh5"])
+        code, printed = run(capsys, "verify", *paths, "--workers", "2")
+        assert code == EXIT_ERROR
+        lines = printed.out.splitlines()
+        assert len(lines) == 2
+        assert lines[0].startswith(f"{paths[0]}: OK")
+        assert lines[1].startswith(f"{paths[2]}: OK")
+        assert f"{paths[1]}: the worker running it stopped" in printed.err
+        assert len(printed.err.splitlines()) == 1
+
+    def test_an_error_stops_where_sequential_stops(
+        self, capsys, tmp_path, batch, monkeypatch
+    ):
+        monkeypatch.setenv("MEDH5_TEST_WORKERS", "error:c.medh5")
+        names = ["a.medh5", "b.medh5", "c.medh5", "d.medh5", "e.medh5"]
+        seen = self.runs(capsys, tmp_path, batch, ["verify"], names)
+        assert len(seen) == 1
+        ((code, out, err),) = seen
+        assert code == EXIT_ERROR
+        lines = out.splitlines()
+        assert [Path(line.split(": OK")[0]).name for line in lines] == [
+            "a.medh5",
+            "b.medh5",
+        ]
+        assert err.strip().endswith("c.medh5: stopped here, as MEDH5_TEST_WORKERS asks")
+
+    def test_zero_workers_is_one_process(self, capsys, tmp_path, batch):
+        paths = self.fresh(tmp_path, batch, ["a.medh5", "b.medh5"])
+        assert run(capsys, "verify", *paths, "--workers", "0") == run(
+            capsys, "verify", *paths
+        )
+        code, printed = run(capsys, "verify", *paths, "--workers", "-1")
+        assert code == EXIT_USAGE

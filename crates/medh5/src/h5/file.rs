@@ -575,6 +575,14 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
     matches!((identity(a), identity(b)), (Some(x), Some(y)) if x == y)
 }
 
+/// A key for the file `path` names, equal for two paths exactly when
+/// [`same_file`] holds: to group many paths by file without comparing every
+/// pair.  `None` for a path naming no file.
+#[doc(hidden)]
+pub fn file_key(path: &Path) -> Option<String> {
+    identity(path).map(|id| format!("{id:?}"))
+}
+
 #[cfg(unix)]
 fn identity(path: &Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;

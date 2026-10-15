@@ -1,0 +1,34 @@
+# What `cargo deny check licenses bans sources` holds the dependency graph to,
+# in the rust job of ci.yml.  Advisories are cargo-audit's (advisories.yml),
+# not this file's.
+
+[graph]
+all-features = true
+
+[licenses]
+# Exactly the licences of pyproject.toml's `license` expression, which the
+# wheels publish: a crate under any other licence fails here before it reaches
+# a wheel whose metadata would not name it (a test holds the two equal).
+allow = ["MIT", "BSD-3-Clause", "BSD-2-Clause", "Zlib", "Apache-2.0", "MIT-0"]
+confidence-threshold = 0.93
+# Crates that run at build time only (a proc-macro's, a build script's), so
+# nothing of theirs is compiled into what the project ships.
+exceptions = [
+  { crate = "unicode-ident", allow = ["Unicode-3.0"] },
+  { crate = "target-lexicon", allow = ["Apache-2.0 WITH LLVM-exception"] },
+  { crate = "libloading", allow = ["ISC"] },
+]
+
+# hdf5-metno-src declares no `license`: it packages HDF5's source, under
+# HDF5's own BSD-3-Clause licence.
+[[licenses.clarify]]
+crate = "hdf5-metno-src"
+expression = "BSD-3-Clause"
+license-files = [{ path = "ext/hdf5/LICENSE", hash = 0x221a80ac }]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

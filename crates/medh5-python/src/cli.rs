@@ -185,6 +185,19 @@ impl medh5_cli::Host for PyHost {
             py_to_json(&found).map_err(|e| e.to_string())
         })
     }
+
+    /// This interpreter, running `medh5.cli.main` --- the current directory
+    /// off `sys.path` first, as the standalone binary's hand-off runs it, so
+    /// a `medh5/` where the command runs is not imported in its place.
+    fn worker_command(&self) -> Option<Vec<OsString>> {
+        let executable: String = Python::attach(|py| py.import("sys")?.getattr("executable")?.extract()).ok()?;
+        if executable.is_empty() {
+            return None;
+        }
+        let code = "import sys; sys.path[:1] == [''] and sys.path.pop(0); from medh5.cli import main; \
+                    raise SystemExit(main())";
+        Some(vec![executable.into(), "-c".into(), code.into()])
+    }
 }
 
 /// Run the command line on `argv` (without the program name); the exit code.

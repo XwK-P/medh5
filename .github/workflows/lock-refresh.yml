@@ -1,0 +1,70 @@
+name: Lock refresh
+
+# Dependabot cannot update Cargo.lock here: THIRD_PARTY_NOTICES is generated
+# from the lock and must change in the same commit, or CI fails.  So once a
+# week this refreshes the lock, within the crates' `rust-version`, and opens a
+# pull request on `deps/cargo-lock` with the notices regenerated.  The crates
+# that build a library of SECURITY.md's native inventory are held back
+# (.github/scripts/lock_refresh.py says why), and the pull request's body lists
+# the bumps a person has to make for them.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: rustup toolchain install --no-self-update
+      - name: Refresh the lock
+        run: python .github/scripts/lock_refresh.py --summary "$RUNNER_TEMP/body.md"
+      # A pull request opened with the workflow's own GITHUB_TOKEN starts no
+      # workflow, so CI would not run on it.  A GitHub App (variable
+      # LOCK_REFRESH_APP_ID, secret LOCK_REFRESH_APP_KEY) or a fine-grained
+      # token (secret LOCK_REFRESH_TOKEN) with contents and pull requests
+      # write opens one that does; without either the pull request is still
+      # opened, and says how to start CI on it.
+      - name: An app token
+        id: app
+        if: vars.LOCK_REFRESH_APP_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.LOCK_REFRESH_APP_ID }}
+          private-key: ${{ secrets.LOCK_REFRESH_APP_KEY }}
+      - name: Which token opens the pull request
+        id: token
+        env:
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          PAT: ${{ secrets.LOCK_REFRESH_TOKEN }}
+        run: |
+          if [ -z "$APP_TOKEN" ] && [ -z "$PAT" ]; then
+            printf '\n%s\n' "Opened with the workflow's own token, which starts no CI: close and reopen this pull request to run CI." >> "$RUNNER_TEMP/body.md"
+            echo "::notice::no LOCK_REFRESH app or token: close and reopen the pull request to run CI"
+          fi
+      - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.app.outputs.token || secrets.LOCK_REFRESH_TOKEN || github.token }}
+          branch: deps/cargo-lock
+          base: main
+          title: Refresh Cargo.lock
+          commit-message: Refresh Cargo.lock and THIRD_PARTY_NOTICES
+          body-path: ${{ runner.temp }}/body.md
+          add-paths: |
+            Cargo.lock
+            THIRD_PARTY_NOTICES
+          delete-branch: true

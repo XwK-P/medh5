@@ -17,6 +17,8 @@
 mod build;
 pub mod clinical;
 pub mod companion;
+#[doc(hidden)]
+pub mod robustness;
 pub mod suite;
 
 use std::collections::BTreeSet;

@@ -24,6 +24,12 @@ pub fn dispatch(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let names = names.as_deref();
     match m.subcommand() {
         Some(("list", sub)) => list(sub, ctx),
+        Some(("build", sub)) if flag(sub, "robustness") => {
+            let dir = outdir(sub)?;
+            let written = medh5::conformance::robustness::write(dir)?;
+            ctx.print(format!("wrote {} robustness fixtures to {}", written.len(), py_path(dir)));
+            Ok(EXIT_OK)
+        }
         Some(("build", sub)) => {
             let manifest = build_corpus(outdir(sub)?, names)?;
             ctx.print(format!("wrote {chosen} cases and {}", py_path(&manifest)));

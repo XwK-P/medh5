@@ -15,14 +15,16 @@ use serde_json::Value;
 use medh5::annotations::encode::InstanceInput;
 use medh5::annotations::encode_geometric::{Assertions, Polygon};
 use medh5::labels::ClassKey;
-use medh5::sample::writer::{Annotated, GridOptions, ImageOptions, QualityArg, SampleWriter as EngineWriter};
+use medh5::sample::writer::{
+    Annotated, GridOptions, ImageEdit, ImageOptions, QualityArg, SampleWriter as EngineWriter,
+};
 use medh5::sample::writer_annotations::{
-    AnnotationOptions, ObjectFields, Placement, SegmentationOptions, SegmentationSource, TransformSpec,
+    AnnotationOptions, FieldDtype, ObjectFields, Placement, SegmentationOptions, SegmentationSource, TransformSpec,
 };
 
 use crate::convert::{
-    bool_array, class_key, class_keys, f64_array, f64_vec, i64_array, i64_vec, kwargs_to_map, matrix as to_matrix,
-    opt_strings, py_to_json, py_to_nd, strings,
+    bool_array, class_key, class_keys, detach_if, f64_array, f64_vec, i64_array, i64_vec, kwargs_to_map,
+    matrix as to_matrix, opt_strings, py_to_json, py_to_nd, strings, DETACH_ROWS,
 };
 use crate::curation::{Activity, Agent, Cohort, Deidentification, Identity, QualityRecord, SplitClaim, Timepoint};
 use crate::errors::R;
@@ -409,6 +411,20 @@ impl SampleWriter {
         profiles: Option<&Bound<'_, PyAny>>,
     ) -> R<Self> {
         let profiles = opt_strings(profiles)?.unwrap_or_default();
+        if sample_id.is_none() {
+            let ids = medh5::sample::writer::default_ids(&path)?;
+            if ids.current != ids.stem {
+                let (stem, current) = (medh5::json::repr_str(&ids.stem), medh5::json::repr_str(&ids.current));
+                crate::deprecation::warn(
+                    py,
+                    &format!(
+                        "medh5 3.0 names this sample {stem} (the file stem), not {current}: pass sample_id= (and \
+                         subject_id=) to keep {current}"
+                    ),
+                    true,
+                )?;
+            }
+        }
         let codec = codec.to_string();
         let inner = py.detach(move || {
             medh5::sample::writer::create(&path, sample_id.as_deref(), subject_id.as_deref(), &codec, &profiles)
@@ -871,11 +887,15 @@ impl SampleWriter {
         task: &str,
         prov: Option<&Bound<'_, PyAny>>,
         codec: Option<&str>,
-    ) -> R<()> {
+    ) -> R<Group> {
         let mask = mask_arg(mask, &format!("mask {}", medh5::json::repr_str(ann_id)))?;
         let prov = prov_arg(prov)?;
         let writer = self.writer()?;
-        Ok(py.detach(move || writer.add_mask(ann_id, mask, grid, task, prov.as_deref(), codec))?)
+        let group = py.detach(move || -> medh5::Result<_> {
+            writer.add_mask(ann_id, mask, grid, task, prov.as_deref(), codec)?;
+            writer.root()?.group("annotations")?.group(ann_id).map_err(Into::into)
+        })?;
+        Ok(Group::wrap(group))
     }
 
     /// Drop an annotation, and any index entry derived from it.
@@ -886,6 +906,59 @@ impl SampleWriter {
     /// Drop a transform; what still names it is checked at commit.
     fn remove_transform(&mut self, transform_id: &str) -> R<()> {
         Ok(self.writer()?.remove_transform(transform_id)?)
+    }
+
+    /// Drop an image, its `acquisition` entry and its `series_uids`
+    /// mentions; what still names it, and the last image going (E201), are
+    /// checked at commit.
+    fn remove_image(&mut self, image_id: &str) -> R<()> {
+        Ok(self.writer()?.remove_image(image_id)?)
+    }
+
+    /// Drop a grid; what still names it (E101, E503), and the last grid
+    /// going (E111), are checked at commit.
+    fn remove_grid(&mut self, grid_id: &str) -> R<()> {
+        Ok(self.writer()?.remove_grid(grid_id)?)
+    }
+
+    /// Change an image's attributes without rewriting its samples (§4.1):
+    /// `None` removes one.  Checked as `add_image` checks them.
+    #[pyo3(signature = (image_id, **attrs))]
+    fn set_image_attrs(&mut self, image_id: &str, attrs: Option<&Bound<'_, PyDict>>) -> R<()> {
+        let mut edit = ImageEdit::default();
+        for (key, value) in attrs.into_iter().flat_map(|d| d.iter()) {
+            let key: String = key.extract()?;
+            let given = (!value.is_none()).then_some(&value);
+            let text = |v: Option<&Bound<'_, PyAny>>| v.map(|v| v.extract::<String>()).transpose();
+            match key.as_str() {
+                "modality" => edit.modality = Some(text(given)?),
+                "value_type" => edit.value_type = Some(text(given)?),
+                "value_units" => edit.value_units = Some(text(given)?),
+                "valid_mask" => edit.valid_mask = Some(text(given)?),
+                "prov" => edit.prov = Some(prov_arg(given)?),
+                "channel_names" => edit.channel_names = Some(opt_strings(given)?),
+                "rescale_slope" => edit.rescale_slope = Some(given.map(|v| v.extract::<f64>()).transpose()?),
+                "rescale_intercept" => edit.rescale_intercept = Some(given.map(|v| v.extract::<f64>()).transpose()?),
+                "window_center" => edit.window_center = Some(given.map(f64_vec).transpose()?),
+                "window_width" => edit.window_width = Some(given.map(f64_vec).transpose()?),
+                _ => {
+                    let why = match key.as_str() {
+                        "grid" => "an image's grid is its geometry; write the image again on the other grid",
+                        "digest" => "a digest is the commit's to stamp",
+                        "levels" | "downsample_factors" | "downsample_method" | "grid_levels" => {
+                            "a pyramid's levels are written by add_pyramid"
+                        }
+                        _ => "the specification defines no such image attribute (§4.1)",
+                    };
+                    return Err(medh5::Error::invalid(format!(
+                        "set_image_attrs does not edit {}: {why}",
+                        medh5::json::repr_str(&key)
+                    ))
+                    .into());
+                }
+            }
+        }
+        Ok(self.writer()?.set_image_attrs(image_id, edit)?)
     }
 
     /// Re-encode a voxel annotation in place, preserving its header (§7.6).
@@ -915,6 +988,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_boxes(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         boxes: &Bound<'_, PyAny>,
         class_ids: &Bound<'_, PyAny>,
@@ -941,15 +1015,11 @@ impl SampleWriter {
         let slice_index =
             is_given(slice_index).map(|o| crate::annotations::slice_index_arg(&o, n_boxes)).transpose()?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_boxes(
-            ann_id,
-            &boxes,
-            &keys,
-            objects,
-            slice_index,
-            placement(grid, Some(space), frame_uid),
-            options,
-        )?;
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = detach_if(py, n_boxes >= DETACH_ROWS, move || {
+            writer.add_boxes(ann_id, &boxes, &keys, objects, slice_index, at, options)
+        })?;
         Ok(Group::wrap(group))
     }
 
@@ -960,6 +1030,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_obb(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         centers: &Bound<'_, PyAny>,
         sizes: &Bound<'_, PyAny>,
@@ -984,16 +1055,12 @@ impl SampleWriter {
         let keys = class_keys(class_ids)?;
         let objects = objects(instance_ids, scores, attributes)?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_obb(
-            ann_id,
-            &centers,
-            &sizes,
-            &rotations,
-            &keys,
-            objects,
-            placement(grid, Some(space), frame_uid),
-            options,
-        )?;
+        let rows = centers.shape().first().copied().unwrap_or(0);
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = detach_if(py, rows >= DETACH_ROWS, move || {
+            writer.add_obb(ann_id, &centers, &sizes, &rotations, &keys, objects, at, options)
+        })?;
         Ok(Group::wrap(group))
     }
 
@@ -1004,6 +1071,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_keypoints(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         points: &Bound<'_, PyAny>,
         keypoint_classes: &Bound<'_, PyAny>,
@@ -1030,17 +1098,12 @@ impl SampleWriter {
         let visibility = is_given(visibility).map(|v| i64_array(&v)).transpose()?;
         let objects = objects(instance_ids, scores, None)?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_keypoints(
-            ann_id,
-            &points,
-            &slots,
-            &keys,
-            visibility.as_ref(),
-            objects,
-            skeleton,
-            placement(grid, Some(space), frame_uid),
-            options,
-        )?;
+        let rows = points.shape().first().copied().unwrap_or(0) * slots.len().max(1);
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = detach_if(py, rows >= DETACH_ROWS, move || {
+            writer.add_keypoints(ann_id, &points, &slots, &keys, visibility.as_ref(), objects, skeleton, at, options)
+        })?;
         Ok(Group::wrap(group))
     }
 
@@ -1051,6 +1114,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_points(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         points: &Bound<'_, PyAny>,
         grid: Option<&str>,
@@ -1076,17 +1140,22 @@ impl SampleWriter {
         let names = opt_strings(names)?;
         let weights = is_given(weights).map(|w| f64_vec(&w)).transpose()?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_points(
-            ann_id,
-            &points,
-            keys.as_deref(),
-            instance_ids.as_deref(),
-            names.as_deref(),
-            weights.as_deref(),
-            correspondence,
-            placement(grid, Some(space), frame_uid),
-            options,
-        )?;
+        let rows = points.shape().first().copied().unwrap_or(0);
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = detach_if(py, rows >= DETACH_ROWS, move || {
+            writer.add_points(
+                ann_id,
+                &points,
+                keys.as_deref(),
+                instance_ids.as_deref(),
+                names.as_deref(),
+                weights.as_deref(),
+                correspondence,
+                at,
+                options,
+            )
+        })?;
         Ok(Group::wrap(group))
     }
 
@@ -1213,7 +1282,7 @@ impl SampleWriter {
     #[pyo3(signature = (transform_id, *, kind, from_frame, to_frame, matrix=None, field=None, control_points=None,
         components=None, field_grid=None, cp_grid=None, vector_space="world", interpolation="linear",
         extrapolation="zero", order=3, units=None, from_grid=None, to_grid=None, invertible=None, inverse_id=None,
-        metrics=None, prov=None, codec=None))]
+        metrics=None, prov=None, codec=None, field_dtype="float32"))]
     #[allow(clippy::too_many_arguments)]
     fn add_transform(
         &mut self,
@@ -1240,7 +1309,20 @@ impl SampleWriter {
         metrics: Option<&Bound<'_, PyAny>>,
         prov: Option<&Bound<'_, PyAny>>,
         codec: Option<String>,
+        field_dtype: &str,
     ) -> R<Group> {
+        let field_dtype = match field_dtype {
+            "float32" => FieldDtype::Float32,
+            "float16" => FieldDtype::Float16,
+            "auto" => FieldDtype::Auto,
+            other => {
+                return Err(medh5::Error::invalid(format!(
+                    "field_dtype {} is not one of 'float32', 'float16', 'auto'",
+                    medh5::json::repr_str(other)
+                ))
+                .into())
+            }
+        };
         let spec = TransformSpec {
             matrix: is_given(matrix).map(|m| f64_array(&m)).transpose()?,
             field: is_given(field).map(|f| py_to_nd(&f)).transpose()?,
@@ -1264,7 +1346,7 @@ impl SampleWriter {
         let writer = self.writer()?;
         let (id, kind, from, to) =
             (transform_id.to_string(), kind.to_string(), from_frame.to_string(), to_frame.to_string());
-        let group = py.detach(move || writer.add_transform(&id, &kind, &from, &to, spec))?;
+        let group = py.detach(move || writer.add_transform_with(&id, &kind, &from, &to, spec, field_dtype))?;
         Ok(Group::wrap(group))
     }
 

@@ -16,10 +16,11 @@ use medh5::json::py_str;
 use medh5::labels::ClassKey;
 use medh5::sample::{open_sample, Sample};
 use medh5::storage::codecs::describe_filters;
-use medh5::validate::{validate_paths_with, ValidateOptions};
+use medh5::validate::{validate_file_with, ValidateOptions};
 use medh5::Error;
 
 use crate::common::*;
+use crate::workers::{run_files, FileOutcome};
 
 pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     match name {
@@ -391,8 +392,16 @@ fn tree_json(node: &hdf5::Group, prefix: &str, roles: &Roles) -> medh5::Result<V
 }
 
 fn validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
-    let paths = get_paths(m, "paths");
-    let refs: Vec<&Path> = paths.iter().map(Path::new).collect();
+    // A bad option is refused before any file is read, as it was.
+    validate_options(m)?;
+    let outcomes = run_files("validate", m, ctx, &get_paths(m, "paths"))?;
+    if flag(m, "json") {
+        ctx.emit(&Value::Array(outcomes.iter().map(|o| o.entry.clone()).collect()), true);
+    }
+    Ok(if outcomes.iter().all(|o| o.ok) { EXIT_OK } else { EXIT_ERROR })
+}
+
+fn validate_options(m: &ArgMatches) -> medh5::Result<ValidateOptions> {
     let mut options = ValidateOptions::default().level(req_str(m, "level"));
     if let Some(profiles) = get_strs(m, "profiles") {
         options = options.profiles(&profiles);
@@ -408,81 +417,91 @@ fn validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         })?;
         options = options.codes_revision(revision);
     }
-    let reports = validate_paths_with(&refs, &options)?;
-    if flag(m, "json") {
-        ctx.emit(&Value::Array(reports.iter().map(|r| r.to_json()).collect()), true);
-    } else {
-        for report in &reports {
-            ctx.print(report.format(flag(m, "verbose")));
-        }
+    Ok(options)
+}
+
+/// One file of `validate`: its report, printed unless `--json` collects it.
+pub(crate) fn validate_one(path: &str, m: &ArgMatches) -> medh5::Result<FileOutcome> {
+    let report = validate_file_with(Path::new(path), &validate_options(m)?)?;
+    let mut outcome = FileOutcome::new();
+    if !flag(m, "json") {
+        outcome.print(report.format(flag(m, "verbose")));
     }
-    Ok(if reports.iter().all(|r| r.ok()) { EXIT_OK } else { EXIT_ERROR })
+    outcome.entry = report.to_json();
+    outcome.ok = report.ok();
+    Ok(outcome)
 }
 
 fn verify(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let outcomes = run_files("verify", m, ctx, &get_paths(m, "paths"))?;
+    ctx.emit(&Value::Array(outcomes.iter().map(|o| o.entry.clone()).collect()), flag(m, "json"));
+    Ok(if outcomes.iter().all(|o| o.ok) { EXIT_OK } else { EXIT_ERROR })
+}
+
+/// One file of `verify`.
+pub(crate) fn verify_one(path: &str, m: &ArgMatches) -> medh5::Result<FileOutcome> {
     let as_json = flag(m, "json");
     let partial = get_strs(m, "partial");
-    let mut results = Vec::new();
-    let mut ok = true;
-    for path in get_paths(m, "paths") {
-        let result = match open(m, &path) {
-            Ok(AnyFile::Collection(c)) => needs_key(&path, &c).and_then(|why| Err(Error::File(why))),
-            Ok(AnyFile::Sample(s)) => s.verify(partial.as_deref()),
-            Err(e) => Err(e),
+    let result = match open(m, path) {
+        Ok(AnyFile::Collection(c)) => needs_key(path, &c).and_then(|why| Err(Error::File(why))),
+        Ok(AnyFile::Sample(s)) => s.verify(partial.as_deref()),
+        Err(e) => Err(e),
+    };
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => return Ok(FileOutcome::failed(path, &e)),
+    };
+    let mut outcome = FileOutcome::new();
+    let mut summary = Map::new();
+    summary.insert("path".into(), json!(path));
+    if let Value::Object(rest) = result.summary() {
+        summary.extend(rest);
+    }
+    outcome.entry = Value::Object(summary);
+    outcome.ok = result.ok();
+    if !as_json {
+        let state = if result.ok() { "OK" } else { "FAILED" };
+        // Three answers, not two: a partial pass does not recompute the
+        // root, and a file may declare no `content_id` at all (§13.2).
+        let content = match result.content_id_ok() {
+            Some(true) => "ok",
+            Some(false) => "MISMATCH",
+            None => "not verified",
         };
-        let result = match result {
-            Ok(r) => r,
-            Err(e) => {
-                results.push(ctx.file_failed(&path, &e));
-                ok = false;
-                continue;
-            }
-        };
-        let mut summary = Map::new();
-        summary.insert("path".into(), json!(path));
-        if let Value::Object(rest) = result.summary() {
-            summary.extend(rest);
+        outcome.print(format!("{path}: {state}  {} objects, content_id {content}", result.checked.len()));
+        for name in &result.mismatched {
+            outcome.print(format!("  MISMATCH  {name}"));
         }
-        results.push(Value::Object(summary));
-        ok = ok && result.ok();
-        if !as_json {
-            let state = if result.ok() { "OK" } else { "FAILED" };
-            // Three answers, not two: a partial pass does not recompute the
-            // root, and a file may declare no `content_id` at all (§13.2).
-            let content = match result.content_id_ok() {
-                Some(true) => "ok",
-                Some(false) => "MISMATCH",
-                None => "not verified",
-            };
-            ctx.print(format!("{path}: {state}  {} objects, content_id {content}", result.checked.len()));
-            for name in &result.mismatched {
-                ctx.print(format!("  MISMATCH  {name}"));
-            }
-            // A digest that is not `ALGO:HEX`, or a `--partial` name with no
-            // digest at all --- a group's path, a typo --- is a failure too,
-            // and says which.
-            for name in &result.malformed {
-                ctx.print(format!("  MALFORMED {name} (no digest of the form ALGO:HEX at this path)"));
-            }
-            for name in &result.unattested {
-                ctx.print(format!("  UNSIGNED  {name} (no line of content_id covers it at this path)"));
-            }
-            for name in &result.stale_index {
-                ctx.print(format!("  STALE     index/{name} (rebuild with `medh5 index build`)"));
-            }
-            // Neither checked nor refuted, so not a failure --- but named, or
-            // `OK` reads as covering it (`--partial` on one said `OK 0
-            // objects` and nothing else).
-            for name in &result.unverifiable {
-                ctx.print(format!("  UNCHECKED {name} (a digest its type cannot have, §13.1: not checked)"));
-            }
+        // A digest that is not `ALGO:HEX`, or a `--partial` name with no
+        // digest at all --- a group's path, a typo --- is a failure too,
+        // and says which.
+        for name in &result.malformed {
+            outcome.print(format!("  MALFORMED {name} (no digest of the form ALGO:HEX at this path)"));
+        }
+        for name in &result.unattested {
+            outcome.print(format!("  UNSIGNED  {name} (no line of content_id covers it at this path)"));
+        }
+        for name in &result.stale_index {
+            outcome.print(format!("  STALE     index/{name} (rebuild with `medh5 index build`)"));
+        }
+        // Neither checked nor refuted, so not a failure --- but named, or
+        // `OK` reads as covering it (`--partial` on one said `OK 0
+        // objects` and nothing else).
+        for name in &result.unverifiable {
+            outcome.print(format!("  UNCHECKED {name} (a digest its type cannot have, §13.1: not checked)"));
         }
     }
-    ctx.emit(&Value::Array(results), as_json);
-    Ok(if ok { EXIT_OK } else { EXIT_ERROR })
+    Ok(outcome)
 }
 
 fn fix_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let outcomes = run_files("fix", m, ctx, &get_paths(m, "paths"))?;
+    ctx.emit(&Value::Array(outcomes.iter().map(|o| o.entry.clone()).collect()), flag(m, "json"));
+    Ok(if outcomes.iter().all(|o| o.ok) { EXIT_OK } else { EXIT_ERROR })
+}
+
+/// One file of `fix`.
+pub(crate) fn fix_one(path: &str, m: &ArgMatches) -> medh5::Result<FileOutcome> {
     let as_json = flag(m, "json");
     let options = FixOptions {
         rebuild_index: flag(m, "rebuild_index"),
@@ -491,76 +510,68 @@ fn fix_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         performed_by: get_str(m, "performed_by").map(str::to_string),
         max_coords: None,
     };
-    let mut results = Vec::new();
-    let mut all_ok = true;
-    for path in get_paths(m, "paths") {
-        let fixed = fix(Path::new(&path), &options).and_then(|repair| {
-            let stale = still_stale(&path, &repair)?;
-            Ok((repair, stale))
-        });
-        let (repair, stale) = match fixed {
-            Ok(v) => v,
-            Err(e) => {
-                results.push(ctx.file_failed(&path, &sample_file_error(&path, e)));
-                all_ok = false;
-                continue;
-            }
-        };
-        // Done when nothing is left needing attention: a run that found
-        // problems and was not asked to act on them has reported, and one
-        // that restamped the digests without rebuilding the index has left
-        // the index stale --- the note says so, and the exit code agrees.
-        let ok = stale.is_empty() && (repair.rewrote_digests || !repair.diagnosis.needs_digests());
-        all_ok &= ok;
-        let notes: Vec<String> = repair.notes.iter().map(|note| in_cli_terms(note)).collect();
-        let mut entry = Map::new();
-        entry.insert("path".into(), json!(repair.path));
-        entry.insert("ok".into(), json!(ok));
-        if let Value::Object(rest) = repair.to_json() {
-            entry.extend(rest);
+    let fixed = fix(Path::new(path), &options).and_then(|repair| {
+        let stale = still_stale(path, &repair)?;
+        Ok((repair, stale))
+    });
+    let (repair, stale) = match fixed {
+        Ok(v) => v,
+        Err(e) => return Ok(FileOutcome::failed(path, &sample_file_error(path, e))),
+    };
+    // Done when nothing is left needing attention: a run that found
+    // problems and was not asked to act on them has reported, and one
+    // that restamped the digests without rebuilding the index has left
+    // the index stale --- the note says so, and the exit code agrees.
+    let ok = stale.is_empty() && (repair.rewrote_digests || !repair.diagnosis.needs_digests());
+    let notes: Vec<String> = repair.notes.iter().map(|note| in_cli_terms(note)).collect();
+    let mut entry = Map::new();
+    entry.insert("path".into(), json!(repair.path));
+    entry.insert("ok".into(), json!(ok));
+    if let Value::Object(rest) = repair.to_json() {
+        entry.extend(rest);
+    }
+    entry.insert("notes".into(), json!(notes));
+    let mut outcome = FileOutcome::new();
+    outcome.entry = Value::Object(entry);
+    outcome.ok = ok;
+    if as_json {
+        return Ok(outcome);
+    }
+    let diagnosis = &repair.diagnosis;
+    if repair.changed() {
+        let mut done = Vec::new();
+        if !repair.rebuilt_index.is_empty() {
+            done.push(format!("rebuilt index for {}", repair.rebuilt_index.join(", ")));
         }
-        entry.insert("notes".into(), json!(notes));
-        results.push(Value::Object(entry));
-        if as_json {
-            continue;
+        if repair.rewrote_digests {
+            done.push("rewrote digests".to_string());
         }
-        let diagnosis = &repair.diagnosis;
-        if repair.changed() {
-            let mut done = Vec::new();
-            if !repair.rebuilt_index.is_empty() {
-                done.push(format!("rebuilt index for {}", repair.rebuilt_index.join(", ")));
-            }
-            if repair.rewrote_digests {
-                done.push("rewrote digests".to_string());
-            }
-            ctx.print(format!("{path}: {}", done.join("; ")));
-        } else if diagnosis.clean() {
-            ctx.print(format!("{path}: nothing to fix"));
-        } else {
-            ctx.print(format!("{path}: needs attention, nothing changed"));
-            let restamp = "--rewrite-digests, and read what it means first";
-            let unparsed = format!("not of the form ALGO:HEX; {restamp}");
-            for (names, what, hint) in [
-                (&diagnosis.stale_index, "stale index", "--rebuild-index"),
-                (&diagnosis.mismatched, "digest mismatch", restamp),
-                (&diagnosis.malformed, "malformed digest", unparsed.as_str()),
-                (&diagnosis.unattested, "unsigned", "no line of content_id covers it at this path"),
-            ] {
-                if !names.is_empty() {
-                    ctx.print(format!("  {what}: {} ({hint})", names.join(", ")));
-                }
-            }
-            if diagnosis.content_id_ok == Some(false) {
-                ctx.print("  content_id does not match the file's own contents");
+        outcome.print(format!("{path}: {}", done.join("; ")));
+    } else if diagnosis.clean() {
+        outcome.print(format!("{path}: nothing to fix"));
+    } else {
+        outcome.print(format!("{path}: needs attention, nothing changed"));
+        let restamp = "--rewrite-digests, and read what it means first";
+        let unparsed = format!("not of the form ALGO:HEX; {restamp}");
+        for (names, what, hint) in [
+            (&diagnosis.stale_index, "stale index", "--rebuild-index"),
+            (&diagnosis.mismatched, "digest mismatch", restamp),
+            (&diagnosis.malformed, "malformed digest", unparsed.as_str()),
+            (&diagnosis.unattested, "unsigned", "no line of content_id covers it at this path"),
+        ] {
+            if !names.is_empty() {
+                outcome.print(format!("  {what}: {} ({hint})", names.join(", ")));
             }
         }
-        // What was left, and why: said whatever was done.
-        for note in &notes {
-            ctx.print(format!("  note: {note}"));
+        if diagnosis.content_id_ok == Some(false) {
+            outcome.print("  content_id does not match the file's own contents");
         }
     }
-    ctx.emit(&Value::Array(results), as_json);
-    Ok(if all_ok { EXIT_OK } else { EXIT_ERROR })
+    // What was left, and why: said whatever was done.
+    for note in &notes {
+        outcome.print(format!("  note: {note}"));
+    }
+    Ok(outcome)
 }
 
 /// The index entries still stale once `repair` is done: the diagnosis's, or

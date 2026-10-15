@@ -1060,7 +1060,13 @@ def create(
     codec: str = "balanced",
     profiles: Sequence[str] | None = None,
 ) -> SampleWriter:
-    """Create a new sample; use as a context manager, or call `commit()`."""
+    """Create a new sample; use as a context manager, or call `commit()`.
+
+    Without `sample_id`, the sample id is the file name up to its first dot,
+    and `subject_id` defaults to the sample id.  Where that is not the file's
+    stem (`case.v2.medh5`) it warns (`FutureWarning`): medh5 3.0 takes the
+    stem.  A name with nothing before its first dot is refused.
+    """
     ...
 
 def cubic_sample(
@@ -3383,7 +3389,7 @@ class SampleWriter:
         task: str = "other",
         prov: Activity | str | None = None,
         codec: str | None = None,
-    ) -> None:
+    ) -> Group:
         """Write a boolean `mask` annotation (FOV, ignore region).  A
         floating-point mask holding a value other than 0 and 1 is refused
         (E411) rather than read as set wherever it is non-zero.
@@ -3540,10 +3546,17 @@ class SampleWriter:
         metrics: str | Mapping[str, Any] | None = None,
         prov: Activity | str | None = None,
         codec: str | None = None,
+        field_dtype: str = "float32",
     ) -> Group:
         """A transform mapping points from `from_frame` to `to_frame`:
         `x_M = T(x_F)`, the ITK convention.  `units` defaults to those of the
         grids in the two frames (§10.1).
+
+        `field_dtype` stores a displacement field as `"float32"` (the
+        default), `"float16"` (refused when a finite value would overflow), or
+        `"auto"`: float16 when the largest displacement is below 64 voxels of
+        the field's grid and within float16's range (§10.4).  Any but
+        `"float32"` is refused for another kind.
         """
         ...
     def build_index(
@@ -3645,11 +3658,42 @@ class SampleWriter:
     def remove_annotation(self, ann_id: str) -> None:
         """Drop an annotation, and any index entry derived from it."""
         ...
+    def remove_grid(self, grid_id: str) -> None:
+        """Drop a grid; what still names it (E101, E503), and the last grid
+        going (E111), are checked at commit.
+        """
+        ...
+    def remove_image(self, image_id: str) -> None:
+        """Drop an image, its `acquisition` entry and its `series_uids`
+        mentions; what still names it, and the last image going (E201), are
+        checked at commit.
+        """
+        ...
     def remove_transform(self, transform_id: str) -> None:
         """Drop a transform; what still names it is checked at commit."""
         ...
     def set_clock(self, clock: Any = None, **fields: Any) -> dict[str, Any]:
         """Declare the subject clock, starting the `clinical` profile (1.1 §3)."""
+        ...
+    def set_image_attrs(
+        self,
+        image_id: str,
+        *,
+        modality: str = ...,
+        value_type: str = ...,
+        value_units: str | None = ...,
+        channel_names: Sequence[str] | None = ...,
+        rescale_slope: float | None = ...,
+        rescale_intercept: float | None = ...,
+        window_center: Sequence[float] | None = ...,
+        window_width: Sequence[float] | None = ...,
+        valid_mask: str | None = ...,
+        prov: Activity | str | None = ...,
+    ) -> None:
+        """Change an image's attributes without rewriting its samples (§4.1):
+        `None` removes one.  Checked as `add_image` checks them; `modality`
+        and `value_type` are required and cannot be removed (E205).
+        """
         ...
     def set_quality(self, key: str, **fields: Any) -> QualityRecord:
         """Create or replace a quality record (status defaults to `draft`)."""

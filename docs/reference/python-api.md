@@ -279,6 +279,13 @@ with medh5.create("out.medh5", sample_id="c1", subject_id="s1",
     ...
 ```
 
+Without `sample_id`, the sample id is the file name up to its first dot, and
+`subject_id` defaults to it. Where that is not the file's stem, as for
+`case.v2.medh5`, `create` warns (`FutureWarning`): medh5 3.0 names that sample
+`case.v2`. Pass `sample_id` (and `subject_id`) to keep the name you want, and
+to keep `P001.ct.medh5` and `P001.mr.medh5` one subject. A name with nothing
+before its first dot, such as `.hidden.medh5`, gives no id and is refused.
+
 `create` and `amend` both return a `SampleWriter`. It builds a temporary file
 beside the target and, on a clean exit, fsyncs it, renames it over the target
 and fsyncs the directory, so the file appears complete or not at all; an
@@ -410,7 +417,8 @@ w.add_transform("tp0_to_tp1", kind="affine",
 
 w.add_transform("warp", kind="displacement",
                 from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
-                field=field, field_grid="ct_tp0", vector_space="world")
+                field=field, field_grid="ct_tp0", vector_space="world",
+                field_dtype="auto")      # float16 where it is safe (§10.3)
 ```
 
 `units` default to those of the grids in the two frames, and a `units` they are
@@ -426,10 +434,23 @@ w.build_index()                          # sampling indices for every voxel anno
 w.build_index(["organs_tp0"], max_coords=8192)
 w.transcode_annotation("organs_tp0", "bitmask")
 w.remove_annotation("old_seg")           # takes its index with it
+w.remove_image("PT_tp1")                 # and its acquisition entry and series UID
+w.remove_grid("pt_tp1")
+w.set_image_attrs("CT_tp0", modality="CT", window_center=[40.0], value_units=None)
 w.remap_frame_uids({"old-frame": "new-frame"})   # grids, transforms, world-space
                                                  # annotations — all at once
 w.infer_profiles()                       # the profiles the content satisfies
 ```
+
+`remove_image` and `remove_grid` refuse an id the file does not hold, and
+leave the rest to the commit, so removals and additions may come in any order:
+it refuses a grid something still names (`E101`, `E503`), and the last image
+(`E201`) or grid (`E111`) going. `set_image_attrs` changes an image's
+attributes without rewriting its samples; `None` removes one. It checks
+values as `add_image` does (`E203`, `E204`, a finite rescale), refuses to
+remove `modality` or `value_type` (`E205`), and does not edit `grid`, `digest`
+or a pyramid's attributes. `add_mask` returns its group, as every other
+`add_*` does.
 
 ## Amending
 
@@ -545,7 +566,7 @@ walk-through is [Train on clinical tasks](../guides/clinical-training.md).
 ## Collections
 
 ```python
-medh5.pack(["case.medh5", "case2.medh5"], "pair.medh5c")    # keys default to file stems
+medh5.pack(["case.medh5", "case2.medh5"], "pair.medh5c")    # keys: names up to the first dot
 medh5.unpack("pair.medh5c", "restored/", keys=["case"])       # -> restored/case.medh5
 ```
 
