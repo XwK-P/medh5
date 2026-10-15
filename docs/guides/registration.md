@@ -196,7 +196,7 @@ w.add_transform("warp", kind="displacement", field=field, field_grid="ct_tp0",
 |---|---|
 | `"float32"` (default) | `float32`, whatever the field holds |
 | `"float16"` | `float16`; a component beyond 65504, which `float16` cannot hold, is refused |
-| `"auto"` | `float16` when every displacement is finite and below 64 voxels (in the field grid's smallest spacing, for a `world` field), else `float32` |
+| `"auto"` | `float16` when every displacement is finite, within float16's range and below 64 voxels (in the field grid's smallest spacing, for a `world` field), else `float32` |
 
 Only a displacement field has a field to store, so another kind given a
 `field_dtype` other than `"float32"` is refused.

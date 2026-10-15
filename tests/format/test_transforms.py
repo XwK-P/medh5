@@ -811,6 +811,9 @@ class TestFieldDtype:
             # 100 mm at 2 mm voxels is 50 voxels; at 0.5 mm, 200.
             ("world", (2.0, 2.0, 4.0), 100.0, np.float16),
             ("world", (0.5, 2.0, 2.0), 100.0, np.float32),
+            # 50 voxels of 2000 units each, but 100000 is beyond float16's
+            # largest value: stored as float16, it would read back infinite.
+            ("world", (2000.0, 2000.0, 2000.0), 100000.0, np.float32),
         ],
     )
     def test_S10_4_auto_stores_float16_below_the_bound_and_float32_above(
@@ -824,6 +827,9 @@ class TestFieldDtype:
             spacing=spacing,
         )
         assert self._stored(path) == stored
+        with medh5.open(path) as sample:
+            moved = sample.transforms["warp"].transform_points(np.array([[2.0] * 3]))
+            assert np.isfinite(moved).all()
         nan = self._field(1.0)
         nan[2, 1, 1, 1] = np.nan
         path = self._write(tmp_path / "n.medh5", nan, field_dtype="auto")

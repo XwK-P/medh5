@@ -3389,8 +3389,8 @@ class SampleWriter:
         `field_dtype` stores a displacement field as `"float32"` (the
         default), `"float16"` (refused when a finite value would overflow), or
         `"auto"`: float16 when the largest displacement is below 64 voxels of
-        the field's grid (§10.4).  Any but `"float32"` is refused for another
-        kind.
+        the field's grid and within float16's range (§10.4).  Any but
+        `"float32"` is refused for another kind.
         """
         ...
     def build_index(

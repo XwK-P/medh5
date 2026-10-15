@@ -119,8 +119,8 @@ pub enum FieldDtype {
     /// `float16`, refused when a finite value would overflow to infinity.
     Float16,
     /// `float16` when the largest displacement, in voxels of the field's
-    /// grid, is below [`FLOAT16_SAFE_VOXELS`](crate::transforms::model::FLOAT16_SAFE_VOXELS);
-    /// `float32` otherwise.
+    /// grid, is below [`FLOAT16_SAFE_VOXELS`](crate::transforms::model::FLOAT16_SAFE_VOXELS)
+    /// and within float16's range; `float32` otherwise.
     Auto,
 }
 
@@ -1137,12 +1137,14 @@ impl SampleWriter {
                     return Ok(DType::F32);
                 };
                 // A value that is no number is no measure of the field: it
-                // stays float32.
+                // stays float32.  Nor does a field few voxels long on a
+                // coarse grid whose values float16 cannot hold: a norm within
+                // its range bounds every component.
                 let small = values.ndim() > 0
                     && values
                         .map_axis(ndarray::Axis(0), |v| v.iter().map(|c| c * c).sum::<f64>().sqrt())
                         .iter()
-                        .all(|n| n.is_finite() && n / per_voxel < FLOAT16_SAFE_VOXELS);
+                        .all(|n| n.is_finite() && *n <= FLOAT16_MAX && n / per_voxel < FLOAT16_SAFE_VOXELS);
                 Ok(if small { DType::F16 } else { DType::F32 })
             }
         }
