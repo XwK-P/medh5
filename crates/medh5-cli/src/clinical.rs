@@ -16,7 +16,9 @@ use medh5::clinical::model::{Event, Link, HOUR};
 use medh5::clinical::select::SelectionPolicy;
 use medh5::clinical::ClinicalRecords;
 use medh5::collection::{open_any, AnyFile};
-use medh5::companion::{preflight_each, validate_cache, write_preflight, Admitted, RowView, TaskManifest};
+use medh5::companion::cache::{validate_cache_in, CacheCheck, CacheEntry, FeatureCache};
+use medh5::companion::task::notes_of;
+use medh5::companion::{preflight_each_in, write_preflight_noted, Admitted, Note, RowView, SourceAccess, TaskManifest};
 use medh5::h5::file::same_file;
 use medh5::json::{pretty, repr_str};
 use medh5::sample::Sample;
@@ -31,13 +33,17 @@ pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         ("clinical", Some(("export", sub))) => export(sub, ctx),
         ("clinical", Some(("augment", sub))) => augment(sub, ctx),
         ("clinical", Some(("strip", sub))) => strip(sub, ctx),
+        ("task", Some(("new", sub))) => task_new(sub, ctx),
         ("task", Some(("validate", sub))) => task_validate(sub, ctx),
         ("task", Some(("preflight", sub))) => task_preflight(sub, ctx),
         ("task", Some(("reconcile", sub))) => task_reconcile(sub, ctx),
+        ("task", Some(("repin", sub))) => task_repin(sub, ctx),
         ("cache", Some(("validate", sub))) => cache_validate(sub, ctx),
+        ("cache", Some(("info", sub))) => cache_info(sub, ctx),
+        ("cache", Some(("ls", sub))) => cache_ls(sub, ctx),
         ("clinical", _) => return Ok(ctx.usage("usage: medh5 clinical {show|select|export|augment|strip}")),
-        ("task", _) => return Ok(ctx.usage("usage: medh5 task {validate|preflight|reconcile}")),
-        _ => return Ok(ctx.usage("usage: medh5 cache {validate}")),
+        ("task", _) => return Ok(ctx.usage("usage: medh5 task {new|validate|preflight|reconcile|repin}")),
+        _ => return Ok(ctx.usage("usage: medh5 cache {info|ls|validate}")),
     };
     match result {
         Err(e) if e.is_medh5() || matches!(e, Error::Io(_) | Error::Value(_) | Error::Key(_)) => {
@@ -191,7 +197,7 @@ fn select_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let clinical = clinical_of(&sample, path)?;
     let cutoff = match (get_i64(m, "cutoff_us"), get_f64(m, "cutoff_hours")) {
         (Some(us), None) => us,
-        (None, Some(h)) => (h * HOUR as f64).round() as i64,
+        (None, Some(h)) => medh5::clinical::hours(h)?,
         _ => return Ok(ctx.usage("give the cutoff once: --cutoff-us or --cutoff-hours")),
     };
     let policy = policy_of(m)?;
@@ -308,11 +314,43 @@ fn strip(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     Ok(EXIT_OK)
 }
 
-fn load_task(m: &ArgMatches) -> medh5::Result<(TaskManifest, Option<PathBuf>)> {
+fn load_task(m: &ArgMatches) -> medh5::Result<(TaskManifest, Option<PathBuf>, Vec<Note>)> {
     let file = Path::new(req_str(m, "manifest"));
-    let manifest = TaskManifest::load(file)?;
+    let doc = TaskManifest::read_document(file)?;
+    let manifest = TaskManifest::from_json(&doc)?;
     let base = get_str(m, "base").map(PathBuf::from).or_else(|| file.parent().map(Path::to_path_buf));
-    Ok((manifest, base))
+    Ok((manifest, base, notes_of(&doc)))
+}
+
+/// Where a task's sources may be opened from: confined to `--source-root`,
+/// unconfined with `--any-source-path`, and otherwise unconfined with a note
+/// on stderr naming the sources 3.0 will refuse (task-cache-1 §2).
+fn source_access(
+    m: &ArgMatches,
+    manifest: &TaskManifest,
+    base: Option<&Path>,
+    ctx: &mut Ctx,
+) -> medh5::Result<SourceAccess> {
+    if let Some(root) = get_str(m, "source_root") {
+        return SourceAccess::confined(base, Some(Path::new(root)));
+    }
+    if !flag(m, "any_source_path") {
+        // A base that does not exist confines nothing to note: its sources
+        // fail to open (T301) whatever 3.0 does.
+        if let Ok(confined) = SourceAccess::confined(base, None) {
+            let outside = manifest.sources_outside(&confined);
+            if let Some(first) = outside.first() {
+                ctx.eprint(format!(
+                    "note: {} source(s) lie outside the manifest's directory ({}{}): medh5 3.0 confines a task's \
+                     sources to its directory; pass --any-source-path to keep reading them, or --source-root DIR",
+                    outside.len(),
+                    repr_str(&first.uri),
+                    if outside.len() > 1 { ", ..." } else { "" }
+                ));
+            }
+        }
+    }
+    Ok(SourceAccess::new(base))
 }
 
 fn findings_text(findings: &[medh5::companion::Finding], ctx: &mut Ctx) {
@@ -321,9 +359,19 @@ fn findings_text(findings: &[medh5::companion::Finding], ctx: &mut Ctx) {
     }
 }
 
+/// What the manifest should state and does not: printed after the findings,
+/// and never a failure.
+fn notes_text(notes: &[Note], ctx: &mut Ctx) {
+    for n in notes {
+        ctx.print(format!("  {}", n.line()));
+    }
+}
+
 fn task_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let file = req_str(m, "manifest");
-    let manifest = match TaskManifest::load(Path::new(file)) {
+    let loaded = TaskManifest::read_document(Path::new(file))
+        .and_then(|doc| Ok((TaskManifest::from_json(&doc)?, notes_of(&doc))));
+    let (manifest, notes) = match loaded {
         Ok(t) => t,
         Err(e) if e.code().is_some() => {
             let finding = medh5::companion::Finding::new(e.code().unwrap_or("T101"), "/", e.message());
@@ -346,6 +394,7 @@ fn task_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 "task_fingerprint": manifest.task_fingerprint(),
                 "manifest_fingerprint": manifest.manifest_fingerprint(),
                 "findings": findings.iter().map(medh5::companion::Finding::to_json).collect::<Vec<_>>(),
+                "notes": notes.iter().map(Note::to_json).collect::<Vec<_>>(),
             }),
             true,
         );
@@ -362,6 +411,7 @@ fn task_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         ctx.print(format!("  task fingerprint      {}", manifest.task_fingerprint()));
         ctx.print(format!("  manifest fingerprint  {}", manifest.manifest_fingerprint()));
         findings_text(&findings, ctx);
+        notes_text(&notes, ctx);
     }
     Ok(if findings.is_empty() { EXIT_OK } else { EXIT_ERROR })
 }
@@ -370,15 +420,16 @@ fn task_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 /// writes each subject's history as soon as it is merged, and the summary
 /// keeps one line per row --- neither holds every subject's records.
 fn task_preflight(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
-    let (manifest, base) = load_task(m)?;
+    let (manifest, base, notes) = load_task(m)?;
+    let access = source_access(m, &manifest, base.as_deref(), ctx)?;
     let deep = flag(m, "deep");
     if flag(m, "json") {
-        let ok = write_preflight(&manifest, base.as_deref(), deep, &mut Stdout(ctx))?;
+        let ok = write_preflight_noted(&manifest, &access, deep, &notes, &mut Stdout(ctx))?;
         ctx.print("");
         return Ok(if ok { EXIT_OK } else { EXIT_ERROR });
     }
     let mut lines: Vec<Option<(String, Vec<String>)>> = vec![None; manifest.rows.len()];
-    let done = preflight_each(&manifest, base.as_deref(), deep, &mut |_, rows| {
+    let done = preflight_each_in(&manifest, &access, deep, &mut |_, rows| {
         for (r, view) in rows {
             lines[r] = Some(row_line(&view));
         }
@@ -403,6 +454,7 @@ fn task_preflight(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         if counts.is_empty() { "none".into() } else { counts.join(", ") }
     ));
     findings_text(&done.findings, ctx);
+    notes_text(&notes, ctx);
     let rows: Vec<Vec<String>> = lines.into_iter().map(|(_, line)| line).collect();
     ctx.print(String::new());
     ctx.print(table(&rows, &["row", "partition", "cutoff_us", "status", "events", "slots", "target", "why"]));
@@ -426,54 +478,325 @@ fn row_line(r: &RowView) -> (String, Vec<String>) {
     (r.status.clone(), line)
 }
 
-fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
-    let (mut manifest, base) = load_task(m)?;
-    // The save replaces whatever `--out` names: a source sample, named again
-    // or through a link, became the manifest that pins it, and exit 0.
-    if let Some(out) = get_str(m, "out") {
-        for subject in &manifest.subjects {
-            if let Some(source) =
-                subject.sources.iter().find(|s| same_file(&s.resolve(base.as_deref()), Path::new(out)))
-            {
-                return Err(Error::invalid(format!(
-                    "--out {} is {}, a source of subject {}; write the manifest to another file",
-                    repr_str(out),
-                    repr_str(&source.locator()),
-                    repr_str(&subject.subject_id)
-                )));
+fn task_repin(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let (mut manifest, base, _) = load_task(m)?;
+    let access = source_access(m, &manifest, base.as_deref(), ctx)?;
+    let only: Option<std::collections::BTreeSet<String>> =
+        m.get_many::<String>("source").map(|ids| ids.cloned().collect());
+    let out = get_str(m, "out").unwrap_or_else(|| req_str(m, "manifest"));
+    let dry_run = flag(m, "dry_run");
+    if !dry_run {
+        manifest.check_output(Path::new(out), &access).map_err(|e| Error::invalid(format!("--out {}", e.message())))?;
+    }
+    let report = manifest.repin(&access, only.as_ref())?;
+    if !dry_run && !report.changed.is_empty() {
+        manifest.save(Path::new(out))?;
+    }
+    if flag(m, "json") {
+        let mut doc = report.to_json();
+        doc["dry_run"] = json!(dry_run);
+        ctx.emit(&doc, true);
+        return Ok(EXIT_OK);
+    }
+    let verb = if dry_run { "would repin" } else { "repinned" };
+    for r in &report.changed {
+        ctx.print(format!("{verb} {}: {} -> {}", r.source_id, r.before, r.after));
+    }
+    ctx.print(format!(
+        "{}: {} {}, {} unchanged{}",
+        req_str(m, "manifest"),
+        verb,
+        report.changed.len(),
+        report.unchanged.len(),
+        if report.rows.is_empty() {
+            String::new()
+        } else {
+            format!("; {} row fingerprint(s) change, so their patient-level cache entries go stale", report.rows.len())
+        }
+    ));
+    Ok(EXIT_OK)
+}
+
+/// A task drawn from a cohort (`TaskManifest::from_cohort`), its definition
+/// from `--definition` and the flags, its rows from `--rows`.
+fn task_new(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    use medh5::companion::{CohortTask, Partitions};
+    let out = Path::new(req_str(m, "out"));
+    let definition = match get_str(m, "definition") {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|e| medh5::error::os_error(&e, Path::new(path)))?;
+            match medh5::json::loads(&text) {
+                Ok(Value::Object(doc)) => doc,
+                Ok(_) => return Err(Error::invalid(format!("--definition {}: not a JSON object", repr_str(path)))),
+                Err(e) => return Err(Error::invalid(format!("--definition {}: not JSON: {e}", repr_str(path)))),
             }
         }
+        None => serde_json::Map::new(),
+    };
+    let named = |flag: &str, key: Option<&str>| -> medh5::Result<String> {
+        let given = get_str(m, flag).map(str::to_string);
+        let defined = match key {
+            Some(key) => definition.get("task").and_then(|t| t.get(key)),
+            None => definition.get("identity_namespace"),
+        };
+        given.or_else(|| defined.and_then(Value::as_str).map(str::to_string)).ok_or_else(|| {
+            Error::invalid(format!("the task needs --{flag}, or a definition that states it", flag = flag))
+        })
+    };
+    let (task_id, version, namespace) =
+        (named("id", Some("id"))?, named("version", Some("version"))?, named("namespace", None)?);
+    let cohort = crate::dataset::load_manifest(req_str(m, "cohort"), ctx)?;
+    let split = get_str(m, "split").map(|p| medh5::dataset::split::load(Path::new(p))).transpose()?;
+    let fold =
+        get_i64(m, "fold").map(|f| u32::try_from(f).map_err(|_| Error::invalid(format!("--fold {f} is not a fold"))));
+    let fold = fold.transpose()?;
+    let partitions = match (&split, get_str(m, "claims")) {
+        (Some(split), _) => Partitions::Split { split, fold },
+        (None, Some(_)) if fold.is_some() => {
+            return Err(Error::invalid("--fold is a split's: claims already name their partition"))
+        }
+        (None, Some(set_id)) => Partitions::Claims { set_id },
+        (None, None) => return Err(Error::invalid("give --split or --claims")),
+    };
+    let base = out.parent().map(|p| if p.as_os_str().is_empty() { Path::new(".") } else { p });
+    let training = get_str(m, "training_partition").unwrap_or("train");
+    let drawn = TaskManifest::from_cohort(
+        &cohort,
+        partitions,
+        &CohortTask::new(&task_id, &version, &namespace).with_base(base).with_training_partition(training),
+    )?;
+    let mut doc = drawn.to_json();
+    for key in ["policy", "slots", "target"] {
+        if let Some(value) = definition.get(key) {
+            doc[key] = value.clone();
+        }
     }
-    let mut recorded = 0;
-    for i in 0..manifest.subjects.len() {
-        let found = medh5::companion::view::reconcile(&manifest.subjects[i], base.as_deref())?;
-        recorded += found.len();
-        manifest.subjects[i].reconciled = found;
+    let description = get_str(m, "description").map(str::to_string).or_else(|| {
+        definition.get("task").and_then(|t| t.get("description")).and_then(Value::as_str).map(str::to_string)
+    });
+    if let Some(d) = description {
+        doc["task"]["description"] = json!(d);
     }
-    manifest.fingerprint = None;
+    if let Some(follow_up) = get_i64(m, "min_follow_up_us") {
+        match doc.get_mut("target") {
+            Some(Value::Object(target)) => {
+                target.insert("min_follow_up_us".into(), json!(follow_up));
+            }
+            _ => return Err(Error::invalid("--min-follow-up-us is the target's, and the definition states none")),
+        }
+    }
+    if let Some(note) = notes_of(&doc).into_iter().next() {
+        return Err(Error::invalid(format!(
+            "{}: state --min-follow-up-us, or min_follow_up_us in the definition",
+            note.line()
+        )));
+    }
+    let mut task = TaskManifest::from_json(&doc)?;
+    if let Some(rows) = get_str(m, "rows") {
+        task.rows = read_rows(Path::new(rows))?;
+    }
+    let findings = task.validate();
+    if let Some(first) = findings.first() {
+        return Err(Error::coded(
+            &first.code,
+            format!(
+                "the new task fails validation ({} finding(s)): {} {}: {}",
+                findings.len(),
+                first.code,
+                first.location,
+                first.message
+            ),
+        ));
+    }
+    task.check_output(out, &SourceAccess::new(base))
+        .map_err(|e| Error::invalid(format!("{} {}", req_str(m, "out"), e.message())))?;
+    task.save(out)?;
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for s in &task.subjects {
+        let p = s.partition.clone().unwrap_or_default();
+        match counts.iter_mut().find(|(q, _)| *q == p) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((p, 1)),
+        }
+    }
+    if let Some((_, partitions)) = &task.split {
+        counts.sort_by_key(|(p, _)| partitions.iter().position(|q| q == p).unwrap_or(usize::MAX));
+    }
+    if flag(m, "json") {
+        ctx.emit(
+            &json!({
+                "path": req_str(m, "out"),
+                "task_fingerprint": task.task_fingerprint(),
+                "manifest_fingerprint": task.manifest_fingerprint(),
+                "split": task.split.as_ref().map(|(set_id, partitions)| json!({"set_id": set_id, "partitions": partitions})),
+                "subjects": counts.iter().map(|(p, n)| (p.clone(), json!(n))).collect::<serde_json::Map<_, _>>(),
+                "sources": task.subjects.iter().map(|s| s.sources.len()).sum::<usize>(),
+                "rows": task.rows.len(),
+            }),
+            true,
+        );
+        return Ok(EXIT_OK);
+    }
+    let placed: Vec<String> = counts.iter().map(|(p, n)| format!("{n} in {p}")).collect();
+    ctx.print(format!(
+        "wrote {}: {} subject(s) ({}), {} row(s); task fingerprint {}",
+        req_str(m, "out"),
+        task.subjects.len(),
+        placed.join(", "),
+        task.rows.len(),
+        task.task_fingerprint()
+    ));
+    Ok(EXIT_OK)
+}
+
+/// Rows from a CSV of `row_id,subject_id,cutoff_us`, its header first.
+fn read_rows(path: &Path) -> medh5::Result<Vec<medh5::companion::task::Row>> {
+    let text = std::fs::read_to_string(path).map_err(|e| medh5::error::os_error(&e, path))?;
+    let shown = repr_str(&path.to_string_lossy());
+    let mut lines = text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty());
+    let header: Vec<&str> = lines.next().map(|(_, l)| l.split(',').map(str::trim).collect()).unwrap_or_default();
+    if header != ["row_id", "subject_id", "cutoff_us"] {
+        return Err(Error::invalid(format!("{shown}: the first line must be the header row_id,subject_id,cutoff_us")));
+    }
+    let mut rows = Vec::new();
+    for (n, line) in lines {
+        let cells: Vec<&str> = line.split(',').map(str::trim).collect();
+        let [row_id, subject_id, cutoff] = cells[..] else {
+            return Err(Error::invalid(format!("{shown} line {}: three cells, not {}", n + 1, cells.len())));
+        };
+        let cutoff_us = cutoff.parse::<i64>().map_err(|_| {
+            Error::invalid(format!("{shown} line {}: cutoff_us {} is not an integer", n + 1, repr_str(cutoff)))
+        })?;
+        rows.push(medh5::companion::task::Row {
+            row_id: row_id.to_string(),
+            subject_id: subject_id.to_string(),
+            cutoff_us,
+        });
+    }
+    Ok(rows)
+}
+
+fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let (mut manifest, base, _) = load_task(m)?;
+    let access = source_access(m, &manifest, base.as_deref(), ctx)?;
+    // The save replaces whatever `--out` names: a source sample, named again
+    // or through a link, became the manifest that pins it, and exit 0.
     let out = get_str(m, "out").unwrap_or_else(|| req_str(m, "manifest"));
+    manifest.check_output(Path::new(out), &access).map_err(|e| Error::invalid(format!("--out {}", e.message())))?;
+    let recorded = manifest.reconcile_all(&access)?;
     manifest.save(Path::new(out))?;
     ctx.print(format!("recorded {recorded} reconciled event(s); wrote {out}"));
+    Ok(EXIT_OK)
+}
+
+/// What a cache holds, from its manifest: nothing is decoded.
+fn cache_info(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let cache = FeatureCache::open(Path::new(req_str(m, "path")))?;
+    let h = &cache.header;
+    let sources: std::collections::BTreeSet<(&str, Option<&str>)> = cache
+        .entries
+        .iter()
+        .flat_map(|e| &e.sources)
+        .map(|s| (s.content_id.as_str(), s.sample_key.as_deref()))
+        .collect();
+    let info = json!({
+        "path": cache.path.to_string_lossy(),
+        "schema": medh5::companion::cache::SCHEMA,
+        "level": h.level,
+        "encoder": h.encoder,
+        "preprocessing": h.preprocessing,
+        "output": h.output,
+        "task_fingerprint": h.task_fingerprint,
+        "selection": h.selection,
+        "fitted_on": h.fitted_on,
+        "manifest_digest": cache.manifest_digest,
+        "entries": cache.entries.len(),
+        "sources": sources.len(),
+    });
+    if flag(m, "json") {
+        ctx.emit(&info, true);
+        return Ok(EXIT_OK);
+    }
+    let one = |v: &Value| match v {
+        Value::Null => "-".to_string(),
+        Value::String(s) => s.clone(),
+        other => medh5::json::canonical(other),
+    };
+    ctx.print(format!(
+        "{}: {} {}-level, {} entries over {} source versions",
+        req_str(m, "path"),
+        medh5::companion::cache::SCHEMA,
+        h.level,
+        cache.entries.len(),
+        sources.len()
+    ));
+    for key in ["encoder", "preprocessing", "output", "task_fingerprint", "selection", "fitted_on", "manifest_digest"] {
+        ctx.print(format!("  {key:<16}  {}", one(&info[key])));
+    }
+    Ok(EXIT_OK)
+}
+
+/// A cache's entries, as its manifest records them, optionally only those
+/// reading one source version or of one row.
+fn cache_ls(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let cache = FeatureCache::open(Path::new(req_str(m, "path")))?;
+    let source = get_str(m, "source");
+    let row = get_str(m, "row");
+    let shown: Vec<&CacheEntry> = cache
+        .entries
+        .iter()
+        .filter(|e| source.is_none_or(|c| e.sources.iter().any(|s| s.content_id == c)))
+        .filter(|e| row.is_none_or(|r| e.row_id.as_deref() == Some(r)))
+        .collect();
+    if flag(m, "json") {
+        ctx.emit(&Value::Array(shown.iter().map(|e| e.to_json()).collect()), true);
+        return Ok(EXIT_OK);
+    }
+    let rows: Vec<Vec<String>> = shown
+        .iter()
+        .map(|e| {
+            let what = match (&e.event_id, &e.row_id) {
+                (Some(event), _) => format!("{event} {}", e.document_id.as_deref().unwrap_or("-")),
+                (None, Some(row)) => format!("{row} @{}", e.cutoff_us.map_or("-".into(), |c| c.to_string())),
+                (None, None) => "-".into(),
+            };
+            let pins: Vec<String> = e.sources.iter().map(|s| format!("{} {}", s.locator(), s.content_id)).collect();
+            vec![e.entry_id.clone(), pins.join("; "), what, e.digest.clone()]
+        })
+        .collect();
+    let what = if cache.header.level == "event" { "event document" } else { "row @cutoff" };
+    ctx.print(table(&rows, &["entry", "sources", what, "digest"]));
     Ok(EXIT_OK)
 }
 
 fn cache_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = Path::new(req_str(m, "path"));
     let mut base = get_str(m, "base").map(PathBuf::from);
-    let (task, admitted) = match get_str(m, "task") {
+    let task = match get_str(m, "task") {
         Some(file) => {
             let file = Path::new(file);
             let manifest = TaskManifest::load(file)?;
-            let admitted = Admitted::preflight(&manifest, file.parent(), false)?;
-            // The entries copy the task's references, relative to its
-            // directory (task-cache-1 §7.1): resolved against the cache's,
-            // a cache kept anywhere else was all stale.
-            base = base.or_else(|| file.parent().map(Path::to_path_buf));
-            (Some(manifest), Some(admitted))
+            let task_base = get_str(m, "task_base").map(PathBuf::from).or_else(|| file.parent().map(Path::to_path_buf));
+            let access = source_access(m, &manifest, task_base.as_deref(), ctx)?;
+            let admitted = Admitted::preflight_in(&manifest, &access, false)?;
+            // An entry source the task pins is opened where the task says
+            // (task-cache-1 §7.1); any other resolves by its own URI, which
+            // copied the task's, relative to its base.
+            base = base.or(task_base);
+            Some((manifest, access, admitted))
         }
-        None => (None, None),
+        None => None,
     };
-    let report = validate_cache(path, base.as_deref(), task.as_ref(), admitted.as_ref())?;
+    let base = base.or_else(|| path.parent().map(Path::to_path_buf));
+    let entries = match get_str(m, "source_root") {
+        Some(root) => SourceAccess::confined(base.as_deref(), Some(Path::new(root)))?,
+        None => SourceAccess::new(base.as_deref()),
+    };
+    let mut check = CacheCheck::new(entries);
+    if let Some((manifest, access, admitted)) = &task {
+        check = check.with_task(manifest, access).with_admitted(admitted);
+    }
+    let report = validate_cache_in(path, &check)?;
     if flag(m, "json") {
         ctx.emit(&report.to_json(), true);
     } else {

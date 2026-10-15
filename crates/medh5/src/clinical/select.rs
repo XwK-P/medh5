@@ -39,6 +39,13 @@ pub const UNCERTAINTY: [&str; 2] = ["contained", "overlaps"];
 pub const KEEP: [&str; 2] = ["latest", "earliest"];
 /// What an event limit does with the tie group it cuts.
 pub const TIES: [&str; 2] = ["keep_group", "drop_group"];
+/// What a selection's `status` can be, in the order the preflight columns
+/// code them: every word the selection writes there is one of these.
+pub const SELECTION_STATUSES: &[&str] = &[CERTIFIED, UNCERTIFIABLE, PROVABLE];
+
+const CERTIFIED: &str = "certified";
+const UNCERTIFIABLE: &str = "uncertifiable";
+const PROVABLE: &str = "provable";
 
 /// The versions of each record, oldest first, ordered by `supersedes`.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -362,7 +369,7 @@ pub struct Selection {
 
 impl Selection {
     pub fn certified(&self) -> bool {
-        self.status == "certified"
+        self.status == CERTIFIED
     }
 
     /// The admitted versions' ids, in input order; `events` is what was
@@ -371,9 +378,18 @@ impl Selection {
         self.events.iter().map(|s| events[s.index].event_id.as_str()).collect()
     }
 
-    /// Whether `(fragment, kind, id)` may be read as input.
+    /// Whether `(fragment, kind, id)` may be read as input.  A payload is
+    /// admitted in the fragment that holds it: in a merged history, one of
+    /// a later fragment is not admitted in fragment 0 ([`admits_any`]).
+    ///
+    /// [`admits_any`]: Self::admits_any
     pub fn admits(&self, fragment: usize, kind: &str, id: &str) -> bool {
         self.payloads.contains(&(fragment, kind.to_string(), id.to_string()))
+    }
+
+    /// Whether `(kind, id)` may be read as input from any fragment.
+    pub fn admits_any(&self, kind: &str, id: &str) -> bool {
+        self.payloads.iter().any(|(_, k, i)| k == kind && i == id)
     }
 
     pub fn to_json(&self, events: &[Event]) -> Value {
@@ -510,9 +526,9 @@ impl<'a> Prepared<'a> {
             eligible[i] = true;
         }
         let status = match (policy.selection.as_str(), uncertain_records.is_empty()) {
-            ("latest_provable", _) => "provable",
-            (_, true) => "certified",
-            (_, false) => "uncertifiable",
+            ("latest_provable", _) => PROVABLE,
+            (_, true) => CERTIFIED,
+            (_, false) => UNCERTIFIABLE,
         };
 
         // 3: kinds, plans, static, context.
@@ -1013,6 +1029,69 @@ mod tests {
         assert!(!at(&[ct0, g], &procedures).admits(0, "annotation", "seg"));
     }
 
+    /// The worked example's phrasing: the procedure asserts the link from
+    /// itself.  Under effective ordering a procedure of unknown time is never
+    /// admitted, and requiring the asserter admitted when it was also the
+    /// endpoint left its mask unattested; phrased from `ct0`, the same
+    /// evidence attested it.
+    #[test]
+    fn s7_3_an_asserter_is_its_own_endpoint() {
+        let mut ct0 = version("ct0", "ct0", 0, Some((HOUR, HOUR)));
+        ct0.kind = "imaging".into();
+        let mut seg0 = version("seg0", "seg0", 0, Some((2 * HOUR, 2 * HOUR)));
+        seg0.kind = "procedure".into();
+        seg0.temporal_type = "unknown".into();
+        seg0.effective_start = None;
+        let image = Link::new(("event", "ct0"), "describes", ("image", "CT_tp0"));
+        let mut own = Link::new(("event", "seg0"), "describes", ("annotation", "lesions_tp0"));
+        own.asserted_by_event_id = Some("seg0".into());
+        let mut from_ct = Link::new(("event", "ct0"), "describes", ("annotation", "lesions_tp0"));
+        from_ct.asserted_by_event_id = Some("seg0".into());
+        let events = [ct0, seg0];
+        for order_by in ["effective", "available"] {
+            let policy = SelectionPolicy { order_by: order_by.into(), ..SelectionPolicy::strict() };
+            for link in [&own, &from_ct] {
+                let s = select(&events, &[(0, &image), (0, link)], 24 * HOUR, &policy).unwrap();
+                assert!(s.admits(0, "annotation", "lesions_tp0"), "{order_by} {link:?}");
+                let early = select(&events, &[(0, &image), (0, link)], HOUR, &policy).unwrap();
+                assert!(!early.admits(0, "annotation", "lesions_tp0"), "not known at 1 h");
+            }
+        }
+        // The procedure attests its mask; it is still not an input itself.
+        let s = select(&events, &[(0, &image), (0, &own)], 24 * HOUR, &SelectionPolicy::strict()).unwrap();
+        assert_eq!(ids(&s, &events), ["ct0"]);
+        // Only the asserter is excused: another event endpoint is still
+        // admitted, or the link attests nothing.
+        let mut other = Link::new(("event", "seg0"), "describes", ("annotation", "lesions_tp0"));
+        other.asserted_by_event_id = Some("ct0".into());
+        let s = select(&events, &[(0, &image), (0, &other)], 24 * HOUR, &SelectionPolicy::strict()).unwrap();
+        assert!(!s.admits(0, "annotation", "lesions_tp0"));
+    }
+
+    /// A document is a payload: a link the asserter draws to one attests it
+    /// only through the document's admitted event.
+    #[test]
+    fn s9_1_a_document_endpoint_needs_its_event_admitted() {
+        let mut rep = version("rep", "rep", 0, Some((HOUR, HOUR)));
+        rep.kind = "document".into();
+        let mut ground = version("ground", "ground", 0, Some((2 * HOUR, 2 * HOUR)));
+        ground.kind = "procedure".into();
+        ground.temporal_type = "unknown".into();
+        ground.effective_start = None;
+        let text = Link::new(("event", "rep"), "describes", ("document", "rep_text"));
+        let mut grounding = Link::new(("document", "rep_text"), "describes", ("annotation", "lesions_tp0"));
+        grounding.asserted_by_event_id = Some("ground".into());
+        let events = [rep, ground];
+        let links = [(0, &text), (0, &grounding)];
+        let s = select(&events, &links, 24 * HOUR, &SelectionPolicy::strict()).unwrap();
+        assert!(s.admits(0, "document", "rep_text"));
+        assert!(s.admits(0, "annotation", "lesions_tp0"));
+        let imaging = SelectionPolicy { kinds: Some(vec!["imaging".into()]), ..SelectionPolicy::strict() };
+        let s = select(&events, &links, 24 * HOUR, &imaging).unwrap();
+        assert!(!s.admits(0, "document", "rep_text"));
+        assert!(!s.admits(0, "annotation", "lesions_tp0"), "its document is not read, so neither is the grounding");
+    }
+
     #[test]
     fn s9_1_one_preparation_answers_every_cutoff_as_select_does() {
         let mut events = Vec::new();
@@ -1036,5 +1115,25 @@ mod tests {
             let once = select(&events, &refs, cutoff, &policy).unwrap();
             assert_eq!(prepared.select(cutoff, &policy).unwrap(), once, "cutoff {cutoff}");
         }
+    }
+
+    /// `admits` answers for one fragment; a payload of a subject's second
+    /// fragment read "not admitted" to a caller that left it at 0.
+    #[test]
+    fn s9_1_admits_any_looks_in_every_fragment() {
+        let selection = Selection {
+            cutoff_us: 0,
+            policy: POLICIES[0].into(),
+            status: CERTIFIED.into(),
+            events: Vec::new(),
+            links: Vec::new(),
+            payloads: BTreeSet::from([(1, "image".to_string(), "ct1".to_string())]),
+            uncertain_records: Vec::new(),
+            excluded: BTreeMap::new(),
+        };
+        assert!(!selection.admits(0, "image", "ct1"));
+        assert!(selection.admits(1, "image", "ct1"));
+        assert!(selection.admits_any("image", "ct1"));
+        assert!(!selection.admits_any("image", "ct0") && !selection.admits_any("annotation", "ct1"));
     }
 }

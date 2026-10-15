@@ -22,17 +22,20 @@
 //! a task can be wrong about perfectly valid files.
 
 pub mod cache;
+pub mod cohort;
 pub mod source;
 pub mod task;
 pub mod view;
 
 use serde_json::{json, Value};
 
-pub use cache::{validate_cache, CacheReport, CacheWriter, FeatureCache};
-pub use source::SourceRef;
-pub use task::TaskManifest;
+pub use cache::{validate_cache, validate_cache_in, CacheCheck, CacheReport, CacheWriter, FeatureCache};
+pub use cohort::{CohortTask, Partitions};
+pub use source::{SourceAccess, SourceRef, SourceState};
+pub use task::{RepinReport, Repinned, TaskManifest};
 pub use view::{
-    preflight, preflight_each, write_preflight, Admitted, Preflight, PreflightDone, RowView, SubjectHistory,
+    preflight, preflight_each, preflight_each_in, preflight_in, write_preflight, write_preflight_in,
+    write_preflight_noted, Admitted, Preflight, PreflightDone, RowView, SubjectHistory,
 };
 
 /// The companion contract's finding codes, and what each means.
@@ -91,6 +94,31 @@ impl Finding {
     /// `CODE location: message`.
     pub fn line(&self) -> String {
         format!("{} {}: {}", self.code, self.location, self.message)
+    }
+}
+
+/// Something a manifest should say and does not: unlike a [`Finding`], a
+/// note never makes a manifest fail.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct Note {
+    /// A JSON pointer into the manifest.
+    pub location: String,
+    pub message: String,
+}
+
+impl Note {
+    pub fn new(location: impl Into<String>, message: impl Into<String>) -> Note {
+        Note { location: location.into(), message: message.into() }
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({"location": self.location, "message": self.message})
+    }
+
+    /// `note location: message`.
+    pub fn line(&self) -> String {
+        format!("note {}: {}", self.location, self.message)
     }
 }
 

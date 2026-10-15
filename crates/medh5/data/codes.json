@@ -1,6 +1,6 @@
 {
   "$comment": "The normative diagnostic code table (spec 1.0 \u00a715.2, extended by 1.1 \u00a711.2). The single source: the engine embeds it, the validator, conformance corpus and documentation all read it. Codes are stable API: a meaning never changes and a retired code is never reused. Each code names the version whose rules it reports (`since`) and the revision of the table that allocated it (`revision`); `revision` at the top is the table's own, the latest any code names (1.0 \u00a715.2).",
-  "revision": 1,
+  "revision": 2,
   "codes": [
     {
       "code": "E001",
@@ -761,6 +761,38 @@
       "summary": "a numeric clinical value carries no unit",
       "since": "1.1",
       "revision": 1
+    },
+    {
+      "code": "W915",
+      "severity": "warning",
+      "domain": "integrity",
+      "summary": "a dataset inside an object `content_id` covers carries no `digest`",
+      "since": "1.0",
+      "revision": 2
+    },
+    {
+      "code": "W916",
+      "severity": "warning",
+      "domain": "annotations",
+      "summary": "under `implicit` closure, a class asserted absent where an `is_a` descendant is asserted present",
+      "since": "1.0",
+      "revision": 2
+    },
+    {
+      "code": "W917",
+      "severity": "warning",
+      "domain": "geometry",
+      "summary": "two grids name one `frame_uid` but differ in dimensionality or `coord_system`",
+      "since": "1.0",
+      "revision": 2
+    },
+    {
+      "code": "W918",
+      "severity": "warning",
+      "domain": "annotations",
+      "summary": "a voxel annotation declares `closure = \"implicit\"`",
+      "since": "1.0",
+      "revision": 2
     }
   ]
 }

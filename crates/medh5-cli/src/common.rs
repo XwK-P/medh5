@@ -37,6 +37,13 @@ pub trait Host {
     /// The dataloader throughput measurement, as `Measurement.to_json()`;
     /// `Err(reason)` when it cannot run here.
     fn throughput(&self, path: &str, patch: i64, workers: i64, annotation: Option<&str>) -> Result<Value, String>;
+
+    /// The program and arguments that run this command line again, as a
+    /// worker of a `--workers` run; `None` when the host cannot start one,
+    /// and a `--workers` run then runs in one process and says so.
+    fn worker_command(&self) -> Option<Vec<std::ffi::OsString>> {
+        None
+    }
 }
 
 /// One command's view of the outside world.

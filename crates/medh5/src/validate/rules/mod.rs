@@ -53,6 +53,7 @@ pub use container::{
 };
 pub(crate) use container::{records_activity, relates_grids};
 pub use curation::{check_curation, check_splits};
+pub use geometric::check_implicit_closure;
 pub use geometry::{check_geometry, check_timepoints};
 pub use images::{check_images, check_multiscale};
 pub use integrity::check_integrity;
@@ -317,6 +318,7 @@ pub fn rules_for(level: &str) -> Vec<(&'static str, Rule)> {
         ("check_references", check_references),
         ("check_transforms", check_transforms),
         ("check_label_set", check_label_set),
+        ("check_implicit_closure", check_implicit_closure),
         ("check_multiscale", check_multiscale),
         ("check_curation", check_curation),
         ("check_splits", check_splits),

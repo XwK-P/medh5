@@ -6,7 +6,7 @@
 //! task manifest is a dict, re-parsed per call, so it pickles into DataLoader
 //! workers with nothing to rebuild.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use pyo3::prelude::*;
@@ -18,7 +18,7 @@ use medh5::clinical::select::SelectionPolicy;
 use medh5::clinical::Clinical as EngineClinical;
 use medh5::companion::cache::{CacheEntry, CacheHeader, CacheWriter, FeatureCache};
 use medh5::companion::task::TaskManifest;
-use medh5::companion::SourceRef;
+use medh5::companion::{CohortTask, Partitions, SourceAccess, SourceRef};
 use medh5::sample::Sample as EngineSample;
 
 use crate::convert::{json_to_py, nd_to_py, py_to_json, py_to_nd};
@@ -208,6 +208,20 @@ fn baseline_day_clock<'py>(py: Python<'py>, clock_id: &str) -> PyResult<Bound<'p
     json_to_py(py, &medh5::clinical::augment::baseline_day_clock(clock_id).to_json())
 }
 
+/// `value` units of `unit_us` microseconds, rounded half to even: the
+/// engine's rounding, which `medh5.clinical.hours` and `days` are held to.
+#[pyfunction]
+fn clinical_round_micros(value: f64, unit_us: i64) -> R<i64> {
+    Ok(medh5::clinical::round_micros(value, unit_us)?)
+}
+
+/// The clock day holding `t`, as inclusive `(lo, hi)` bounds.
+#[pyfunction]
+fn clinical_day_containing(t: i64) -> (i64, i64) {
+    let day = medh5::clinical::model::Bounds::day_containing(t);
+    (day.lo, day.hi)
+}
+
 #[pyfunction]
 fn clinical_schema_text() -> &'static str {
     medh5::clinical::schema::schema_text()
@@ -226,6 +240,14 @@ fn manifest(doc: &Bound<'_, PyAny>) -> R<TaskManifest> {
     Ok(TaskManifest::from_json(&crate::convert::py_to_json_as_parsed(&doc)?)?)
 }
 
+/// Where sources may be opened: confined to `root` when one is given.
+fn access(base: Option<PathBuf>, root: Option<PathBuf>) -> medh5::Result<SourceAccess> {
+    match root {
+        Some(root) => SourceAccess::confined(base.as_deref(), Some(&root)),
+        None => Ok(SourceAccess::new(base.as_deref())),
+    }
+}
+
 fn findings<'py>(py: Python<'py>, found: &[medh5::companion::Finding]) -> PyResult<Bound<'py, PyList>> {
     to_list(py, found.iter().map(medh5::companion::Finding::to_json))
 }
@@ -234,6 +256,14 @@ fn findings<'py>(py: Python<'py>, found: &[medh5::companion::Finding]) -> PyResu
 #[pyfunction]
 fn task_normalize<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     Ok(json_to_py(py, &manifest(doc)?.to_json())?)
+}
+
+/// What the manifest document should state and does not, as written: the
+/// normal form has filled the defaults in.
+#[pyfunction]
+fn task_notes<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
+    let doc = crate::convert::py_to_json_as_parsed(doc)?;
+    Ok(to_list(py, medh5::companion::task::notes_of(&doc).iter().map(medh5::companion::Note::to_json))?)
 }
 
 /// Everything wrong with a manifest that opening no file can find.
@@ -286,29 +316,139 @@ fn task_subjects_digest(doc: &Bound<'_, PyAny>, partition: &str) -> R<String> {
 
 /// The manifest with every subject's duplicated events recorded.
 #[pyfunction]
-#[pyo3(signature = (doc, base=None))]
-fn task_reconcile<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>, base: Option<PathBuf>) -> R<Bound<'py, PyAny>> {
+#[pyo3(signature = (doc, base=None, root=None))]
+fn task_reconcile<'py>(
+    py: Python<'py>,
+    doc: &Bound<'py, PyAny>,
+    base: Option<PathBuf>,
+    root: Option<PathBuf>,
+) -> R<Bound<'py, PyAny>> {
     let mut m = manifest(doc)?;
     let m = py.detach(move || -> medh5::Result<TaskManifest> {
-        for i in 0..m.subjects.len() {
-            m.subjects[i].reconciled = medh5::companion::view::reconcile(&m.subjects[i], base.as_deref())?;
-        }
+        m.reconcile_all(&access(base, root)?)?;
         Ok(m)
     })?;
     Ok(json_to_py(py, &m.to_json())?)
 }
 
+/// The manifest with its sources repinned, and what changed:
+/// `{"manifest": ..., "report": ...}`.
+#[pyfunction]
+#[pyo3(signature = (doc, base=None, root=None, sources=None))]
+fn task_repin<'py>(
+    py: Python<'py>,
+    doc: &Bound<'py, PyAny>,
+    base: Option<PathBuf>,
+    root: Option<PathBuf>,
+    sources: Option<Vec<String>>,
+) -> R<Bound<'py, PyAny>> {
+    let mut m = manifest(doc)?;
+    let (m, report) = py.detach(move || -> medh5::Result<_> {
+        let only: Option<std::collections::BTreeSet<String>> = sources.map(|s| s.into_iter().collect());
+        let report = m.repin(&access(base, root)?, only.as_ref())?;
+        Ok((m, report))
+    })?;
+    Ok(json_to_py(py, &json!({"manifest": m.to_json(), "report": report.to_json()}))?)
+}
+
+/// A task over a cohort (`TaskManifest::from_cohort`), partitioned by
+/// `split` (a split's JSON) or by the claims the samples carry for `set_id`:
+/// the manifest's JSON.
+#[pyfunction]
+#[pyo3(signature = (
+    cohort, task_id, version, identity_namespace, *, split=None, set_id=None, fold=None, base=None,
+    training_partition=None
+))]
+#[allow(clippy::too_many_arguments)]
+fn task_from_cohort<'py>(
+    py: Python<'py>,
+    cohort: &Bound<'py, PyAny>,
+    task_id: String,
+    version: String,
+    identity_namespace: String,
+    split: Option<&Bound<'py, PyAny>>,
+    set_id: Option<String>,
+    fold: Option<u32>,
+    base: Option<PathBuf>,
+    training_partition: Option<String>,
+) -> R<Bound<'py, PyAny>> {
+    let training_partition = training_partition.unwrap_or_else(|| "train".into());
+    let cohort = medh5::dataset::Manifest::from_json(&py_to_json(cohort)?)?;
+    let split = match split {
+        Some(s) => Some(medh5::dataset::Split::from_json(&py_to_json(s)?)?),
+        None => None,
+    };
+    let task = py.detach(move || -> medh5::Result<TaskManifest> {
+        let partitions = match (&split, &set_id) {
+            (Some(split), None) => Partitions::Split { split, fold },
+            (None, Some(set_id)) if fold.is_none() => Partitions::Claims { set_id },
+            (None, Some(_)) => {
+                return Err(medh5::Error::invalid("a fold is a split's; claims already name their partition"));
+            }
+            _ => return Err(medh5::Error::invalid("give a split or the set_id of the claims, one of the two")),
+        };
+        let named = CohortTask::new(&task_id, &version, &identity_namespace)
+            .with_base(base.as_deref())
+            .with_training_partition(&training_partition);
+        TaskManifest::from_cohort(&cohort, partitions, &named)
+    })?;
+    Ok(json_to_py(py, &task.to_json())?)
+}
+
+/// Write the manifest as the engine writes it, refusing an output that is
+/// one of its sources; `base` resolves relative sources (else both the
+/// working directory and the output's directory).
+#[pyfunction]
+#[pyo3(signature = (doc, path, base=None))]
+fn task_save(py: Python<'_>, doc: &Bound<'_, PyAny>, path: PathBuf, base: Option<PathBuf>) -> R<()> {
+    let m = manifest(doc)?;
+    py.detach(move || -> medh5::Result<()> {
+        // Without a base, a source resolves against the working directory
+        // now and against the output's directory once the manifest is loaded
+        // from there: neither may be the output.
+        let bases: Vec<Option<&Path>> = match &base {
+            Some(base) => vec![Some(base.as_path())],
+            None => vec![None, path.parent()],
+        };
+        for base in bases {
+            m.check_output(&path, &SourceAccess::new(base))?;
+        }
+        m.save(&path)
+    })?;
+    Ok(())
+}
+
+/// A manifest file's document, unparsed: T101 for anything not JSON.
+#[pyfunction]
+fn task_load_document<'py>(py: Python<'py>, path: PathBuf) -> R<Bound<'py, PyAny>> {
+    let doc = py.detach(move || TaskManifest::read_document(&path))?;
+    Ok(json_to_py(py, &doc)?)
+}
+
 /// The preflight of a task, as columns (`crate::preflight`).
 #[pyfunction]
-#[pyo3(signature = (doc, base=None, deep=false))]
+#[pyo3(signature = (doc, base=None, deep=false, root=None))]
 fn task_preflight<'py>(
     py: Python<'py>,
     doc: &Bound<'py, PyAny>,
     base: Option<PathBuf>,
     deep: bool,
+    root: Option<PathBuf>,
 ) -> R<Bound<'py, PyAny>> {
     let m = manifest(doc)?;
-    Ok(crate::preflight::preflight_to_py(py, m, base.as_deref(), deep)?.into_any())
+    let access = access(base, root)?;
+    Ok(crate::preflight::preflight_to_py(py, m, access, deep)?.into_any())
+}
+
+/// The URIs of the sources that confining to `base` would refuse, in
+/// manifest order; no file is examined.  Empty when `base` cannot be
+/// canonicalized: its sources fail to open whatever confinement does.
+#[pyfunction]
+#[pyo3(signature = (doc, base=None))]
+fn task_sources_outside(doc: &Bound<'_, PyAny>, base: Option<PathBuf>) -> R<Vec<String>> {
+    let m = manifest(doc)?;
+    let Ok(confined) = SourceAccess::confined(base.as_deref(), None) else { return Ok(Vec::new()) };
+    Ok(m.sources_outside(&confined).into_iter().map(|s| s.uri.clone()).collect())
 }
 
 /// A source reference pinned to what the sample is now.
@@ -335,28 +475,91 @@ fn source_pin<'py>(
 /// The file a source URI names, relative to `base` when it is relative: a
 /// `file:` URI decoded as the engine decodes it.
 #[pyfunction]
-#[pyo3(signature = (uri, base=None))]
-fn source_resolve(uri: &str, base: Option<PathBuf>) -> PathBuf {
-    SourceRef::new(uri, None, "").resolve(base.as_deref())
+#[pyo3(signature = (uri, base=None, root=None))]
+fn source_resolve(uri: &str, base: Option<PathBuf>, root: Option<PathBuf>) -> R<PathBuf> {
+    let source = SourceRef::new(uri, None, "");
+    Ok(match root {
+        None => source.resolve(base.as_deref()),
+        Some(_) => access(base, root)?.locate(&source)?,
+    })
+}
+
+/// The id a source reference gets when none is given, widened past the ids
+/// in `taken` (`SourceRef::default_id_among`).
+#[pyfunction]
+#[pyo3(signature = (uri, sample_key=None, taken=Vec::new()))]
+fn source_default_id(uri: &str, sample_key: Option<&str>, taken: Vec<String>) -> String {
+    let taken: std::collections::HashSet<String> = taken.into_iter().collect();
+    SourceRef::default_id_among(uri, sample_key, &|id| taken.contains(id))
 }
 
 /// The findings of checking a reference against its sample now.
 #[pyfunction]
-#[pyo3(signature = (source, base=None, deep=false))]
+#[pyo3(signature = (source, base=None, deep=false, root=None))]
 fn source_check<'py>(
     py: Python<'py>,
     source: &Bound<'py, PyAny>,
     base: Option<PathBuf>,
     deep: bool,
+    root: Option<PathBuf>,
 ) -> R<Bound<'py, PyList>> {
     let src = SourceRef::from_json(&record(source)?)?;
     let found = py.detach(move || -> medh5::Result<Vec<medh5::companion::Finding>> {
-        match src.open(base.as_deref()) {
+        match src.open_in(&access(base, root)?) {
             Err(e) => Ok(vec![medh5::companion::Finding::new("T301", src.locator(), e.to_string())]),
             Ok(sample) => src.check(&sample, deep),
         }
     })?;
     Ok(findings(py, &found)?)
+}
+
+/// Each event version of a source and the documents it owns: the engine's
+/// rule for what an event-level cache files under it.
+#[pyfunction]
+#[pyo3(signature = (source, base=None, root=None))]
+fn cache_owned_documents<'py>(
+    py: Python<'py>,
+    source: &Bound<'py, PyAny>,
+    base: Option<PathBuf>,
+    root: Option<PathBuf>,
+) -> R<Bound<'py, PyDict>> {
+    let src = SourceRef::from_json(&record(source)?)?;
+    let owned = py.detach(move || medh5::companion::cache::owned_documents(&src, &access(base, root)?))?;
+    let out = PyDict::new(py);
+    for (event, documents) in owned {
+        out.set_item(event, documents)?;
+    }
+    Ok(out)
+}
+
+/// An entry as the engine reads it, written back: a malformed entry is
+/// refused (T401) rather than read leniently.
+#[pyfunction]
+fn cache_entry_json<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    Ok(json_to_py(py, &CacheEntry::from_json(&py_to_json(doc)?)?.to_json())?)
+}
+
+/// A `CacheReport` dataclass's engine JSON: its verdict, stale and corrupt
+/// entries are the engine's.
+#[pyfunction]
+fn cache_report_json<'py>(py: Python<'py>, report: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    let mut findings = Vec::new();
+    for f in report.getattr("findings")?.try_iter()? {
+        let f = f?;
+        findings.push(medh5::companion::Finding::new(
+            &f.getattr("code")?.extract::<String>()?,
+            f.getattr("location")?.extract::<String>()?,
+            f.getattr("message")?.extract::<String>()?,
+        ));
+    }
+    let engine = medh5::companion::CacheReport {
+        path: report.getattr("path")?.extract()?,
+        entries: report.getattr("entries")?.extract()?,
+        findings,
+        manifest_digest: report.getattr("manifest_digest")?.extract()?,
+        level: report.getattr("level")?.extract()?,
+    };
+    Ok(json_to_py(py, &engine.to_json())?)
 }
 
 fn header(value: &Value) -> CacheHeader {
@@ -492,7 +695,7 @@ fn cache_open(py: Python<'_>, path: PathBuf) -> R<FeatureCacheHandle> {
 /// Validate a cache; with a task, also against that task (and, with
 /// `check_rows`, against what its preflight admits).
 #[pyfunction]
-#[pyo3(signature = (path, base=None, task=None, task_base=None, check_rows=true))]
+#[pyo3(signature = (path, base=None, task=None, task_base=None, check_rows=true, root=None))]
 fn cache_validate<'py>(
     py: Python<'py>,
     path: PathBuf,
@@ -500,21 +703,30 @@ fn cache_validate<'py>(
     task: Option<&Bound<'py, PyAny>>,
     task_base: Option<PathBuf>,
     check_rows: bool,
+    root: Option<PathBuf>,
 ) -> R<Bound<'py, PyAny>> {
     let task = match task {
         Some(t) if !t.is_none() => Some(manifest(t)?),
         _ => None,
     };
     let report = py.detach(move || -> medh5::Result<medh5::companion::CacheReport> {
+        let task_access = access(task_base.clone(), root.clone())?;
         let admitted = match &task {
-            Some(t) if check_rows => Some(medh5::companion::Admitted::preflight(t, task_base.as_deref(), false)?),
+            Some(t) if check_rows => Some(medh5::companion::Admitted::preflight_in(t, &task_access, false)?),
             _ => None,
         };
         // The entries copy the task's references, relative to its base
         // (task-cache-1 §7.1): resolved against the cache's directory, a
         // cache kept anywhere else was all stale.
-        let base = base.or_else(|| task.as_ref().and(task_base));
-        medh5::companion::validate_cache(&path, base.as_deref(), task.as_ref(), admitted.as_ref())
+        let base = base.or_else(|| task.as_ref().and(task_base)).or_else(|| path.parent().map(PathBuf::from));
+        let mut check = medh5::companion::CacheCheck::new(access(base, root)?);
+        if let Some(t) = &task {
+            check = check.with_task(t, &task_access);
+        }
+        if let Some(a) = &admitted {
+            check = check.with_admitted(a);
+        }
+        medh5::companion::validate_cache_in(&path, &check)
     })?;
     Ok(json_to_py(py, &report.to_json())?)
 }
@@ -557,20 +769,32 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(imaging_events_from_timepoints, m)?,
         wrap_pyfunction!(baseline_day_clock, m)?,
         wrap_pyfunction!(clinical_schema_text, m)?,
+        wrap_pyfunction!(clinical_round_micros, m)?,
+        wrap_pyfunction!(clinical_day_containing, m)?,
         wrap_pyfunction!(task_normalize, m)?,
         wrap_pyfunction!(task_validate, m)?,
+        wrap_pyfunction!(task_notes, m)?,
         wrap_pyfunction!(task_fingerprints, m)?,
         wrap_pyfunction!(task_row_fingerprint, m)?,
         wrap_pyfunction!(task_row_fingerprints, m)?,
         wrap_pyfunction!(task_subjects_digest, m)?,
         wrap_pyfunction!(task_reconcile, m)?,
+        wrap_pyfunction!(task_save, m)?,
+        wrap_pyfunction!(task_repin, m)?,
+        wrap_pyfunction!(task_from_cohort, m)?,
+        wrap_pyfunction!(task_load_document, m)?,
         wrap_pyfunction!(task_preflight, m)?,
+        wrap_pyfunction!(task_sources_outside, m)?,
         wrap_pyfunction!(source_pin, m)?,
         wrap_pyfunction!(source_check, m)?,
         wrap_pyfunction!(source_resolve, m)?,
+        wrap_pyfunction!(source_default_id, m)?,
         wrap_pyfunction!(cache_create, m)?,
         wrap_pyfunction!(cache_open, m)?,
         wrap_pyfunction!(cache_validate, m)?,
+        wrap_pyfunction!(cache_owned_documents, m)?,
+        wrap_pyfunction!(cache_entry_json, m)?,
+        wrap_pyfunction!(cache_report_json, m)?,
         wrap_pyfunction!(cache_fitted_on, m)?,
         wrap_pyfunction!(cache_fitted_on_mismatches, m)?,
         wrap_pyfunction!(cache_event_entry_id, m)?,
@@ -589,6 +813,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CLINICAL_SCHEMA", medh5::clinical::SCHEMA)?;
     m.add("TASK_SCHEMA", medh5::companion::task::SCHEMA)?;
     m.add("CACHE_SCHEMA", medh5::companion::cache::SCHEMA)?;
+    m.add("CACHE_SUFFIX", medh5::companion::cache::SUFFIX)?;
+    m.add("ASSESSMENT_SYSTEM", medh5::clinical::model::ASSESSMENT_SYSTEM)?;
+    m.add("LESION_PRESENCE", medh5::clinical::model::LESION_PRESENCE)?;
     for (name, values) in [
         ("EVENT_KINDS", &medh5::clinical::EVENT_KINDS[..]),
         ("TEMPORAL_TYPES", &medh5::clinical::TEMPORAL_TYPES[..]),

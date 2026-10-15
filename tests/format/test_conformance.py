@@ -394,6 +394,38 @@ class TestCodeRevisions:
         assert report.ok, report.codes
 
 
+class TestVerifyAgreesWithTheValidator:
+    """D6: `verify` fails exactly when the validator, at the integrity level,
+    reports an attestation code.  At 2.0 an undigested dataset under a
+    `content_id` failed `verify` and passed `--level strict`."""
+
+    ATTESTATION = {"E701", "E702", "E703", "E704", "E818", "W915"}
+
+    def test_S13_2_verify_fails_exactly_when_an_attestation_code_is_reported(
+        self, corpus, corpus_root
+    ):
+        disagree = []
+        for case in load_manifest(corpus_root)["cases"]:
+            path = corpus_root / case["file"]
+            try:
+                with medh5.open(path) as sample:
+                    verified = sample.verify().ok
+            except (MEDH5Error, OSError, ValueError, KeyError):
+                continue  # a case that does not open has nothing to verify
+            report = validate_file(path, level="integrity")
+            attested = {
+                d.code
+                for d in report.diagnostics
+                if d.code in self.ATTESTATION
+                or (
+                    d.code == "W913" and d.location == "/" and "content_id" in d.message
+                )
+            }
+            if verified is bool(attested):
+                disagree.append((case["name"], verified, sorted(attested)))
+        assert disagree == []
+
+
 class TestSpecSync:
     """The spec's code table and the implementation must not drift apart."""
 
@@ -408,6 +440,25 @@ class TestSpecSync:
             minor.index("### 11.2 Diagnostic codes") : minor.index("### 11.3")
         ]
         return set(re.findall(r"`([EW]\d{3})`", table + added))
+
+    def test_S16_the_reserved_table_lists_the_annotation_pyramid_attributes(self):
+        """§4.3 withdrew annotation pyramids; §16 reserves their names, and
+        the writer refuses the same four."""
+        spec = (ROOT / "docs" / "spec" / "medh5-1.0.md").read_text(encoding="utf-8")
+        reserved = spec[spec.index("**Reserved names.**") : spec.index("## Appendix A")]
+        row = next(
+            line for line in reserved.splitlines() if line.startswith("| `levels`")
+        )
+        assert re.findall(r"`(\w+)`", row.split("|")[1]) == [
+            "levels",
+            "downsample_factors",
+            "downsample_method",
+            "grid_levels",
+        ]
+        assert "attributes, on an annotation" in row
+        pyramids = spec[spec.index("### 4.3") : spec.index("### 4.4")]
+        assert "Voxel annotations are not pyramided in 1.x" in pyramids
+        assert "MAY be pyramided" not in pyramids
 
     def test_S15_2_the_table_matches_the_registry(self):
         assert self._spec_codes() == set(CODES)

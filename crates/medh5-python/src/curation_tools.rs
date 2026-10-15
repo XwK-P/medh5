@@ -10,7 +10,8 @@
 use std::path::PathBuf;
 
 use indexmap::IndexMap;
-use ndarray::{ArrayD, IxDyn};
+use ndarray::{ArrayViewD, Dimension, IxDyn};
+use numpy::{PyArrayDyn, PyArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFrozenSet, PyList, PyTuple};
@@ -22,7 +23,7 @@ use medh5::curation::splits as sp;
 use medh5::labels::ClassKey;
 
 use crate::annotations::annotation_handle;
-use crate::convert::{bool_array, class_keys, f64_array, json_to_py, py_to_json, strings};
+use crate::convert::{asarray, class_keys, detach_if, f64_array, json_to_py, py_to_json, strings, DETACH_BYTES};
 use crate::curation::{Agreement, SplitClaim};
 use crate::errors::R;
 
@@ -239,16 +240,22 @@ fn shape_text(shape: &[usize]) -> String {
     }
 }
 
-/// Two masks as boolean arrays of one shape, broadcast as NumPy would.
-fn mask_pair(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<(ArrayD<bool>, ArrayD<bool>)> {
-    let (a, b) = (bool_array(a)?, bool_array(b)?);
-    if a.shape() == b.shape() {
-        return Ok((a, b));
-    }
+/// `count` of two masks as boolean arrays, broadcast to one shape as NumPy
+/// would --- lazily, on views of the arrays --- and counted with the GIL
+/// released once they reach [`DETACH_BYTES`].
+fn count_pair(
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+    count: fn(ArrayViewD<'_, bool>, ArrayViewD<'_, bool>) -> Option<f64>,
+) -> PyResult<Option<f64>> {
+    let py = a.py();
+    let (a, b) = (asarray(a, Some("bool"))?, asarray(b, Some("bool"))?);
+    let (a, b) = (a.cast::<PyArrayDyn<bool>>()?.readonly(), b.cast::<PyArrayDyn<bool>>()?.readonly());
+    let (a, b) = (a.as_array(), b.as_array());
     let shape = IxDyn(&broadcast_shape(a.shape(), b.shape())?);
-    let widen = |m: &ArrayD<bool>| m.broadcast(shape.clone()).map(|v| v.to_owned());
-    match (widen(&a), widen(&b)) {
-        (Some(x), Some(y)) => Ok((x, y)),
+    let large = shape.size() >= DETACH_BYTES;
+    match (a.broadcast(shape.clone()), b.broadcast(shape)) {
+        (Some(x), Some(y)) => Ok(detach_if(py, large, || count(x, y))),
         _ => Err(PyValueError::new_err("the masks cannot be broadcast to one shape")),
     }
 }
@@ -256,15 +263,13 @@ fn mask_pair(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<(ArrayD<boo
 /// Sørensen--Dice, or `None` when both masks are empty.
 #[pyfunction]
 fn agreement_dice(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Option<f64>> {
-    let (a, b) = mask_pair(a, b)?;
-    Ok(ag::dice(&a, &b))
+    count_pair(a, b, ag::dice_view)
 }
 
 /// Intersection over union, or `None` when both masks are empty.
 #[pyfunction]
 fn agreement_iou(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Option<f64>> {
-    let (a, b) = mask_pair(a, b)?;
-    Ok(ag::iou(&a, &b))
+    count_pair(a, b, ag::iou_view)
 }
 
 fn box_arg(obj: &Bound<'_, PyAny>) -> PyResult<ndarray::Array2<f64>> {

@@ -20,8 +20,8 @@ use std::sync::OnceLock;
 
 use serde_json::{json, Map, Value};
 
-use super::source::SourceRef;
-use super::{fingerprint, Finding};
+use super::source::{SourceAccess, SourceRef, SourceState};
+use super::{fingerprint, Finding, Note};
 use crate::clinical::select::SelectionPolicy;
 use crate::json::repr_str;
 use crate::{Error, Result};
@@ -194,6 +194,65 @@ fn micros(value: &Value, what: &str) -> Result<i64> {
     value
         .as_i64()
         .ok_or_else(|| Error::coded("T101", format!("{what} is {value}, not a 64-bit integer number of microseconds")))
+}
+
+/// What the manifest `doc` should state and does not (contract §5): a
+/// target with `negative` values and no `min_follow_up_us`.  Read from the
+/// document as written, since the normal form fills the default in.  A note
+/// never fails a manifest; a later version of the contract may require it.
+pub fn notes_of(doc: &Value) -> Vec<Note> {
+    let mut notes = Vec::new();
+    let target = &doc["target"];
+    let negatives = target.get("negative").and_then(Value::as_array).is_some_and(|n| !n.is_empty());
+    if negatives && target.get("min_follow_up_us").is_none_or(Value::is_null) {
+        notes.push(Note::new(
+            "/target/min_follow_up_us",
+            "a target with negatives should state it: the default, horizon_us, leaves a negative only an \
+             observation at exactly the cutoff plus the horizon, so nearly every row without a positive is censored",
+        ));
+    }
+    notes
+}
+
+/// What [`TaskManifest::repin`] did.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct RepinReport {
+    /// The sources pinned to a new version.
+    pub changed: Vec<Repinned>,
+    /// The sources already pinned to what they name.
+    pub unchanged: Vec<String>,
+    /// Whether a changed subject's reconciled events changed.
+    pub reconciled: bool,
+    /// The rows whose fingerprints changed: their patient-level cache
+    /// entries are stale (T403).
+    pub rows: Vec<String>,
+}
+
+impl RepinReport {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "changed": self.changed.iter().map(Repinned::to_json).collect::<Vec<_>>(),
+            "unchanged": self.unchanged,
+            "reconciled": self.reconciled,
+            "rows": self.rows,
+        })
+    }
+}
+
+/// One source pinned to a new version.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct Repinned {
+    pub source_id: String,
+    pub before: String,
+    pub after: String,
+}
+
+impl Repinned {
+    pub fn to_json(&self) -> Value {
+        json!({"source_id": self.source_id, "before": self.before, "after": self.after})
+    }
 }
 
 /// An event version present in several fragments, and the digest they share.
@@ -374,10 +433,131 @@ impl TaskManifest {
 
     /// Read a manifest file.
     pub fn load(path: &Path) -> Result<TaskManifest> {
+        TaskManifest::from_json(&TaskManifest::read_document(path)?)
+    }
+
+    /// A manifest file's document, before it is parsed: T101 for anything
+    /// that is not JSON, `NaN` and the infinities included (JSON has none).
+    pub fn read_document(path: &Path) -> Result<Value> {
         let text = std::fs::read_to_string(path).map_err(|e| crate::error::os_error(&e, path))?;
-        let doc = crate::json::loads(&text)
-            .map_err(|e| Error::coded("T101", format!("the task manifest is not JSON: {e}")))?;
-        TaskManifest::from_json(&doc)
+        crate::json::loads(&text).map_err(|e| Error::coded("T101", format!("the task manifest is not JSON: {e}")))
+    }
+
+    /// Record, per subject, the event versions several of its fragments
+    /// hold and the digest they share (`subjects[].reconciled`), opening
+    /// sources where `access` lets them be opened.  Returns how many were
+    /// recorded.  The declared fingerprint is dropped: the manifest changed.
+    pub fn reconcile_all(&mut self, access: &SourceAccess) -> Result<usize> {
+        let mut recorded = 0;
+        for subject in &mut self.subjects {
+            subject.reconciled = super::view::reconcile_in(subject, access)?;
+            recorded += subject.reconciled.len();
+        }
+        self.fingerprint = None;
+        Ok(recorded)
+    }
+
+    /// Pin each source (or those whose ids `only` names) to the sample it
+    /// names now, where `access` lets it be opened.  Only a whole version is
+    /// pinned: its stored root recomputes and its digests hold.  A source
+    /// that does not open is refused (T301), one whose integrity fails
+    /// (T302), one that is another subject (T303) or on another clock
+    /// (T304), or one this engine cannot certify (T306); refused, nothing
+    /// changes.  The subjects that changed are reconciled again, and the
+    /// rows whose fingerprints change --- their patient-level cache entries
+    /// now stale, as they should be --- are listed.  The declared
+    /// fingerprint is dropped: the manifest changed.
+    pub fn repin(&mut self, access: &SourceAccess, only: Option<&BTreeSet<String>>) -> Result<RepinReport> {
+        if let Some(only) = only {
+            let known: BTreeSet<&str> =
+                self.subjects.iter().flat_map(|s| &s.sources).map(|s| s.source_id.as_str()).collect();
+            if let Some(unknown) = only.iter().find(|id| !known.contains(id.as_str())) {
+                return Err(Error::invalid(format!("the manifest has no source {}", repr_str(unknown))));
+            }
+        }
+        let task_fingerprint = self.task_fingerprint();
+        let mut next = self.clone();
+        let mut report = RepinReport::default();
+        for (k, subject) in next.subjects.iter_mut().enumerate() {
+            let mut moved: BTreeSet<String> = BTreeSet::new();
+            for source in &mut subject.sources {
+                if only.is_some_and(|o| !o.contains(&source.source_id)) {
+                    continue;
+                }
+                let at = source.at();
+                let sample = source.open_in(access).map_err(|e| match e.code() {
+                    Some("T301") => e,
+                    _ => Error::coded("T301", format!("{} does not open: {e}", source.locator())),
+                })?;
+                match source.state(&sample, false)? {
+                    SourceState::Pinned => report.unchanged.push(at),
+                    SourceState::Moved => {
+                        let mut pinned = SourceRef::pin(source.uri.clone(), source.sample_key.clone(), &sample)?;
+                        pinned.source_id = source.source_id.clone();
+                        pinned.local_subject_id = source.local_subject_id.clone();
+                        report.changed.push(Repinned {
+                            source_id: at.clone(),
+                            before: source.content_id.clone(),
+                            after: pinned.content_id.clone(),
+                        });
+                        moved.insert(at);
+                        *source = pinned;
+                    }
+                    SourceState::Corrupt(found) => {
+                        let first = found.into_iter().next().map(|f| f.message).unwrap_or_default();
+                        return Err(Error::coded("T302", first));
+                    }
+                }
+            }
+            if moved.is_empty() {
+                continue;
+            }
+            // The new pins as preflight will read them: the sample is still
+            // the subject, on its clock, and certifiable.
+            let history = super::view::load_subject_in(subject, access, false)?;
+            let refused = history.findings.iter().find(|f| {
+                matches!(f.code.as_str(), "T301" | "T302" | "T303" | "T304" | "T306")
+                    && (moved.contains(&f.location) || f.location == subject.subject_id)
+            });
+            if let Some(f) = refused {
+                return Err(Error::coded(&f.code, format!("{} cannot be repinned: {}", f.location, f.message)));
+            }
+            let before = std::mem::take(&mut subject.reconciled);
+            subject.reconciled = super::view::reconcile_in(subject, access)?;
+            report.reconciled |= subject.reconciled != before;
+            let old = &self.subjects[k];
+            for row in self.rows.iter().filter(|r| r.subject_id == subject.subject_id) {
+                let was = self.row_fingerprint_with(&task_fingerprint, Some(old), row);
+                if self.row_fingerprint_with(&task_fingerprint, Some(subject), row) != was {
+                    report.rows.push(row.row_id.clone());
+                }
+            }
+        }
+        if !report.changed.is_empty() {
+            next.fingerprint = None;
+            *self = next;
+        }
+        Ok(report)
+    }
+
+    /// Refuse an output that is one of the manifest's sources, by any path
+    /// or link: saving there replaces a patient's sample with JSON.  Sources
+    /// are located through `access`, so nothing outside a confined root is
+    /// examined.
+    pub fn check_output(&self, out: &Path, access: &SourceAccess) -> Result<()> {
+        for subject in &self.subjects {
+            for source in &subject.sources {
+                if access.locate(source).is_ok_and(|p| crate::h5::file::same_file(&p, out)) {
+                    return Err(Error::invalid(format!(
+                        "{} is {}, a source of subject {}; write the manifest to another file",
+                        repr_str(&out.to_string_lossy()),
+                        repr_str(&source.locator()),
+                        repr_str(&subject.subject_id)
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The task's definition: what identifies the task, defaults filled in.
@@ -444,6 +624,24 @@ impl TaskManifest {
         fingerprint(&doc)
     }
 
+    /// Declare a subject.  A source without an id gets its default
+    /// ([`SourceRef::default_id`]), widened when another source of the
+    /// manifest already holds it ([`SourceRef::default_id_among`]): the
+    /// first holder keeps its id.  An id given explicitly is kept as given,
+    /// so one that collides is still T204.
+    pub fn add_subject(&mut self, mut subject: Subject) -> &mut Self {
+        let mut taken: BTreeSet<String> =
+            self.subjects.iter().flat_map(|s| &s.sources).map(|s| s.source_id.clone()).collect();
+        taken.extend(subject.sources.iter().filter(|s| !s.source_id.is_empty()).map(|s| s.source_id.clone()));
+        for source in subject.sources.iter_mut().filter(|s| s.source_id.is_empty()) {
+            source.source_id =
+                SourceRef::default_id_among(&source.uri, source.sample_key.as_deref(), &|id| taken.contains(id));
+            taken.insert(source.source_id.clone());
+        }
+        self.subjects.push(subject);
+        self
+    }
+
     pub fn subject(&self, subject_id: &str) -> Option<&Subject> {
         self.subjects.iter().find(|s| s.subject_id == subject_id)
     }
@@ -487,9 +685,21 @@ impl TaskManifest {
         fingerprint(&json!(members))
     }
 
+    /// The sources a confined `access` refuses, in manifest order: what a
+    /// runner confining to its root could not open.  No file is examined.
+    pub fn sources_outside(&self, access: &SourceAccess) -> Vec<&SourceRef> {
+        self.subjects.iter().flat_map(|s| &s.sources).filter(|s| access.locate(s).is_err()).collect()
+    }
+
     /// The rows of one partition, in manifest order.
     pub fn rows_in(&self, partition: &str) -> Vec<&Row> {
-        self.rows.iter().filter(|r| self.partition_of(&r.subject_id) == Some(partition)).collect()
+        // One pass over the subjects, not one per row: the first subject of
+        // an id is the one `subject` finds.
+        let mut first: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
+        for s in &self.subjects {
+            first.entry(s.subject_id.as_str()).or_insert(s.partition.as_deref() == Some(partition));
+        }
+        self.rows.iter().filter(|r| first.get(r.subject_id.as_str()).copied().unwrap_or(false)).collect()
     }
 
     /// Everything wrong with the manifest that opening no file can find.
@@ -635,5 +845,37 @@ impl TaskManifest {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(follow_up: Option<Value>, negative: &[&str]) -> Value {
+        let mut t = json!({
+            "id": "t", "version": "1", "event": {"code_system": "s", "code": "c"},
+            "positive": ["PD"], "negative": negative, "horizon_us": 100,
+        });
+        if let Some(f) = follow_up {
+            t["min_follow_up_us"] = f;
+        }
+        json!({"target": t})
+    }
+
+    /// The default stays (it is in every fingerprint); a target with
+    /// negatives that leaves it out, or null, is noted.
+    #[test]
+    fn s5_a_defaulted_follow_up_is_noted() {
+        for doc in [target(None, &["SD"]), target(Some(Value::Null), &["SD"])] {
+            let notes = notes_of(&doc);
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0].location, "/target/min_follow_up_us");
+            assert!(notes[0].line().starts_with("note /target/min_follow_up_us: "));
+        }
+        assert!(notes_of(&target(Some(json!(100)), &["SD"])).is_empty());
+        assert!(notes_of(&target(None, &[])).is_empty());
+        assert!(notes_of(&json!({"target": null})).is_empty());
+        assert!(notes_of(&json!({})).is_empty());
     }
 }

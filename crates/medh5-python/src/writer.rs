@@ -21,8 +21,8 @@ use medh5::sample::writer_annotations::{
 };
 
 use crate::convert::{
-    bool_array, class_key, class_keys, f64_array, f64_vec, i64_array, i64_vec, kwargs_to_map, matrix as to_matrix,
-    opt_strings, py_to_json, py_to_nd, strings,
+    bool_array, class_key, class_keys, detach_if, f64_array, f64_vec, i64_array, i64_vec, kwargs_to_map,
+    matrix as to_matrix, opt_strings, py_to_json, py_to_nd, strings, DETACH_ROWS,
 };
 use crate::curation::{Activity, Agent, Cohort, Deidentification, Identity, QualityRecord, SplitClaim, Timepoint};
 use crate::errors::R;
@@ -915,6 +915,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_boxes(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         boxes: &Bound<'_, PyAny>,
         class_ids: &Bound<'_, PyAny>,
@@ -941,15 +942,11 @@ impl SampleWriter {
         let slice_index =
             is_given(slice_index).map(|o| crate::annotations::slice_index_arg(&o, n_boxes)).transpose()?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_boxes(
-            ann_id,
-            &boxes,
-            &keys,
-            objects,
-            slice_index,
-            placement(grid, Some(space), frame_uid),
-            options,
-        )?;
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = detach_if(py, n_boxes >= DETACH_ROWS, move || {
+            writer.add_boxes(ann_id, &boxes, &keys, objects, slice_index, at, options)
+        })?;
         Ok(Group::wrap(group))
     }
 
@@ -960,6 +957,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_obb(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         centers: &Bound<'_, PyAny>,
         sizes: &Bound<'_, PyAny>,
@@ -984,16 +982,12 @@ impl SampleWriter {
         let keys = class_keys(class_ids)?;
         let objects = objects(instance_ids, scores, attributes)?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_obb(
-            ann_id,
-            &centers,
-            &sizes,
-            &rotations,
-            &keys,
-            objects,
-            placement(grid, Some(space), frame_uid),
-            options,
-        )?;
+        let rows = centers.shape().first().copied().unwrap_or(0);
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = detach_if(py, rows >= DETACH_ROWS, move || {
+            writer.add_obb(ann_id, &centers, &sizes, &rotations, &keys, objects, at, options)
+        })?;
         Ok(Group::wrap(group))
     }
 
@@ -1004,6 +998,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_keypoints(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         points: &Bound<'_, PyAny>,
         keypoint_classes: &Bound<'_, PyAny>,
@@ -1030,17 +1025,12 @@ impl SampleWriter {
         let visibility = is_given(visibility).map(|v| i64_array(&v)).transpose()?;
         let objects = objects(instance_ids, scores, None)?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_keypoints(
-            ann_id,
-            &points,
-            &slots,
-            &keys,
-            visibility.as_ref(),
-            objects,
-            skeleton,
-            placement(grid, Some(space), frame_uid),
-            options,
-        )?;
+        let rows = points.shape().first().copied().unwrap_or(0) * slots.len().max(1);
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = detach_if(py, rows >= DETACH_ROWS, move || {
+            writer.add_keypoints(ann_id, &points, &slots, &keys, visibility.as_ref(), objects, skeleton, at, options)
+        })?;
         Ok(Group::wrap(group))
     }
 
@@ -1051,6 +1041,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_points(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         points: &Bound<'_, PyAny>,
         grid: Option<&str>,
@@ -1076,17 +1067,22 @@ impl SampleWriter {
         let names = opt_strings(names)?;
         let weights = is_given(weights).map(|w| f64_vec(&w)).transpose()?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_points(
-            ann_id,
-            &points,
-            keys.as_deref(),
-            instance_ids.as_deref(),
-            names.as_deref(),
-            weights.as_deref(),
-            correspondence,
-            placement(grid, Some(space), frame_uid),
-            options,
-        )?;
+        let rows = points.shape().first().copied().unwrap_or(0);
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = detach_if(py, rows >= DETACH_ROWS, move || {
+            writer.add_points(
+                ann_id,
+                &points,
+                keys.as_deref(),
+                instance_ids.as_deref(),
+                names.as_deref(),
+                weights.as_deref(),
+                correspondence,
+                at,
+                options,
+            )
+        })?;
         Ok(Group::wrap(group))
     }
 

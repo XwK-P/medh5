@@ -45,8 +45,21 @@ that is not the version its reference pins is read no further: its finding
 (`T302`) names the pin and nothing the file holds, and the file adds no
 identity, clock, event or document to the report. A file that matches its pin
 is reported in full, and whether a path exists can still be told from its
-finding (`T301`), so run a manifest from someone else only over files you are
-willing to have it name.
+finding (`T301`).
+
+To run a manifest someone else wrote, confine it: `--source-root DIR` on the
+command line, `confine=True` (the manifest's directory) or `confine=DIR` in
+Python. A URI outside the directory, its `.` and `..` resolved as text, is
+refused (`T301`) without the path being examined, the same whether or not it
+exists, so a manifest can neither open nor probe anything outside it. Without
+either, 2.1 opens wherever the URIs point and says so on stderr (a
+`FutureWarning` in Python) when one lies outside the manifest's directory;
+3.0 confines by default.
+
+One limit remains: whether a source is a regular file is checked before HDF5
+opens it, by path, and HDF5 opens only by path. A process that can write to a
+source's directory can swap a named pipe in between, and the open then blocks.
+Confine sources to a directory nobody else can write to.
 
 ## Native inventory
 

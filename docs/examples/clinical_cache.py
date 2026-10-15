@@ -46,7 +46,7 @@ from medh5.cache import (
     validate_cache,
 )
 from medh5.clinical import DAY, Event
-from medh5.task import Preflight, SourceRef, TaskManifest
+from medh5.task import Preflight, TaskManifest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clinical_longitudinal import progression_task, write_cohort  # noqa: E402
@@ -161,13 +161,9 @@ def main(out: Path) -> dict[str, Any]:
     results["task after amend"] = codes(task.preflight())
 
     repinned = TaskManifest(task.to_json(), base=out)
-    doc = repinned.to_json()
-    for subject in doc["subjects"]:
-        for source in subject["sources"]:
-            fresh = SourceRef.pin(out / source["uri"], uri=source["uri"],
-                                  source_id=source["source_id"])
-            source["content_id"] = fresh.content_id
-    repinned = TaskManifest(doc, base=out)
+    renewed = repinned.repin()  # only the amended source moves
+    assert [r.source_id for r in renewed.changed] == ["P-02"]
+    assert renewed.rows == ("P-02@24h", "P-02@d95")
     results["repinned task"] = (
         codes(repinned.preflight()),
         repinned.task_fingerprint == task.task_fingerprint,

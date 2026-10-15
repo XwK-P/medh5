@@ -42,22 +42,51 @@ fn count_true<'a>(it: impl Iterator<Item = &'a bool>) -> u64 {
 
 /// Sørensen--Dice, or `None` when both masks are empty.
 pub fn dice(a: &ndarray::ArrayD<bool>, b: &ndarray::ArrayD<bool>) -> Option<f64> {
-    let total = count_true(a.iter()) + count_true(b.iter());
-    if total == 0 {
-        return None;
-    }
-    let both = a.iter().zip(b.iter()).filter(|(x, y)| **x && **y).count() as u64;
-    dice_of(both, total)
+    dice_view(a.view(), b.view())
+}
+
+/// [`dice`] of two views of one shape, which may be broadcast.
+pub fn dice_view(a: ndarray::ArrayViewD<'_, bool>, b: ndarray::ArrayViewD<'_, bool>) -> Option<f64> {
+    let counts = pair_counts(a, b);
+    dice_of(counts.both, counts.in_a + counts.in_b)
 }
 
 /// Intersection over union, or `None` when both masks are empty.
 pub fn iou(a: &ndarray::ArrayD<bool>, b: &ndarray::ArrayD<bool>) -> Option<f64> {
-    let union = a.iter().zip(b.iter()).filter(|(x, y)| **x || **y).count() as u64;
-    if union == 0 {
-        return None;
+    iou_view(a.view(), b.view())
+}
+
+/// [`iou`] of two views of one shape, which may be broadcast.
+pub fn iou_view(a: ndarray::ArrayViewD<'_, bool>, b: ndarray::ArrayViewD<'_, bool>) -> Option<f64> {
+    let counts = pair_counts(a, b);
+    iou_of(counts.both, counts.union)
+}
+
+/// What Dice and IoU are taken from.
+struct PairCounts {
+    in_a: u64,
+    in_b: u64,
+    both: u64,
+    union: u64,
+}
+
+/// [`PairCounts`] in one pass.  Masks of two shapes are taken element by
+/// element in order as far as the shorter goes, as a `zip` of their
+/// iterators took them, for `both` and `union`.
+fn pair_counts(a: ndarray::ArrayViewD<'_, bool>, b: ndarray::ArrayViewD<'_, bool>) -> PairCounts {
+    if a.shape() != b.shape() {
+        let pairs = || a.iter().zip(b.iter());
+        return PairCounts {
+            in_a: count_true(a.iter()),
+            in_b: count_true(b.iter()),
+            both: pairs().filter(|(x, y)| **x && **y).count() as u64,
+            union: pairs().filter(|(x, y)| **x || **y).count() as u64,
+        };
     }
-    let both = a.iter().zip(b.iter()).filter(|(x, y)| **x && **y).count() as u64;
-    iou_of(both, union)
+    let (in_a, in_b, both) = ndarray::Zip::from(&a)
+        .and(&b)
+        .fold((0, 0, 0), |(x, y, z), &p, &q| (x + u64::from(p), y + u64::from(q), z + u64::from(p && q)));
+    PairCounts { in_a, in_b, both, union: in_a + in_b - both }
 }
 
 /// Dice from voxel counts: `2 |A ∩ B| / (|A| + |B|)`.
