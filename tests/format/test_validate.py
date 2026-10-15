@@ -49,6 +49,13 @@ def at(report: Report, location: str) -> list[str]:
 
 
 class TestLevels:
+    def test_S15_1_the_levels_are_the_engines(self):
+        from medh5 import _core, validate
+
+        assert validate.LEVELS is _core.LEVELS
+        with pytest.raises(ValueError, match="unknown validation level 'strictest'"):
+            validate.rules_for("strictest")  # type: ignore[arg-type]
+
     def test_S15_1_levels_are_cumulative(self, sample_path):
         rules = {
             level: set(validate_file(sample_path, level=level).checked["rules"])

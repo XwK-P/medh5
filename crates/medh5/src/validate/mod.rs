@@ -208,7 +208,10 @@ pub fn merge(reports: &[Report], path: &str) -> Report {
     out
 }
 
-fn check_level(level: &str) -> Result<()> {
+/// Refuse a level the validator does not run.  Public for the frontends,
+/// which refuse it before they reach the validator.
+#[doc(hidden)]
+pub fn check_level(level: &str) -> Result<()> {
     if !LEVELS.contains(&level) {
         return Err(Error::Value(format!(
             "unknown validation level {}; expected one of {}",
@@ -312,7 +315,9 @@ pub fn validate_root(root: &hdf5::Group, path: Option<&Path>, level: &str, error
 }
 
 /// The digest attribute map, needed only where integrity is checked.
-fn attr_names_for(root: &hdf5::Group, level: &str) -> Option<AttrNameMap> {
+/// Public for the frontends, which validate a root they hold.
+#[doc(hidden)]
+pub fn attr_names_for(root: &hdf5::Group, level: &str) -> Option<AttrNameMap> {
     if level != "integrity" && level != "strict" {
         return None;
     }

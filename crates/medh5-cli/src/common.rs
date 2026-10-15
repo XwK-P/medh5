@@ -236,13 +236,23 @@ pub fn sample_file(path: &str) -> medh5::Result<Sample> {
 /// ("open it with open_collection()"); from the command line, the way to a
 /// member is `medh5 unpack`.
 pub fn sample_file_error(path: &str, error: Error) -> Error {
-    match open_collection(Path::new(path)).and_then(|c| c.len()) {
-        Ok(count) => Error::invalid(format!(
-            "{path} is a collection of {count} sample(s); this command works on one sample file --- extract them \
-             with `medh5 unpack {path} -o DIR`"
-        )),
-        Err(_) => error,
+    match sample_file_refusal(path) {
+        Some(refusal) => Error::invalid(refusal),
+        None => error,
     }
+}
+
+/// Why `path` is not worked on as one sample file, as the command line words
+/// it: a collection is named with the way to its members.  `None` for
+/// anything else, whose own error says what is wrong.  Public for the Python
+/// converters, which refuse a collection in the same words.
+#[doc(hidden)]
+pub fn sample_file_refusal(path: &str) -> Option<String> {
+    let count = open_collection(Path::new(path)).and_then(|c| c.len()).ok()?;
+    Some(format!(
+        "{path} is a collection of {count} sample(s); this command works on one sample file --- extract them with \
+         `medh5 unpack {path} -o DIR`"
+    ))
 }
 
 /// `error`, from working on `path` as a collection, as the command line

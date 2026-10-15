@@ -40,7 +40,7 @@ from medh5.errors import CODES, Severity
 
 Level = Literal["structural", "semantic", "integrity", "strict"]
 
-LEVELS: tuple[Level, ...] = ("structural", "semantic", "integrity", "strict")
+LEVELS: tuple[Level, ...] = _core.LEVELS
 
 LEVEL_ORDER = {name: i for i, name in enumerate(LEVELS)}
 

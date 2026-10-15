@@ -314,17 +314,10 @@ def _sample_file(path: str) -> str:
     Python API's (``open it with open_collection()``), which tells a command
     line user nothing they can type.
     """
-    from medh5.collection import open_collection
-
-    try:
-        with open_collection(path) as shard:
-            count = len(shard)
-    except (MEDH5Error, OSError):  # not a collection: the converter says what
-        return path
-    raise MEDH5Error(
-        f"{path} is a collection of {count} sample(s); this command works on "
-        f"sample files --- extract them with `medh5 unpack {path} -o DIR`"
-    )
+    refusal = _core.cli_sample_file_refusal(path)
+    if refusal is not None:
+        raise MEDH5Error(refusal)
+    return path
 
 
 def _finish(report: ConversionReport, args: Any) -> int:

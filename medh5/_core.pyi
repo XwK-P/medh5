@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Any, ClassVar, final
+from typing import Any, ClassVar, Literal, final
 
 import numpy as np
 import numpy.typing as npt
@@ -291,6 +291,7 @@ __all__ = [
     "cli_command_tree",
     "cli_lookup_message",
     "cli_main",
+    "cli_sample_file_refusal",
     "clinical_augment",
     "clinical_records",
     "clinical_schema_text",
@@ -614,7 +615,7 @@ LATERALITY_VALUES: tuple[str, ...]
 LEGACY_BOX_SHIFT: float
 LEGACY_SCHEMA_VERSION: str
 LESION_VALUES: tuple[str, ...]
-LEVELS: tuple[str, ...]
+LEVELS: tuple[Literal["structural", "semantic", "integrity", "strict"], ...]
 LOCALIZED_BBOX_FRACTION: float
 MANAGED_ROOT_ATTRS: tuple[str, ...]
 MANIFEST_SCHEMA: str
@@ -956,6 +957,12 @@ def cli_lookup_message(text: str) -> str:
 
 def cli_main(argv: Sequence[str], host: Any) -> int:
     """Run the command line on `argv` (without the program name); the exit code."""
+    ...
+
+def cli_sample_file_refusal(path: str) -> str | None:
+    """Why `path` is not worked on as one sample file, as every native command
+    words it (a collection, with the way to its members); `None` otherwise.
+    """
     ...
 
 def clinical_augment(

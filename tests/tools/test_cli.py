@@ -2613,9 +2613,12 @@ class TestConvert:
         assert code == EXIT_ERROR
         assert out.err == (
             f"medh5: {shard} is a collection of 1 sample(s); this command works "
-            f"on sample files --- extract them with `medh5 unpack {shard} -o DIR`\n"
+            f"on one sample file --- extract them with `medh5 unpack {shard} -o DIR`\n"
         )
         assert sorted(p.name for p in tmp_path.iterdir()) == ["m0.medh5", "s.medh5c"]
+        # The native commands' words, not a copy of them that drifted ("works on
+        # sample files"): one refusal, from the same function.
+        assert run(capsys, "fix", str(shard))[1].err.startswith(out.err)
 
     @pytest.fixture
     def nifti(self, tmp_path):
