@@ -539,7 +539,7 @@ mod tests {
         std::fs::create_dir_all(root.join("b")).unwrap();
         std::fs::create_dir_all(dir.path().join("elsewhere/deep")).unwrap();
         let access = SourceAccess::confined(Some(&root), None).unwrap();
-        let canonical = std::fs::canonicalize(&root).unwrap();
+        let canonical = runner_dir(&root).unwrap();
         let at = |uri: &str| access.locate(&SourceRef::new(uri, None, ""));
         assert_eq!(at("a/../b/x.medh5").unwrap(), canonical.join("b").join("x.medh5"));
         assert_eq!(at("./x.medh5").unwrap(), canonical.join("x.medh5"));
