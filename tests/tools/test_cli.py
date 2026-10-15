@@ -1326,7 +1326,13 @@ class TestFixAndScrub:
             w.add_image("CT", np.zeros((4, 4, 4), np.int16), grid="g", modality="CT")
             w.acquisition("CT", PatientName="Doe^Jane")
         code, out = run(
-            capsys, "scrub", str(path), "--apply", "--date-shift-days", "-30"
+            capsys,
+            "scrub",
+            str(path),
+            "--apply",
+            "--date-shift-days",
+            "-30",
+            "--withhold-shift",
         )
         assert code == EXIT_OK
         with medh5.open(path) as sample:
@@ -1516,8 +1522,8 @@ class TestBatches:
     def test_a_refused_scrub_keeps_the_reports_of_files_already_changed(
         self, capsys, tmp_path, sample_path
     ):
-        """A clinical sample is refused by design; the files scrubbed before
-        it were changed, and their reports carry the only key to the
+        """A clinical sample whose text no one attested is refused; the files
+        scrubbed before it were changed, and their reports carry the only key to the
         pseudonyms written (`uid_map`)."""
         from medh5.conformance import build_corpus
 
@@ -1537,7 +1543,7 @@ class TestBatches:
         first, refused = json.loads(out.out)
         assert first["path"] == str(sample_path) and first["applied"]
         assert "uid_map" in first
-        assert refused["ok"] is False and "clinical profile" in refused["error"]
+        assert refused["ok"] is False and "clinical text" in refused["error"]
 
 
 class TestDatasetCommands:

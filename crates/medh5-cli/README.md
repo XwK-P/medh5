@@ -13,7 +13,7 @@ cargo install --locked medh5-cli # or a binary from the GitHub Release, or Homeb
 medh5 info case.medh5            # grids, images, annotations, coverage
 medh5 validate case.medh5 --level integrity
 medh5 verify case.medh5          # digests and content_id
-medh5 conformance run corpus/    # the 171-case conformance corpus
+medh5 conformance run corpus/    # the 172-case conformance corpus
 ```
 
 HDF5 is linked statically: the binary needs nothing installed. Building it

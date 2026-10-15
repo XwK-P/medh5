@@ -376,14 +376,44 @@ fn curation() -> Vec<Command> {
                     .default_value(""),
             )
             .arg(opt("performed_by", "by", "with --apply: who performed the de-identification; recorded in the file"))
+            .arg(flag(
+                "pseudonymise_ids",
+                "pseudonymise-ids",
+                "with --apply and --salt: replace sample_id and subject_id with salted stable pseudonyms (they are \
+                 often the record number)",
+            ))
             .arg(
-                flag(
-                    "pseudonymise_ids",
-                    "pseudonymise-ids",
-                    "with --apply and --salt: replace sample_id and subject_id with salted stable pseudonyms (they \
-                     are often the record number)",
+                opt(
+                    "date_shift_range",
+                    "date-shift-range",
+                    "with --apply and --salt: shift each subject's dates by a nonzero number of days in MIN:MAX, \
+                     taken from the salt and the subject, so one subject's files agree; the amount is withheld",
                 )
-                .requires("apply_changes"),
+                .value_name("MIN:MAX")
+                .value_parser(shift_range)
+                .allow_hyphen_values(true)
+                .conflicts_with("date_shift_days"),
+            )
+            .arg(flag(
+                "withhold_shift",
+                "withhold-shift",
+                "with --apply: record that dates were shifted, not by how much (one known date restores every other)",
+            ))
+            .arg(opt("out", "out", "with --apply: write the scrubbed sample here, and leave the source as it is"))
+            .arg(opt(
+                "out_dir",
+                "out-dir",
+                "with --apply: write each scrubbed sample into this directory, named by its pseudonymised sample id \
+                 under --pseudonymise-ids, else as it was",
+            ))
+            .arg(
+                opt(
+                    "attest_text",
+                    "attest-text",
+                    "with --apply: record that TOOL de-identified a clinical sample's text, with the digests of the \
+                     bytes it attests; it lapses when they change",
+                )
+                .value_name("TOOL"),
             )
             .arg(json()),
         Command::new("splits")
@@ -979,6 +1009,14 @@ fn conformance() -> Command {
 
 /// An IoU two objects must reach to match: in (0, 1].  NaN matched nothing,
 /// and 0 or less matched every pair, objects that do not touch among them.
+/// `--date-shift-range MIN:MAX`: two whole numbers of days.
+fn shift_range(text: &str) -> Result<(i64, i64), String> {
+    let (min, max) = text.split_once(':').ok_or_else(|| format!("{text:?} is not MIN:MAX"))?;
+    let day =
+        |part: &str| part.trim().parse::<i64>().map_err(|_| format!("{part:?} in {text:?} is not a whole number"));
+    Ok((day(min)?, day(max)?))
+}
+
 fn iou_threshold(text: &str) -> Result<f64, String> {
     let threshold: f64 = text.trim().parse().map_err(|_| format!("{text:?} is not a number"))?;
     if threshold > 0.0 && threshold <= 1.0 {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -13,11 +14,17 @@ import pytest
 
 import medh5
 from medh5.curation import scrub as scrubber
-from medh5.errors import MEDH5ValidationError
+from medh5.errors import MEDH5Error, MEDH5ValidationError
 from medh5.labels import LabelClass, LabelSet
 from medh5.validate import validate_file
 from tests.helpers import SHAPE, encode_attr, write_dicom_series
 from tests.kits import Numbered, Organs
+
+
+def _untimed(findings: list[Any]) -> list[Any]:
+    """*findings* but the file's own `created`, which a strict scan reports
+    on every file a strict scrub has not cut (10.3)."""
+    return [f for f in findings if f.where != "root.created"]
 
 
 class TestDeidentificationAttestation:
@@ -87,7 +94,7 @@ class TestDeidentificationAttestation:
         from medh5.curation import scrub
 
         path = self._dirty(tmp_path / "record.medh5")
-        scrub.apply(path, profile="strict", date_shift_days=-30)
+        scrub.apply(path, profile="strict", date_shift_days=-30, salt="pep")
         with medh5.open(path) as sample:
             activity = sample.document.provenance.activities_by_type("deidentify")[0]
             assert activity.params["remaining_actionable"] == 0
@@ -127,7 +134,19 @@ class TestDeidentificationAttestation:
         path = self._dirty(tmp_path / "cli.medh5")
         assert main(["scrub", str(path)]) == 1
         assert (
-            main(["scrub", str(path), "--apply", "--profile", "strict", "--by", "R7"])
+            main(
+                [
+                    "scrub",
+                    str(path),
+                    "--apply",
+                    "--profile",
+                    "strict",
+                    "--by",
+                    "R7",
+                    "--salt",
+                    "pep",
+                ]
+            )  # fmt: skip
             == 0
         )
         capsys.readouterr()
@@ -325,7 +344,7 @@ class TestDeidentification:
         assert not found["age"].actionable
         assert not found["organization_name"].actionable
         assert found["age"].where == "timepoints[0].subject_age_years"
-        assert scrub.apply(path, profile="strict").ok
+        assert scrub.apply(path, profile="strict", salt="pep").ok
         with medh5.open(path) as sample:
             assert sample.document.timepoints["tp0"].subject_age_years == 90.0
             names = [a.name for a in sample.document.provenance.agents]
@@ -815,7 +834,11 @@ class TestScrubFinds:
         basic = scrubber.scan(dirty, profile="basic")
         strict = scrubber.scan(dirty, profile="strict")
         assert len(strict.actionable) > len(basic.actionable)
-        assert len(strict.findings) == len(basic.findings)
+        # The same places, and the time the file was written, which strict
+        # cuts to its year.
+        timed = [f.where for f in strict.findings if f.rule == "tool_timestamp"]
+        assert timed == ["root.created"]
+        assert len(strict.findings) == len(basic.findings) + 1
 
     def test_an_unknown_profile_is_refused(self, dirty):
         with pytest.raises(MEDH5ValidationError, match="unknown profile"):
@@ -1043,7 +1066,7 @@ class TestScrubCoverage:
             ("date", "extra.StudyDate"): True,
             ("person_name", "extra.Doe^Jane"): True,
         }
-        assert scrubber.apply(path, date_shift_days=-10).ok
+        assert scrubber.apply(path, date_shift_days=-10, withhold_shift=True).ok
         with medh5.open(path) as sample:
             extra = sample.document.extra
         assert extra["StudyDate"] == "20200121"
@@ -1163,7 +1186,7 @@ class TestScrubCoverage:
             w.extra("src", {"AccessionNumber": "A-99213", "series": "1.2.3.4.5"})
         assert len(scrubber.scan(path).actionable) >= 5
 
-        scrubber.apply(path, date_shift_days=-117)
+        scrubber.apply(path, date_shift_days=-117, withhold_shift=True)
         assert not scrubber.scan(path).actionable
 
     def test_a_swept_file_passes_scrub_as_a_gate(self, tmp_path):
@@ -1171,7 +1194,7 @@ class TestScrubCoverage:
         path = self._with(
             tmp_path, "gate", kvp=120, PatientName="Doe^Jane", StudyDate="20260203"
         )
-        scrubber.apply(path, date_shift_days=-117)
+        scrubber.apply(path, date_shift_days=-117, withhold_shift=True)
         assert not scrubber.scan(path).actionable
 
 
@@ -1232,7 +1255,7 @@ class TestScrubApplies:
                 frame_uid="not-a-dicom-uid",
             )
             w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
-        scrubber.apply(path, salt="pepper", date_shift_days=-117)
+        scrubber.apply(path, salt="pepper", date_shift_days=-117, withhold_shift=True)
         with medh5.open(path) as sample:
             assert sample.document.deidentification.id_mapping == "none"
 
@@ -1277,7 +1300,7 @@ class TestScrubApplies:
             assert "StudyDate" not in sample.document.acquisition["CT"]
 
     def test_a_shift_preserves_the_interval(self, dirty):
-        scrubber.apply(dirty, date_shift_days=-117)
+        scrubber.apply(dirty, date_shift_days=-117, withhold_shift=True)
         with medh5.open(dirty) as sample:
             first = sample.document.timepoints["tp0"].date
             second = sample.document.timepoints["tp1"].date
@@ -1287,7 +1310,9 @@ class TestScrubApplies:
             assert sample.document.timepoints["tp1"].days_from_baseline == 90
 
     def test_S11_4_the_attestation_says_what_was_not_checked(self, dirty):
-        scrubber.apply(dirty, date_shift_days=-117, performed_by="RAD-07")
+        scrubber.apply(
+            dirty, date_shift_days=-117, performed_by="RAD-07", withhold_shift=False
+        )
         with medh5.open(dirty) as sample:
             record = sample.document.deidentification
             assert record is not None
@@ -1301,14 +1326,14 @@ class TestScrubApplies:
     def test_the_file_is_still_valid_afterwards(self, dirty):
         from medh5.validate import validate_file
 
-        scrubber.apply(dirty, date_shift_days=-30)
+        scrubber.apply(dirty, date_shift_days=-30, withhold_shift=True)
         assert not validate_file(dirty).errors
 
     def test_scrubbing_twice_is_stable(self, dirty):
-        scrubber.apply(dirty, date_shift_days=-117)
+        scrubber.apply(dirty, date_shift_days=-117, withhold_shift=True)
         with medh5.open(dirty) as sample:
             first = sample.document.to_json()
-        second_run = scrubber.apply(dirty, date_shift_days=-117)
+        second_run = scrubber.apply(dirty, date_shift_days=-117, withhold_shift=True)
         with medh5.open(dirty) as sample:
             second = sample.document.to_json()
         assert first["timepoints"] == second["timepoints"]
@@ -1346,7 +1371,7 @@ class TestScrubContainer:
         with h5py.File(path, "r+") as handle:
             handle[alias] = handle["meta"]
         where = alias.replace("/", ".")
-        scanned = scrubber.scan(path, profile="strict").findings
+        scanned = _untimed(scrubber.scan(path, profile="strict").findings)
         assert [(f.rule, f.where, f.actionable, f.value) for f in scanned] == [
             ("identity", where, True, self.RECORD)
         ]
@@ -1379,7 +1404,7 @@ class TestScrubContainer:
         path = self._named(tmp_path / "soft.medh5")
         with h5py.File(path, "r+") as handle:
             handle["x_document"] = h5py.SoftLink("/meta")
-        assert scrubber.scan(path, profile="strict").clean
+        assert not _untimed(scrubber.scan(path, profile="strict").findings)
         report = scrubber.apply(
             path, profile="strict", salt="pep", pseudonymise_ids=True
         )
@@ -1398,7 +1423,7 @@ class TestScrubContainer:
             # Found once, at its first name; removed under every name.
             handle["x_backup/again"] = handle["x_backup/meta"]
             handle["images/CT"].attrs["x_document"] = document
-        scanned = scrubber.scan(path, profile="strict").findings
+        scanned = _untimed(scrubber.scan(path, profile="strict").findings)
         assert {(f.rule, f.where, f.actionable, f.value) for f in scanned} == {
             ("identity", "x_backup.again", True, self.RECORD),
             ("identity", "images.CT.x_document", True, self.RECORD),
@@ -1483,7 +1508,8 @@ class TestScrubContainer:
             group["root"] = handle["/"]
             group["Doe^Jane"] = group
         found = {
-            (f.where, f.rule) for f in scrubber.scan(path, profile="strict").findings
+            (f.where, f.rule)
+            for f in _untimed(scrubber.scan(path, profile="strict").findings)
         }
         assert found == {("x_loop.Doe^Jane", "person_name")}
 
@@ -1548,7 +1574,7 @@ class TestScrubDates:
             "extra.src.ContentDate",
         }
         assert not found["extra.src.note"].actionable, "free text is a person's call"
-        report = scrubber.apply(path, date_shift_days=10)
+        report = scrubber.apply(path, date_shift_days=10, withhold_shift=True)
         assert report.ok
         with medh5.open(path) as sample:
             assert sample.document.timepoints["tp0"].date == "2020-02-10T10:00:00"
@@ -1576,7 +1602,7 @@ class TestScrubDates:
         Such a value is not a date this tool can move, so it is dropped.
         """
         path = self._with(tmp_path / "deva.medh5", StudyDate="२०२००१३१")
-        report = scrubber.apply(path, date_shift_days=5)
+        report = scrubber.apply(path, date_shift_days=5, withhold_shift=True)
         assert report.ok
         with medh5.open(path) as sample:
             assert "StudyDate" not in sample.document.extra["src"]
@@ -1637,7 +1663,7 @@ class TestScrubDates:
         ]
         with medh5.open(path) as sample:
             assert sample.document.deidentification.date_shift_days == 0
-        assert scrubber.apply(path, date_shift_days=-30).ok
+        assert scrubber.apply(path, date_shift_days=-30, withhold_shift=False).ok
         with medh5.open(path) as sample:
             assert sample.document.timepoints["tp0"].date == "2020-01-01"
             assert sample.document.deidentification.date_shift_days == -30
@@ -1654,7 +1680,7 @@ class TestScrubDates:
             w.add_image(
                 "CT", np.zeros(Numbered.SHAPE, np.int16), grid="g", modality="CT"
             )
-        assert scrubber.apply(path, date_shift_days=-10).ok
+        assert scrubber.apply(path, date_shift_days=-10, withhold_shift=False).ok
         with medh5.amend(path) as w:
             # Shifted by hand, as the record says: it agrees.
             w.add_timepoint("tp1", date="2020-04-20", days_from_baseline=90)
@@ -1666,7 +1692,7 @@ class TestScrubDates:
         ]
         assert "10 day(s) off" in dates[0].detail
         # A run with the recorded shift leaves the dates alone, and says so.
-        again = scrubber.apply(path, date_shift_days=-10)
+        again = scrubber.apply(path, date_shift_days=-10, withhold_shift=False)
         assert [f.where for f in again.remaining if f.rule == "date"] == [
             "timepoints[2].date"
         ]
@@ -1677,7 +1703,7 @@ class TestScrubDates:
         from medh5.cli import main
 
         path = self._with(tmp_path / "twice.medh5", date="2020-01-31")
-        assert scrubber.apply(path, date_shift_days=117).ok
+        assert scrubber.apply(path, date_shift_days=117, withhold_shift=False).ok
         with medh5.open(path) as sample:
             before = sample.content_id
         with pytest.raises(MEDH5ValidationError, match="records a date shift of 117"):
@@ -1686,28 +1712,36 @@ class TestScrubDates:
         with medh5.open(path) as sample:
             assert sample.content_id == before
         # The recorded shift, or none, is the one the dates already had.
-        assert scrubber.apply(path, date_shift_days=117).ok
-        assert scrubber.apply(path).ok
+        assert scrubber.apply(path, date_shift_days=117, withhold_shift=False).ok
+        assert scrubber.apply(path, withhold_shift=False).ok
         with medh5.open(path) as sample:
             assert sample.document.timepoints["tp0"].date == "2020-05-27"
             assert sample.document.deidentification.date_shift_days == 117
 
 
-class TestClinicalIsNotScrubbed:
-    """The clinical profile is outside what this tool examines (1.1 §6:
-    de-identification covers the body as well as the metadata).  Its text is
-    packed UTF-8, which the string sweep never read, and a date shift moved
-    `/meta` and not the clinical clock --- yet a strict scan of a clinical
-    sample with a name in its report said `clean`, and apply attested a
-    de-identification and kept the name.  Until the tool covers the profile, a
-    clinical sample is never clean and is not scrubbed."""
+class TestClinicalScrub:
+    """10.6: the clinical profile is examined --- its clock, its ids and its
+    text, one document at a time --- and `apply` writes it again as a new
+    sample's records (D15): times moved by the one shift, a `utc` clock become
+    `shifted_utc`, every id re-minted from the salt.  Text is never rewritten:
+    whoever de-identified it attests that, by the digests of its bytes."""
+
+    NOTE = "Seen with Smith^Alice today."
+    CLEAN = "Seen in clinic today; no change."
 
     @staticmethod
-    def _clinical(tmp_path: Path) -> Path:
+    def _clinical(
+        tmp_path: Path,
+        *,
+        text: str = NOTE,
+        clock: Any = None,
+        name: str = "visit.medh5",
+        subject_id: str = "P-01",
+    ) -> Path:
         from medh5.clinical import HOUR, Document, Event, Link
         from tests.kits import History
 
-        path = tmp_path / "clinical.medh5"
+        path = tmp_path / name
         note = Event(
             "note",
             "note",
@@ -1716,38 +1750,339 @@ class TestClinicalIsNotScrubbed:
             "final",
             effective_start_us=0,
             available_us=HOUR,
+            encounter_id="ENC-7781",
         )
         History.write(
             path,
+            subject_id=subject_id,
+            clock=clock,
             events=[note],
-            documents=[Document("note_text", "Seen with Smith^Alice today.")],
+            documents=[Document("note_text", text)],
             links=[
                 Link.between(("event", "note"), "describes", ("document", "note_text"))
             ],
         )
         return path
 
+    @staticmethod
+    def _utc(tmp_path: Path, **options: Any) -> Path:
+        from medh5.clinical import Clock
+
+        options.setdefault("text", TestClinicalScrub.CLEAN)
+        return TestClinicalScrub._clinical(tmp_path, clock=Clock.utc("ehr"), **options)
+
+    @staticmethod
+    def _rules(report: Any, rule: str) -> list[Any]:
+        return [f for f in report.findings if f.rule == rule]
+
+    @staticmethod
+    def _plant(path: Path, document_id: str, old: bytes, new: bytes) -> None:
+        """Replace *old* with *new* (as long) in one document's stored bytes."""
+        with h5py.File(path, "r+") as handle:
+            table = handle["clinical/documents"]
+            ids = table["document_id/data"][()]
+            offsets = table["document_id/offsets"][()]
+            names = [
+                bytes(ids[a:b]).decode()
+                for a, b in zip(offsets[:-1], offsets[1:], strict=True)
+            ]
+            row = names.index(document_id)
+            text = table["text/data"]
+            # Plain ints: NumPy 1's uint64 plus an int is a float, which h5py
+            # refuses as an index.
+            start, end = (int(o) for o in table["text/offsets"][row : row + 2])
+            stored = bytes(text[start:end])
+            assert len(old) == len(new) and old in stored
+            at = start + stored.index(old)
+            text[at : at + len(new)] = np.frombuffer(new, np.uint8)
+
     @pytest.mark.parametrize("profile", ["basic", "strict"])
     def test_S11_4_a_clinical_sample_is_never_clean(self, tmp_path: Path, profile):
         report = scrubber.scan(self._clinical(tmp_path), profile=profile)
         assert not report.clean
-        found = [f for f in report.findings if f.rule == "clinical"]
-        assert len(found) == 1 and not found[0].actionable
-        assert "not examined" in found[0].detail
-        assert any("clinical" in item for item in report.not_checked)
+        unattested = self._rules(report, "clinical")
+        # One per document, and one for the short text columns.
+        assert sorted(f.where for f in unattested) == [
+            "clinical/documents/note_text",
+            "clinical/documents/rep_text_v1",
+            "clinical/documents/rep_text_v2",
+            "clinical/events",
+        ]
+        assert not any(f.actionable for f in unattested)
+        assert all("not attested" in f.detail for f in unattested)
+        (name,) = [
+            f for f in self._rules(report, "clinical_text") if "name" in f.detail
+        ]
+        assert name.where == "clinical/documents/note_text"
+        assert name.value == "Smith^Alice" and "[10, 21)" in name.detail
+        ids = {f.where: f for f in self._rules(report, "clinical_id")}
+        assert ids["clinical/meta.clock.id"].value == "clock"
+        assert ids["clinical/events.encounter_id"].value == "ENC-7781"
 
-    @pytest.mark.parametrize(
-        "options", [{}, {"profile": "strict"}, {"date_shift_days": -117}]
-    )
-    def test_S11_4_apply_refuses_a_clinical_sample(self, tmp_path: Path, options):
+    def test_S6_text_is_scanned_one_document_at_a_time(self, tmp_path: Path):
+        """Each document is read on its own: one whose bytes do not read is
+        reported, and the others are still examined."""
+        path = self._clinical(tmp_path)
+        self._plant(path, "rep_text_v1", b"B", b"\xff")
+        report = scrubber.scan(path)
+        (unread,) = self._rules(report, "unreadable")
+        assert unread.where == "clinical/documents/rep_text_v1"
+        assert any(
+            f.where == "clinical/documents/note_text"
+            for f in self._rules(report, "clinical_text")
+        )
+        with pytest.raises(MEDH5ValidationError, match="does not read"):
+            scrubber.apply(path, salt="pep", attest_text="philter")
+
+    def test_S6_a_name_in_a_report_blocks_apply(self, tmp_path: Path):
         path = self._clinical(tmp_path)
         with medh5.open(path) as sample:
             before = sample.content_id
-        with pytest.raises(MEDH5ValidationError, match="clinical strip"):
-            scrubber.apply(path, **options)
+        with pytest.raises(MEDH5ValidationError, match="a name, a UID") as refused:
+            scrubber.apply(path, salt="pep", attest_text="philter")
+        assert "note_text" in str(refused.value)
         with medh5.open(path) as sample:
             assert sample.content_id == before
             assert sample.document.deidentification is None
+
+    def test_S6_unattested_text_refuses_apply(self, tmp_path: Path):
+        path = self._clinical(tmp_path, text=self.CLEAN)
+        with pytest.raises(MEDH5ValidationError, match="attest-text"):
+            scrubber.apply(path, salt="pep")
+        with medh5.open(path) as sample:
+            held = sample.clinical.records()
+        report = scrubber.apply(path, salt="pep", attest_text="philter 2.1")
+        assert report.ok and self._rules(report, "clinical")
+        assert not [f for f in report.remaining if f.rule == "clinical"]
+        assert any("philter 2.1" in n for n in scrubber.scan(path).not_checked)
+        assert validate_file(path).ok
+        with medh5.open(path) as sample:
+            # A relative clock and ids left alone: nothing under clinical/
+            # was touched, only /meta records the attestation.
+            assert sample.clinical.records() == held
+            (attested,) = [
+                a
+                for a in sample.document.provenance.activities_by_type("deidentify")
+                if a.params.get("scope") == "clinical_text"
+            ]
+            texts = {
+                d.document_id: sample.clinical.text(d.document_id)
+                for d in held.documents
+            }
+        assert attested.params["tool"] == "philter 2.1"
+        digests = attested.params["digests"]
+        assert sorted(digests) == [
+            "clinical/documents/note_text",
+            "clinical/documents/rep_text_v1",
+            "clinical/documents/rep_text_v2",
+            "clinical/events",
+        ]
+        for document_id, text in texts.items():
+            digest = "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+            assert digests[f"clinical/documents/{document_id}"] == digest
+
+    def test_S6_an_attestation_lapses_when_the_text_changes(self, tmp_path: Path):
+        path = self._clinical(tmp_path, text=self.CLEAN)
+        scrubber.apply(path, salt="pep", attest_text="philter")
+        assert not self._rules(scrubber.scan(path), "clinical")
+        self._plant(path, "note_text", b"clinic", b"clinik")
+        (lapsed,) = self._rules(scrubber.scan(path), "clinical")
+        assert lapsed.where == "clinical/documents/note_text"
+
+    def test_S3_utc_becomes_shifted_utc_by_the_one_shift(self, tmp_path: Path):
+        from medh5.clinical import DAY
+
+        path = self._utc(tmp_path)
+        assert self._rules(scrubber.scan(path), "clinical_clock")[0].actionable
+        with pytest.raises(MEDH5ValidationError, match="--date-shift-days"):
+            scrubber.apply(path, salt="pep", attest_text="philter")
+        with pytest.raises(MEDH5ValidationError, match="--salt"):
+            scrubber.apply(
+                path, date_shift_days=-30, attest_text="philter", withhold_shift=True
+            )
+        with medh5.open(path) as sample:
+            before = sample.clinical.records()
+        out = tmp_path / "shared.medh5"
+        report = scrubber.apply(
+            path,
+            salt="pep",
+            date_shift_days=-30,
+            withhold_shift=True,
+            attest_text="philter",
+            out=out,
+        )
+        assert report.ok and validate_file(out).ok
+        assert not self._rules(scrubber.scan(out), "clinical_clock")
+        with medh5.open(out) as sample:
+            after = sample.clinical.records()
+            assert sample.document.deidentification.date_shift_days is None
+        assert after.clock.reference == "shifted_utc"
+        assert after.clock.id.startswith("pseudo.clock.")
+        moved = {report.uid_map[f"event:{e.event_id}"]: e for e in before.events}
+        assert len(moved) == len(after.events)
+        for event in after.events:
+            was = moved[event.event_id]
+            for name in ("effective_start_us", "effective_end_us", "available_us"):
+                old, new = getattr(was, name), getattr(event, name)
+                if old is None:
+                    assert new is None
+                else:
+                    assert new == (old[0] - 30 * DAY, old[1] - 30 * DAY)
+            assert event.value_text == was.value_text
+        # The text is the same bytes, so every span still points at it.
+        assert sorted(d.text for d in after.documents) == sorted(
+            d.text for d in before.documents
+        )
+
+    def test_S3_fragments_scrubbed_with_one_salt_share_a_clock(self, tmp_path: Path):
+        options = {
+            "date_shift_days": -30,
+            "withhold_shift": True,
+            "attest_text": "philter",
+        }
+        clocks = []
+        for name, salt in (("a", "pep"), ("b", "pep"), ("c", "other")):
+            path = self._utc(tmp_path, name=f"{name}.medh5")
+            scrubber.apply(path, salt=salt, **options)
+            with medh5.open(path) as sample:
+                clocks.append(sample.clinical.clock.id)
+        assert clocks[0] == clocks[1] != clocks[2]
+
+    def test_S3_two_subjects_sharing_a_clock_id_get_different_ones(
+        self, tmp_path: Path
+    ):
+        # Each subject takes its own shift from the range, so one new id for
+        # both would claim their shifted times share a clock.
+        clocks = []
+        for subject in ("P-01", "P-02"):
+            path = self._utc(tmp_path, name=f"{subject}.medh5", subject_id=subject)
+            scrubber.apply(
+                path,
+                salt="pep",
+                date_shift_range=(-400, -30),
+                withhold_shift=True,
+                attest_text="philter",
+            )
+            with medh5.open(path) as sample:
+                clocks.append(sample.clinical.clock.id)
+        assert clocks[0] != clocks[1]
+
+    def test_S7_3_reminted_ids_keep_every_link_resolving(self, tmp_path: Path):
+        path = self._clinical(tmp_path, text=self.CLEAN)
+        report = scrubber.apply(
+            path, salt="pep", pseudonymise_ids=True, attest_text="philter"
+        )
+        result = validate_file(path)
+        assert result.ok, result
+        assert not [d for d in result.diagnostics if d.code == "E813"]
+        with medh5.open(path) as sample:
+            records = sample.clinical.records()
+            sample_id = sample.document.identity.sample_id
+        assert sample_id.startswith("pseudo:")
+        # A relative clock keeps its times; its id is re-minted all the same.
+        assert records.clock.reference == "relative"
+        assert records.clock.id.startswith("pseudo.clock.")
+        events = {e.event_id for e in records.events}
+        documents = {d.document_id for d in records.documents}
+        assert all(i.startswith("pseudo.event.") for i in events)
+        assert all(i.startswith("pseudo.document.") for i in documents)
+        for link in records.links:
+            for kind, found in (
+                (link.source_type, link.source_id),
+                (link.target_type, link.target_id),
+            ):
+                if kind == "event":
+                    assert found in events
+                elif kind == "document":
+                    assert found in documents
+        mapped = report.uid_map
+        assert any(
+            (link.source_id, link.target_id)
+            == (mapped["event:rep_v2"], mapped["event:rep_v1"])
+            for link in records.links
+            if link.relation == "supersedes"
+        )
+        (record,) = {
+            e.record_id
+            for e in records.events
+            if e.event_id in (mapped["event:rep_v1"], mapped["event:rep_v2"])
+        }
+        assert record == mapped["record:rep"]
+        encounters = {e.encounter_id for e in records.events} - {None}
+        assert encounters == {mapped["encounter:ENC-7781"]}
+        # The attestation followed the documents to their new ids.
+        assert not [f for f in report.remaining if f.rule == "clinical"]
+        again = scrubber.apply(
+            path, salt="pep", pseudonymise_ids=True, attest_text="philter"
+        )
+        assert again.ok
+        with medh5.open(path) as sample:
+            assert sample.clinical.records() == records
+
+    def test_S6_an_attestation_follows_the_reminted_documents(self, tmp_path: Path):
+        """Attested by one run and derived by a later one, each text keeps the
+        tool that attested it, under its new id."""
+        path = self._clinical(tmp_path, text=self.CLEAN)
+        scrubber.apply(path, salt="pep", attest_text="philter")
+        report = scrubber.apply(path, salt="pep", pseudonymise_ids=True)
+        assert report.ok
+        assert not [f for f in report.remaining if f.rule == "clinical"]
+        with medh5.open(path) as sample:
+            activities = sample.document.provenance.activities_by_type("deidentify")
+            documents = {d.document_id for d in sample.clinical.documents}
+        carried = [a for a in activities if a.params.get("scope") == "clinical_text"]
+        assert [a.params["tool"] for a in carried] == ["philter", "philter"]
+        digests = carried[-1].params["digests"]
+        keys = {k.removeprefix("clinical/documents/") for k in digests}
+        assert keys - {"clinical/events"} == documents
+
+    def test_S9_a_shifted_cutoff_admits_the_same_versions(self, tmp_path: Path):
+        from medh5.clinical import DAY, HOUR
+
+        path = self._utc(tmp_path)
+        cutoffs = [-47 * HOUR, 0, 3 * HOUR, 5 * HOUR, 49 * HOUR, 91 * DAY]
+        with medh5.open(path) as sample:
+            before = [sample.clinical.select(t).event_ids for t in cutoffs]
+        report = scrubber.apply(
+            path,
+            salt="pep",
+            date_shift_range=(-400, -100),
+            attest_text="philter",
+        )
+        with medh5.open(path) as sample:
+            first = sample.clinical.records().events
+        shift = None
+        with medh5.open(path) as sample:
+            for event in first:
+                if event.event_id == report.uid_map["event:ct0"]:
+                    shift = event.effective_start_us[0]
+            assert shift is not None and shift % DAY == 0 and shift < 0
+            after = [set(sample.clinical.select(t + shift).event_ids) for t in cutoffs]
+        # The same versions; ties order by id, and the ids are new.
+        assert after == [{report.uid_map[f"event:{e}"] for e in ids} for ids in before]
+        assert any(before)
+
+    def test_S11_4_the_clinical_rule_still_blocks_the_guide_gate(self, tmp_path: Path):
+        """The guide's gate: what is not examined, and a name or a date in the
+        clinical text, block until a person has dealt with it."""
+        not_examined = {"clinical", "unreadable", "too_deep"}
+        review = {"clinical_text"}
+
+        def blocked(report: Any) -> bool:
+            return bool(
+                report.actionable
+                or report.open_identity
+                or any(f.rule in not_examined | review for f in report.findings)
+            )
+
+        unattested = scrubber.scan(self._clinical(tmp_path, text=self.CLEAN))
+        assert {"clinical"} <= {f.rule for f in unattested.findings}
+        assert blocked(unattested)
+        named = self._clinical(tmp_path, name="named.medh5")
+        assert blocked(scrubber.scan(named))
+        clean = self._clinical(tmp_path, text=self.CLEAN, name="clean.medh5")
+        scrubber.apply(clean, salt="pep", pseudonymise_ids=True, attest_text="philter")
+        assert not blocked(scrubber.scan(clean, profile="basic"))
 
     def test_S11_4_an_undeclared_clinical_group_is_not_examined_either(
         self, tmp_path: Path
@@ -1771,9 +2106,11 @@ class TestClinicalIsNotScrubbed:
         projection = tmp_path / "imaging.medh5"
         strip(self._clinical(tmp_path), projection)
         assert not [
-            f for f in scrubber.scan(projection).findings if f.rule == "clinical"
+            f
+            for f in scrubber.scan(projection).findings
+            if f.rule.startswith("clinical")
         ]
-        report = scrubber.apply(projection, profile="strict")
+        report = scrubber.apply(projection, profile="strict", salt="pep")
         assert report.applied
 
 
@@ -1785,7 +2122,7 @@ class TestScrubPaths:
         rewritten --- their `uid_map` the only key to the pseudonyms --- went
         with it, and the files after it were never scrubbed."""
         first = Numbered.plain(tmp_path / "a.medh5")
-        clinical = TestClinicalIsNotScrubbed._clinical(tmp_path)
+        clinical = TestClinicalScrub._clinical(tmp_path)
         last = Numbered.plain(tmp_path / "b.medh5")
         with pytest.raises(MEDH5ValidationError, match="clinical strip") as refused:
             scrubber.scrub_paths(
@@ -1826,5 +2163,415 @@ class TestScrubPaths:
         paths = [Numbered.plain(tmp_path / f"{name}.medh5") for name in "ab"]
         scanned = scrubber.scrub_paths(paths, profile="strict")
         assert [(r.applied, r.profile) for r in scanned] == [(False, "strict")] * 2
-        applied = scrubber.scrub_paths(paths, apply_changes=True, date_shift_days=-30)
+        applied = scrubber.scrub_paths(
+            paths, apply_changes=True, date_shift_days=-30, withhold_shift=True
+        )
         assert [(r.applied, r.ok) for r in applied] == [(True, True)] * 2
+
+
+def _dated(path: Path, *, subject_id: str = "subj-1", sample_id: str = "s1") -> Path:
+    """A sample with one dated timepoint, of *subject_id*."""
+    with medh5.create(path, sample_id=sample_id, subject_id=subject_id) as w:
+        w.add_timepoint("tp0", date="2020-01-31")
+        w.add_grid("g", shape=Numbered.SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0")
+        w.add_image("CT", np.zeros(Numbered.SHAPE, np.int16), grid="g", modality="CT")
+    return path
+
+
+def _deidentify(path: Path) -> Any:
+    with medh5.open(path) as sample:
+        return sample.document.provenance.activities_by_type("deidentify")[-1]
+
+
+class TestScrubOptions:
+    """10.1: the options are checked once, by the engine, for both doors."""
+
+    @pytest.mark.parametrize(
+        ("options", "flags", "message"),
+        [
+            ({"salt": "pep"}, ["--salt", "pep"], "--salt (salt) would do nothing"),
+            (
+                {"pseudonymise_ids": True, "withhold_shift": True},
+                ["--pseudonymise-ids", "--withhold-shift"],
+                "--pseudonymise-ids (pseudonymise_ids) and --withhold-shift",
+            ),
+            (
+                {"apply_changes": True, "pseudonymise_ids": True},
+                ["--apply", "--pseudonymise-ids"],
+                "needs --salt (salt)",
+            ),
+            (
+                {"apply_changes": True, "date_shift_days": 0},
+                ["--apply", "--date-shift-days", "0"],
+                "shifts nothing",
+            ),
+            (
+                {"apply_changes": True, "date_shift_range": (-5, -10), "salt": "p"},
+                ["--apply", "--date-shift-range", "-5:-10", "--salt", "p"],
+                "holds no nonzero shift",
+            ),
+            (
+                {"apply_changes": True, "date_shift_range": (-10, -5)},
+                ["--apply", "--date-shift-range", "-10:-5"],
+                "--date-shift-range (date_shift_range) needs --salt",
+            ),
+        ],
+    )
+    def test_S11_4_the_cli_and_the_api_refuse_alike(
+        self, tmp_path: Path, capsys, options, flags, message
+    ):
+        """Each kept its own list --- Python four options, the command line
+        three --- and they disagreed."""
+        from medh5.cli import main
+
+        path = Numbered.plain(tmp_path / "a.medh5")
+        with pytest.raises(MEDH5Error) as refused:
+            scrubber.scrub_paths([path], **options)
+        said = str(refused.value)
+        assert message in said
+        assert main(["scrub", str(path), *flags]) == 2
+        assert f"medh5: {said}" in capsys.readouterr().err
+        with medh5.open(path) as sample:
+            assert sample.document.deidentification is None
+
+    def test_S11_4_out_names_one_file(self, tmp_path: Path, capsys):
+        from medh5.cli import main
+
+        paths = [str(Numbered.plain(tmp_path / f"{n}.medh5")) for n in "ab"]
+        out = str(tmp_path / "x.medh5")
+        assert main(["scrub", *paths, "--apply", "--out", out]) == 2
+        assert "use --out-dir (out_dir)" in capsys.readouterr().err
+        assert not Path(out).exists()
+
+
+class TestScrubSalt:
+    """10.2 (D26): a name is never hashed without a salt."""
+
+    def test_S11_4_strict_refuses_to_hash_a_name_without_a_salt(self, tmp_path: Path):
+        """Strict wrote "John Smith" as `sha256("John Smith")[:32]`: hashing
+        candidate names reversed it."""
+        path = tmp_path / "staff.medh5"
+        with Numbered.writer(path) as w:
+            w.person("John Smith")
+        with medh5.open(path) as sample:
+            before = sample.content_id
+        with pytest.raises(MEDH5ValidationError, match="needs --salt") as refused:
+            scrubber.apply(path, profile="strict")
+        assert "provenance.agents[" in str(refused.value)
+        with medh5.open(path) as sample:
+            assert sample.content_id == before
+        # Under basic a person's name is reported and kept, so nothing is hashed.
+        assert scrubber.apply(path, withhold_shift=True).applied
+        # The person --by names is pseudonymised under strict too.
+        plain = Numbered.plain(tmp_path / "plain.medh5")
+        with pytest.raises(MEDH5ValidationError, match="the person --by names"):
+            scrubber.apply(plain, profile="strict", performed_by="RAD-07")
+
+    def test_S11_4_salted_names_are_in_the_uid_map(self, tmp_path: Path):
+        """A software agent named like a person became an unsalted pseudonym,
+        whatever the salt."""
+        path = tmp_path / "named.medh5"
+        with Numbered.writer(path) as w:
+            w.software("Doe^Jane")
+            w.person("John Smith")
+        with pytest.raises(MEDH5ValidationError, match="needs --salt"):
+            scrubber.apply(path)
+        report = scrubber.apply(path, profile="strict", salt="pep")
+        for name in ("Doe^Jane", "John Smith"):
+            assert report.uid_map[name] == scrubber.pseudonymise(name, "pep")
+        with medh5.open(path) as sample:
+            names = {a.name for a in sample.document.provenance.agents}
+        assert scrubber.pseudonymise("Doe^Jane", "pep") in names
+        assert scrubber.pseudonymise("Doe^Jane") not in names
+
+    def test_S11_4_an_unsalted_uid_pseudonym_is_reported(self, tmp_path: Path):
+        def with_uid(path: Path) -> Path:
+            with Numbered.writer(path) as w:
+                w.add_timepoint("tp0", study_uid="1.2.840.113619.2.55.3")
+            return path
+
+        report = scrubber.apply(with_uid(tmp_path / "uid.medh5"))
+        assert report.ok
+        (found,) = [f for f in report.remaining if f.rule == "unsalted_pseudonym"]
+        assert not found.actionable and "3.0 requires one" in found.detail
+        assert found in report.findings
+        report = scrubber.apply(with_uid(tmp_path / "salted.medh5"), salt="pep")
+        assert not [f for f in report.remaining if f.rule == "unsalted_pseudonym"]
+
+
+class TestToolTimestamps:
+    """10.3: when a tool ran can date the acquisition."""
+
+    def _timed(self, path: Path) -> Path:
+        with medh5.create(path, sample_id="s1", subject_id="subj-1") as w:
+            w.add_timepoint("tp0", date="2020-01-31")
+            w.add_grid("g", shape=Numbered.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT", np.zeros(Numbered.SHAPE, np.int16), grid="g", modality="CT"
+            )
+            tool = w.software("conv")
+            w.activity(
+                "import",
+                agent=tool,
+                started="2020-01-31T10:22:00Z",
+                ended="2020-01-31T10:24:00Z",
+            )
+        return path
+
+    def test_S11_4_strict_truncates_tool_times(self, tmp_path: Path):
+        path = self._timed(tmp_path / "timed.medh5")
+        found = {
+            f.where: f.actionable
+            for f in scrubber.scan(path, profile="strict").findings
+            if f.rule == "tool_timestamp"
+        }
+        assert found == {
+            "root.created": True,
+            "provenance.activities[act_import_1].started": True,
+            "provenance.activities[act_import_1].ended": True,
+        }
+        report = scrubber.apply(path, profile="strict", salt="pep", date_shift_days=-9)
+        assert report.ok, report.format()
+        assert "root.created cut to its year" in report.actions
+        with h5py.File(path, "r") as handle:
+            created = handle.attrs["created"]
+        created = created.decode() if isinstance(created, bytes) else str(created)
+        assert re.fullmatch(r"\d{4}-01-01T00:00:00Z", created)
+        with medh5.open(path) as sample:
+            (imported,) = sample.document.provenance.activities_by_type("import")
+            assert sample.document.deidentification.date.endswith("-01-01T00:00:00Z")
+        assert (imported.started, imported.ended) == ("2020-01-01T00:00:00Z",) * 2
+        assert validate_file(path).ok
+        assert not scrubber.scan(path, profile="strict").findings
+
+    def test_S11_4_basic_reports_tool_times_after_a_shift(self, tmp_path: Path):
+        path = self._timed(tmp_path / "timed.medh5")
+        report = scrubber.apply(path, date_shift_days=-9, withhold_shift=True)
+        assert report.ok
+        timed = [f for f in report.remaining if f.rule == "tool_timestamp"]
+        assert {f.where for f in timed} == {
+            "provenance.activities[act_import_1].started",
+            "provenance.activities[act_import_1].ended",
+        }
+        assert not any(f.actionable for f in timed)
+        assert "unshifted beside shifted dates" in timed[0].detail
+        with medh5.open(path) as sample:
+            (imported,) = sample.document.provenance.activities_by_type("import")
+        assert imported.started == "2020-01-31T10:22:00Z"
+
+    def test_S11_4_basic_leaves_tool_times_alone_without_a_shift(self, tmp_path: Path):
+        path = self._timed(tmp_path / "timed.medh5")
+        assert not [
+            f for f in scrubber.scan(path).findings if f.rule == "tool_timestamp"
+        ]
+        report = scrubber.apply(path)
+        assert not [f for f in report.remaining if f.rule == "tool_timestamp"]
+
+
+class TestDateSpellings:
+    """10.4: a date or a time in a form no shift moves is reported."""
+
+    def _with(self, path: Path, **extra: Any) -> Path:
+        with Numbered.writer(path) as w:
+            w.extra("src", extra)
+        return path
+
+    def test_S11_4_a_locale_date_is_reported(self, tmp_path: Path):
+        path = self._with(
+            tmp_path / "locale.medh5",
+            seen="31.01.2020",
+            us="01/31/2020",
+            either="03/04/2020",
+            nonsense="13/13/2020",
+            dotted_month_first="01.31.2020",
+        )
+        found = {
+            f.where: f.actionable
+            for f in scrubber.scan(path).findings
+            if f.rule == "locale_date"
+        }
+        assert found == {
+            "extra.src.seen": False,
+            "extra.src.us": False,
+            "extra.src.either": False,
+        }
+        report = scrubber.apply(path)
+        with medh5.open(path) as sample:
+            assert sample.document.extra["src"]["seen"] == "31.01.2020"
+        assert {f.where for f in report.remaining if f.rule == "locale_date"} == set(
+            found
+        )
+
+    def test_S11_4_a_dicom_time_is_reported(self, tmp_path: Path):
+        path = self._with(
+            tmp_path / "time.medh5",
+            AcquisitionTime="102200.123",
+            study_time="102200",
+            ContentTime="256000",
+        )
+        found = {
+            f.where for f in scrubber.scan(path).findings if f.rule == "dicom_time"
+        }
+        assert found == {"extra.src.AcquisitionTime", "extra.src.study_time"}
+
+    def test_S11_4_a_six_digit_id_is_not_a_time(self, tmp_path: Path):
+        path = self._with(tmp_path / "id.medh5", SeriesNumber="102200", ref="102200")
+        assert scrubber.scan(path).clean
+
+
+class TestWithheldShift:
+    """10.5 (D14): the amount of a shift restores every date it moved."""
+
+    def test_S11_4_a_withheld_shift_leaves_no_amount_in_the_file(self, tmp_path: Path):
+        path = _dated(tmp_path / "w.medh5")
+        report = scrubber.apply(
+            path, date_shift_days=-117, salt="pep", withhold_shift=True
+        )
+        assert report.ok
+        with medh5.open(path) as sample:
+            assert sample.document.timepoints["tp0"].date == "2019-10-06"
+            record = sample.document.deidentification
+            assert record.date_shift_days is None
+            assert "date_shift_days" not in json.dumps(record.to_json())
+        params = _deidentify(path).params
+        assert (params["dates"], params["shift"]) == ("shifted", "withheld")
+        assert re.fullmatch(r"[0-9a-f]{64}", params["shift_commitment"])
+        assert b"-117" not in path.read_bytes()
+
+    def test_S11_4_a_withheld_shift_still_passes_the_date_scan(self, tmp_path: Path):
+        path = _dated(tmp_path / "w.medh5")
+        scrubber.apply(path, date_shift_days=-117, salt="pep", withhold_shift=True)
+        assert scrubber.scan(path).clean
+        with medh5.amend(path) as w:
+            w.add_timepoint("tp1", date="2020-04-30", days_from_baseline=90)
+        (late,) = [f for f in scrubber.scan(path).findings if f.rule == "date"]
+        assert late.where == "timepoints[1].date" and not late.actionable
+        assert "withholds" in late.detail
+
+    def test_S11_4_the_same_salt_and_shift_reapply_another_is_refused(
+        self, tmp_path: Path
+    ):
+        path = _dated(tmp_path / "w.medh5")
+        options = {"date_shift_days": -117, "salt": "pep", "withhold_shift": True}
+        assert scrubber.apply(path, **options).ok
+        assert scrubber.apply(path, **options).ok
+        with medh5.open(path) as sample:
+            assert sample.document.timepoints["tp0"].date == "2019-10-06"
+            before = sample.content_id
+        for other in ({"date_shift_days": -30}, {"salt": "other"}):
+            with pytest.raises(MEDH5ValidationError, match="withholds a date shift"):
+                scrubber.apply(path, **{**options, **other})
+        with medh5.open(path) as sample:
+            assert sample.content_id == before
+        # The amount it withholds can be recorded only by the run that knows it.
+        assert scrubber.apply(path, **{**options, "withhold_shift": False}).ok
+        with medh5.open(path) as sample:
+            assert sample.document.deidentification.date_shift_days == -117
+
+    def test_S11_4_one_subjects_files_share_a_shift_from_a_range(self, tmp_path: Path):
+        first = _dated(tmp_path / "a.medh5", sample_id="a")
+        second = _dated(tmp_path / "b.medh5", sample_id="b")
+        scrubber.apply(first, date_shift_range=(-400, -100), salt="pep")
+        # The other file's ids pseudonymised: its subject is still the same.
+        scrubber.apply(
+            second, date_shift_range=(-400, -100), salt="pep", pseudonymise_ids=True
+        )
+        dates = []
+        for path in (first, second):
+            with medh5.open(path) as sample:
+                dates.append(sample.document.timepoints["tp0"].date)
+                assert sample.document.deidentification.date_shift_days is None
+            assert _deidentify(path).params["shift"] == "withheld"
+        assert dates[0] == dates[1] != "2020-01-31"
+        import datetime
+
+        moved = datetime.date.fromisoformat(dates[0]) - datetime.date(2020, 1, 31)
+        assert -400 <= moved.days <= -100
+        # A re-run with the range finds the same shift, and is accepted.
+        assert scrubber.apply(first, date_shift_range=(-400, -100), salt="pep").ok
+
+    def test_S11_4_two_subjects_get_different_shifts(self, tmp_path: Path):
+        dates = set()
+        for subject in ("subj-1", "subj-2", "subj-3"):
+            path = _dated(tmp_path / f"{subject}.medh5", subject_id=subject)
+            scrubber.apply(path, date_shift_range=(-1000, 1000), salt="pep")
+            with medh5.open(path) as sample:
+                dates.add(sample.document.timepoints["tp0"].date)
+        assert len(dates) == 3 and "2020-01-31" not in dates
+
+    def test_S11_4_a_recorded_shift_is_reported(self, tmp_path: Path):
+        path = _dated(tmp_path / "w.medh5")
+        with pytest.warns(FutureWarning, match="^medh5 3.0 withholds the date shift"):
+            scrubber.apply(path, date_shift_days=-117)
+        (basic,) = [
+            f for f in scrubber.scan(path).findings if f.rule == "date_shift_recorded"
+        ]
+        assert (basic.value, basic.actionable) == ("-117", False)
+        assert "date_shift_recorded" in scrubber.STRICT_RULES
+        strict = scrubber.scan(path, profile="strict")
+        assert [f.actionable for f in strict.findings if f.rule == basic.rule] == [True]
+        # A strict scrub withholds it, and leaves the dates where they are.
+        assert scrubber.apply(path, profile="strict", salt="pep").ok
+        with medh5.open(path) as sample:
+            assert sample.document.deidentification.date_shift_days is None
+            assert sample.document.timepoints["tp0"].date == "2019-10-06"
+        assert _deidentify(path).params["shift"] == "withheld"
+        assert not scrubber.scan(path, profile="strict").findings
+
+    def test_S11_4_out_leaves_the_source_byte_identical(self, tmp_path: Path):
+        source = _dated(tmp_path / "src.medh5", sample_id="MRN-000042")
+        before = source.read_bytes()
+        out = tmp_path / "out.medh5"
+        report = scrubber.apply(
+            source, date_shift_days=-5, salt="pep", withhold_shift=True, out=out
+        )
+        assert report.ok and report.path == str(out)
+        assert source.read_bytes() == before
+        with medh5.open(out) as sample:
+            assert sample.document.timepoints["tp0"].date == "2020-01-26"
+        with pytest.raises(MEDH5ValidationError, match="does not overwrite one"):
+            scrubber.apply(source, withhold_shift=True, out=out)
+        # A directory: named by the pseudonymised id, the source untouched.
+        target = tmp_path / "shared"
+        target.mkdir()
+        [report] = scrubber.scrub_paths(
+            [source],
+            apply_changes=True,
+            salt="pep",
+            pseudonymise_ids=True,
+            withhold_shift=True,
+            out_dir=target,
+        )
+        pseudonym = scrubber.pseudonymise("MRN-000042", "pep")
+        assert report.path == str(target / f"{pseudonym[len('pseudo:') :]}.medh5")
+        assert source.read_bytes() == before
+        assert [p.name for p in target.iterdir()] == [Path(report.path).name]
+
+    def test_S11_4_a_burned_in_check_survives_apply(self, tmp_path: Path):
+        path = tmp_path / "checked.medh5"
+        with Numbered.writer(path) as w:
+            w.deidentification(method="manual", burned_in_annotation_checked=True)
+        scrubber.apply(path)
+        with medh5.open(path) as sample:
+            record = sample.document.deidentification
+        assert record.method == "medh5-scrub"
+        assert record.burned_in_annotation_checked is True
+        assert record.date is not None
+        assert _deidentify(path).params["prior_method"] == "manual"
+
+    def test_the_cli_withholds_and_takes_a_range(self, tmp_path: Path, capsys):
+        from medh5.cli import main
+
+        path = _dated(tmp_path / "w.medh5")
+        argv = ["scrub", str(path), "--apply", "--salt", "pep"]
+        assert main([*argv, "--date-shift-range", "-20:-10"]) == 0
+        assert _deidentify(path).params["shift"] == "withheld"
+        recorded = _dated(tmp_path / "r.medh5")
+        assert main(["scrub", str(recorded), "--apply", "--date-shift-days", "-3"]) == 0
+        assert "medh5 3.0 withholds it by default" in capsys.readouterr().err
+        quiet = _dated(tmp_path / "q.medh5")
+        assert (
+            main(["scrub", str(quiet), "--apply", "--date-shift-days=-3"])
+            + main(["scrub", str(quiet), "--apply", "--withhold-shift"])
+            == 0
+        )

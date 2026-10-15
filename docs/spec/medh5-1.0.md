@@ -1282,8 +1282,12 @@ Normative rules:
   pseudonyms.
 * Writers **MUST NOT** copy DICOM tags wholesale into `acquisition` or `extra`; only the named
   parameters relevant to imaging physics.
-* `date_shift_days` records that dates were consistently shifted, preserving intervals. A recorded
-  `date_shift_days` of `0` means no shift: it claims nothing about the file's dates.
+* `date_shift_days` records that dates were consistently shifted, preserving intervals, and by how
+  much; a recorded `0` means no shift: it claims nothing about the file's dates. Because the amount
+  restores every date, a file shared beyond whoever holds the key **SHOULD NOT** record it: it
+  omits `date_shift_days`, and the de-identification's provenance activity states that dates were
+  shifted. A shift **MAY** differ between subjects and **MUST NOT** differ between the files of one
+  subject.
 * A file whose `deidentification` is absent **MUST** be treated by tooling as potentially identifying.
 
 ---
@@ -1803,7 +1807,7 @@ a patient's name, and the sample's `content_id` would follow the machine.
 
 Sections §2–§15 are **implemented** by the `medh5` format engine — the Rust crate `medh5`, which the
 Python package and the `medh5` command line wrap — and exercised by a conformance corpus (§15) of
-171 files: valid samples covering every encoding, annotation kind, transform kind,
+172 files: valid samples covering every encoding, annotation kind, transform kind,
 dimensionality, profile and container kind, plus at least one case per diagnostic code: a
 deliberately invalid file for each error, and a file drawing each warning.
 The corpus includes the cases of the [1.1](medh5-1.1.md) `clinical` profile, which the same engine
@@ -1812,7 +1816,7 @@ Running the corpus against a validator is how a third-party implementation demon
 
 ```
 $ medh5 conformance run ./corpus
-171/171 cases pass
+172/172 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `cargo clippy` and `rustfmt`
@@ -1826,10 +1830,10 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 2.3 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.04 ms at 63
 classes), a metadata-only read 0.13 ms, and `open()` → first patch 1.6 ms.
 
-Eighty-five clauses have been corrected — ten during implementation, eleven in the 1.x package
+Eighty-six clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
 package, one when it implemented 1.1, twenty-eight in the audits of 2.0 before its release,
-twenty-three in the audit of 2.0.1, and eight in the development of 2.1 — each because
+twenty-three in the audit of 2.0.1, and nine in the development of 2.1 — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1899,6 +1903,7 @@ implementation could honestly promise, as written:
 | §8.2 | Found by the audit of 2.0.1: without `instance_ids`, a reader **MAY** number boxes by row, and such numbers name no object and join nothing. The table made `instance_ids` optional and said nothing of the numbers a reader gives such boxes, which a join on `instance_id` (§7.4) could take for identities. |
 | §14.4 | Found by the audit of 2.0.1; enforced from 2.0.2: a replace through a symbolic link writes beside, and renames over, the file the link names, and keeps the link. The temporary file was named from the path given, so amend, recompress, fix and `scrub --apply` on a linked path replaced the link with an independent copy and left the file it named untouched — for a scrub, the identifying original, while the command reported it scrubbed. |
 | §15.2 | Found by the audit of 2.0.1; enforced from 2.0.2: five codes are described by what the reference validator now reports under them — **E001** a member of `grids/`, `images/`, `annotations/` or `transforms/` that resolves to no object, and an image that is not numbers (§4.2); **E004** a `/meta` that is not a dataset holding one string; **E008** a group the layout defines that is not a group; **E109** a grid that is not a group; **E702** a `digest` on a dataset no line covers, as §13.2 already said. At 2.0.1 a `/meta` group or an `images` dataset validated clean, and a dangling image passed every level, `strict` included. |
+| §11.4 | Found in the development of 2.1: a file shared beyond whoever holds the key **SHOULD NOT** record the amount of its shift, and states in the de-identification's provenance activity that dates were shifted; a shift **MAY** differ between subjects and **MUST NOT** differ between the files of one subject. The clause had a writer record the amount, as the example's −117 does, and one known date then restores every other; DICOM PS3.15 records only *that* dates were modified. A `shifted_utc` clock already validated without the amount, so nothing a validator accepts changes. |
 | §11.4 | Found by the audit of 2.0.1: a recorded `date_shift_days` of `0` means no shift. Recorded as a shift, it told every later scan that the dates were already shifted, so dates added afterwards were passed over; the reference scrub now refuses a zero shift. |
 | §2.1 | Found by the audit of 2.0.1: an amendment keeps the `digest_algo` the file declares. The reference writer restamped an amended file with `sha256`, and, writing no digests, left digests of two algorithms under one declaration. |
 | §5.1 | Found by the audit of 2.0.1: a float is written in fixed notation when it is zero, as well as when `1e-4 ≤ |x| < 1e16` — `0.0`, `-0.0`. The condition left zero out, so a literal reading wrote `0e+00` where every implementation writes `0.0`, and zeros are in almost every grid's `origin` and `direction`. No digest changes. |

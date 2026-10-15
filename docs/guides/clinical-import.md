@@ -159,8 +159,12 @@ Python, as it hands over `medh5 convert`.
 
 ## De-identification
 
-`medh5 scrub` does not examine the clinical profile yet: it reports it as
-"not examined by this tool" and refuses `--apply` on a clinical sample (see
-[De-identify and publish](deidentify.md)). This is why the importers leave out
-free text and birth instants unless asked. If you import them, de-identify the
-source before importing, or keep the samples private.
+`medh5 scrub` examines the clinical profile: it moves a `utc` clock's times by
+the date shift, re-mints the ids from the salt, and finds names, dates, UIDs
+and record numbers in the text. It does not rewrite text: a document must be
+de-identified by a tool that handles free text and attested with
+`--attest-text`, or `--apply` refuses the sample (see
+[De-identify and publish](deidentify.md#4-a-clinical-sample)). This is why
+the importers leave out free text and birth instants unless asked. If you
+import them, de-identify the text before importing, or keep the samples
+private.

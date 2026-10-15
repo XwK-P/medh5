@@ -325,8 +325,15 @@ impl Deidentification {
         Ok(Some(record))
     }
 
-    /// The date shift as an integer number of days.
+    /// The date shift as an integer number of days, when it moved anything:
+    /// a recorded `0` shifted nothing (§11.4), so it is no shift.
     pub fn shift_days(&self) -> Option<i64> {
-        self.date_shift_days.as_ref().and_then(|n| n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)))
+        self.date_shift_days.as_ref().and_then(shift_of)
     }
+}
+
+/// A recorded `date_shift_days` as whole days, `None` for `0`: what
+/// [`Deidentification::shift_days`] and the scrub both read.
+pub(crate) fn shift_of(days: &Number) -> Option<i64> {
+    days.as_i64().or_else(|| days.as_f64().map(|f| f as i64)).filter(|d| *d != 0)
 }
