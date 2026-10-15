@@ -4,7 +4,7 @@
 |---|---|
 | Branch | `w22/enhanced-dicom` |
 | Size | L |
-| Lands after | W22-05 PR 1 |
+| Lands after | v2.1.0 released |
 | Builds on (2.1.0) | `medh5/io/_frames.py` (W21-13 PR 1), `per_slice_rescale` (W21-13 PR 5) |
 | Owns | `medh5/io/dicom.py` (`scan_dicom`, `_plan_series`), `medh5/io/_frames.py` |
 | Decisions | none beyond the rules |

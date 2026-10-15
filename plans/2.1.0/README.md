@@ -185,7 +185,7 @@ changes.
 | Enhanced multi-frame DICOM import | 2.2.0 |
 | A native NIfTI converter in the engine | 2.2.0 (2.1.0 makes the qform float64, its prerequisite) |
 | Free-threading (`gil_used = false`), musllinux, `abi3t`, the macOS x86_64 cross-build | 2.2.0 |
-| Dropping Python 3.10 | 2.2.0 (announced in 2.1.0) |
+| Dropping Python 3.10 | not planned: kept in 2.2.0 (D36 revised, 2.2.0 E5) |
 | Scrubbing collections; rewriting clinical text | 2.2.0 |
 | ITK `.h5` transform files, B-spline transforms | 2.2.0 |
 | A batch MEDS import across a cohort | 2.2.0 |
@@ -193,7 +193,9 @@ changes.
 | Annotation pyramids | reserved (D11), no release planned |
 | `medh5.cache/2` with a digest of what a row read | recorded as a known limit (D19), not planned |
 | `Error` gains variants; wrapping `hdf5::Group` | 3.0 |
-| COCO, resampling in converters or loaders, `rle`, image-free subjects, cloud object stores, SWMR, a FHIR/OMOP serialization | out of scope by design |
+| Resampling in converters or loaders | by design; 2.2.0 adds a recorded `medh5 resample` derivation instead (2.2.0 E11, W22-10) |
+| `rle`, image-free subjects, SWMR, FHIR/OMOP | 2.2.0's Out of scope says, item by item, what each would need |
+| COCO, cloud object stores | out of scope by design |
 
 ## Release checklist (the coordinator)
 
@@ -209,8 +211,8 @@ changes.
    `docs/reference/api-index.md`.
 5. `python .github/scripts/changelog.py build 2.1.0 --date <day>`.
 6. Recount every stated corpus and code number (`TestStatedCounts`, 1.0
-   Appendix C.1's sentence); check `docs/install.md` says 2.1.x is the last line
-   to support Python 3.10.
+   Appendix C.1's sentence). (The check that `docs/install.md` says 2.1.x is
+   the last line to support Python 3.10 was withdrawn with D36's announcement.)
 7. Read the assembled changelog against the merged commits, as 2.0.2's
    coordinator did: each claim matches its code. Check the release notes length
    (`release_notes.py`, 125,000 characters).

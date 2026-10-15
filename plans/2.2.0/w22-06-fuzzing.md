@@ -4,7 +4,7 @@
 |---|---|
 | Branch | `w22/fuzzing` |
 | Size | M |
-| Lands after | W22-05 PR 1 |
+| Lands after | v2.1.0 released |
 | Builds on (2.1.0) | `fuzz/` and `fuzz.yml`, Rust instrumented with AddressSanitizer (W21-01 PR 1) |
 | Owns | `fuzz/`, `.github/workflows/fuzz.yml` |
 

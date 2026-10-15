@@ -4,7 +4,7 @@
 |---|---|
 | Branch | `w22/format-1.2` |
 | Size | L overall: PR 1 M, PR 2 M–L, PR 3 M |
-| Lands after | W22-05 PR 1 |
+| Lands after | v2.1.0 released |
 | Builds on (2.1.0) | `version::format_versions()`, `annotations::kinds(version)`, `version::next_minor` (W21-02 PR 1); RTSTRUCT points and `--open-curves omit` (W21-13 PR 3); the code-table revision rule (D1) |
 | Owns | `docs/spec/medh5-1.2.md` (new), `crates/medh5/src/version.rs`, the `polylines` encoder, reader and validator rules, `medh5/annotations/geometric.py` (`Polyline`), the RTSTRUCT open-curve paths |
 | Decisions | E1, E2, E9 |
@@ -15,11 +15,11 @@
 > in this repository. First read `plans/README.md`, `plans/2.2.0/README.md` and
 > `plans/2.2.0/decisions.md` (E1, E2, E9), then
 > `plans/2.2.0/w22-01-format-1.2.md` in full. Check that 2.1.0's version
-> accessors and `next_minor` are on `main` (W21-02 PR 1), and W22-05 PR 1 has
-> merged. Work from the latest `main` on `w22/format-1.2`; land the three pull
-> requests in order. This is a format version: 1.2 may add only what a 1.1 reader
-> already skips (a new kind), a sample is written at 1.2 only when its content
-> needs it, and a 1.1 reader must read a 1.2 file as its projection with W913.
+> accessors and `next_minor` are on `main` (W21-02 PR 1). Work from the latest
+> `main` on `w22/format-1.2`; land the three pull requests in order. This is a
+> format version: 1.2 may add only what a 1.1 reader already skips (a new kind),
+> a sample is written at 1.2 only when its content needs it, and a 1.1 reader
+> must read a 1.2 file as its projection with W913.
 > Write tests first (including a 2.1.0 reader reading a 2.2.0 file, through the
 > 1.1 projection tests), write the specification as E1 gives it, run the local
 > gate from `CLAUDE.md` (both conformance runs), add fragments, open `W22-01: …`

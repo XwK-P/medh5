@@ -4,7 +4,7 @@
 |---|---|
 | Branch | `w22/free-threading` |
 | Size | L |
-| Lands after | W22-05 PR 1; PR 4 after PRs 1–3 |
+| Lands after | v2.1.0 released; PR 4 after PRs 1–3 |
 | Builds on (2.1.0) | cp314t wheels and the `test-free-threaded` and `test-no-gil` jobs (W21-01 PR 3); the GIL releases (W21-15 PR 1) |
 | Owns | `crates/medh5-python/src/lib.rs` (`gil_used`), the mutable pyclasses, `medh5/torch/handles.py`, `medh5/labels.py` and `medh5/_live.py` registries, `tests/format/test_threads.py` |
 | Decisions | E4 |

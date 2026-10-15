@@ -4,7 +4,7 @@
 |---|---|
 | Branch | `w22/clinical-cohorts` |
 | Size | M overall; each pull request M |
-| Lands after | W22-05 PR 1 |
+| Lands after | v2.1.0 released |
 | Builds on (2.1.0) | `read_meds`, `read_fhir`, `augment_from_meds`, `augment_from_fhir`, `clinical augment --from-meds/--from-fhir`, the `meds` extra and job (W21-12) |
 | Owns | `medh5/io/{meds.py,fhir.py}`, the `clinical augment-cohort` command |
 

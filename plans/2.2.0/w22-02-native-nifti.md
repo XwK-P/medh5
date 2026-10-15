@@ -4,7 +4,7 @@
 |---|---|
 | Branch | `w22/native-nifti` |
 | Size | L (two to three weeks) |
-| Lands after | W22-05 PR 1 |
+| Lands after | v2.1.0 released |
 | Builds on (2.1.0) | the consolidated helpers and the float64 qform (W21-13 PR 1), `--plane-as-volume` (PR 5), `import-seg-nifti` and the converter flags (PR 6), the converter write sites through `stage_file` (PR 9) |
 | Owns | `crates/medh5/src/convert/nifti/` (new), the NIfTI bindings, `medh5/io/nifti.py` (becomes a facade), the native routes in `crates/medh5-cli/src/convert.rs`, `crates/medh5/tests/nifti_parity.rs` (new) |
 | Decisions | E3 |

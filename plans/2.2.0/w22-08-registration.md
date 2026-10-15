@@ -4,7 +4,7 @@
 |---|---|
 | Branch | `w22/registration` |
 | Size | M overall: PR 1 S–M, PR 2 M (a study, then code or a refusal) |
-| Lands after | W22-05 PR 1 |
+| Lands after | v2.1.0 released |
 | Builds on (2.1.0) | `medh5/io/itk.py`, `from_itk_transform`, `to_itk_transform`, the `test-itk` job (W21-07 PR 4) |
 | Owns | `medh5/io/itk.py`, the ITK commands |
 | Decisions | E9 (the `bspline` kind is not added) |
