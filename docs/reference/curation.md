@@ -140,6 +140,18 @@ meanings, or a class name the two resolve to different ids, is refused (`C102`,
 as `dataset check` refuses it in a cohort) rather than scored. Where a file has
 no label set, its ids are compared as numbers.
 
+## Tracking
+
+`Sample.tracks()` joins `instance_id` across visits (§7.4) and returns a
+`Tracking`: `{instance_id: Track}`, each absence with a state (`present`,
+`resolved`, `unexamined`, `medh5.curation.STATES`) and a reason
+(`medh5.curation.REASONS`, in precedence order) from `reason_at` and
+`reasons`. `coverage` is class-level: the classes each visit examined, not
+where. The [longitudinal guide](../guides/longitudinal.md) has the rule.
+In Rust, `curation::tracking::locate_tracks` returns a `LocatedTracking`;
+`Tracking`'s own `state_at`, `states`, `is_new` and `is_resolved` are the
+class-level rule, deprecated in 2.1.
+
 ## Identity and cohort
 
 ```python

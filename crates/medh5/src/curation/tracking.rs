@@ -2,23 +2,29 @@
 //!
 //! Tracking is a **join, not a structure**: grouping objects on
 //! `instance_id` recovers the lesion a radiologist followed across visits.
-//! Absence is not a measurement --- it is `resolved` only where the class was
-//! looked for (`annotated_class_ids`) by an annotation that declares no part
-//! of its grid unexamined (§7.7), and `unexamined` otherwise.  A track
-//! carrying several class ids is reported (W909), never resolved by a rule.
+//! Absence is not a measurement --- it is `resolved` only where the object
+//! was looked for, and `unexamined` otherwise.  [`locate_tracks`] gives every
+//! unseen (object, visit) an [`Absence`] saying why: it maps the object's
+//! boxes from the visits that saw it into each annotation of the visit that
+//! did not, and an object outside that grid, outside its images' acquired
+//! voxels or inside its ignore region (§7.7) was not looked for there.  A
+//! track carrying several class ids is reported (W909), never resolved by a
+//! rule.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use indexmap::IndexMap;
 use ndarray::Array2;
 use serde_json::{json, Map, Value};
 
 use crate::annotations::{Annotation, Instance};
-use crate::geometry::affine::{box_to_slices, voxel_volume};
+use crate::array::Slice;
+use crate::geometry::affine::{box_corners, box_to_slices, voxel_volume};
 use crate::geometry::grid::{mm_per_unit, Grid};
 use crate::json::{format_g, num, repr_str};
 use crate::labels::ClassKey;
 use crate::sample::Sample;
+use crate::transforms::{stored_inverse, Body, Transform};
 use crate::{Error, Result};
 
 pub const PRESENT: &str = "present";
@@ -243,8 +249,14 @@ pub struct Tracking {
     pub skipped: IndexMap<String, String>,
 }
 
+#[allow(deprecated)]
 impl Tracking {
     /// `present`, `resolved` or `unexamined`.
+    #[deprecated(
+        since = "2.1.0",
+        note = "medh5 3.0 removes the class-level states, under which an object outside the visit's field of view \
+                reads as resolved: use locate_tracks"
+    )]
     pub fn state_at(&self, instance_id: u64, timepoint: &str) -> Option<&'static str> {
         let track = self.tracks.get(&instance_id)?;
         if !track.observations_at(timepoint).is_empty() {
@@ -255,12 +267,22 @@ impl Tracking {
         Some(if looked { RESOLVED } else { UNEXAMINED })
     }
 
+    #[deprecated(
+        since = "2.1.0",
+        note = "medh5 3.0 removes the class-level states, under which an object outside the visit's field of view \
+                reads as resolved: use locate_tracks"
+    )]
     pub fn states(&self, instance_id: u64) -> IndexMap<String, &'static str> {
         self.timepoints.iter().map(|tp| (tp.clone(), self.state_at(instance_id, tp).unwrap_or(UNEXAMINED))).collect()
     }
 
     /// Absent-then-present: not seen at a baseline that looked for it
     /// (`resolved` there), seen later.
+    #[deprecated(
+        since = "2.1.0",
+        note = "medh5 3.0 removes the class-level states, under which an object outside the visit's field of view \
+                reads as resolved: use locate_tracks"
+    )]
     pub fn is_new(&self, instance_id: u64) -> bool {
         let states = self.states(instance_id);
         match self.timepoints.first() {
@@ -270,6 +292,11 @@ impl Tracking {
     }
 
     /// Present-then-gone, where the later visit did look for it.
+    #[deprecated(
+        since = "2.1.0",
+        note = "medh5 3.0 removes the class-level states, under which an object outside the visit's field of view \
+                reads as resolved: use locate_tracks"
+    )]
     pub fn is_resolved(&self, instance_id: u64) -> bool {
         if self.timepoints.len() < 2 {
             return false;
@@ -306,6 +333,16 @@ impl Tracking {
     }
 
     pub fn to_json(&self) -> Value {
+        self.json_with(&|instance_id, entry| {
+            entry.insert(
+                "states".into(),
+                Value::Object(self.states(instance_id).into_iter().map(|(k, v)| (k, json!(v))).collect()),
+            );
+        })
+    }
+
+    /// [`Tracking::to_json`], each track's entry completed by `per_track`.
+    fn json_with(&self, per_track: &dyn Fn(u64, &mut Map<String, Value>)) -> Value {
         let mut coverage: Vec<(&String, &BTreeSet<i64>)> = self.coverage.iter().collect();
         coverage.sort_by(|a, b| a.0.cmp(b.0));
         let coverage: Map<String, Value> = coverage.into_iter().map(|(k, v)| (k.clone(), json!(v))).collect();
@@ -315,10 +352,7 @@ impl Tracking {
             .map(|(i, t)| {
                 let mut v = t.to_json();
                 if let Value::Object(m) = &mut v {
-                    m.insert(
-                        "states".into(),
-                        Value::Object(self.states(*i).into_iter().map(|(k, v)| (k, json!(v))).collect()),
-                    );
+                    per_track(*i, m);
                 }
                 v
             })
@@ -335,13 +369,22 @@ impl Tracking {
     }
 
     pub fn summary(&self) -> Value {
+        self.summary_with(&|i| self.is_new(i), &|i| self.is_resolved(i), &|i| self.is_persistent(i))
+    }
+
+    fn summary_with(
+        &self,
+        new: &dyn Fn(u64) -> bool,
+        resolved: &dyn Fn(u64) -> bool,
+        persistent: &dyn Fn(u64) -> bool,
+    ) -> Value {
         let pick = |f: &dyn Fn(u64) -> bool| -> Vec<u64> { self.tracks.keys().copied().filter(|i| f(*i)).collect() };
         json!({
             "tracks": self.tracks.len(),
             "timepoints": self.timepoints,
-            "new": pick(&|i| self.is_new(i)),
-            "resolved": pick(&|i| self.is_resolved(i)),
-            "persistent": pick(&|i| self.is_persistent(i)),
+            "new": pick(new),
+            "resolved": pick(resolved),
+            "persistent": pick(persistent),
             "class_conflicts": self.class_conflicts().keys().copied().collect::<Vec<_>>(),
             "skipped": self.skipped.keys().collect::<Vec<_>>(),
         })
@@ -552,4 +595,460 @@ pub fn build_tracks(sample: &Sample, class_key: Option<&ClassKey>, do_measure: b
         built.insert(instance_id, Track { instance_id, class_ids, observations, class_key });
     }
     Ok(Tracking { tracks: built, timepoints: declared, coverage, skipped })
+}
+
+// -- why an absence is, or is not, a finding (§7.4) ---------------------------
+
+/// Why an object unseen at a visit is, or is not, a finding there (§7.4).
+///
+/// The first two leave the object `resolved` there; the rest `unexamined`.
+/// Where the visit's annotations disagree, the first in this order wins: one
+/// annotation that looked at the place outweighs another that did not.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Absence {
+    /// The object's located extent lies within an annotation's grid, within
+    /// its images' acquired voxels, and outside its ignore region.
+    Located,
+    /// No geometry relates the object to the annotation's grid (no shared
+    /// frame, no affine path), and the annotation examined the class and
+    /// ignores no voxel: 1.0's class-level rule.  A registration would decide.
+    ClassExamined,
+    /// The located extent leaves the grid, or a voxel of it was not acquired
+    /// (an image's `valid_mask`, §4.4).
+    OutsideFov,
+    /// The located extent holds an ignored voxel (§7.7).
+    Ignored,
+    /// No geometry relates the object to the annotation's grid, and the
+    /// annotation ignores some voxels, which may be where the object is.
+    Unrelated,
+    /// The annotation examined the class but carries no object identity
+    /// (`instance_ids`) a track could join, so nothing says the object is not
+    /// among what it found.
+    NoIdentity,
+    /// Nothing at the visit examined the object's class.
+    NotExamined,
+}
+
+/// Every [`Absence`], as [`Absence::as_str`] spells it, in precedence order.
+pub const REASONS: &[&str] =
+    &["located", "class_examined", "outside_fov", "ignored", "unrelated", "no_identity", "not_examined"];
+
+const ABSENCES: [Absence; 7] = [
+    Absence::Located,
+    Absence::ClassExamined,
+    Absence::OutsideFov,
+    Absence::Ignored,
+    Absence::Unrelated,
+    Absence::NoIdentity,
+    Absence::NotExamined,
+];
+
+impl Absence {
+    pub fn as_str(self) -> &'static str {
+        REASONS[self as usize]
+    }
+
+    /// The absence of a spelling [`Absence::as_str`] gives, or `None`.
+    pub fn parse(reason: &str) -> Option<Absence> {
+        REASONS.iter().position(|r| *r == reason).map(|i| ABSENCES[i])
+    }
+
+    /// Whether the absence is a finding: the object was looked for there.
+    pub fn is_finding(self) -> bool {
+        matches!(self, Absence::Located | Absence::ClassExamined)
+    }
+
+    /// `resolved` for a finding, `unexamined` otherwise.
+    pub fn state(self) -> &'static str {
+        if self.is_finding() {
+            RESOLVED
+        } else {
+            UNEXAMINED
+        }
+    }
+}
+
+/// A [`Tracking`] with the reason for every unseen (object, visit).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocatedTracking {
+    pub tracking: Tracking,
+    /// `(instance_id, timepoint) -> why`, for every declared timepoint at
+    /// which a track was not seen.
+    pub absences: BTreeMap<(u64, String), Absence>,
+}
+
+impl LocatedTracking {
+    /// A tracking and its absences, as [`locate_tracks`] found them.
+    pub fn new(tracking: Tracking, absences: BTreeMap<(u64, String), Absence>) -> LocatedTracking {
+        LocatedTracking { tracking, absences }
+    }
+
+    /// `present`, `resolved` or `unexamined`; `None` for an id no track has.
+    pub fn state_at(&self, instance_id: u64, timepoint: &str) -> Option<&'static str> {
+        let track = self.tracking.tracks.get(&instance_id)?;
+        if !track.observations_at(timepoint).is_empty() {
+            return Some(PRESENT);
+        }
+        Some(self.reason_at(instance_id, timepoint).map_or(UNEXAMINED, Absence::state))
+    }
+
+    /// Why the object is absent at `timepoint`; `None` where it was seen, or
+    /// for a timepoint or id the tracking does not have.
+    pub fn reason_at(&self, instance_id: u64, timepoint: &str) -> Option<Absence> {
+        self.absences.get(&(instance_id, timepoint.to_string())).copied()
+    }
+
+    /// `{timepoint: state}` over every timepoint, in order.
+    pub fn states(&self, instance_id: u64) -> IndexMap<String, &'static str> {
+        self.tracking
+            .timepoints
+            .iter()
+            .map(|tp| (tp.clone(), self.state_at(instance_id, tp).unwrap_or(UNEXAMINED)))
+            .collect()
+    }
+
+    /// `{timepoint: reason}` over every timepoint, in order; `None` where the
+    /// object was seen.
+    pub fn reasons(&self, instance_id: u64) -> IndexMap<String, Option<Absence>> {
+        self.tracking.timepoints.iter().map(|tp| (tp.clone(), self.reason_at(instance_id, tp))).collect()
+    }
+
+    /// Whether the absence at `timepoint` is a finding; with `located`, only
+    /// where the object was located there (not by 1.0's class-level rule).
+    fn looked(&self, instance_id: u64, timepoint: &str, located: bool) -> bool {
+        match self.reason_at(instance_id, timepoint) {
+            Some(reason) if located => reason == Absence::Located,
+            Some(reason) => reason.is_finding(),
+            None => false,
+        }
+    }
+
+    /// Absent-then-present: not seen at a baseline that looked for it, seen
+    /// later.  A baseline that did not image the place finds nothing new.
+    pub fn is_new(&self, instance_id: u64, located: bool) -> bool {
+        let Some(first) = self.tracking.timepoints.first() else { return false };
+        self.looked(instance_id, first, located) && self.states(instance_id).values().any(|s| *s == PRESENT)
+    }
+
+    /// Present-then-gone, where the last visit looked for it.
+    pub fn is_resolved(&self, instance_id: u64, located: bool) -> bool {
+        let timepoints = &self.tracking.timepoints;
+        if timepoints.len() < 2 {
+            return false;
+        }
+        self.state_at(instance_id, &timepoints[0]) == Some(PRESENT)
+            && self.looked(instance_id, &timepoints[timepoints.len() - 1], located)
+    }
+
+    pub fn is_persistent(&self, instance_id: u64) -> bool {
+        self.states(instance_id).values().all(|s| *s == PRESENT)
+    }
+
+    /// `timepoint -> instance ids` not seen there and not looked for there.
+    pub fn unexamined(&self) -> IndexMap<String, Vec<u64>> {
+        let mut out = IndexMap::new();
+        for tp in &self.tracking.timepoints {
+            let ids: Vec<u64> =
+                self.tracking.tracks.keys().copied().filter(|i| self.state_at(*i, tp) == Some(UNEXAMINED)).collect();
+            if !ids.is_empty() {
+                out.insert(tp.clone(), ids);
+            }
+        }
+        out
+    }
+
+    /// [`Tracking::to_json`], each track with its `states` and `reasons`.
+    pub fn to_json(&self) -> Value {
+        self.tracking.json_with(&|instance_id, entry| {
+            entry.insert(
+                "states".into(),
+                Value::Object(self.states(instance_id).into_iter().map(|(k, v)| (k, json!(v))).collect()),
+            );
+            entry.insert(
+                "reasons".into(),
+                Value::Object(
+                    self.reasons(instance_id).into_iter().map(|(k, v)| (k, json!(v.map(Absence::as_str)))).collect(),
+                ),
+            );
+        })
+    }
+
+    pub fn summary(&self) -> Value {
+        self.tracking
+            .summary_with(&|i| self.is_new(i, false), &|i| self.is_resolved(i, false), &|i| self.is_persistent(i))
+    }
+
+    pub fn repr(&self) -> String {
+        self.tracking.repr()
+    }
+}
+
+/// Join every instance-carrying annotation in `sample` on `instance_id`, and
+/// say for every unseen (object, visit) why the absence is or is not a
+/// finding (§7.4).
+///
+/// An object's *located extent* in an annotation is the box, rounded out to
+/// whole voxels of its grid, that encloses the corners of every box observed
+/// for it, each mapped into that grid through the shared frame or a path of
+/// affine transforms.  A path with a nonlinear step does not locate it ---
+/// a warped box's corners do not bound it --- and an observation that does
+/// not map leaves the object unlocated.  Only the extent's window of an
+/// ignore region and of each `valid_mask` is read.
+pub fn locate_tracks(sample: &Sample, class_key: Option<&ClassKey>, do_measure: bool) -> Result<LocatedTracking> {
+    let tracking = build_tracks(sample, class_key, do_measure)?;
+    let implicit: Vec<String> =
+        if tracking.timepoints.len() == 1 { tracking.timepoints.clone() } else { vec![String::new()] };
+    let mut at: IndexMap<String, Vec<&Annotation>> = IndexMap::new();
+    for ann in sample.annotations()?.values() {
+        let own = ann.timepoints();
+        for tp in if own.is_empty() { implicit.clone() } else { own } {
+            at.entry(tp).or_default().push(ann);
+        }
+    }
+    let mut locator = Locator { sample, valid_masks: HashMap::new() };
+    let mut absences = BTreeMap::new();
+    for (instance_id, track) in &tracking.tracks {
+        for tp in &tracking.timepoints {
+            if !track.observations_at(tp).is_empty() {
+                continue;
+            }
+            let mut reason = Absence::NotExamined;
+            for ann in at.get(tp).map(Vec::as_slice).unwrap_or(&[]) {
+                reason = reason.min(locator.reason(track, ann)?);
+                if reason == Absence::Located {
+                    break;
+                }
+            }
+            absences.insert((*instance_id, tp.clone()), reason);
+        }
+    }
+    Ok(LocatedTracking { tracking, absences })
+}
+
+/// The voxel window of a located extent, one `(start, stop)` per spatial axis.
+type Extent = Vec<(i64, i64)>;
+
+/// What [`locate_tracks`] reads once per sample.
+struct Locator<'a> {
+    sample: &'a Sample,
+    /// `grid -> images on it that declare a valid_mask`.
+    valid_masks: HashMap<String, Vec<String>>,
+}
+
+impl Locator<'_> {
+    /// Why `track`, unseen by `ann`, is or is not a finding there.
+    fn reason(&mut self, track: &Track, ann: &Annotation) -> Result<Absence> {
+        if !track.class_ids.iter().any(|c| ann.annotated_class_ids().contains(c)) {
+            return Ok(Absence::NotExamined);
+        }
+        if !carries_instance_ids(ann)? || unjoinable(ann).is_some() {
+            return Ok(Absence::NoIdentity);
+        }
+        let Some((grid, extent)) = self.extent(track, ann)? else {
+            return Ok(if ignores_part(ann) { Absence::Unrelated } else { Absence::ClassExamined });
+        };
+        let shape = grid.spatial_shape();
+        if extent.iter().zip(&shape).any(|((a, b), n)| *a < 0 || *b > *n as i64) || !self.acquired(&grid, &extent) {
+            return Ok(Absence::OutsideFov);
+        }
+        if ignores_within(self.sample, ann, &extent) {
+            return Ok(Absence::Ignored);
+        }
+        Ok(Absence::Located)
+    }
+
+    /// The located extent of `track` in `ann`'s grid, with that grid; `None`
+    /// where any observation does not map into it.
+    fn extent(&self, track: &Track, ann: &Annotation) -> Result<Option<(Grid, Extent)>> {
+        let grids = self.sample.grids()?;
+        let Some(target) = ann.grid_id().and_then(|g| grids.get(g)) else { return Ok(None) };
+        let s = target.n_spatial();
+        if track.observations.is_empty() || s == 0 {
+            return Ok(None);
+        }
+        let (mut lo, mut hi) = (vec![f64::INFINITY; s], vec![f64::NEG_INFINITY; s]);
+        for observation in &track.observations {
+            let Some(corners) = self.corners_in(observation, target)? else { return Ok(None) };
+            for corner in corners.chunks(s) {
+                for k in 0..s {
+                    lo[k] = lo[k].min(corner[k]);
+                    hi[k] = hi[k].max(corner[k]);
+                }
+            }
+        }
+        if lo.iter().chain(&hi).any(|v| !v.is_finite()) {
+            return Ok(None);
+        }
+        Ok(Some((target.clone(), rounded_out(&lo, &hi))))
+    }
+
+    /// An observation's box corners as continuous indices of `target`, flat;
+    /// `None` where nothing relates the two grids by an affine.
+    fn corners_in(&self, observation: &Observation, target: &Grid) -> Result<Option<Vec<f64>>> {
+        let grids = self.sample.grids()?;
+        let Some(source) = observation.grid.as_deref().and_then(|g| grids.get(g)) else { return Ok(None) };
+        let s = target.n_spatial();
+        let bbox = &observation.bbox;
+        if bbox.ncols() != 2 || bbox.nrows() != s || source.n_spatial() != s {
+            return Ok(None);
+        }
+        let flat: Vec<f64> = bbox.iter().map(|v| f64::from(*v)).collect();
+        let corners = box_corners(&flat)?.concat();
+        let space = self.sample.annotation(&observation.annotation)?.header.space.clone();
+        let world = if space.as_deref() == Some("world") { corners } else { source.index_to_world(&corners)? };
+        let Some(world) = self.world_between(source, target, &world) else { return Ok(None) };
+        Ok(Some(target.world_to_index(&world)?))
+    }
+
+    /// `source`'s flat world points in `target`'s world: through the shared
+    /// frame, or a path of affine transforms between their frames.
+    fn world_between(&self, source: &Grid, target: &Grid, points: &[f64]) -> Option<Vec<f64>> {
+        if source.grid_id == target.grid_id || source.comparable_with(target) {
+            return source.world_into(target, points).ok();
+        }
+        let frame = |g: &Grid| g.frame_uid.clone().filter(|f| !f.is_empty());
+        let (from, to) = (frame(source)?, frame(target)?);
+        let transform = self.sample.resolve_frames(&from, &to).ok()??;
+        if !is_linear(&transform) {
+            return None;
+        }
+        let into = unit_scale(&source.units, transform.units())?;
+        let out = unit_scale(transform.units(), &target.units)?;
+        let s = source.n_spatial();
+        let scaled: Vec<f64> = points.iter().map(|v| v * into).collect();
+        let array = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[points.len() / s, s]), scaled).ok()?;
+        let mapped = transform.transform_points(&array).ok()?;
+        Some(mapped.iter().map(|v| v * out).collect())
+    }
+
+    /// Whether every voxel of `extent` was acquired by every image on `grid`
+    /// that declares a `valid_mask` (§4.4).  One that cannot be read shows
+    /// nothing acquired.
+    fn acquired(&mut self, grid: &Grid, extent: &Extent) -> bool {
+        let sample = self.sample;
+        let images = self.valid_masks.entry(grid.grid_id.clone()).or_insert_with(|| match sample.images() {
+            Ok(images) => images
+                .iter()
+                .filter(|(_, image)| {
+                    image.grid_id().ok().as_deref() == Some(grid.grid_id.as_str())
+                        && image.valid_mask().ok().flatten().is_some()
+                })
+                .map(|(id, _)| id.clone())
+                .collect(),
+            Err(_) => Vec::new(),
+        });
+        let roi = slices_of(extent);
+        images.iter().all(|id| sample.valid_region(id, Some(&roi)).is_ok_and(|region| region.iter().all(|v| *v)))
+    }
+}
+
+/// Whether `ann` ignores a voxel of `extent` (§7.7).  An ignore region that
+/// cannot be read counts as covering it, as [`ignores_part`] has it.
+fn ignores_within(sample: &Sample, ann: &Annotation, extent: &Extent) -> bool {
+    if !ignores_part(ann) {
+        return false;
+    }
+    let roi = slices_of(extent);
+    if ann.is_voxel() {
+        return sample.ignore_region(&ann.ann_id, Some(&roi)).map_or(true, |region| region.iter().any(|v| *v));
+    }
+    match ann.ignore_region() {
+        Ok(Some(region)) => {
+            let index: Vec<ndarray::SliceInfoElem> =
+                extent.iter().map(|(a, b)| ndarray::SliceInfoElem::from(*a as usize..*b as usize)).collect();
+            region.ndim() != extent.len() || region.slice(index.as_slice()).iter().any(|v| *v)
+        }
+        Ok(None) => false,
+        Err(_) => true,
+    }
+}
+
+fn slices_of(extent: &Extent) -> Vec<Slice> {
+    extent.iter().map(|(a, b)| Slice::new(*a, *b)).collect()
+}
+
+/// Continuous index bounds rounded out to whole voxels: voxel `i` spans
+/// `[i - 0.5, i + 0.5)`, so a bound on a voxel edge takes no voxel beyond it
+/// (§3.3, §8.1), and one a hair past an edge from the affine's arithmetic is
+/// read as on it.  A degenerate extent (a point on an edge) keeps one voxel.
+fn rounded_out(lo: &[f64], hi: &[f64]) -> Extent {
+    let snap = |v: f64| if (v - v.round()).abs() < 1e-6 { v.round() } else { v };
+    lo.iter()
+        .zip(hi)
+        .map(|(l, h)| {
+            let start = snap(l + 0.5).floor() as i64;
+            let stop = snap(h + 0.5).ceil() as i64;
+            (start, stop.max(start + 1))
+        })
+        .collect()
+}
+
+/// The factor taking world coordinates in `from` to `to`, or `None` where
+/// no factor relates them (an uncalibrated unit against another).
+fn unit_scale(from: &str, to: &str) -> Option<f64> {
+    if from == to {
+        return Some(1.0);
+    }
+    Some(mm_per_unit(from)? / mm_per_unit(to)?)
+}
+
+/// Whether a transform maps boxes to boxes' corners: identity and affine
+/// steps only.  One that cannot be read is not.
+fn is_linear(transform: &Transform) -> bool {
+    match &transform.body {
+        Body::Chain(steps) => steps.iter().all(is_linear),
+        Body::Inverse(inner) => {
+            is_linear(inner)
+                && match stored_inverse(inner) {
+                    Ok(Some(stored)) => is_linear(&stored),
+                    Ok(None) => true,
+                    Err(_) => false,
+                }
+        }
+        Body::Stored => match transform.kind() {
+            "identity" | "affine" => true,
+            "displacement" | "bspline" => false,
+            _ => transform.components().is_ok_and(|components| components.iter().all(is_linear)),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s7_4_reason_precedence_prefers_a_finding() {
+        // The visit's annotations disagree: the first reason in REASONS wins.
+        let reasons: Vec<Absence> = REASONS.iter().map(|r| Absence::parse(r).expect("a reason")).collect();
+        assert_eq!(reasons, ABSENCES);
+        assert!(reasons.windows(2).all(|w| w[0] < w[1]));
+        let disagreeing = [Absence::Ignored, Absence::ClassExamined, Absence::OutsideFov];
+        assert_eq!(disagreeing.into_iter().min(), Some(Absence::ClassExamined));
+        assert_eq!(reasons.iter().filter(|r| r.is_finding()).count(), 2);
+        assert!(reasons.iter().all(|r| r.as_str() == REASONS[*r as usize]));
+        assert_eq!(Absence::parse("resolved"), None);
+    }
+
+    #[test]
+    fn s7_4_an_extent_rounds_out_to_whole_voxels() {
+        // A bound on a voxel edge takes no voxel past it; one inside a voxel
+        // takes that voxel; arithmetic noise at an edge is read as the edge.
+        assert_eq!(rounded_out(&[0.5], &[4.5]), vec![(1, 5)]);
+        assert_eq!(rounded_out(&[0.6], &[4.4]), vec![(1, 5)]);
+        assert_eq!(rounded_out(&[0.4], &[4.6]), vec![(0, 6)]);
+        assert_eq!(rounded_out(&[0.5 + 1e-9], &[4.5 - 1e-9]), vec![(1, 5)]);
+        assert_eq!(rounded_out(&[3.0], &[3.0]), vec![(3, 4)]);
+        assert_eq!(rounded_out(&[2.5], &[2.5]), vec![(3, 4)]);
+    }
+
+    #[test]
+    fn s7_4_units_scale_only_where_calibrated() {
+        assert_eq!(unit_scale("mm", "mm"), Some(1.0));
+        assert_eq!(unit_scale("m", "mm"), Some(1000.0));
+        assert_eq!(unit_scale("px", "px"), Some(1.0));
+        assert_eq!(unit_scale("px", "mm"), None);
+    }
 }

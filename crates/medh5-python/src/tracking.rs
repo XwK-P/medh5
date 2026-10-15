@@ -307,17 +307,21 @@ impl Track {
 }
 
 /// `{instance_id: Track}` with the coverage needed to tell *resolved* from
-/// *unexamined*.
+/// *unexamined*, and the reason for every absence.
 #[pyclass(module = "medh5.curation", name = "Tracking", frozen)]
-pub struct Tracking(pub engine::Tracking);
+pub struct Tracking(pub engine::LocatedTracking);
 
 impl Tracking {
-    pub fn wrap(t: engine::Tracking) -> Self {
+    pub fn wrap(t: engine::LocatedTracking) -> Self {
         Tracking(t)
     }
 
+    fn tracks(&self) -> &std::collections::BTreeMap<u64, engine::Track> {
+        &self.0.tracking.tracks
+    }
+
     fn require(&self, instance_id: u64) -> PyResult<&engine::Track> {
-        self.0.tracks.get(&instance_id).ok_or_else(|| PyKeyError::new_err(instance_id))
+        self.tracks().get(&instance_id).ok_or_else(|| PyKeyError::new_err(instance_id))
     }
 }
 
@@ -327,30 +331,29 @@ impl Tracking {
     /// that is no instance id (`-1`, `"7"`) raised `OverflowError` or
     /// `TypeError`, which `get` and `in` already answered as absent.
     fn __getitem__(&self, instance_id: &Bound<'_, PyAny>) -> PyResult<Track> {
-        match instance_id.extract::<u64>().ok().and_then(|i| self.0.tracks.get(&i)) {
+        match instance_id.extract::<u64>().ok().and_then(|i| self.tracks().get(&i)) {
             Some(track) => Ok(Track(track.clone())),
             None => Err(PyKeyError::new_err(instance_id.clone().unbind())),
         }
     }
     fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        Ok(PyTuple::new(py, self.0.tracks.keys())?.try_iter()?.into_any())
+        Ok(PyTuple::new(py, self.tracks().keys())?.try_iter()?.into_any())
     }
     fn __len__(&self) -> usize {
-        self.0.tracks.len()
+        self.tracks().len()
     }
     fn __contains__(&self, instance_id: &Bound<'_, PyAny>) -> bool {
-        instance_id.extract::<u64>().map(|i| self.0.tracks.contains_key(&i)).unwrap_or(false)
+        instance_id.extract::<u64>().map(|i| self.tracks().contains_key(&i)).unwrap_or(false)
     }
     fn keys<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.0.tracks.keys())
+        PyTuple::new(py, self.tracks().keys())
     }
     fn values<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.0.tracks.values().cloned().map(Track))
+        PyTuple::new(py, self.tracks().values().cloned().map(Track))
     }
     fn items<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let pairs = self
-            .0
-            .tracks
+            .tracks()
             .iter()
             .map(|(k, v)| {
                 PyTuple::new(py, [k.into_pyobject(py)?.into_any(), Bound::new(py, Track(v.clone()))?.into_any()])
@@ -365,42 +368,41 @@ impl Tracking {
         instance_id: &Bound<'py, PyAny>,
         default: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        match instance_id.extract::<u64>().ok().and_then(|i| self.0.tracks.get(&i)) {
+        match instance_id.extract::<u64>().ok().and_then(|i| self.tracks().get(&i)) {
             Some(t) => Ok(Bound::new(py, Track(t.clone()))?.into_any()),
             None => Ok(default.unwrap_or_else(|| py.None().into_bound(py))),
         }
     }
     #[getter]
     fn timepoints<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, &self.0.timepoints)
+        PyTuple::new(py, &self.0.tracking.timepoints)
     }
     /// `{annotation: why}` for the annotations that carry `instance_ids`
     /// and that no track joined.
     #[getter]
     fn skipped<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
-        for (k, v) in &self.0.skipped {
+        for (k, v) in &self.0.tracking.skipped {
             out.set_item(k, v)?;
         }
         Ok(out)
     }
     /// `{timepoint: frozenset of class ids}`: the classes the annotators at
-    /// each timepoint committed to finding (§11.3), whose absence is
-    /// therefore a finding --- those of the annotations there that ignore no
-    /// part of their grid (§7.7).
+    /// each timepoint committed to finding (§11.3), of the annotations there
+    /// that ignore no part of their grid (§7.7).  Class-level: it does not
+    /// say where anyone looked, which `reason_at` does.
     #[getter]
     fn coverage<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
-        for (k, v) in &self.0.coverage {
+        for (k, v) in &self.0.tracking.coverage {
             out.set_item(k, pyo3::types::PyFrozenSet::new(py, v)?)?;
         }
         Ok(out)
     }
     /// `present`, `resolved` or `unexamined`.  `resolved` is claimed only
-    /// where the object's class is in that timepoint's `coverage`; anywhere
-    /// else an unseen object is `unexamined`: nobody looked, or an ignore
-    /// region may hide it, so its absence measures nothing.  `KeyError` for
-    /// an id no track has.
+    /// where the object was looked for there (`reason_at` says how); anywhere
+    /// else an unseen object is `unexamined`, and its absence measures
+    /// nothing.  `KeyError` for an id no track has.
     fn state_at(&self, instance_id: u64, timepoint: &str) -> PyResult<&'static str> {
         self.require(instance_id)?;
         Ok(self.0.state_at(instance_id, timepoint).unwrap_or(engine::UNEXAMINED))
@@ -415,17 +417,39 @@ impl Tracking {
         }
         Ok(out)
     }
-    /// Absent-then-present: `resolved` at the first timepoint (looked for
-    /// and not seen) and `present` at a later one.
-    fn is_new(&self, instance_id: u64) -> PyResult<bool> {
+    /// Why the object is absent at `timepoint` (`REASONS`): `located` or
+    /// `class_examined` where it is `resolved`, `outside_fov`, `ignored`,
+    /// `unrelated`, `no_identity` or `not_examined` where it is
+    /// `unexamined`; `None` where it was seen.
+    fn reason_at(&self, instance_id: u64, timepoint: &str) -> PyResult<Option<&'static str>> {
         self.require(instance_id)?;
-        Ok(self.0.is_new(instance_id))
+        Ok(self.0.reason_at(instance_id, timepoint).map(engine::Absence::as_str))
+    }
+    /// `{timepoint: reason_at(instance_id, timepoint)}` over every
+    /// timepoint, in order.
+    fn reasons<'py>(&self, py: Python<'py>, instance_id: u64) -> PyResult<Bound<'py, PyDict>> {
+        self.require(instance_id)?;
+        let out = PyDict::new(py);
+        for (k, v) in self.0.reasons(instance_id) {
+            out.set_item(k, v.map(engine::Absence::as_str))?;
+        }
+        Ok(out)
+    }
+    /// Absent-then-present: `resolved` at the first timepoint (looked for
+    /// and not seen) and `present` at a later one.  With `located`, only
+    /// where the object was located at the first (not by class alone).
+    #[pyo3(signature = (instance_id, *, located=false))]
+    fn is_new(&self, instance_id: u64, located: bool) -> PyResult<bool> {
+        self.require(instance_id)?;
+        Ok(self.0.is_new(instance_id, located))
     }
     /// Present-then-gone: `present` at the first timepoint and `resolved` at
-    /// the last, whose annotators looked for it.
-    fn is_resolved(&self, instance_id: u64) -> PyResult<bool> {
+    /// the last, whose annotators looked for it.  With `located`, only where
+    /// the object was located at the last.
+    #[pyo3(signature = (instance_id, *, located=false))]
+    fn is_resolved(&self, instance_id: u64, located: bool) -> PyResult<bool> {
         self.require(instance_id)?;
-        Ok(self.0.is_resolved(instance_id))
+        Ok(self.0.is_resolved(instance_id, located))
     }
     fn is_persistent(&self, instance_id: u64) -> PyResult<bool> {
         self.require(instance_id)?;
@@ -433,14 +457,13 @@ impl Tracking {
     }
     fn class_conflicts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
-        for (k, v) in self.0.class_conflicts() {
+        for (k, v) in self.0.tracking.class_conflicts() {
             out.set_item(k, PyTuple::new(py, v)?)?;
         }
         Ok(out)
     }
     /// `{timepoint: instance ids}` of the objects that are `unexamined`
-    /// there: not seen, and of a class nobody there examined without
-    /// ignoring part of the volume.
+    /// there: not seen, and not looked for there.
     fn unexamined<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
         for (k, v) in self.0.unexamined() {
@@ -457,11 +480,15 @@ impl Tracking {
     fn __repr__(&self) -> String {
         self.0.repr()
     }
-    /// Pickling and `copy`: the tracks, timepoints, coverage and skipped
-    /// annotations, through `_rebuild` (only a join builds one).
+    /// Pickling and `copy`: the tracks, timepoints, coverage, skipped
+    /// annotations and reasons, through `_rebuild` (only a join builds one).
     fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
         let py = slf.py();
         let this = slf.get();
+        let reasons = PyDict::new(py);
+        for ((instance_id, timepoint), reason) in &this.0.absences {
+            reasons.set_item((instance_id, timepoint), reason.as_str())?;
+        }
         let state = PyTuple::new(
             py,
             [
@@ -469,24 +496,56 @@ impl Tracking {
                 this.timepoints(py)?.into_any(),
                 this.coverage(py)?.into_any(),
                 this.skipped(py)?.into_any(),
+                reasons.into_any(),
             ],
         )?;
         Ok((slf.get_type().getattr("_rebuild")?, state))
     }
+    /// A pickle from before 2.1 carries no reasons: each absence is then
+    /// read by the class-level rule it was made under.
     #[classmethod]
+    #[pyo3(signature = (tracks, timepoints, coverage, skipped, reasons=None))]
     fn _rebuild(
         _cls: &Bound<'_, PyType>,
         tracks: Vec<Bound<'_, Track>>,
         timepoints: Vec<String>,
         coverage: &Bound<'_, PyDict>,
         skipped: &Bound<'_, PyDict>,
+        reasons: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Self> {
-        let tracks = tracks.iter().map(|t| (t.get().0.instance_id, t.get().0.clone())).collect();
-        let coverage =
-            coverage.iter().map(|(k, v)| Ok((k.extract()?, v.extract()?))).collect::<PyResult<IndexMap<_, _>>>()?;
+        let tracks: std::collections::BTreeMap<u64, engine::Track> =
+            tracks.iter().map(|t| (t.get().0.instance_id, t.get().0.clone())).collect();
+        let coverage = coverage
+            .iter()
+            .map(|(k, v)| Ok((k.extract()?, v.extract()?)))
+            .collect::<PyResult<IndexMap<String, std::collections::BTreeSet<i64>>>>()?;
         let skipped =
             skipped.iter().map(|(k, v)| Ok((k.extract()?, v.extract()?))).collect::<PyResult<IndexMap<_, _>>>()?;
-        Ok(Tracking(engine::Tracking { tracks, timepoints, coverage, skipped }))
+        let absences = match reasons {
+            Some(reasons) => reasons
+                .iter()
+                .map(|(k, v)| {
+                    let key: (u64, String) = k.extract()?;
+                    let reason: String = v.extract()?;
+                    let absence = engine::Absence::parse(&reason)
+                        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("unknown reason {reason:?}")))?;
+                    Ok((key, absence))
+                })
+                .collect::<PyResult<_>>()?,
+            None => tracks
+                .iter()
+                .flat_map(|(instance_id, track)| {
+                    let coverage = &coverage;
+                    timepoints.iter().filter(|tp| track.observations_at(tp).is_empty()).map(move |tp| {
+                        let looked = coverage.get(tp).is_some_and(|c| track.class_ids.iter().any(|i| c.contains(i)));
+                        let reason = if looked { engine::Absence::ClassExamined } else { engine::Absence::NotExamined };
+                        ((*instance_id, tp.clone()), reason)
+                    })
+                })
+                .collect(),
+        };
+        let tracking = engine::Tracking { tracks, timepoints, coverage, skipped };
+        Ok(Tracking(engine::LocatedTracking::new(tracking, absences)))
     }
 }
 
@@ -509,5 +568,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("RESOLVED", engine::RESOLVED)?;
     m.add("UNEXAMINED", engine::UNEXAMINED)?;
     m.add("STATES", PyTuple::new(m.py(), engine::STATES)?)?;
+    m.add("REASONS", PyTuple::new(m.py(), engine::REASONS)?)?;
     Ok(())
 }

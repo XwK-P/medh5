@@ -540,11 +540,13 @@ medh5.Tracking.__len__	method	()
 medh5.Tracking.class_conflicts	method	()
 medh5.Tracking.coverage	property
 medh5.Tracking.get	method	(instance_id, default=None)
-medh5.Tracking.is_new	method	(instance_id)
+medh5.Tracking.is_new	method	(instance_id, *, located=False)
 medh5.Tracking.is_persistent	method	(instance_id)
-medh5.Tracking.is_resolved	method	(instance_id)
+medh5.Tracking.is_resolved	method	(instance_id, *, located=False)
 medh5.Tracking.items	method	()
 medh5.Tracking.keys	method	()
+medh5.Tracking.reason_at	method	(instance_id, timepoint)
+medh5.Tracking.reasons	method	(instance_id)
 medh5.Tracking.skipped	property
 medh5.Tracking.state_at	method	(instance_id, timepoint)
 medh5.Tracking.states	method	(instance_id)
@@ -2250,6 +2252,7 @@ medh5.curation.QualityRecord.issues	field
 medh5.curation.QualityRecord.reviewed_by	field
 medh5.curation.QualityRecord.status	field
 medh5.curation.QualityRecord.to_json	method	()
+medh5.curation.REASONS	constant	tuple
 medh5.curation.RESOLVED	constant	str
 medh5.curation.RFC3339	constant	<external>
 medh5.curation.SEX_VALUES	constant	tuple
@@ -2329,11 +2332,13 @@ medh5.curation.Tracking.__len__	method	()
 medh5.curation.Tracking.class_conflicts	method	()
 medh5.curation.Tracking.coverage	property
 medh5.curation.Tracking.get	method	(instance_id, default=None)
-medh5.curation.Tracking.is_new	method	(instance_id)
+medh5.curation.Tracking.is_new	method	(instance_id, *, located=False)
 medh5.curation.Tracking.is_persistent	method	(instance_id)
-medh5.curation.Tracking.is_resolved	method	(instance_id)
+medh5.curation.Tracking.is_resolved	method	(instance_id, *, located=False)
 medh5.curation.Tracking.items	method	()
 medh5.curation.Tracking.keys	method	()
+medh5.curation.Tracking.reason_at	method	(instance_id, timepoint)
+medh5.curation.Tracking.reasons	method	(instance_id)
 medh5.curation.Tracking.skipped	property
 medh5.curation.Tracking.state_at	method	(instance_id, timepoint)
 medh5.curation.Tracking.states	method	(instance_id)

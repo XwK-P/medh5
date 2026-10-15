@@ -180,12 +180,15 @@ medh5 track PATH [--class KEY] [--key K] [--json]
 
 Join instance ids across visits: per object, its volume at each timepoint in
 mm³ (in px on an uncalibrated grid), the relative change, and whether it is
-`present`, `resolved` or `unexamined`. `resolved` means the class was examined
-at this visit, outside any ignore region, and the object was not found;
-`unexamined`, that nobody looked for that class at this visit, or that an
-ignore region (§7.7) may hide it. Masks, boxes, oriented boxes and points
-join; an annotation of another kind that carries `instance_ids` is named as
-skipped, and the rest still join.
+`present`, `resolved` or `unexamined`. `resolved` means the object was looked
+for at this visit and not found; `unexamined`, that nobody looked for it there.
+The `reasons` column says why for each visit that did not see it
+(`tp1:outside_fov`): `located` or `class_examined` where it is `resolved`,
+`outside_fov`, `ignored`, `unrelated`, `no_identity` or `not_examined` where it
+is `unexamined` (§7.4; the [longitudinal guide](../guides/longitudinal.md)
+has the rule), and `--json` gives each track its `reasons`. Masks, boxes,
+oriented boxes and points join; an annotation of another kind that carries
+`instance_ids` is named as skipped, and the rest still join.
 
 ## Annotations
 
