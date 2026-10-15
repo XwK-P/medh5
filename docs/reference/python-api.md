@@ -247,6 +247,27 @@ s.fresh_indices               # the ids whose source_digest still matches (§13.
 A stale entry is ignored by the samplers and the statistics, never trusted; see
 [Storage](storage.md#the-sampling-index).
 
+### Sampling patches
+
+```python
+from medh5.sampling import PatchSampler, iter_patches
+
+sampler = PatchSampler(8, strategy="balanced")
+sampler.draw(s, "organs_tp0", rng=0)               # one Patch
+sampler.draws(s, "organs_tp0", n=4, rng=0)         # a list, from one generator
+sampler.draws(s, None, n=4, rng=0, grid="ct_tp1")  # every window in ct_tp1
+for patch in iter_patches(s, sampler, annotation="organs_tp0", n=10_000, rng=0):
+    break                                          # drawn one per next()
+```
+
+`iter_patches` yields exactly what `draws` returns for the same seed, but
+draws each patch when it is asked for, so a long run holds one patch rather
+than all of them. It checks the annotation and the grid when it is called,
+before the first patch: a misspelt name fails where it was written, not inside
+the loop. `rng` is a seed or a `numpy.random.Generator` (`Seed`); a loop
+calling `draw` with the same integer seed draws the same patch every time, so
+draw a run from one call.
+
 ### Stored objects
 
 `s.root` is the sample's HDF5 root, and `img.dataset`, `ann.group`, `t.group`,

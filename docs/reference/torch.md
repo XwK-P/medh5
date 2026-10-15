@@ -69,6 +69,10 @@ every epoch**. The epoch lives in shared memory, so `set_epoch` reaches every
 `spawn`. (Before 1.4.1 persistent workers kept the epoch they were started
 with and repeated epoch 0's draw for the whole run.)
 
+Outside a dataset, `iter_patches(sample, sampler, n=..., rng=..., grid=...)`
+draws the same patches as `sampler.draws(...)`, one per `next()`; see
+[Sampling patches](python-api.md#sampling-patches).
+
 ### GridPatchDataset — deterministic tiling, for inference
 
 ```python

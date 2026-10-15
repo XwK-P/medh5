@@ -279,7 +279,20 @@ impl PatchSampler {
 
     /// `n` draws from one generator.
     pub fn draws(&self, sample: &Sample, annotation: Option<&str>, n: usize, rng: &mut Rng) -> Result<Vec<Patch>> {
-        (0..n).map(|_| self.draw(sample, annotation, rng, None)).collect()
+        self.draws_in(sample, annotation, n, rng, None)
+    }
+
+    /// `n` draws from one generator, each measured in `grid` when one is
+    /// named, as [`draw`](Self::draw) takes it.
+    pub fn draws_in(
+        &self,
+        sample: &Sample,
+        annotation: Option<&str>,
+        n: usize,
+        rng: &mut Rng,
+        grid: Option<&str>,
+    ) -> Result<Vec<Patch>> {
+        (0..n).map(|_| self.draw(sample, annotation, rng, grid)).collect()
     }
 
     /// The annotation to draw foreground from, auto-selected if not named.

@@ -270,9 +270,13 @@ class PatchSampler:
         annotation: str | None = None,
         n: int = 1,
         rng: Seed = None,
+        *,
+        grid: str | None = None,
     ) -> list[Patch]:
-        """*n* draws from one generator seeded by *rng*."""
-        return [Patch(**f) for f in self._engine().draws(sample, annotation, n, rng)]
+        """*n* draws from one generator seeded by *rng*, each measured in
+        *grid* when one is named (as :meth:`draw` takes it)."""
+        found = self._engine().draws(sample, annotation, n, rng, grid=grid)
+        return [Patch(**f) for f in found]
 
     # -- the decisions a draw makes, for callers that need one alone ---------
 
@@ -381,9 +385,15 @@ def iter_patches(
     annotation: str | None = None,
     n: int = 1,
     rng: Seed = None,
+    grid: str | None = None,
 ) -> Iterator[Patch]:
-    """The patches of :meth:`PatchSampler.draws`, one at a time."""
-    yield from sampler.draws(sample, annotation, n, rng)
+    """The patches of :meth:`PatchSampler.draws`, drawn one per ``next()``.
+
+    A long run holds one patch at a time, not *n*.  The annotation and the
+    grid are checked when this is called, before the first patch.
+    """
+    draws = sampler._engine().iter_draws(sample, annotation, n, rng, grid=grid)
+    return (Patch(**fields) for fields in draws)
 
 
 def grid_patches(

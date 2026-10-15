@@ -138,6 +138,7 @@ __all__ = [
     "PRESENT",
     "PROFILES",
     "PSEUDONYM_SOURCE",
+    "PatchDraws",
     "PatchSamplerHandle",
     "Provenance",
     "Pyramid",
@@ -2807,6 +2808,20 @@ class OverlapStats:
     def total_foreground(self) -> int: ...
 
 @final
+class PatchDraws:
+    """`n` patch draws from one generator, drawn one per `next()`: nothing is
+    held but the generator and the count, so a long run costs one patch at a
+    time.
+    """
+    def __iter__(self) -> Self: ...
+    def __length_hint__(self) -> int:
+        """The draws still to come."""
+        ...
+    def __next__(self) -> dict[str, Any]:
+        """The next draw: the fields of a `Patch`."""
+        ...
+
+@final
 class PatchSamplerHandle:
     """The engine half of `PatchSampler`: its configuration, validated, and the
     draws.
@@ -2841,8 +2856,23 @@ class PatchSamplerHandle:
         annotation: str | None = None,
         n: int = 1,
         rng: int | Sequence[int] | np.random.Generator | None = None,
+        *,
+        grid: str | None = None,
     ) -> list[dict[str, Any]]:
         """`n` draws from one generator: the fields of each `Patch`."""
+        ...
+    def iter_draws(
+        self,
+        sample: Any,
+        annotation: str | None = None,
+        n: int = 1,
+        rng: int | Sequence[int] | np.random.Generator | None = None,
+        *,
+        grid: str | None = None,
+    ) -> PatchDraws:
+        """The draws of [`draws`](Self::draws), one per `next()`.  The annotation
+        and the grid are checked here, before the first patch.
+        """
         ...
     def pick_class(
         self,

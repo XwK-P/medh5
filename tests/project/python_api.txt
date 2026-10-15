@@ -284,7 +284,7 @@ medh5.Patch.used_index	field
 medh5.PatchSampler	class	(patch_size, *, strategy='balanced', foreground_prob=0.5, foreground_classes=None, class_weights='uniform') bases=
 medh5.PatchSampler.class_weights	property
 medh5.PatchSampler.draw	method	(sample, annotation=None, rng=None, *, grid=None)
-medh5.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None)
+medh5.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None, *, grid=None)
 medh5.PatchSampler.foreground_classes	property
 medh5.PatchSampler.foreground_prob	property
 medh5.PatchSampler.patch_size	property
@@ -3473,7 +3473,7 @@ medh5.sampling.PatchAggregator.spatial_shape	property
 medh5.sampling.PatchSampler	class	(patch_size, *, strategy='balanced', foreground_prob=0.5, foreground_classes=None, class_weights='uniform') bases=
 medh5.sampling.PatchSampler.class_weights	property
 medh5.sampling.PatchSampler.draw	method	(sample, annotation=None, rng=None, *, grid=None)
-medh5.sampling.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None)
+medh5.sampling.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None, *, grid=None)
 medh5.sampling.PatchSampler.foreground_classes	property
 medh5.sampling.PatchSampler.foreground_prob	property
 medh5.sampling.PatchSampler.patch_size	property
@@ -3492,7 +3492,7 @@ medh5.sampling.TimepointPairSampler.pairs	method	(sample)
 medh5.sampling.blend_weights	function	(patch_size, *, mode='gaussian', sigma_scale=0.125)
 medh5.sampling.coerce_patch_size	function	(patch_size, ndim)
 medh5.sampling.grid_patches	function	(shape, patch_size, *, overlap=0, grid_id=None)
-medh5.sampling.iter_patches	function	(sample, sampler, *, annotation=None, n=1, rng=None)
+medh5.sampling.iter_patches	function	(sample, sampler, *, annotation=None, n=1, rng=None, grid=None)
 medh5.sampling.window_around	function	(center, patch, shape)
 medh5.storage	module
 medh5.storage.BLOSC2_FILTER_ID	constant	int
@@ -3858,7 +3858,7 @@ medh5.torch.PatchDataset.set_epoch	method	(epoch)
 medh5.torch.PatchSampler	class	(patch_size, *, strategy='balanced', foreground_prob=0.5, foreground_classes=None, class_weights='uniform') bases=
 medh5.torch.PatchSampler.class_weights	property
 medh5.torch.PatchSampler.draw	method	(sample, annotation=None, rng=None, *, grid=None)
-medh5.torch.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None)
+medh5.torch.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None, *, grid=None)
 medh5.torch.PatchSampler.foreground_classes	property
 medh5.torch.PatchSampler.foreground_prob	property
 medh5.torch.PatchSampler.patch_size	property
