@@ -665,6 +665,24 @@ digest they share — what preflight checks duplicates against. The manifest is
 replaced whole, in place or at `--out`; an `--out` that is one of the task's
 sources, by any path or link, is refused before anything is written.
 
+### `medh5 task repin`
+
+```
+medh5 task repin MANIFEST [--base DIR] [--source ID]... [--dry-run] [--out OUT] [--json]
+                 [--source-root DIR | --any-source-path]
+```
+
+Pin each source to the sample its URI names now, after the data was
+re-exported or amended on purpose: the `content_id` its reference records
+becomes the one the file holds. A source is repinned only when it is whole —
+its own integrity passes (else T302) — and its new version still belongs to
+the subject and reads as its rows need (T301–T304, T306): a file that changed
+into another subject is refused, not pinned. The manifest is then reconciled,
+its fingerprint cleared, and it is replaced whole, in place or at `--out`.
+Prints each source whose pin changed, with the old and new `content_id`, and
+the rows whose selection may have moved; `--dry-run` prints the same and
+writes nothing. `--source` repins only the named sources.
+
 ### `medh5 cache info`
 
 ```

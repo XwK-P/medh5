@@ -455,6 +455,7 @@ medh5.TaskManifest.partition_of	method	(subject_id)
 medh5.TaskManifest.policy	property
 medh5.TaskManifest.preflight	method	(base=None, *, deep=False, confine=None)
 medh5.TaskManifest.reconcile	method	(base=None, *, confine=None)
+medh5.TaskManifest.repin	method	(base=None, *, sources=None, dry_run=False, confine=None)
 medh5.TaskManifest.row_fingerprint	method	(row_id)
 medh5.TaskManifest.rows	property
 medh5.TaskManifest.save	method	(path)
@@ -3607,6 +3608,16 @@ medh5.task.Reconciled	class	(event_id, digest, sources) bases=
 medh5.task.Reconciled.digest	field
 medh5.task.Reconciled.event_id	field
 medh5.task.Reconciled.sources	field
+medh5.task.RepinReport	class	(changed, unchanged, reconciled, rows) bases=
+medh5.task.RepinReport.changed	field
+medh5.task.RepinReport.from_json	classmethod	(doc)
+medh5.task.RepinReport.reconciled	field
+medh5.task.RepinReport.rows	field
+medh5.task.RepinReport.unchanged	field
+medh5.task.Repinned	class	(source_id, before, after) bases=
+medh5.task.Repinned.after	field
+medh5.task.Repinned.before	field
+medh5.task.Repinned.source_id	field
 medh5.task.Row	class	(row_id, subject_id, cutoff_us) bases=
 medh5.task.Row.cutoff_us	field
 medh5.task.Row.row_id	field
@@ -3726,6 +3737,7 @@ medh5.task.TaskManifest.partition_of	method	(subject_id)
 medh5.task.TaskManifest.policy	property
 medh5.task.TaskManifest.preflight	method	(base=None, *, deep=False, confine=None)
 medh5.task.TaskManifest.reconcile	method	(base=None, *, confine=None)
+medh5.task.TaskManifest.repin	method	(base=None, *, sources=None, dry_run=False, confine=None)
 medh5.task.TaskManifest.row_fingerprint	method	(row_id)
 medh5.task.TaskManifest.rows	property
 medh5.task.TaskManifest.save	method	(path)

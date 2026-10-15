@@ -29,8 +29,8 @@ pub mod view;
 use serde_json::{json, Value};
 
 pub use cache::{validate_cache, validate_cache_in, CacheCheck, CacheReport, CacheWriter, FeatureCache};
-pub use source::{SourceAccess, SourceRef};
-pub use task::TaskManifest;
+pub use source::{SourceAccess, SourceRef, SourceState};
+pub use task::{RepinReport, Repinned, TaskManifest};
 pub use view::{
     preflight, preflight_each, preflight_each_in, preflight_in, write_preflight, write_preflight_in,
     write_preflight_noted, Admitted, Preflight, PreflightDone, RowView, SubjectHistory,

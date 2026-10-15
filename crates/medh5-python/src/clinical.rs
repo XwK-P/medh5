@@ -331,6 +331,26 @@ fn task_reconcile<'py>(
     Ok(json_to_py(py, &m.to_json())?)
 }
 
+/// The manifest with its sources repinned, and what changed:
+/// `{"manifest": ..., "report": ...}`.
+#[pyfunction]
+#[pyo3(signature = (doc, base=None, root=None, sources=None))]
+fn task_repin<'py>(
+    py: Python<'py>,
+    doc: &Bound<'py, PyAny>,
+    base: Option<PathBuf>,
+    root: Option<PathBuf>,
+    sources: Option<Vec<String>>,
+) -> R<Bound<'py, PyAny>> {
+    let mut m = manifest(doc)?;
+    let (m, report) = py.detach(move || -> medh5::Result<_> {
+        let only: Option<std::collections::BTreeSet<String>> = sources.map(|s| s.into_iter().collect());
+        let report = m.repin(&access(base, root)?, only.as_ref())?;
+        Ok((m, report))
+    })?;
+    Ok(json_to_py(py, &json!({"manifest": m.to_json(), "report": report.to_json()}))?)
+}
+
 /// Write the manifest as the engine writes it, refusing an output that is
 /// one of its sources; `base` resolves relative sources (else the output's
 /// directory).
@@ -708,6 +728,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(task_subjects_digest, m)?,
         wrap_pyfunction!(task_reconcile, m)?,
         wrap_pyfunction!(task_save, m)?,
+        wrap_pyfunction!(task_repin, m)?,
         wrap_pyfunction!(task_load_document, m)?,
         wrap_pyfunction!(task_preflight, m)?,
         wrap_pyfunction!(task_sources_outside, m)?,

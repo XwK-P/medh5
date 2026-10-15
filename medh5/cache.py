@@ -414,9 +414,9 @@ def validate_cache(
     says, so a cache whose samples moved validates once the task is repinned
     or its URIs updated (contract §7.1).  ``base`` resolves the entry
     sources the task does not pin, by their own URIs: by default
-    ``task_base`` with a task, the cache's directory without.  The row checks run the task's
-    preflight; an event-level cache has no row entries, so
-    ``check_rows=False`` spares it that.  A path naming no file raises
+    ``task_base`` with a task, the cache's directory without.  The row
+    checks run the task's preflight; an event-level cache has no row
+    entries, so ``check_rows=False`` spares it that.  A path naming no file raises
     :class:`~medh5.errors.MEDH5FileError`: there is no cache to report on.
     ``confine`` says where the task's and the entries' sources may be opened
     (:data:`medh5.task.Confine`): ``True`` the task's base, or without a task
@@ -521,8 +521,8 @@ def build_document_cache(
                     if sample.content_id != source.content_id:
                         raise MEDH5ValidationError(
                             f"{source.locator} is not the version the task pins "
-                            f"({source.content_id}) --- repin it explicitly if "
-                            "the change is meant",
+                            f"({source.content_id}) --- if the change is meant, "
+                            "repin it (`medh5 task repin`, `TaskManifest.repin`)",
                             "T302",
                         )
                     clinical = sample.clinical

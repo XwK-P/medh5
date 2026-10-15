@@ -41,6 +41,7 @@ from medh5.task import (
     CODES,
     Finding,
     Packed,
+    RepinReport,
     Slot,
     SourceRef,
     Target,
@@ -1693,6 +1694,77 @@ class TestPreflight:
             findings = TaskManifest(doc, base=root).preflight().findings
             assert "T305" in found(findings), why
             assert any(why in str(f) for f in findings), (why, findings)
+
+
+class TestRepin:
+    def test_S2_repin_pins_what_is_there(self, setup):
+        """Re-pinning was by hand (``SourceRef.pin`` per source, then
+        reconcile): ``repin`` pins each source to the whole version it names
+        now, and names the rows it stales."""
+        task, paths = setup
+        assert task.repin() == RepinReport((), ("P-01", "P-02", "P-03"), False, ())
+        before = task.subjects[1].sources[0].content_id
+        with medh5.amend(paths["P-02"]) as w:
+            w.add_event(
+                Event("late", "late", "other", "static", "final", available_us=0)
+            )
+        assert not task.preflight().ok
+        report = task.repin()
+        assert [(r.source_id, r.before) for r in report.changed] == [("P-02", before)]
+        after = report.changed[0].after
+        assert after == task.subjects[1].sources[0].content_id != before
+        assert report.rows == ("P-02@24h", "P-02@d95")
+        assert task.preflight().ok and task.validate() == []
+        assert task.repin().changed == ()
+
+    def test_S2_repin_dry_run_writes_nothing(self, setup, tmp_path: Path, capsys):
+        task, paths = setup
+        manifest = task.save(tmp_path / "cohort" / "t.task.json")
+        with medh5.amend(paths["P-01"]) as w:
+            w.add_event(
+                Event("late", "late", "other", "static", "final", available_us=0)
+            )
+        before = manifest.read_bytes()
+        loaded = TaskManifest.load(manifest)
+        report = loaded.repin(dry_run=True)
+        assert [r.source_id for r in report.changed] == ["P-01"]
+        assert loaded.to_json() == TaskManifest.load(manifest).to_json()
+        capsys.readouterr()
+        assert main(["task", "repin", str(manifest), "--dry-run", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["dry_run"] is True
+        assert manifest.read_bytes() == before
+        assert main(["task", "repin", str(manifest), "--source", "P-02"]) == 0
+        assert "repinned 0, 1 unchanged" in capsys.readouterr().out
+        assert manifest.read_bytes() == before
+        assert main(["task", "repin", str(manifest)]) == EXIT_OK
+        out = capsys.readouterr().out
+        assert "repinned P-01: " in out and "2 row fingerprint(s) change" in out
+        assert TaskManifest.load(manifest).preflight().ok
+
+    def test_S2_repin_refuses_another_subject(self, setup):
+        task, paths = setup
+        pinned = task.to_json()
+        History.write(paths["P-02"], subject_id="P-99", response="SD")
+        with pytest.raises(MEDH5ValidationError) as caught:
+            task.repin()
+        assert caught.value.code == "T303"
+        assert task.to_json() == pinned, "refused, nothing changes"
+
+    def test_S2_repin_refuses_a_corrupt_source(self, setup):
+        task, paths = setup
+        with medh5.amend(paths["P-02"]) as w:
+            w.add_event(
+                Event("late", "late", "other", "static", "final", available_us=0)
+            )
+        with h5py.File(paths["P-02"], "a") as f:
+            damage(f["clinical/events/event_id"], "data")
+        pinned = task.to_json()
+        with pytest.raises(MEDH5ValidationError) as caught:
+            task.repin()
+        assert caught.value.code == "T302"
+        assert task.to_json() == pinned
+        with pytest.raises(MEDH5ValidationError):
+            task.repin(sources=["nope"])
 
 
 class TestInstanceCentres:

@@ -510,6 +510,7 @@ __all__ = [
     "task_notes",
     "task_preflight",
     "task_reconcile",
+    "task_repin",
     "task_row_fingerprint",
     "task_row_fingerprints",
     "task_save",
@@ -1850,6 +1851,15 @@ def task_reconcile(
     root: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """The manifest with every subject's duplicated events recorded."""
+    ...
+
+def task_repin(
+    doc: Any,
+    base: str | os.PathLike[str] | None = None,
+    root: str | os.PathLike[str] | None = None,
+    sources: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """The manifest with its sources repinned, and what changed."""
     ...
 
 def task_row_fingerprint(doc: Any, row_id: str) -> str: ...

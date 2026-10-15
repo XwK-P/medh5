@@ -36,11 +36,12 @@ pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         ("task", Some(("validate", sub))) => task_validate(sub, ctx),
         ("task", Some(("preflight", sub))) => task_preflight(sub, ctx),
         ("task", Some(("reconcile", sub))) => task_reconcile(sub, ctx),
+        ("task", Some(("repin", sub))) => task_repin(sub, ctx),
         ("cache", Some(("validate", sub))) => cache_validate(sub, ctx),
         ("cache", Some(("info", sub))) => cache_info(sub, ctx),
         ("cache", Some(("ls", sub))) => cache_ls(sub, ctx),
         ("clinical", _) => return Ok(ctx.usage("usage: medh5 clinical {show|select|export|augment|strip}")),
-        ("task", _) => return Ok(ctx.usage("usage: medh5 task {validate|preflight|reconcile}")),
+        ("task", _) => return Ok(ctx.usage("usage: medh5 task {validate|preflight|reconcile|repin}")),
         _ => return Ok(ctx.usage("usage: medh5 cache {info|ls|validate}")),
     };
     match result {
@@ -474,6 +475,45 @@ fn row_line(r: &RowView) -> (String, Vec<String>) {
         if r.reasons.is_empty() { "-".into() } else { r.reasons.join("; ") },
     ];
     (r.status.clone(), line)
+}
+
+fn task_repin(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let (mut manifest, base, _) = load_task(m)?;
+    let access = source_access(m, &manifest, base.as_deref(), ctx)?;
+    let only: Option<std::collections::BTreeSet<String>> =
+        m.get_many::<String>("source").map(|ids| ids.cloned().collect());
+    let out = get_str(m, "out").unwrap_or_else(|| req_str(m, "manifest"));
+    let dry_run = flag(m, "dry_run");
+    if !dry_run {
+        manifest.check_output(Path::new(out), &access).map_err(|e| Error::invalid(format!("--out {}", e.message())))?;
+    }
+    let report = manifest.repin(&access, only.as_ref())?;
+    if !dry_run && !report.changed.is_empty() {
+        manifest.save(Path::new(out))?;
+    }
+    if flag(m, "json") {
+        let mut doc = report.to_json();
+        doc["dry_run"] = json!(dry_run);
+        ctx.emit(&doc, true);
+        return Ok(EXIT_OK);
+    }
+    let verb = if dry_run { "would repin" } else { "repinned" };
+    for r in &report.changed {
+        ctx.print(format!("{verb} {}: {} -> {}", r.source_id, r.before, r.after));
+    }
+    ctx.print(format!(
+        "{}: {} {}, {} unchanged{}",
+        req_str(m, "manifest"),
+        verb,
+        report.changed.len(),
+        report.unchanged.len(),
+        if report.rows.is_empty() {
+            String::new()
+        } else {
+            format!("; {} row fingerprint(s) change, so their patient-level cache entries go stale", report.rows.len())
+        }
+    ));
+    Ok(EXIT_OK)
 }
 
 fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {

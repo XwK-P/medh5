@@ -131,6 +131,42 @@ class Note:
         return cls(str(doc["location"]), str(doc["message"]))
 
 
+@dataclass(frozen=True, slots=True)
+class Repinned:
+    """One source pinned to a new version."""
+
+    source_id: str
+    before: str
+    after: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepinReport:
+    """What :meth:`TaskManifest.repin` did, or would do."""
+
+    changed: tuple[Repinned, ...]
+    """The sources pinned to a new version."""
+    unchanged: tuple[str, ...]
+    """The sources already pinned to what they name."""
+    reconciled: bool
+    """Whether a changed subject's reconciled events changed."""
+    rows: tuple[str, ...]
+    """The rows whose fingerprints changed: their patient-level cache
+    entries are stale (T403), as they should be."""
+
+    @classmethod
+    def from_json(cls, doc: Mapping[str, Any]) -> RepinReport:
+        return cls(
+            tuple(
+                Repinned(str(r["source_id"]), str(r["before"]), str(r["after"]))
+                for r in doc["changed"]
+            ),
+            tuple(str(u) for u in doc["unchanged"]),
+            bool(doc["reconciled"]),
+            tuple(str(r) for r in doc["rows"]),
+        )
+
+
 def _findings(found: Iterable[Mapping[str, Any]]) -> tuple[Finding, ...]:
     return tuple(Finding.from_json(f) for f in found)
 
@@ -625,6 +661,40 @@ class TaskManifest:
         self._doc.pop("fingerprint", None)
         self._changed()
         return self
+
+    def repin(
+        self,
+        base: PathLike | None = None,
+        *,
+        sources: Iterable[str] | None = None,
+        dry_run: bool = False,
+        confine: Confine = None,
+    ) -> RepinReport:
+        """Pin each source (or those whose ids ``sources`` names) to the
+        sample it names now.
+
+        Only a whole version is pinned: its stored root recomputes and its
+        digests hold.  A source that does not open is refused (T301), one
+        whose integrity fails (T302), another subject (T303), another clock
+        (T304) or one this engine cannot certify (T306); refused, nothing
+        changes.  Changed subjects are reconciled again and the declared
+        fingerprint dropped.  With ``dry_run`` the manifest is left as it
+        is and the report says what would change.  ``confine`` says where
+        sources may be opened (:data:`Confine`).
+        """
+        found = _core.task_repin(
+            self._doc,
+            self._base(base),
+            self._confined(base, confine),
+            None if sources is None else [str(s) for s in sources],
+        )
+        report = RepinReport.from_json(found["report"])
+        if report.changed and not dry_run:
+            # The document as written, its subjects the engine's.
+            self._doc["subjects"] = found["manifest"]["subjects"]
+            self._doc.pop("fingerprint", None)
+            self._changed()
+        return report
 
     # -- reading -----------------------------------------------------------
 
@@ -1564,6 +1634,8 @@ __all__ = [
     "Packed",
     "Preflight",
     "Reconciled",
+    "RepinReport",
+    "Repinned",
     "Row",
     "RowView",
     "SlotFill",

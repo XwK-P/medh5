@@ -795,6 +795,21 @@ fn task() -> Command {
                 .arg(json()),
         ))
         .subcommand(confinement(
+            Command::new("repin")
+                .about(
+                    "pin sources to the samples they name now, refusing any that is not a whole version of its subject",
+                )
+                .arg(manifest())
+                .arg(opt("base", "base", "resolve relative source URIs here (default: the manifest's directory)"))
+                .arg(
+                    opt("source", "source", "repin only this source id (repeatable; default: every source)")
+                        .action(clap::ArgAction::Append),
+                )
+                .arg(flag("dry_run", "dry-run", "report what would change and write nothing"))
+                .arg(opt("out", "out", "write the repinned manifest here (default: in place)").short('o'))
+                .arg(json()),
+        ))
+        .subcommand(confinement(
             Command::new("reconcile")
                 .about("record the events several fragments of a subject share, and their digests")
                 .arg(manifest())

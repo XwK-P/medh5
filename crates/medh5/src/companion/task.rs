@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 
 use serde_json::{json, Map, Value};
 
-use super::source::{SourceAccess, SourceRef};
+use super::source::{SourceAccess, SourceRef, SourceState};
 use super::{fingerprint, Finding, Note};
 use crate::clinical::select::SelectionPolicy;
 use crate::json::repr_str;
@@ -212,6 +212,47 @@ pub fn notes_of(doc: &Value) -> Vec<Note> {
         ));
     }
     notes
+}
+
+/// What [`TaskManifest::repin`] did.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct RepinReport {
+    /// The sources pinned to a new version.
+    pub changed: Vec<Repinned>,
+    /// The sources already pinned to what they name.
+    pub unchanged: Vec<String>,
+    /// Whether a changed subject's reconciled events changed.
+    pub reconciled: bool,
+    /// The rows whose fingerprints changed: their patient-level cache
+    /// entries are stale (T403).
+    pub rows: Vec<String>,
+}
+
+impl RepinReport {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "changed": self.changed.iter().map(Repinned::to_json).collect::<Vec<_>>(),
+            "unchanged": self.unchanged,
+            "reconciled": self.reconciled,
+            "rows": self.rows,
+        })
+    }
+}
+
+/// One source pinned to a new version.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct Repinned {
+    pub source_id: String,
+    pub before: String,
+    pub after: String,
+}
+
+impl Repinned {
+    pub fn to_json(&self) -> Value {
+        json!({"source_id": self.source_id, "before": self.before, "after": self.after})
+    }
 }
 
 /// An event version present in several fragments, and the digest they share.
@@ -414,6 +455,89 @@ impl TaskManifest {
         }
         self.fingerprint = None;
         Ok(recorded)
+    }
+
+    /// Pin each source (or those whose ids `only` names) to the sample it
+    /// names now, where `access` lets it be opened.  Only a whole version is
+    /// pinned: its stored root recomputes and its digests hold.  A source
+    /// that does not open is refused (T301), one whose integrity fails
+    /// (T302), one that is another subject (T303) or on another clock
+    /// (T304), or one this engine cannot certify (T306); refused, nothing
+    /// changes.  The subjects that changed are reconciled again, and the
+    /// rows whose fingerprints change --- their patient-level cache entries
+    /// now stale, as they should be --- are listed.  The declared
+    /// fingerprint is dropped: the manifest changed.
+    pub fn repin(&mut self, access: &SourceAccess, only: Option<&BTreeSet<String>>) -> Result<RepinReport> {
+        if let Some(only) = only {
+            let known: BTreeSet<&str> =
+                self.subjects.iter().flat_map(|s| &s.sources).map(|s| s.source_id.as_str()).collect();
+            if let Some(unknown) = only.iter().find(|id| !known.contains(id.as_str())) {
+                return Err(Error::invalid(format!("the manifest has no source {}", repr_str(unknown))));
+            }
+        }
+        let task_fingerprint = self.task_fingerprint();
+        let mut next = self.clone();
+        let mut report = RepinReport::default();
+        for (k, subject) in next.subjects.iter_mut().enumerate() {
+            let mut moved: BTreeSet<String> = BTreeSet::new();
+            for source in &mut subject.sources {
+                if only.is_some_and(|o| !o.contains(&source.source_id)) {
+                    continue;
+                }
+                let at = source.at();
+                let sample = source.open_in(access).map_err(|e| match e.code() {
+                    Some("T301") => e,
+                    _ => Error::coded("T301", format!("{} does not open: {e}", source.locator())),
+                })?;
+                match source.state(&sample, false)? {
+                    SourceState::Pinned => report.unchanged.push(at),
+                    SourceState::Moved => {
+                        let mut pinned = SourceRef::pin(source.uri.clone(), source.sample_key.clone(), &sample)?;
+                        pinned.source_id = source.source_id.clone();
+                        pinned.local_subject_id = source.local_subject_id.clone();
+                        report.changed.push(Repinned {
+                            source_id: at.clone(),
+                            before: source.content_id.clone(),
+                            after: pinned.content_id.clone(),
+                        });
+                        moved.insert(at);
+                        *source = pinned;
+                    }
+                    SourceState::Corrupt(found) => {
+                        let first = found.into_iter().next().map(|f| f.message).unwrap_or_default();
+                        return Err(Error::coded("T302", first));
+                    }
+                }
+            }
+            if moved.is_empty() {
+                continue;
+            }
+            // The new pins as preflight will read them: the sample is still
+            // the subject, on its clock, and certifiable.
+            let history = super::view::load_subject_in(subject, access, false)?;
+            let refused = history.findings.iter().find(|f| {
+                matches!(f.code.as_str(), "T301" | "T302" | "T303" | "T304" | "T306")
+                    && (moved.contains(&f.location) || f.location == subject.subject_id)
+            });
+            if let Some(f) = refused {
+                return Err(Error::coded(&f.code, format!("{} cannot be repinned: {}", f.location, f.message)));
+            }
+            let before = std::mem::take(&mut subject.reconciled);
+            subject.reconciled = super::view::reconcile_in(subject, access)?;
+            report.reconciled |= subject.reconciled != before;
+            let old = &self.subjects[k];
+            for row in self.rows.iter().filter(|r| r.subject_id == subject.subject_id) {
+                let was = self.row_fingerprint_with(&task_fingerprint, Some(old), row);
+                if self.row_fingerprint_with(&task_fingerprint, Some(subject), row) != was {
+                    report.rows.push(row.row_id.clone());
+                }
+            }
+        }
+        if !report.changed.is_empty() {
+            next.fingerprint = None;
+            *self = next;
+        }
+        Ok(report)
     }
 
     /// Refuse an output that is one of the manifest's sources, by any path

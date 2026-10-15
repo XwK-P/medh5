@@ -309,6 +309,16 @@ impl SourceRef {
     }
 
     /// `uri` or `uri::key`, for messages.
+    /// Where a finding about this source is located: its id, else its
+    /// locator.
+    pub(crate) fn at(&self) -> String {
+        if self.source_id.is_empty() {
+            self.locator()
+        } else {
+            self.source_id.clone()
+        }
+    }
+
     pub fn locator(&self) -> String {
         match &self.sample_key {
             Some(k) => format!("{}::{k}", self.uri),
@@ -340,6 +350,29 @@ impl SourceRef {
         }
     }
 
+    /// What `sample` is to this reference: the version it pins, another
+    /// whole version (its stored root recomputes and its digests hold: one
+    /// that could be pinned), or a sample whose own integrity fails, with why.
+    /// `deep` verifies every dataset's bytes, not only the clinical ones.
+    pub fn state(&self, sample: &Sample, deep: bool) -> Result<SourceState> {
+        let Some(stored) = sample.content_id()? else {
+            return Ok(SourceState::Corrupt(vec![Finding::new(
+                "T302",
+                if self.source_id.is_empty() { self.locator() } else { self.source_id.clone() },
+                format!("{} has no content_id: commit it before pinning it", self.locator()),
+            )]));
+        };
+        let as_stored = SourceRef { content_id: stored.clone(), ..self.clone() };
+        let found = as_stored.check(sample, deep)?;
+        Ok(if !found.is_empty() {
+            SourceState::Corrupt(found)
+        } else if stored == self.content_id {
+            SourceState::Pinned
+        } else {
+            SourceState::Moved
+        })
+    }
+
     /// Whether `sample` is the pinned version: its stored `content_id` is the
     /// pin, every dataset the root speaks for carries a digest, the root
     /// recomputes to it, and every clinical dataset's bytes match their
@@ -359,7 +392,8 @@ impl SourceRef {
                 // Only the pin: what a file off its pin stores is nothing the
                 // manifest's author named (task-cache-1 Appendix A).
                 format!(
-                    "{} is not the version the reference pins ({}) --- repin it explicitly if the change is meant",
+                    "{} is not the version the reference pins ({}) --- if the change is meant, repin it (`medh5 task \
+                     repin`, `TaskManifest.repin`)",
                     self.locator(),
                     self.content_id
                 ),
@@ -458,6 +492,18 @@ impl SourceRef {
             local_subject_id: text("local_subject_id"),
         })
     }
+}
+
+/// What a sample is to the reference that names it ([`SourceRef::state`]).
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum SourceState {
+    /// The version the reference pins.
+    Pinned,
+    /// Another whole version: what a repin would pin.
+    Moved,
+    /// Its own integrity fails: nothing can be pinned.
+    Corrupt(Vec<Finding>),
 }
 
 #[cfg(test)]

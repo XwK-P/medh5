@@ -714,7 +714,8 @@ mod tests {
         assert_eq!(Bounds::day_containing(-1), Bounds::new(-DAY, -1));
         assert_eq!(Bounds::day_containing(-DAY), Bounds::new(-DAY, -1));
         let last = Bounds::day_containing(i64::MAX);
-        assert!(last.lo <= i64::MAX && last.hi == i64::MAX);
+        assert_eq!(last.hi, i64::MAX);
+        assert_eq!(last.lo, i64::MAX - i64::MAX.rem_euclid(DAY));
         assert_eq!(Bounds::day_containing(i64::MIN).lo, i64::MIN);
     }
 

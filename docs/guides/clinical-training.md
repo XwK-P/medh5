@@ -106,7 +106,10 @@ medh5 task preflight cohort/progression.task.json
 | `error` | Its sources are wrong: a changed pin (T302), a fragment of another subject (T303), clocks that disagree (T304), unreconciled duplicates (T305) |
 
 A changed source fails its pin; nothing is re-pinned behind your back. Pin again on purpose when the
-change is meant.
+change is meant: `task.repin()`, or `medh5 task repin MANIFEST`, pins each source to the whole version
+it names now, refuses one that is corrupt, another subject or on another clock, and lists the rows
+whose fingerprints change (their patient-level cache entries go stale). `--dry-run` shows what
+would change.
 
 ## Train on it
 
