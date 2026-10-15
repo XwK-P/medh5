@@ -161,7 +161,6 @@ medh5.clinical.records_from
 medh5.collection.SAMPLES_GROUP
 medh5.collection.SUFFIX
 medh5.collection.default_key
-medh5.collection.extract
 medh5.collection.is_collection
 medh5.conformance.CASES
 medh5.conformance.CHECKSUMS

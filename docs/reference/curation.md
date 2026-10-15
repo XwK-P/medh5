@@ -1,7 +1,8 @@
 # Curation records
 
 Who produced this, how good is it, who is it about, and can it be shared.
-Spec §11–§12.
+Spec §11–§12. [Record review, provenance and agreement](../guides/review-and-provenance.md)
+is the how-to.
 
 ## Provenance
 

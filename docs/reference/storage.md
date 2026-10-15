@@ -275,6 +275,9 @@ prove nothing.
 `sample ⊂ collection` is strict containment: a collection is not a sample and
 does not pretend to be one. `medh5 validate` dispatches on the kind.
 
+[Pack small samples into collections](../guides/collections.md) walks through
+packing, splitting over members and verifying them.
+
 ## Reading it without medh5
 
 The point of plain HDF5:

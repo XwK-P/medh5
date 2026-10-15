@@ -314,7 +314,7 @@ compiled extension the modules re-export from, not an API of its own.
 |---|---|---|---|
 | `Collection` | class | A read-only mapping of `sample_key -> Sample` over one shard. | [Python API › Opening](python-api.md#opening) |
 | `default_key` | function | The sample key a file gets when none is supplied: its stem. |  |
-| `extract` | function | Extract one member of a collection into a standalone sample file. |  |
+| `extract` | function | Extract one member of a collection into a standalone sample file. | [Pack small samples into collections › Pack and unpack](../guides/collections.md#pack-and-unpack) |
 | `is_collection` | function | Whether a root declares itself a collection. |  |
 | `open_any` | function | Open a file whatever its kind, resolving *key* inside a collection. | [Python API › Opening](python-api.md#opening) |
 | `open_collection` | function | Open a `.medh5c` shard, read-only. | [Python API › Opening](python-api.md#opening) |
@@ -453,7 +453,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `CHECK_CODES` | constant (`dict`) | Cohort codes. | [Cohort check codes](cohort-checks.md) |
 | `ClassStats` | class | How often a class occurs, over the samples that examined it. |  |
 | `CohortReport` | class | What `medh5.dataset.check` found in a cohort: the manifest it read, the number of samples, every finding and each class's coverage. |  |
-| `compute_stats` | function | Stream a whole cohort, optionally across *workers* threads. | [Build and split a cohort › Compute the statistics](../guides/cohorts.md#compute-the-statistics) |
+| `compute_stats` | function | Stream a whole cohort, optionally across *workers* threads. | [Pack small samples into collections › Members in a cohort](../guides/collections.md#members-in-a-cohort) |
 | `DatasetStats` | class | Everything one streaming pass over a cohort learned. |  |
 | `entries_for` | function | The manifest entries in one file: one per sample, so a collection fans out into one entry per member (each with its `key`). |  |
 | `Entry` | class | One sample's metadata, as far as a cohort needs it. | [Partial labels and coverage › What this buys you at training time](../guides/partial-labels.md#what-this-buys-you-at-training-time) |
@@ -510,7 +510,7 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `ClassStats` | class | How often a class occurs, over the samples that examined it. |  |
-| `compute_stats` | function | Stream a whole cohort, optionally across *workers* threads. | [Build and split a cohort › Compute the statistics](../guides/cohorts.md#compute-the-statistics) |
+| `compute_stats` | function | Stream a whole cohort, optionally across *workers* threads. | [Pack small samples into collections › Members in a cohort](../guides/collections.md#members-in-a-cohort) |
 | `DatasetStats` | class | Everything one streaming pass over a cohort learned. |  |
 | `Moments` | class | Count, mean and M2 for one image key — a Welford accumulator over the finite values folded in. |  |
 | `stats_for` | function | One file's contribution, read plane by plane rather than whole. |  |

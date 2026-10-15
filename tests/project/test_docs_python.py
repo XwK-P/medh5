@@ -128,7 +128,7 @@ SEQUENTIAL_PAGES = [
 ]
 
 
-"""The tutorials that run as one program: each block uses what the last made."""
+"""The pages that run as one program: each block uses what the last made."""
 
 
 @pytest.fixture(scope="module")

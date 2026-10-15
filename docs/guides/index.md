@@ -12,6 +12,7 @@ minutes.
 | **[Detection and boxes](detection.md)** | Boxes at voxel edges, cropping without an off-by-one, 2-D on a slice. |
 | **[Classification and change labels](classification.md)** | Choosing a scope; labels that span an interval. |
 | **[Partial labels and coverage](partial-labels.md)** | Recording what you looked for, not just what you found. |
+| **[Record review, provenance and agreement](review-and-provenance.md)** | Who drew a mask and who checked it, its quality, and how far two raters agree. |
 
 ## Getting data in
 
@@ -40,6 +41,7 @@ minutes.
 | | |
 |---|---|
 | **[Build and split a cohort](cohorts.md)** | Manifests, leakage-free splits, streaming statistics, cross-file checks. |
+| **[Pack small samples into collections](collections.md)** | Many samples in one `.medh5c`: packing, members, splits over members, verifying them. |
 | **[Check a file before training on it](validate.md)** | `validate` versus `verify`, choosing a level, reading a code. |
 
 ## Getting data out
