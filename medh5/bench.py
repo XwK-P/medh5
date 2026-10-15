@@ -49,7 +49,8 @@ class Measurement:
     def from_json(cls, doc: dict[str, Any]) -> Measurement:
         return cls(
             name=str(doc["name"]),
-            value=float(doc["value"]),
+            # `to_json` writes a NaN as `None`, which JSON can carry.
+            value=float("nan") if doc["value"] is None else float(doc["value"]),
             unit=str(doc.get("unit", "ms")),
             target=doc.get("target"),
             description=str(doc.get("description", "")),

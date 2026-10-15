@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -2971,6 +2972,8 @@ class TestResultTypesAreTheEngines:
         assert nan.to_json()["value"] is None
         assert nan.ok is False
         assert "draw" in str(nan)
+        back = Measurement.from_json(nan.to_json())
+        assert math.isnan(back.value) and back.target == 1.0
         met = Measurement("draw", 0.5, target=1.0, detail={"n": 3})
         assert Measurement.from_json(met.to_json()) == met
         assert met.ok and met.to_json()["ok"] is True
