@@ -15,11 +15,13 @@ pub use reader::{
 };
 pub mod writer;
 
-pub use writer::{amend, create, Annotated, ClinicalSource, GridOptions, ImageOptions, QualityArg, SampleWriter};
+pub use writer::{
+    amend, create, Annotated, ClinicalSource, GridOptions, ImageEdit, ImageOptions, QualityArg, SampleWriter,
+};
 pub mod writer_annotations;
 pub mod writer_clinical;
 
 pub use writer_annotations::{
-    annotation_to_masks, transcode, AnnotationOptions, ObjectFields, Placement, SegmentationOptions,
+    annotation_to_masks, transcode, AnnotationOptions, FieldDtype, ObjectFields, Placement, SegmentationOptions,
     SegmentationSource, TransformSpec,
 };

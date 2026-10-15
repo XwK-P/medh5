@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from medh5 import _core
+from medh5._deprecation import warn
 from medh5.sample import Sample
 
 SUFFIX: str = _core.COLLECTION_SUFFIX
@@ -147,7 +148,8 @@ def open_collection(path: str | os.PathLike[str]) -> Collection:
 
 
 def default_key(path: str | os.PathLike[str]) -> str:
-    """The sample key a file gets when none is supplied: its stem."""
+    """The sample key a file gets when none is supplied: its name up to its
+    first dot (medh5 3.0 takes the stem, the name less its last suffix)."""
     return str(_core.default_key(os.fspath(path)))
 
 
@@ -161,9 +163,19 @@ def pack(
 
     Chunks move as raw bytes, so ``unpack(pack(x)) == x`` down to the
     compressed bytes and every ``content_id`` is unchanged.  *keys* name the
-    members (default: each file's stem); they must be unique and valid sample
-    keys.
+    members (default: each file's name up to its first dot); they must be
+    unique and valid sample keys.  A default key that is not the file's stem
+    warns (`FutureWarning`): medh5 3.0 keys the member by the stem.
     """
+    if keys is None:
+        for source in sources:
+            current, stem = default_key(source), Path(source).stem
+            if current != stem:
+                warn(
+                    f"medh5 3.0 keys {os.fspath(source)!r} as {stem!r} (the file "
+                    f"stem), not {current!r}: pass keys= to keep {current!r}",
+                    category=FutureWarning,
+                )
     return Path(
         _core.pack(
             [os.fspath(s) for s in sources],
