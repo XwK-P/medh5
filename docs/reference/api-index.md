@@ -544,7 +544,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `code` | function | Look up a diagnostic code, raising `KeyError` for unknown codes. | [Diagnostic codes › Reading a code](diagnostic-codes.md#reading-a-code) |
 | `CODES` | constant (`dict`) | Every diagnostic code, keyed by code string. | [Python API › Validation](python-api.md#validation) |
 | `codes_for` | function | Every code in one domain, in table order. |  |
-| `CODES_REVISION` | constant (`int`) | The revision of the code table this engine implements (§15.2). |  |
+| `CODES_REVISION` | constant (`int`) | The revision of the code table this engine implements (§15.2). | [Profiles and validation levels › Levels — how much to check](profiles-and-levels.md#levels--how-much-to-check) |
 | `Domain` | type | The area of the specification a diagnostic code belongs to (§15.2). |  |
 | `MEDH5Error` | exception | Base of the package's own exceptions: a file, version, schema, validation or integrity error. | [Python API › Exceptions](python-api.md#exceptions) |
 | `MEDH5FileError` | exception | A file cannot be opened, is not HDF5, or is structurally unreadable. | [Python API › Amending](python-api.md#amending) |

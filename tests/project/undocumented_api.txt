@@ -243,7 +243,6 @@ medh5.document.new_document
 medh5.document.read_document
 medh5.document.read_document_text
 medh5.document.validate_against_schema
-medh5.errors.CODES_REVISION
 medh5.errors.Code
 medh5.errors.Domain
 medh5.errors.MEDH5IntegrityError

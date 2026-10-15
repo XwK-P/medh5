@@ -310,18 +310,29 @@ _MISSING = object()
 _DOTTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
+def _identity(name: str, value: object) -> object:
+    """What a qualified mention of *name* documents: its object, or for a value
+    Python may share between unrelated names (a small int, a string), that
+    value under that name --- `CODES_REVISION` and `EXIT_USAGE` are both the
+    int 2, and are one object."""
+    if isinstance(value, (int, float, str, bytes, type(None))):
+        return (name, type(value).__name__, repr(value))
+    return id(value)
+
+
 def sections(
     names: set[str], qualified: bool = False
-) -> dict[str | tuple[str, int], Section]:
+) -> dict[str | tuple[str, object], Section]:
     """name -> the section that documents it best.
 
     The reference before the guides before anything else; then a section that
     names it as a definition (`mentions`) before one that only uses it; then
     the section naming it most often; then the first.  With *qualified*, a
     name written after its module's path (`medh5.task.SCHEMA`) is counted for
-    that object, under the key `("object", id(value))`, not for the bare name.
+    that object, under the key `("object", _identity(name, value))`, not for
+    the bare name.
     """
-    tally: dict[str | tuple[str, int], dict[Section, list[int]]] = {}
+    tally: dict[str | tuple[str, object], dict[Section, list[int]]] = {}
     order = 0
     for relative in pages():
         for section, code, definition in mentions(relative):
@@ -330,11 +341,11 @@ def sections(
                 for i, word in enumerate(parts):
                     if word not in names:
                         continue
-                    key: str | tuple[str, int] = word
+                    key: str | tuple[str, object] = word
                     if qualified and i and parts[0] == PACKAGE:
                         value = resolve(".".join(parts[: i + 1]))
                         if value is not _MISSING:
-                            key = ("object", id(value))
+                            key = ("object", _identity(word, value))
                     called = definition or re.search(rf"\b{word}\(", code)
                     counts = tally.setdefault(key, {}).setdefault(
                         section, [0, 0, order]
@@ -389,7 +400,7 @@ def rows() -> list[Row]:
             )
         if kind == "constant":
             kind = f"constant (`{type(value).__name__}`)"
-        candidates = [found.get(("object", id(value)))]
+        candidates = [found.get(("object", _identity(name, value)))]
         if len(objects[name]) == 1:
             candidates.append(found.get(name))
         named = [c for c in candidates if c is not None]

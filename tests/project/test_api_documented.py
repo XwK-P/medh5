@@ -101,6 +101,22 @@ def test_a_qualified_name_documents_that_object_alone(rows: list) -> None:
         assert section is None or section.page != "reference/cohort-manifest.md"
 
 
+def test_a_qualified_constant_does_not_document_its_values_twins(rows: list) -> None:
+    """`medh5.errors.CODES_REVISION` is the int 2, which Python shares with
+    every other 2: naming it documented `medh5.cli.EXIT_USAGE` and
+    `medh5.geometry.MIN_SPATIAL` too."""
+    import medh5.cli
+    import medh5.errors
+
+    assert medh5.errors.CODES_REVISION is medh5.cli.EXIT_USAGE  # the trap
+    by_path = {row.path: row for row in rows}
+    revision = by_path["medh5.errors.CODES_REVISION"].section
+    assert revision is not None and revision.page == "reference/profiles-and-levels.md"
+    for twin in ("medh5.cli.EXIT_USAGE", "medh5.geometry.MIN_SPATIAL"):
+        section = by_path[twin].section
+        assert section is None or section.page != "reference/profiles-and-levels.md"
+
+
 def test_a_bare_name_two_objects_share_documents_neither(rows: list) -> None:
     """`load(...)` on the label-set page is `medh5.labels.load`; it says nothing
     of the manifest's or the split's `load`, which their paths document."""
