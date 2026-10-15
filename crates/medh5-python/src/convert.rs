@@ -396,11 +396,30 @@ pub fn i64_array(obj: &Bound<'_, PyAny>) -> PyResult<ArrayD<i64>> {
 }
 
 pub fn f64_vec(obj: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
-    Ok(f64_array(obj)?.iter().copied().collect())
+    Ok(into_vec(f64_array(obj)?))
 }
 
 pub fn i64_vec(obj: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> {
-    Ok(i64_array(obj)?.iter().copied().collect())
+    Ok(into_vec(i64_array(obj)?))
+}
+
+/// The elements in order, taking the array's own buffer when it is laid out
+/// as one, as `typed` returns it: walking a dynamic-rank array element by
+/// element costs ~10 ms a million, with the GIL held.
+fn into_vec<T: Clone>(array: ArrayD<T>) -> Vec<T> {
+    if !array.is_standard_layout() {
+        return array.iter().cloned().collect();
+    }
+    let n = array.len();
+    // C order: the elements are the buffer's `n` from the offset on.
+    let (mut data, offset) = array.into_raw_vec_and_offset();
+    match offset.unwrap_or(0) {
+        0 => {
+            data.truncate(n);
+            data
+        }
+        start => data[start..start + n].to_vec(),
+    }
 }
 
 /// A 2-D float matrix.

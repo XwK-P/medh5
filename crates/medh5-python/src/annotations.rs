@@ -1360,7 +1360,10 @@ fn encode_boxes(
     let cols = Columns::of(class_ids, instance_ids, scores, attributes)?;
     let n_boxes = boxes.shape().first().copied().unwrap_or(0);
     let planes = given(slice_index).map(|s| slice_index_arg(&s, n_boxes)).transpose()?;
-    let encoded = detach_if(py, n_boxes >= DETACH_ROWS, || geo::encode_boxes(&boxes, &cols.view(), planes.as_deref()))?;
+    // `move`: the inputs are freed with the GIL released too, and freeing tens
+    // of megabytes is milliseconds.
+    let encoded =
+        detach_if(py, n_boxes >= DETACH_ROWS, move || geo::encode_boxes(&boxes, &cols.view(), planes.as_deref()))?;
     Ok(AnnotationPayload::wrap(encoded))
 }
 
@@ -1380,7 +1383,8 @@ fn encode_obb(
     let cols = Columns::of(class_ids, instance_ids, scores, attributes)?;
     let (centers, sizes, rotations) = (f64_array(centers)?, f64_array(sizes)?, f64_array(rotations)?);
     let rows = centers.shape().first().copied().unwrap_or(0);
-    let encoded = detach_if(py, rows >= DETACH_ROWS, || geo::encode_obb(&centers, &sizes, &rotations, &cols.view()))?;
+    let encoded =
+        detach_if(py, rows >= DETACH_ROWS, move || geo::encode_obb(&centers, &sizes, &rotations, &cols.view()))?;
     Ok(AnnotationPayload::wrap(encoded))
 }
 
@@ -1402,7 +1406,7 @@ fn encode_keypoints(
     let visibility = given(visibility).map(|v| i64_array(&v)).transpose()?;
     let points = f64_array(points)?;
     let rows = points.shape().first().copied().unwrap_or(0) * slots.len().max(1);
-    let encoded = detach_if(py, rows >= DETACH_ROWS, || {
+    let encoded = detach_if(py, rows >= DETACH_ROWS, move || {
         geo::encode_keypoints(&points, &slots, &cols.view(), visibility.as_ref(), skeleton)
     })?;
     Ok(AnnotationPayload::wrap(encoded))
@@ -1425,7 +1429,7 @@ fn encode_points(
     let weights = given(weights).map(|w| f64_vec(&w)).transpose()?;
     let points = f64_array(points)?;
     let rows = points.shape().first().copied().unwrap_or(0);
-    let encoded = detach_if(py, rows >= DETACH_ROWS, || {
+    let encoded = detach_if(py, rows >= DETACH_ROWS, move || {
         geo::encode_points(
             &points,
             ids.as_deref(),
@@ -1465,7 +1469,7 @@ fn encode_contours(py: Python<'_>, polygons: &Bound<'_, PyAny>, ndim: Option<usi
     // not.
     let found = polygons.try_iter()?.map(|p| polygon_arg(&p?)).collect::<R<Vec<_>>>()?;
     let vertices: usize = found.iter().map(|p| p.vertices.shape().first().copied().unwrap_or(0)).sum();
-    let encoded = detach_if(py, vertices >= DETACH_ROWS, || geo::encode_contours(&found, ndim))?;
+    let encoded = detach_if(py, vertices >= DETACH_ROWS, move || geo::encode_contours(&found, ndim))?;
     Ok(AnnotationPayload::wrap(encoded))
 }
 
