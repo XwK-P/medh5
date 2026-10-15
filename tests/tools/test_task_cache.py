@@ -2269,6 +2269,28 @@ class TestCaches:
             FeatureCache.open(path)
         assert caught.value.code == "T401"
 
+    def test_S7_1_a_moved_cache_validates_through_its_task(self, setup, tmp_path: Path):
+        """An entry copies its task's URI.  Once the samples moved and the
+        task's URIs followed them, every entry was stale (T403) though no
+        content changed: a validator given the task now opens each entry
+        source through the task's reference pinning it."""
+        task, paths = setup
+        cache = tmp_path / "cohort" / "docs.medh5cache"
+        assert build_document_cache(task, cache, HashingTextEncoder(dim=4)).ok
+        moved = tmp_path / "moved"
+        moved.mkdir()
+        for path in paths.values():
+            path.rename(moved / path.name)
+        doc = task.to_json()
+        for subject in doc["subjects"]:
+            for source in subject["sources"]:
+                source["uri"] = f"../moved/{source['uri']}"
+        repointed = TaskManifest(doc, base=tmp_path / "cohort")
+        report = validate_cache(cache, task=repointed, check_rows=False, confine=False)
+        assert report.ok, report.findings
+        alone = validate_cache(cache)
+        assert len(alone.stale) == alone.entries == 6, "without the task: by URI"
+
     def test_S7_1_an_entry_without_sources_is_T401(self, tmp_path: Path):
         """The schema requires a source, and a writer refuses an entry that
         would fail its schema (T401): it was refused as stale (T403)."""
@@ -2770,6 +2792,59 @@ class TestCommandLine:
         argv = ["clinical", "select", str(paths["P-01"]), "--json"]
         assert main([*argv, "--cutoff-hours=1.25e-09"]) == EXIT_OK
         assert json.loads(capsys.readouterr().out)["cutoff_us"] == hours(1.25e-09) == 4
+
+    def test_cache_ls_and_info(self, setup, tmp_path: Path, capsys):
+        task, _ = setup
+        cache = tmp_path / "cohort" / "docs.medh5cache"
+        build_document_cache(task, cache, HashingTextEncoder(dim=4))
+        source = task.subjects[0].sources[0]
+        capsys.readouterr()
+        assert main(["cache", "info", str(cache), "--json"]) == EXIT_OK
+        info = json.loads(capsys.readouterr().out)
+        assert (info["level"], info["entries"], info["sources"]) == ("event", 6, 3)
+        assert info["encoder"]["name"] == HashingTextEncoder.NAME
+        assert info["output"]["shape"] == [4]
+        assert main(["cache", "info", str(cache)]) == EXIT_OK
+        out = capsys.readouterr().out
+        assert "event-level, 6 entries over 3 source versions" in out
+        assert main(["cache", "ls", str(cache), "--json"]) == EXIT_OK
+        assert len(json.loads(capsys.readouterr().out)) == 6
+        argv = ["cache", "ls", str(cache), "--source", source.content_id, "--json"]
+        assert main(argv) == EXIT_OK
+        listed = json.loads(capsys.readouterr().out)
+        assert len(listed) == 2
+        assert {e["sources"][0]["content_id"] for e in listed} == {source.content_id}
+        with open_cache(cache) as opened:
+            assert [CacheEntry.from_json(e) for e in listed] == [
+                e
+                for e in opened.entries
+                if e.sources[0].content_id == source.content_id
+            ], "the entries the reader holds"
+        assert main(["cache", "ls", str(cache)]) == EXIT_OK
+        out = capsys.readouterr().out
+        assert "event document" in out and "rep_v1" in out
+        assert main(["cache", "ls", str(cache), "--row", "P-01@24h", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out) == []
+
+    def test_cache_validate_task_base(self, setup, tmp_path: Path, capsys):
+        """``--task-base`` locates the task's sources when the manifest is
+        kept away from them, as ``task preflight --base`` does."""
+        task, _ = setup
+        cohort = tmp_path / "cohort"
+        cache = cohort / "docs.medh5cache"
+        build_document_cache(task, cache, HashingTextEncoder(dim=4))
+        elsewhere = tmp_path / "tasks"
+        elsewhere.mkdir()
+        manifest = task.save(elsewhere / "t.task.json")
+        argv = ["cache", "validate", str(cache), "--task", str(manifest), "--json"]
+        capsys.readouterr()
+        assert main(argv) == EXIT_ERROR, "the sources are not beside the manifest"
+        capsys.readouterr()
+        assert main([*argv, "--task-base", str(cohort)]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["ok"] is True
+        assert main(["cache", "validate", str(cache), "--task-base", str(cohort)]) == (
+            EXIT_USAGE
+        ), "--task-base without --task"
 
     def test_cutoff_hours_takes_a_negative_exponent_after_equals(self, setup, capsys):
         """``--cutoff-hours -5.5e-07`` reads as a flag; the documented

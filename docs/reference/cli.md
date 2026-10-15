@@ -665,10 +665,32 @@ digest they share — what preflight checks duplicates against. The manifest is
 replaced whole, in place or at `--out`; an `--out` that is one of the task's
 sources, by any path or link, is refused before anything is written.
 
+### `medh5 cache info`
+
+```
+medh5 cache info CACHE [--json]
+```
+
+What a cache holds, from its manifest: its level, encoder, preprocessing and
+output, the task fingerprint and selection it was built for, `fitted_on`, its
+manifest checksum, and how many entries it has over how many distinct source
+versions. Nothing is decoded or checked; `cache validate` checks.
+
+### `medh5 cache ls`
+
+```
+medh5 cache ls CACHE [--source CONTENT_ID] [--row ROW_ID] [--json]
+```
+
+Each entry as the manifest records it: its id, the source versions it pins,
+its event and document (event level) or row and cutoff (patient level), and
+its digest. `--source` keeps the entries reading one source version, by its
+`content_id`; `--row` the entry of one row.
+
 ### `medh5 cache validate`
 
 ```
-medh5 cache validate CACHE [--task MANIFEST] [--base DIR] [--json]
+medh5 cache validate CACHE [--task MANIFEST [--task-base DIR]] [--base DIR] [--json]
                      [--source-root DIR | --any-source-path]
 ```
 
@@ -679,9 +701,13 @@ version owns (T407). With `--task`,
 also that it was built for this task and its cutoffs (T404), fitted on its
 training partition (T405), and encodes only versions its rows admit (T406) —
 the task is preflighted a subject at a time, keeping only each row's cutoff
-and admitted versions. Entries copy their task's source references, so their
-relative URIs resolve against `--base`, by default the task manifest's
-directory with `--task` and the cache's directory without.
+and admitted versions. `--task-base` resolves the task's relative URIs, by
+default against the task manifest's directory. With a task, an entry source
+the task pins (the same `content_id` and `sample_key`) is opened where the
+task's reference says, so a cache whose samples moved validates once the
+task's URIs follow them (contract §7.1). Other entry sources resolve by their
+own URIs against `--base`, by default the task's base with `--task` and the
+cache's directory without.
 
 ## Conformance
 

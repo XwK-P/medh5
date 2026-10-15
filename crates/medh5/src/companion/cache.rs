@@ -826,7 +826,21 @@ pub fn validate_cache_in(path: &Path, check: &CacheCheck<'_>) -> Result<CacheRep
             report.findings.push(Finding::new(e.code().unwrap_or("T402"), &entry.entry_id, e.message()));
         }
     }
-    let access = &check.entries;
+    // An entry source the task pins is opened where the task's reference
+    // says (§7.1): a cache whose samples moved, the task's URIs updated and
+    // its pins unchanged, still validates.  Any other by its own URI.
+    let mut pinned: HashMap<(&str, Option<&str>), (&SourceRef, &SourceAccess)> = HashMap::new();
+    if let Some((task, task_access)) = check.task {
+        for source in task.subjects.iter().flat_map(|s| &s.sources) {
+            pinned.entry((source.content_id.as_str(), source.sample_key.as_deref())).or_insert((source, task_access));
+        }
+    }
+    let locate = |source: &SourceRef| -> (SourceRef, &SourceAccess) {
+        match pinned.get(&(source.content_id.as_str(), source.sample_key.as_deref())) {
+            Some((own, access)) => ((*own).clone(), *access),
+            None => (source.clone(), &check.entries),
+        }
+    };
     // Each source is opened once: for its pin and, at the event level, for
     // what its versions own.
     let event_level = cache.header.level == "event";
@@ -834,9 +848,10 @@ pub fn validate_cache_in(path: &Path, check: &CacheCheck<'_>) -> Result<CacheRep
     for entry in &cache.entries {
         for source in &entry.sources {
             let key = (source.uri.clone(), source.sample_key.clone(), source.content_id.clone());
+            let (located, access) = locate(source);
             let problem = checked
                 .entry(key)
-                .or_insert_with(|| match source.open_in(access) {
+                .or_insert_with(|| match located.open_in(access) {
                     Err(e) => Checked::Failed(format!("{} cannot be reached: {e}", source.locator())),
                     Ok(sample) => match source.check(&sample, false) {
                         Ok(f) if f.is_empty() => Checked::Pinned(event_level.then(|| ownership(source, &sample))),

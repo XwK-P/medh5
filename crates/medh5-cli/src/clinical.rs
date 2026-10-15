@@ -16,7 +16,7 @@ use medh5::clinical::model::{Event, Link, HOUR};
 use medh5::clinical::select::SelectionPolicy;
 use medh5::clinical::ClinicalRecords;
 use medh5::collection::{open_any, AnyFile};
-use medh5::companion::cache::{validate_cache_in, CacheCheck};
+use medh5::companion::cache::{validate_cache_in, CacheCheck, CacheEntry, FeatureCache};
 use medh5::companion::task::notes_of;
 use medh5::companion::{preflight_each_in, write_preflight_noted, Admitted, Note, RowView, SourceAccess, TaskManifest};
 use medh5::h5::file::same_file;
@@ -37,9 +37,11 @@ pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         ("task", Some(("preflight", sub))) => task_preflight(sub, ctx),
         ("task", Some(("reconcile", sub))) => task_reconcile(sub, ctx),
         ("cache", Some(("validate", sub))) => cache_validate(sub, ctx),
+        ("cache", Some(("info", sub))) => cache_info(sub, ctx),
+        ("cache", Some(("ls", sub))) => cache_ls(sub, ctx),
         ("clinical", _) => return Ok(ctx.usage("usage: medh5 clinical {show|select|export|augment|strip}")),
         ("task", _) => return Ok(ctx.usage("usage: medh5 task {validate|preflight|reconcile}")),
-        _ => return Ok(ctx.usage("usage: medh5 cache {validate}")),
+        _ => return Ok(ctx.usage("usage: medh5 cache {info|ls|validate}")),
     };
     match result {
         Err(e) if e.is_medh5() || matches!(e, Error::Io(_) | Error::Value(_) | Error::Key(_)) => {
@@ -487,6 +489,86 @@ fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     Ok(EXIT_OK)
 }
 
+/// What a cache holds, from its manifest: nothing is decoded.
+fn cache_info(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let cache = FeatureCache::open(Path::new(req_str(m, "path")))?;
+    let h = &cache.header;
+    let sources: std::collections::BTreeSet<(&str, Option<&str>)> = cache
+        .entries
+        .iter()
+        .flat_map(|e| &e.sources)
+        .map(|s| (s.content_id.as_str(), s.sample_key.as_deref()))
+        .collect();
+    let info = json!({
+        "path": cache.path.to_string_lossy(),
+        "schema": medh5::companion::cache::SCHEMA,
+        "level": h.level,
+        "encoder": h.encoder,
+        "preprocessing": h.preprocessing,
+        "output": h.output,
+        "task_fingerprint": h.task_fingerprint,
+        "selection": h.selection,
+        "fitted_on": h.fitted_on,
+        "manifest_digest": cache.manifest_digest,
+        "entries": cache.entries.len(),
+        "sources": sources.len(),
+    });
+    if flag(m, "json") {
+        ctx.emit(&info, true);
+        return Ok(EXIT_OK);
+    }
+    let one = |v: &Value| match v {
+        Value::Null => "-".to_string(),
+        Value::String(s) => s.clone(),
+        other => medh5::json::canonical(other),
+    };
+    ctx.print(format!(
+        "{}: {} {}-level, {} entries over {} source versions",
+        req_str(m, "path"),
+        medh5::companion::cache::SCHEMA,
+        h.level,
+        cache.entries.len(),
+        sources.len()
+    ));
+    for key in ["encoder", "preprocessing", "output", "task_fingerprint", "selection", "fitted_on", "manifest_digest"] {
+        ctx.print(format!("  {key:<16}  {}", one(&info[key])));
+    }
+    Ok(EXIT_OK)
+}
+
+/// A cache's entries, as its manifest records them, optionally only those
+/// reading one source version or of one row.
+fn cache_ls(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let cache = FeatureCache::open(Path::new(req_str(m, "path")))?;
+    let source = get_str(m, "source");
+    let row = get_str(m, "row");
+    let shown: Vec<&CacheEntry> = cache
+        .entries
+        .iter()
+        .filter(|e| source.is_none_or(|c| e.sources.iter().any(|s| s.content_id == c)))
+        .filter(|e| row.is_none_or(|r| e.row_id.as_deref() == Some(r)))
+        .collect();
+    if flag(m, "json") {
+        ctx.emit(&Value::Array(shown.iter().map(|e| e.to_json()).collect()), true);
+        return Ok(EXIT_OK);
+    }
+    let rows: Vec<Vec<String>> = shown
+        .iter()
+        .map(|e| {
+            let what = match (&e.event_id, &e.row_id) {
+                (Some(event), _) => format!("{event} {}", e.document_id.as_deref().unwrap_or("-")),
+                (None, Some(row)) => format!("{row} @{}", e.cutoff_us.map_or("-".into(), |c| c.to_string())),
+                (None, None) => "-".into(),
+            };
+            let pins: Vec<String> = e.sources.iter().map(|s| format!("{} {}", s.locator(), s.content_id)).collect();
+            vec![e.entry_id.clone(), pins.join("; "), what, e.digest.clone()]
+        })
+        .collect();
+    let what = if cache.header.level == "event" { "event document" } else { "row @cutoff" };
+    ctx.print(table(&rows, &["entry", "sources", what, "digest"]));
+    Ok(EXIT_OK)
+}
+
 fn cache_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = Path::new(req_str(m, "path"));
     let mut base = get_str(m, "base").map(PathBuf::from);
@@ -494,12 +576,12 @@ fn cache_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         Some(file) => {
             let file = Path::new(file);
             let manifest = TaskManifest::load(file)?;
-            let task_base = file.parent().map(Path::to_path_buf);
+            let task_base = get_str(m, "task_base").map(PathBuf::from).or_else(|| file.parent().map(Path::to_path_buf));
             let access = source_access(m, &manifest, task_base.as_deref(), ctx)?;
             let admitted = Admitted::preflight_in(&manifest, &access, false)?;
-            // The entries copy the task's references, relative to its
-            // directory (task-cache-1 §7.1): resolved against the cache's,
-            // a cache kept anywhere else was all stale.
+            // An entry source the task pins is opened where the task says
+            // (task-cache-1 §7.1); any other resolves by its own URI, which
+            // copied the task's, relative to its base.
             base = base.or(task_base);
             Some((manifest, access, admitted))
         }

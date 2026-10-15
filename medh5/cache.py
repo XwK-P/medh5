@@ -408,10 +408,13 @@ def validate_cache(
     partition, and (``check_rows``) that each row's entry was built at its
     cutoff, from versions it admits, of its own subject's sources.
 
-    ``base`` resolves the entries' relative source URIs; ``task_base`` the
-    task's (default: the manifest's).  Entries copy their task's references,
-    so with a task ``base`` defaults to ``task_base`` (contract §7.1), and to
-    the cache's directory without one.  The row checks run the task's
+    ``task_base`` resolves the task's relative source URIs (default: the
+    manifest's).  With a task, an entry source the task pins --- the same
+    ``content_id`` and ``sample_key`` --- is opened where the task's reference
+    says, so a cache whose samples moved validates once the task is repinned
+    or its URIs updated (contract §7.1).  ``base`` resolves the entry
+    sources the task does not pin, by their own URIs: by default
+    ``task_base`` with a task, the cache's directory without.  The row checks run the task's
     preflight; an event-level cache has no row entries, so
     ``check_rows=False`` spares it that.  A path naming no file raises
     :class:`~medh5.errors.MEDH5FileError`: there is no cache to report on.

@@ -804,16 +804,41 @@ fn task() -> Command {
 }
 
 fn cache() -> Command {
-    group("cache", "feature caches derived from MEDH5 sources (medh5.cache/1)").subcommand(confinement(
+    let cache = || positional("path", "a .medh5cache file");
+    group("cache", "feature caches derived from MEDH5 sources (medh5.cache/1)")
+        .subcommand(
+            Command::new("info")
+                .about("what a cache holds: its level, encoder, output, task and how many entries and sources")
+                .arg(cache())
+                .arg(json()),
+        )
+        .subcommand(
+            Command::new("ls")
+                .about("list a cache's entries: id, source pins, event and document or row and cutoff, digest")
+                .arg(cache())
+                .arg(opt("source", "source", "only the entries reading this source version (its content_id)"))
+                .arg(opt("row", "row", "only the entry of this row"))
+                .arg(json()),
+        )
+        .subcommand(confinement(
         Command::new("validate")
             .about("check a cache's checksums and pins, and --- given a task --- its admissibility (T4xx)")
             .arg(positional("path", "a .medh5cache file"))
             .arg(opt("task", "task", "also check the cache against this task manifest (T404-T406)"))
+            .arg(
+                opt(
+                    "task_base",
+                    "task-base",
+                    "resolve the task's relative source URIs here (default: the task manifest's directory); an entry \
+                     source the task pins is opened where the task says",
+                )
+                .requires("task"),
+            )
             .arg(opt(
                 "base",
                 "base",
-                "resolve the entries' relative source URIs here (default: the manifest's directory with --task, else \
-                 the cache's)",
+                "resolve the relative URIs of entry sources the task does not pin here (default: the task's base \
+                 with --task, else the cache's directory)",
             ))
             .arg(json()),
     ))
