@@ -89,6 +89,15 @@ class TestNnunet:
     ):
         written_as_masks(dataset, tmp_path, monkeypatch)
 
+    def test_S7_a_float_label_volume_is_written_as_its_masks_were(
+        self, dataset, tmp_path, monkeypatch
+    ):
+        """Integer labels stored as float32, as some tools write them."""
+        for path in (dataset / "labelsTr").iterdir():
+            labels = np.asarray(nib.load(str(path)).dataobj).astype(np.float32)
+            nib.save(nib.Nifti1Image(labels, np.eye(4)), str(path))
+        written_as_masks(dataset, tmp_path, monkeypatch)
+
     def test_S11_3_an_nnunet_label_volume_is_exhaustive(self, dataset, tmp_path):
         from medh5.io.nnunetv2 import from_nnunetv2
 

@@ -650,8 +650,12 @@ def _marked(
 
     The ignore label is one above the written values, so a class id once they
     are restored can be the ignore label: restored, its voxels are marked -1,
-    which no label value is.
+    which no label value is.  A volume of floats holding declared integers
+    (``_require_declared`` has checked them) is cast to integers, which a
+    labelmap is.
     """
+    if ids.dtype.kind not in "iu":
+        ids = ids.astype(np.int64)
     if ignored is None:
         return _restored(ids, restore), None
     if not restore and ignore_value not in label_values:

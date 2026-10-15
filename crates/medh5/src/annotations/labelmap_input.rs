@@ -11,20 +11,21 @@
 //! the payload being written, where one mask per class cost the volume's
 //! voxels once per class --- 13.6 GB at 104 classes of 512×512×500.
 //!
-//! What it writes equals what [`encode_masks`] writes for those masks, byte
-//! for byte, with the same [`OverlapStats`] behind the choice; the tests hold
-//! the two routes to each other.
+//! What it writes equals what [`encode_masks`](super::encode::encode_masks)
+//! writes for those masks, byte for byte, with the same [`OverlapStats`]
+//! behind the choice; the tests hold the two routes to each other.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ndarray::{ArrayD, ArrayViewD, Axis, IxDyn, Slice};
 
-use super::encode::{encode_instances, encode_masks, minted_id, EncodeOptions, InstanceInput, BITS_PER_PLANE};
-use super::payload::{Masks, Payload};
+use super::encode::{encode_instances, minted_id, InstanceInput, BITS_PER_PLANE};
+use super::payload::Payload;
 use super::select::{greedy_colour, label_dtype_size, layers_from_colouring, OverlapStats, LOCALIZED_BBOX_FRACTION};
 use crate::array::NdArray;
 use crate::geometry::affine::slices_to_box;
-use crate::json::repr_int_tuple;
+use crate::h5::attrs::AttrValue;
+use crate::json::{repr_int_tuple, repr_str};
 use crate::labels::{check_class_id, IGNORE_ID};
 use crate::{Error, Result};
 
@@ -324,8 +325,9 @@ pub(crate) fn analyse_labelmap<T: LabelValue>(
     Ok(Analysis { stats, values, counts, bounds })
 }
 
-/// Encode the volume as `kind`, as [`encode_masks`] encodes the masks its
-/// values imply.  `in_band` paints the ignore region into a `labelmap` or
+/// Encode the volume as `kind`, as
+/// [`encode_masks`](super::encode::encode_masks) encodes the masks its values
+/// imply.  `in_band` paints the ignore region into a `labelmap` or
 /// `layers`; `start_id` is the first id an `instances` encoding mints.
 pub(crate) fn encode_labelmap_input<T: LabelValue>(
     data: ArrayViewD<'_, T>,
@@ -455,20 +457,24 @@ pub(crate) fn encode_labelmap_input<T: LabelValue>(
             }
             encode_instances(&objects, Some(&stats.spatial_shape), true, Some(&stats.class_ids))
         }
-        // Asked for by name: the masks themselves, as any other encoding of
-        // them is written.
-        other => {
-            let masks: Masks = stats
-                .class_ids
+        // Each class's plane 1.0 where it is, as `encode_masks` writes masks:
+        // 0 and 1 are exact in float16, which `storage_dtype` keeps, and the
+        // map is not normalized.
+        "probmap" => {
+            let (one, zero) = (half::f16::ONE, half::f16::ZERO);
+            let table: Vec<Vec<half::f16>> = classes
                 .iter()
-                .map(|class| {
-                    let holding: Vec<bool> = classes.iter().map(|set| set.contains(class)).collect();
-                    (*class, analysis.map(data.view(), |at| holding[at]))
-                })
+                .map(|set| stats.class_ids.iter().map(|c| if set.contains(c) { one } else { zero }).collect())
                 .collect();
-            let options = EncodeOptions { start_id, colouring: Some(stats.colouring.clone()), ..Default::default() };
-            encode_masks(&masks, other, Some(&stats.spatial_shape), &options)
+            let n = stats.class_ids.len();
+            let mut p = Payload::new("probmap");
+            p.datasets.insert("data".into(), NdArray::F16(stack(data, analysis, n, |at, k| table[at][k])).into());
+            p.attrs = vec![("normalized".to_string(), AttrValue::Bool(false))];
+            p.stacked_axes = 1;
+            p.class_ids = stats.class_ids.clone();
+            Ok(p)
         }
+        other => Err(Error::coded("E404", format!("a labelmap cannot be encoded as {}", repr_str(other)))),
     }
 }
 
