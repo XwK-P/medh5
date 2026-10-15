@@ -490,12 +490,14 @@ pub fn missing_attribute(class: &str, name: &str) -> PyErr {
 /// Define a record class over an engine value type.
 ///
 /// `parse` turns the JSON form into the engine value (validating it);
-/// `dump` turns the engine value back into JSON.
+/// `dump` turns the engine value back into JSON.  Doc comments before the
+/// struct's name become the class's docstring.
 #[macro_export]
 macro_rules! record_class {
     (@nullable) => { false };
     (@nullable $flag:expr) => { $flag };
     (
+        $(#[$meta:meta])*
         $rust:ident, $py:literal, $module:literal, $engine:ty,
         parse = $parse:expr,
         dump = $dump:expr,
@@ -503,6 +505,7 @@ macro_rules! record_class {
         fields = [$($field:expr),* $(,)?]
         $(, methods = { $($methods:tt)* })?
     ) => {
+        $(#[$meta])*
         #[pyclass(module = $module, name = $py, skip_from_py_object, frozen)]
         pub struct $rust {
             /// The record as made.  Its container fields may have been

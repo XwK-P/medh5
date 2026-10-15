@@ -774,7 +774,7 @@ class TestPublication:
         files = {case["file"] for case in load_manifest(suite)["cases"]}
         for text in (
             (suite / "README.md").read_text(encoding="utf-8"),
-            (ROOT / "docs/spec/conformance.md").read_text(encoding="utf-8"),
+            (ROOT / "docs/guides/conformance.md").read_text(encoding="utf-8"),
         ):
             named = set(re.findall(r'"file": "([^"]+)"', text))
             assert named and named <= files, named - files
@@ -1175,6 +1175,7 @@ class TestStatedCounts:
         ".github/workflows/ci.yml",
         "docs/index.md",
         "docs/spec/conformance.md",
+        "docs/guides/conformance.md",
         "docs/spec/medh5-1.0.md",
         # The crates' READMEs are their pages on crates.io; the CLI's said 117
         # for the release whose corpus had 153.
@@ -1222,7 +1223,11 @@ class TestStatedCounts:
         several releases after all three had changed.
         """
 
-        page = (ROOT / "docs/spec/conformance.md").read_text(encoding="utf-8")
+        # The guide holds the how-to the page once did, and its count with it.
+        page = "\n".join(
+            (ROOT / name).read_text(encoding="utf-8")
+            for name in ("docs/spec/conformance.md", "docs/guides/conformance.md")
+        )
         valid = [case for case in CASES if not case.errors]
         expected = {
             r"(\d+) are valid files": len(valid),

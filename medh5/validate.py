@@ -39,6 +39,7 @@ from medh5 import _core
 from medh5.errors import CODES, Severity
 
 Level = Literal["structural", "semantic", "integrity", "strict"]
+"""A validation level (§15.1); each includes the checks of the levels before it."""
 
 LEVELS: tuple[Level, ...] = _core.LEVELS
 

@@ -85,7 +85,7 @@ g = s.grids["ct_tp0"]
 g.shape, g.spacing, g.origin, g.direction
 g.affine                   # (n+1, n+1) index -> world
 g.spatial_shape            # spatial axes only, for a 4-D grid
-g.coord_system             # "LPS"
+g.coord_system             # "LPS", one of medh5.geometry.COORD_SYSTEMS
 g.timepoint                # "tp0"
 g.frame_uid                # frame of reference
 g.physical_size            # extent per spatial axis, in g.units
@@ -435,7 +435,8 @@ not zero — so threshold it first, or pass a `bool` array.
 Every `commit()` runs the validator's structural and semantic error rules over
 the finished file and refuses to write one it would reject, so a file this
 writer produces passes `medh5 validate` at the default level. Grid `units` must
-be one of `mm`, `um`, `m`, `px` (§3.2).
+be one of `mm`, `um`, `m`, `px` (§3.2); `medh5.geometry.MM_PER_UNIT` gives the
+millimetres in one of each length unit (`px` has none).
 
 ### Transforms
 
@@ -557,6 +558,9 @@ support, which 1.1 §2.2 forbids for a version this package does not implement.
 | `augment(path, records, *, out=None)` | Add a history to a 1.0 or 1.1 sample, in place or into `out`; returns the report |
 | `strip(path, out)` | The imaging projection, as a new 1.0 file |
 | `imaging_events_from_timepoints(path)` | Day-precision imaging events from `days_from_baseline` |
+| `utc_us(moment)` | An aware `datetime` as microseconds on a `utc` clock; a naive one is refused |
+| `day_bounds(day, tz=None)` | Every instant of a calendar day on a `utc` clock, inclusive; with no zone, the fifty hours it may be somewhere |
+| `clock_day(t_us)` | The clock day holding an instant, midnight to the last microsecond before the next |
 
 The writer takes the records one at a time — `w.set_clock(...)`,
 `w.add_event(...)`, `w.add_document(...)`, `w.add_link(...)` — or as a
@@ -588,6 +592,10 @@ row.events, row.slots["ct"].image_id, row.target.status
 | `medh5.task.concept_token(kind, code_system, code)` | An event's concept as a vocabulary keys it: the kind, the coding system and the code, a separator inside either escaped so two concepts never share a token |
 | `CacheWriter.add(entry_id, values, *, sources, ...)` | One entry, naming every source version it read; at the patient level also its row, fingerprint, cutoff and the versions it encodes |
 | `CacheWriter.add_row(row, values, ...)` | A preflight row's feature, its id, fingerprint, cutoff, admitted versions and sources taken from the `RowView` |
+| `TaskManifest.repin(base=None, *, sources=None, dry_run=False, confine=None)` | Pin sources to the samples they name now; returns a `RepinReport` (`changed`, a `Repinned` per source, `unchanged`, `reconciled`, `rows`) |
+| `medh5.task.Finding` | One thing wrong with a task, its sources or a cache: its code, a key of `medh5.task.CODES` (contract §9) |
+| `TaskManifest.notes` | What the manifest should state and does not, each a `medh5.task.Note`; unlike a `Finding`, never a failure |
+| `confine=` | On `preflight`, `reconcile` and `repin`, where sources may be opened from (`medh5.task.Confine`): `True` the manifest's base, a directory, or `False` anywhere |
 
 The contract is [Task and cache contract 1](../spec/task-cache-1.md); the
 walk-through is [Train on clinical tasks](../guides/clinical-training.md).
@@ -638,9 +646,10 @@ MEDH5Error
 so a caller can branch on the defect rather than on the message text.
 
 A file that is missing, a directory or unreadable raises the subclass that
-says so, with the system's `errno` and the `filename`, so `except
-FileNotFoundError` catches a missing sample; `str()` is the message alone, as
-before.
+says so (`medh5.errors.MEDH5FileNotFoundError`,
+`medh5.errors.MEDH5IsADirectoryError`, `medh5.errors.MEDH5PermissionError`),
+with the system's `errno` and the `filename`, so `except FileNotFoundError`
+catches a missing sample; `str()` is the message alone, as before.
 
 `MEDH5Error` is the base of the errors this package defines, not of every
 error it raises. HDF5 failing to read a file's bytes — a damaged chunk, say —

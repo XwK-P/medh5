@@ -58,6 +58,7 @@ _LO_LENGTH = 64
 
 
 def require_highdicom() -> Any:
+    """Import highdicom, or raise an ``ImportError`` naming the extra to install."""
     return require("highdicom", extra="dicomseg", purpose="writing DICOM SEG")
 
 

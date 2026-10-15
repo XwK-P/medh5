@@ -855,6 +855,11 @@ impl CostModel {
 
 // -- selection ------------------------------------------------------------------------------
 
+/// Measure a set of class masks: counts, the overlap graph, a colouring and localization (§7.6).
+///
+/// `masks` maps class id to a boolean array, of `spatial_shape` when it is
+/// given. The result, an `OverlapStats`, is what `select_encoding` and
+/// `cost_model` decide by.
 #[pyfunction]
 #[pyo3(signature = (masks, spatial_shape=None))]
 fn analyse(py: Python<'_>, masks: &Bound<'_, PyAny>, spatial_shape: Option<&Bound<'_, PyAny>>) -> R<OverlapStats> {
@@ -863,6 +868,10 @@ fn analyse(py: Python<'_>, masks: &Bound<'_, PyAny>, spatial_shape: Option<&Boun
     Ok(OverlapStats::wrap(py.detach(|| select::analyse(&masks, shape.as_deref()))?))
 }
 
+/// Colour an overlap graph greedily, highest degree first: a dict of class id to layer (§7.6).
+///
+/// `edges` are `(a, b)` pairs of classes that overlap; two classes joined by an
+/// edge never share a colour, so each colour can be one `layers` plane.
 #[pyfunction]
 fn greedy_colour<'py>(
     py: Python<'py>,
@@ -878,6 +887,7 @@ fn greedy_colour<'py>(
     Ok(int_dict(py, select::greedy_colour(&ids, &set))?)
 }
 
+/// Group a colouring of class id to layer into one tuple of class ids per layer, ascending.
 #[pyfunction]
 fn layers_from_colouring<'py>(py: Python<'py>, colouring: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
     let map = colouring_arg(Some(colouring))?.unwrap_or_default();
@@ -885,12 +895,21 @@ fn layers_from_colouring<'py>(py: Python<'py>, colouring: &Bound<'py, PyAny>) ->
     Ok(PyTuple::new(py, layers.into_iter().map(|l| PyTuple::new(py, l)).collect::<PyResult<Vec<_>>>()?)?)
 }
 
+/// Return the bytes per voxel of a labelmap for these class ids: 1 (`uint8`) or 2 (`uint16`).
+///
+/// 1 when every id is at most 254 and no ignore value is painted (`ignore`),
+/// else 2 (§7.1).
 #[pyfunction]
 #[pyo3(signature = (class_ids, *, ignore=false))]
 fn label_dtype_size(class_ids: &Bound<'_, PyAny>, ignore: bool) -> R<usize> {
     Ok(select::label_dtype_size(&ints_of(class_ids)?, ignore))
 }
 
+/// Return the raw, uncompressed bytes each voxel encoding would take for the analysed masks.
+///
+/// `stats` is an `analyse` result; `ignore` says an ignore value will be
+/// painted. The `labelmap` cost is `None` when classes overlap, since a
+/// labelmap cannot hold them (§7.6).
 #[pyfunction]
 #[pyo3(signature = (stats, *, ignore=false))]
 fn cost_model(stats: &Bound<'_, OverlapStats>, ignore: bool) -> CostModel {
@@ -966,6 +985,10 @@ fn encode_layers(
     Ok(AnnotationPayload::wrap(payload))
 }
 
+/// Pack class masks into `uint64` bitplanes, one bit per class, as a `bitmask` payload (§7.3).
+///
+/// `masks` maps class id to a boolean array of `spatial_shape`; `ceil(C / 64)`
+/// planes are stored, least significant bit first.
 #[pyfunction]
 #[pyo3(signature = (masks, spatial_shape=None))]
 fn encode_bitmask(
@@ -978,6 +1001,7 @@ fn encode_bitmask(
     Ok(AnnotationPayload::wrap(py.detach(|| enc::encode_bitmask(&masks, shape.as_deref()))?))
 }
 
+/// Wrap one boolean volume as a `mask` payload.
 #[pyfunction]
 fn encode_mask(py: Python<'_>, mask: &Bound<'_, PyAny>) -> R<AnnotationPayload> {
     let mask = bool_array(mask)?;
@@ -1100,6 +1124,11 @@ fn instances_from_masks<'py>(py: Python<'py>, masks: &Bound<'py, PyAny>, start_i
     Ok(out)
 }
 
+/// Decode any voxel payload into a dict of class id to boolean mask.
+///
+/// A `probmap` is thresholded at `threshold` when given, else at its own
+/// declared threshold. Decoding `instances` needs `spatial_shape` (E405), and a
+/// `mask` decodes as class 1.
 #[pyfunction]
 #[pyo3(signature = (payload, *, spatial_shape=None, threshold=None))]
 fn payload_to_masks<'py>(
@@ -1114,6 +1143,13 @@ fn payload_to_masks<'py>(
     Ok(masks_to_py(py, masks)?)
 }
 
+/// Encode class masks into the voxel encoding `kind` and return the payload.
+///
+/// `kind` is one of `labelmap`, `layers`, `bitmask`, `probmap`, `mask` or
+/// `instances`. The keyword arguments are the encoders' own --- `ignore`,
+/// `ignore_id`, `colouring`, `dtype`, `normalized`, `threshold`, `start_id`,
+/// `store_masks` --- each used by the encodings that take it; another raises
+/// `TypeError`.
 #[pyfunction]
 #[pyo3(signature = (masks, kind, spatial_shape=None, **kwargs))]
 fn encode_masks(
@@ -1243,12 +1279,18 @@ pub fn annotation_handle(obj: &Bound<'_, PyAny>) -> PyResult<std::sync::Arc<medh
     Ok(inner.cast::<crate::reader::AnnotationHandle>()?.get().inner.clone())
 }
 
+/// Whether two mask dicts hold the same classes with identical masks: the losslessness check.
 #[pyfunction]
 fn masks_equal(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> R<bool> {
     let (a, b) = (masks_arg(a)?, masks_arg(b)?);
     Ok(py.detach(|| enc::masks_equal(&a, &b)))
 }
 
+/// Whether transcoding a payload to `to_kind` keeps every class mask and its ignore region (§7.6).
+///
+/// The payload and its transcode are both decoded and compared, the in-band
+/// ignore region (§7.7) included. A conversion `transcode_payload` refuses
+/// raises as it does.
 #[pyfunction]
 #[pyo3(signature = (payload, to_kind, *, spatial_shape=None))]
 fn check_roundtrip(
@@ -1294,6 +1336,10 @@ fn normalize_masks<'py>(
     Ok(PyTuple::new(py, [out.into_any(), PyTuple::new(py, found)?.into_any()])?)
 }
 
+/// Return `class_id` if it is an assignable class id, 1 to 65534 (§5.3).
+///
+/// 0 (background) and 65535 (ignore) raise `MEDH5ValidationError` (E303); an id
+/// outside the range raises E306.
 #[pyfunction]
 fn check_class_id(class_id: &Bound<'_, PyAny>) -> R<i64> {
     Ok(i64::from(medh5::labels::check_class_id(int_of(class_id)?)?))
@@ -1345,6 +1391,12 @@ impl Columns {
     }
 }
 
+/// Pack axis-aligned boxes, `(N, S, 2)` in `[lo, hi]` at voxel edges, as a `boxes` payload (§8.2).
+///
+/// `class_ids` has one id per box; `instance_ids`, `scores` and per-box
+/// `attributes` dicts are optional columns. `slice_index` names one plane per
+/// box, for 2-D boxes on a slice of a 3-D grid. A box with `lo > hi` or a bound
+/// that is not finite raises E406, a column of the wrong length E405.
 #[pyfunction]
 #[pyo3(signature = (boxes, class_ids, *, instance_ids=None, scores=None, attributes=None, slice_index=None))]
 fn encode_boxes(
@@ -1367,6 +1419,12 @@ fn encode_boxes(
     Ok(AnnotationPayload::wrap(encoded))
 }
 
+/// Pack oriented boxes as centres, full edge lengths and rotation matrices, an `obb` payload (§8.3).
+///
+/// `centers` and `sizes` are `(N, S)` and `rotations` `(N, S, S)`, column *k*
+/// the direction of the box's axis *k*. Sizes are full edge lengths, not
+/// half-extents; each rotation must be proper (E407), and centres and sizes
+/// finite (E406).
 #[pyfunction]
 #[pyo3(signature = (centers, sizes, rotations, class_ids, *, instance_ids=None, scores=None, attributes=None))]
 #[allow(clippy::too_many_arguments)]
@@ -1388,6 +1446,12 @@ fn encode_obb(
     Ok(AnnotationPayload::wrap(encoded))
 }
 
+/// Pack `(N, K, S)` keypoints of `N` objects as a `keypoints` payload (§8.4).
+///
+/// `keypoint_class_ids` gives the class of each of the `K` slots and
+/// `class_ids` the class of each object. `visibility` is `(N, K)`: 0 not
+/// labelled, 1 occluded, 2 visible. `skeleton` names a skeleton of the label
+/// set (§5.5).
 #[pyfunction]
 #[pyo3(signature = (points, keypoint_class_ids, class_ids, *, visibility=None, instance_ids=None, scores=None, skeleton=None))]
 #[allow(clippy::too_many_arguments)]
@@ -1412,6 +1476,11 @@ fn encode_keypoints(
     Ok(AnnotationPayload::wrap(encoded))
 }
 
+/// Pack an `(N, S)` point set --- landmarks or seeds --- as a `points` payload (§8.5).
+///
+/// The per-point columns are optional: `class_ids`, `instance_ids`, `names`,
+/// `weights`. `correspondence` names the paired `points` annotation of a
+/// landmark pair (§10.6).
 #[pyfunction]
 #[pyo3(signature = (points, *, class_ids=None, instance_ids=None, names=None, weights=None, correspondence=None))]
 fn encode_points(
@@ -1462,6 +1531,11 @@ pub fn polygon_arg(item: &Bound<'_, PyAny>) -> R<geo::Polygon> {
     Ok(geo::Polygon::new(vertices, class_id, plane, &role)?)
 }
 
+/// Concatenate planar polygons into a `contours` payload with an offset table (§8.6).
+///
+/// Each polygon carries `vertices`, `class_id`, an optional `plane` `(axis,
+/// index)` and a `role`, `outer` or `hole`. An empty list needs `ndim` to shape
+/// the vertex table (E410).
 #[pyfunction]
 #[pyo3(signature = (polygons, *, ndim=None))]
 fn encode_contours(py: Python<'_>, polygons: &Bound<'_, PyAny>, ndim: Option<usize>) -> R<AnnotationPayload> {
@@ -1509,6 +1583,12 @@ fn polygon_depths(polygons: &Bound<'_, PyAny>) -> R<Vec<usize>> {
     Ok(medh5::annotations::depth::polygon_depths(&views))
 }
 
+/// Pack a triangle surface mesh, `(V, 3)` vertices and `(F, 3)` faces, as a `mesh` payload (§8.7).
+///
+/// `normals` and `vertex_class_ids` are per vertex. Several meshes share one
+/// payload through `mesh_offsets` (`M + 1` entries; mesh *m* is faces `[o[m],
+/// o[m+1])`) and `mesh_class_ids`. A face indexing past the vertices raises
+/// E405, offsets that do not delimit the faces E408.
 #[pyfunction]
 #[pyo3(signature = (vertices, faces, *, normals=None, vertex_class_ids=None, mesh_offsets=None, mesh_class_ids=None))]
 fn encode_mesh(
@@ -1549,6 +1629,11 @@ pub fn slice_index_arg(obj: &Bound<'_, PyAny>, n_boxes: usize) -> R<Vec<i64>> {
     Ok(array.iter().copied().collect())
 }
 
+/// Return what is wrong with a `slice_index` column of one plane per box, or `None` (§8.2).
+///
+/// The shape `(n_boxes,)` is checked always. With the index-space `boxes` and
+/// the grid `shape`, each plane of a box flat on one axis is also checked to
+/// lie inside the grid.
 #[pyfunction]
 #[pyo3(signature = (planes, n_boxes, *, boxes=None, shape=None))]
 fn check_slice_index(
@@ -1574,12 +1659,16 @@ fn check_slice_index(
     Ok(geo::check_slice_index(&planes, n_boxes, rows.as_deref(), shape.as_deref()))
 }
 
+/// Return `space` if it is `index` or `world`, else raise E412 (§8.1).
 #[pyfunction]
 fn check_space(space: &str) -> R<String> {
     geo::check_space(space)?;
     Ok(space.to_string())
 }
 
+/// Return `scope` if it is a classification scope, else raise E412 (§9).
+///
+/// The scopes are `sample`, `timepoint`, `grid`, `roi`, `slice` and `instance`.
 #[pyfunction]
 fn check_scope(scope: &str) -> R<String> {
     geo::check_scope(scope)?;
@@ -1606,6 +1695,12 @@ fn assertion_rows<'py>(py: Python<'py>, labels: &Bound<'py, PyAny>) -> R<Bound<'
     )?)
 }
 
+/// Pack label assertions as a `classification` payload over one `scope` (§9).
+///
+/// `labels` is a mapping of class to value, or rows `(class, value[, scope_id[,
+/// scheme, scheme_value]])`; a value is in `[0, 1]`, 1.0 a hard positive and
+/// 0.0 an explicit negative (E404 otherwise). `multilabel=False` allows at most
+/// one positive class per scope unit, and that is checked here.
 #[pyfunction]
 #[pyo3(signature = (labels, *, scope="sample", multilabel=true, scope_ids=None, schemes=None, scheme_values=None))]
 fn encode_classification(

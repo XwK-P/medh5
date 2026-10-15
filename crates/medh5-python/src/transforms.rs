@@ -30,11 +30,17 @@ fn points2(obj: &Bound<'_, PyAny>) -> PyResult<Array2<f64>> {
 
 // -- encoders ---------------------------------------------------------------------------
 
+/// Return the payload of an identity transform, which stores nothing but its endpoints.
 #[pyfunction]
 fn encode_identity() -> AnnotationPayload {
     AnnotationPayload::wrap(enc::encode_identity())
 }
 
+/// Pack a homogeneous world-to-world `(S+1, S+1)` matrix as an `affine` transform payload (§10.3).
+///
+/// The last row must be `[0 ... 0 1]`, every entry finite and the linear part
+/// non-singular (E504). Index-space affines are not storable: compose with the
+/// grids' affines first.
 #[pyfunction]
 fn encode_affine(matrix: &Bound<'_, PyAny>) -> R<AnnotationPayload> {
     Ok(AnnotationPayload::wrap(enc::encode_affine(&f64_array(matrix)?)?))
@@ -62,6 +68,10 @@ fn encode_displacement(
     Ok(AnnotationPayload::wrap(payload))
 }
 
+/// Pack `(S, *cp_shape)` B-spline control-point coefficients as a `bspline` payload (§10.5).
+///
+/// `cp_grid` names the grid of the control points; `order` is 1 or 3 and
+/// `vector_space` `world` or `index` (E502 otherwise).
 #[pyfunction]
 #[pyo3(signature = (control_points, *, cp_grid, order=model::DEFAULT_ORDER, vector_space="world"))]
 fn encode_bspline(
@@ -73,6 +83,10 @@ fn encode_bspline(
     Ok(AnnotationPayload::wrap(enc::encode_bspline(&f64_array(control_points)?, cp_grid, order, vector_space)?))
 }
 
+/// Declare a `composite` transform: two or more component transform ids, applied in order (§10.5).
+///
+/// `T(x) = T_n(... T_1(x))`: the first component is applied first. Fewer than
+/// two components raise E501.
 #[pyfunction]
 fn encode_composite(components: &Bound<'_, PyAny>) -> R<AnnotationPayload> {
     Ok(AnnotationPayload::wrap(enc::encode_composite(&strings(components)?)?))
@@ -98,6 +112,9 @@ fn basis<'py>(py: Python<'py>, order: i64, t: &Bound<'py, PyAny>) -> R<Bound<'py
     Ok(array_to_py(py, out))
 }
 
+/// Return `transform_id` if it is a valid object id, else raise E003.
+///
+/// An id matches `[A-Za-z0-9_.-]{1,128}` and is not a reserved name (§2.3).
 #[pyfunction]
 fn check_transform_id(transform_id: &str) -> R<String> {
     Ok(model::check_transform_id(transform_id)?.to_string())
@@ -105,6 +122,11 @@ fn check_transform_id(transform_id: &str) -> R<String> {
 
 // -- sampling -----------------------------------------------------------------------------
 
+/// Return a boolean array saying which points lie within a lattice's voxel extent, edges included.
+///
+/// `spatial` is the lattice's spatial shape and `points` `(..., S)` continuous
+/// indices; the extent is `[-0.5, n - 0.5]` along an axis of `n` samples
+/// (§10.4).
 #[pyfunction]
 fn inside_extent<'py>(py: Python<'py>, spatial: Vec<usize>, points: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     let points = points2(points)?;
@@ -115,6 +137,7 @@ fn inside_extent<'py>(py: Python<'py>, spatial: Vec<usize>, points: &Bound<'py, 
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[inside.len()]), inside)?))
 }
 
+/// Raise `MEDH5ValidationError` if any of the `inside` flags is false: `extrapolation='error'`.
 #[pyfunction]
 fn refuse_outside(py: Python<'_>, inside: &Bound<'_, PyAny>) -> R<()> {
     let flags = crate::convert::bool_array(inside)?;
@@ -129,6 +152,11 @@ fn field_of(obj: &Bound<'_, PyAny>) -> PyResult<ArrayD<f64>> {
     f64_array(obj)
 }
 
+/// Interpolate `(C, *spatial)` data multilinearly at `(N, S)` continuous indices: an `(N, C)` array.
+///
+/// Beyond the outermost samples `extrapolation` decides: `zero`, `nearest`
+/// (clamped) or `error`, which refuses a point outside the voxel extent
+/// (§10.4).
 #[pyfunction]
 #[pyo3(signature = (field, coords, *, extrapolation="zero"))]
 fn linear_sample<'py>(
@@ -142,6 +170,12 @@ fn linear_sample<'py>(
     Ok(array_to_py(py, sampled.into_dyn()))
 }
 
+/// Interpolate `(C, *spatial)` data with cubic splines at `(N, S)` continuous indices: `(N, C)`.
+///
+/// Between the outermost samples it computes what
+/// `scipy.ndimage.map_coordinates(order=3)` does. Under `zero` and `error`, a
+/// point in the half-voxel margin takes the outermost sample's value; `nearest`
+/// interpolates the edge-extended field (§10.4).
 #[pyfunction]
 #[pyo3(signature = (field, coords, *, extrapolation="zero"))]
 fn cubic_sample<'py>(
@@ -155,6 +189,10 @@ fn cubic_sample<'py>(
     Ok(array_to_py(py, sampled.into_dyn()))
 }
 
+/// Interpolate a field at `(N, S)` continuous indices with the declared `interpolation` (§10.4).
+///
+/// `interpolation` is `linear` or `cubic`, as `linear_sample` and
+/// `cubic_sample` compute it.
 #[pyfunction]
 #[pyo3(signature = (field, coords, *, interpolation="linear", extrapolation="zero"))]
 fn sample_field<'py>(
@@ -169,11 +207,16 @@ fn sample_field<'py>(
     Ok(array_to_py(py, sampled.into_dyn()))
 }
 
+/// Return a grid's `direction @ diag(spacing)`: the `(S, S)` map from index to world displacement.
 #[pyfunction]
 fn linear_part<'py>(py: Python<'py>, grid: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     Ok(array_to_py(py, apply::linear_part(&grid_arg(grid)?).into_dyn()))
 }
 
+/// Convert `(N, S)` displacement vectors in `vector_space` on `grid` to world units (§10.4).
+///
+/// `world` vectors are returned as given; `index` vectors, in voxels along the
+/// grid's axes, are multiplied by the grid's `linear_part`.
 #[pyfunction]
 fn to_world_vectors<'py>(
     py: Python<'py>,
@@ -186,6 +229,10 @@ fn to_world_vectors<'py>(
     Ok(array_to_py(py, world.into_dyn()))
 }
 
+/// Return `det(I + du/dx)` per voxel of a displacement field on `grid`; values `<= 0` mark folding.
+///
+/// `field` is `(S, *spatial)` on `grid` (E503 otherwise), its vectors in
+/// `vector_space` (§10.4). The result has the grid's spatial shape.
 #[pyfunction]
 #[pyo3(signature = (field, grid, *, vector_space="world"))]
 fn jacobian_determinant<'py>(
@@ -198,6 +245,9 @@ fn jacobian_determinant<'py>(
     Ok(array_to_py(py, py.detach(move || apply::jacobian_determinant(&field, &grid, vector_space))?))
 }
 
+/// Return the fraction of Jacobian determinants that are `<= 0`: where the transform folds.
+///
+/// An empty array gives 0.0.
 #[pyfunction]
 fn folding_fraction(py: Python<'_>, determinants: &Bound<'_, PyAny>) -> R<f64> {
     let determinants = f64_array(determinants)?;

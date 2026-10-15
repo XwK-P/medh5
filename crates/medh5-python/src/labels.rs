@@ -15,6 +15,7 @@ use crate::values::{dataclass_repr, json_hash, opt, reduce_via_json};
 
 // -- OntologyCode ----------------------------------------------------------------------
 
+/// A binding of a class to a code of an external vocabulary, such as SNOMED-CT or RadLex (§5.2).
 #[pyclass(module = "medh5.labels", name = "OntologyCode", skip_from_py_object, frozen, eq)]
 #[derive(Clone, PartialEq)]
 pub struct OntologyCode(pub engine::OntologyCode);
@@ -86,6 +87,9 @@ impl OntologyCode {
 
 // -- Relation ----------------------------------------------------------------------------
 
+/// A non-`is_a` edge between two classes of a label set, such as `part_of` (§5.4).
+///
+/// `subject` and `object` are class ids, `predicate` the relation.
 #[pyclass(module = "medh5.labels", name = "Relation", skip_from_py_object, frozen, eq, hash)]
 #[derive(Clone, PartialEq, Hash)]
 pub struct Relation(pub engine::Relation);
@@ -151,6 +155,7 @@ impl Relation {
 
 // -- Skeleton ----------------------------------------------------------------------------
 
+/// A keypoint topology declared by a label set: keypoint class ids and edges between them (§5.5).
 #[pyclass(module = "medh5.labels", name = "Skeleton", skip_from_py_object, frozen, eq, hash)]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Skeleton(pub engine::Skeleton);
@@ -793,11 +798,20 @@ fn keys_arg(keys: &Bound<'_, PyAny>) -> PyResult<Vec<ClassKey>> {
 
 // -- module functions ------------------------------------------------------------------------
 
+/// Return the canonical JSON bytes of a document: sorted keys, no whitespace, UTF-8 (§5.1).
+///
+/// These are the bytes a label set's digest is computed over; the encoding is
+/// defined to the byte.
 #[pyfunction]
 fn canonical_json<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
     Ok(pyo3::types::PyBytes::new(py, &engine::canonical_json(&py_to_json(doc)?)))
 }
 
+/// Mint an inline `LabelSet` from bare class keys, with ids counting up from `start`.
+///
+/// Each class is named from its key in title case, underscores as spaces
+/// (`left_kidney` becomes `Left Kidney`): what the converters do on ingest. Ids
+/// are checked as §5.3 requires.
 #[pyfunction]
 #[pyo3(signature = (keys, *, id, version="1.0.0", start=1))]
 fn from_keys(keys: Vec<String>, id: &str, version: &str, start: i64) -> R<LabelSet> {

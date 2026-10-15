@@ -1206,6 +1206,12 @@ impl TransformHandle {
 
 // -- SamplingIndex -----------------------------------------------------------------------------
 
+/// A reader for one `index/<ann_id>` entry: the sampling index of the `training` profile (§14.3).
+///
+/// It holds per-class voxel counts, bounding boxes and a subsample of
+/// foreground coordinates, so a sampler finds foreground without reading the
+/// annotation. An entry whose `source_digest` no longer matches its annotation
+/// is stale (§13.3).
 #[pyclass(module = "medh5.storage", name = "SamplingIndex", frozen)]
 pub struct IndexHandle {
     pub inner: Arc<EngineIndex>,

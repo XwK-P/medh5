@@ -77,6 +77,8 @@ them:
 s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 ```
 
+`medh5.PROFILES` lists every profile, in the table's order.
+
 | Profile | Requires (spec §1.3) |
 |---|---|
 | `core` | the container, geometry and timepoints, at least one image, integrity — always required |

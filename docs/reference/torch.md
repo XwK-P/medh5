@@ -102,7 +102,9 @@ stitcher.finish()
 A prediction is shaped as its patch, after `channels` when the model returns
 channels (`GridStitcher(ds, channels=3)`); the padding a patch carries past the
 volume is cut off. Overlaps are blended with Gaussian weights, highest at a
-patch's centre, or averaged (`mode="constant"`). `stitcher.pending` maps each
+patch's centre, or averaged (`mode="constant"`): `medh5.sampling.BLEND_MODES`
+lists the two, and `medh5.sampling.blend_weights(patch_size, mode=...)` returns
+a patch's weights. `stitcher.pending` maps each
 file not yet returned to the patches it is missing, and `finish()` refuses,
 naming every such file, rather than return a volume with holes —
 `finish(partial=True)` returns what arrived, `NaN` where nothing did. One
@@ -223,6 +225,9 @@ but not required for correctness**: the handle cache is PID-keyed and re-checks
 ownership on every access, so a forked worker abandons the parent's handles on
 first use rather than reading through or closing them. The callback just does
 that reset eagerly, at worker start, instead of lazily.
+
+[Threads, processes and open files](../explanation/concurrency.md) covers
+workers, threads and `fork` together.
 
 If you need your one `worker_init_fn` slot for seeding or other setup, call it
 from your own:
@@ -395,7 +400,7 @@ to one number:
 | `value`, `has_value` | `(B, N)` | The value, normalised by the fitted statistics; whether there is one — an absent value is not 0 |
 | `unit` | `(B, N)` int | 2 when the value is in the unit its concept was fitted in (and so normalised); 1 when it is in another, or its concept was not fitted — then `value` is 0; 0 without a value |
 | `value_index` | `(B, N)` int | The text value (`value_text`) as a fitted `(concept, value)` pair's index: 0 none, 1 a value the concept never took in training, fitted pairs from 2 (`ConceptVocabulary.n_values` in all) |
-| `comparator` | `(B, N)` int | `eq`, `lt`, ... as `COMPARATORS` index + 1 (`eq` when a value has none); 0 without a value |
+| `comparator` | `(B, N)` int | `eq`, `lt`, ... as `medh5.clinical.COMPARATORS` index + 1 (`eq` when a value has none); 0 without a value |
 | `missing` | `(B, N)` bool | An expected result missing for a source reason: absence, never a negative |
 | `start_age_h`, `end_age_h`, `available_age_h` | `(B, N, 2)` | Effective start, effective end and availability as ages before the cutoff in hours: `[..., 0]` the least, `[..., 1]` the most, equal for an exact instant |
 | `start_known`, `end_known`, `available_known` | `(B, N)` bool | Whether that time is known; an unknown one is zeros, which are not a time |
@@ -412,6 +417,8 @@ orders an unknown time; `order_by = "available"` admits it, as unknown).
 ```bash
 pip install "medh5[monai]"
 ```
+
+`medh5.monai.available()` says whether MONAI imports.
 
 ```python
 from medh5.monai import to_metatensor, from_metatensor, meta_dict, affine_for

@@ -33,6 +33,12 @@ pub fn dataclass_fields(py: Python<'_>, names: &[&str]) -> PyResult<Py<PyDict>> 
 
 // -- Grid ------------------------------------------------------------------------------
 
+/// The lattice of a stored array: its shape, axes and index-to-world geometry (§3.2).
+///
+/// `spacing` and `origin` have one entry per spatial axis, in `units`, and
+/// `direction` is `(S, S)`, column *k* the world direction of spatial axis *k*.
+/// The constructor checks the grid and raises `MEDH5ValidationError` when it
+/// breaks a rule of §3.2.
 #[pyclass(module = "medh5.geometry", name = "Grid", skip_from_py_object, frozen)]
 pub struct Grid(pub EngineGrid, PyOnceLock<Py<PyAny>>);
 
@@ -403,6 +409,10 @@ fn points_through<'py>(
 
 // -- Pyramid -----------------------------------------------------------------------------
 
+/// The multiscale declaration of an image group: its levels, factors, method and grids (§4.3).
+///
+/// `downsample_factors` is `(levels, S)`, relative to level 0, and
+/// `grid_levels` names one grid per level.
 #[pyclass(module = "medh5.geometry", name = "Pyramid", skip_from_py_object, frozen)]
 pub struct Pyramid(pub multiscale::Pyramid);
 
@@ -477,6 +487,11 @@ impl Pyramid {
 
 // -- functions -------------------------------------------------------------------------------
 
+/// Return the `(S+1, S+1)` index-to-world affine built from spacing, origin and direction (§3.3).
+///
+/// `A[:S, :S] = direction @ diag(spacing)` and `A[:S, S] = origin`. Raises
+/// `MEDH5ValidationError` (E109) when the three disagree on the number of
+/// spatial axes.
 #[pyfunction]
 fn build_affine<'py>(
     py: Python<'py>,
@@ -488,6 +503,11 @@ fn build_affine<'py>(
     Ok(array_to_py(py, a.into_dyn()))
 }
 
+/// Split an index-to-world affine back into `(spacing, origin, direction)` arrays (§3.3).
+///
+/// The spacing is the length of each column of the linear part; an axis of
+/// length zero raises `MEDH5ValidationError` (E104), and a matrix that is not
+/// `(S+1, S+1)` raises `ValueError`.
 #[pyfunction]
 fn decompose_affine<'py>(py: Python<'py>, affine: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
     let (spacing, origin, direction) = affine::decompose_affine(&to_matrix(affine)?)?;
@@ -501,6 +521,9 @@ fn decompose_affine<'py>(py: Python<'py>, affine: &Bound<'py, PyAny>) -> R<Bound
     )?)
 }
 
+/// Whether `direction` is a square matrix with `direction.T @ direction == I` to within `tol`.
+///
+/// A matrix that is not square is `False`, never an error (§3.2).
 #[pyfunction]
 #[pyo3(signature = (direction, tol=affine::ORTHONORMAL_TOL))]
 fn is_orthonormal(direction: &Bound<'_, PyAny>, tol: f64) -> PyResult<bool> {
@@ -511,6 +534,9 @@ fn is_orthonormal(direction: &Bound<'_, PyAny>, tol: f64) -> PyResult<bool> {
     Ok(affine::is_orthonormal(&d.into_dimensionality().expect("checked 2-D"), tol))
 }
 
+/// Return `direction` as a float array, raising E102 unless it is orthonormal to within `tol`.
+///
+/// `what` names the matrix in the message of the `MEDH5ValidationError` (§3.2).
 #[pyfunction]
 #[pyo3(signature = (direction, tol=affine::ORTHONORMAL_TOL, *, what="direction"))]
 fn check_orthonormal<'py>(
@@ -524,6 +550,10 @@ fn check_orthonormal<'py>(
     Ok(array_to_py(py, d.into_dyn()))
 }
 
+/// Whether `matrix` is orthonormal to within `tol` and has determinant +1.
+///
+/// A matrix that is not square is `False`. Oriented boxes need a proper
+/// rotation (§8.3).
 #[pyfunction]
 #[pyo3(signature = (matrix, tol=affine::ORTHONORMAL_TOL))]
 fn is_proper_rotation(matrix: &Bound<'_, PyAny>, tol: f64) -> PyResult<bool> {
@@ -534,6 +564,11 @@ fn is_proper_rotation(matrix: &Bound<'_, PyAny>, tol: f64) -> PyResult<bool> {
     Ok(affine::is_proper_rotation(&d.into_dimensionality().expect("checked 2-D"), tol))
 }
 
+/// Map continuous index coordinates to world coordinates through an `(S+1, S+1)` affine (§3.3).
+///
+/// `indices` is `(..., S)`, an integer at a voxel centre; the result has the
+/// same shape, in the grid's units. Raises `ValueError` when the last axis is
+/// not `S` long.
 #[pyfunction]
 fn index_to_world<'py>(
     py: Python<'py>,
@@ -545,6 +580,11 @@ fn index_to_world<'py>(
     points_through(py, indices, s, |flat| affine::index_to_world(&a, flat))
 }
 
+/// Map world coordinates back to continuous index coordinates through an `(S+1, S+1)` affine (§3.3).
+///
+/// `points` is `(..., S)` in the grid's units; the result has the same shape,
+/// an integer at a voxel centre. Raises `ValueError` when the last axis is not
+/// `S` long.
 #[pyfunction]
 fn world_to_index<'py>(
     py: Python<'py>,
@@ -573,6 +613,12 @@ fn box_arg(r#box: &Bound<'_, PyAny>) -> R<Vec<f64>> {
     Ok(b.iter().copied().collect())
 }
 
+/// Convert one `(S, 2)` box at voxel edges to a tuple of `slice(start, stop)`, one per axis (§8.1).
+///
+/// `start = floor(lo + 0.5)` and `stop = floor(hi + 0.5)`: half up, never half
+/// to even. With `shape`, one extent per axis, the slices are clipped to it. A
+/// box with `lo > hi` or a bound that is not finite raises
+/// `MEDH5ValidationError` (E406).
 #[pyfunction]
 #[pyo3(signature = (r#box, shape=None))]
 fn box_to_slices<'py>(py: Python<'py>, r#box: &Bound<'py, PyAny>, shape: Option<Vec<usize>>) -> R<Bound<'py, PyTuple>> {
@@ -590,6 +636,11 @@ fn box_to_slices<'py>(py: Python<'py>, r#box: &Bound<'py, PyAny>, shape: Option<
     Ok(PyTuple::new(py, out)?)
 }
 
+/// Convert `slice(start, stop)` objects to one `(S, 2)` `float32` box at voxel edges (§8.1).
+///
+/// Each axis becomes `[start - 0.5, stop - 0.5]`. A slice with an open stop, a
+/// negative bound, `start > stop` or a step raises `ValueError`: only the array
+/// knows what those select.
 #[pyfunction]
 fn slices_to_box<'py>(py: Python<'py>, slices: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     let mut pairs = Vec::new();
@@ -617,6 +668,11 @@ fn slices_to_box<'py>(py: Python<'py>, slices: &Bound<'py, PyAny>) -> R<Bound<'p
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[pairs.len(), 2]), flat)?))
 }
 
+/// Return the `2**S` corners of an `(S, 2)` axis-aligned box as a `(2**S, S)` array.
+///
+/// Corners are in odometer order, the first axis varying slowest. A box of
+/// another shape raises `MEDH5ValidationError`, and one of more than 16 axes
+/// raises `ValueError`.
 #[pyfunction]
 fn box_corners<'py>(py: Python<'py>, r#box: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     let flat = box_arg(r#box)?;
@@ -625,6 +681,10 @@ fn box_corners<'py>(py: Python<'py>, r#box: &Bound<'py, PyAny>) -> R<Bound<'py, 
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[1 << s, s]), corners)?))
 }
 
+/// Return the `(S, 2)` axis-aligned bounds of a box's corners mapped through an affine.
+///
+/// `box` is `(S, 2)` and `affine` `(S+1, S+1)`: an index-space box at voxel
+/// edges and a grid's affine give the box's world bounds.
 #[pyfunction]
 fn apply_affine_to_box<'py>(
     py: Python<'py>,
@@ -636,16 +696,27 @@ fn apply_affine_to_box<'py>(
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[s, 2]), out)?))
 }
 
+/// Return the volume of one voxel: the product of `spacing`, in the grid's units to the power `S`.
 #[pyfunction]
 fn voxel_volume(spacing: &Bound<'_, PyAny>) -> PyResult<f64> {
     Ok(affine::voxel_volume(&f64_vec(spacing)?))
 }
 
+/// Return a dict describing an affine: `spacing`, `origin`, `direction`, `determinant`, `orthonormal`.
+///
+/// The determinant is that of `direction`, and `orthonormal` is checked to
+/// `ORTHONORMAL_TOL`. Raises as `decompose_affine` does.
 #[pyfunction]
 fn affine_summary<'py>(py: Python<'py>, affine: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     Ok(json_to_py(py, &affine::affine_summary(&to_matrix(affine)?)?)?)
 }
 
+/// Derive the `Grid` of one pyramid level from level 0 and its per-axis downsample factors (§4.3).
+///
+/// `spacing' = spacing * f` and the origin moves by the half-voxel shift
+/// `direction @ (spacing * (f - 1) / 2)`. `shape` defaults to `ceil(shape / f)`
+/// on the spatial axes, which keeps the field of view covered. A `factors` of
+/// the wrong length raises `MEDH5ValidationError` (E105).
 #[pyfunction]
 #[pyo3(signature = (base, factors, grid_id, *, shape=None))]
 fn derive_level_grid(
@@ -657,6 +728,12 @@ fn derive_level_grid(
     Ok(Grid::wrap(multiscale::derive_level_grid(&grid_arg(base)?, &f64_vec(factors)?, grid_id, shape.as_deref())?))
 }
 
+/// Return a message for each pyramid level whose geometry breaks the derivation rule (§4.3).
+///
+/// `levels` are the level grids and `factors` the `(L, S)` downsample factors
+/// relative to `base`, row by row. Spacing is held to `rtol` of the derived
+/// spacing and the origin to `rtol` of the level's voxel. An empty list means
+/// the pyramid conforms.
 #[pyfunction]
 #[pyo3(signature = (base, levels, factors, *, rtol=multiscale::GEOMETRY_RTOL))]
 fn check_pyramid(
@@ -670,6 +747,7 @@ fn check_pyramid(
     Ok(multiscale::check_pyramid(&grid_arg(base)?, &refs, &to_matrix(factors)?, rtol)?)
 }
 
+/// Recover the `(L, S)` downsample factors of pyramid levels from their spacings relative to `base`.
 #[pyfunction]
 fn pyramid_factors<'py>(
     py: Python<'py>,

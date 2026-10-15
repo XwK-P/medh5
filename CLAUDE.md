@@ -54,6 +54,7 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
   && python .github/scripts/third_party_notices.py --check \
   && python .github/scripts/changelog.py check \
   && ruff check . && ruff format --check . && mypy medh5 \
+  && python .github/scripts/api_index.py --check \
   && pytest tests/ --cov=medh5 --cov-fail-under=90 \
   && medh5 conformance run /tmp/corpus \
   && cargo run --release -p medh5-cli -- conformance run /tmp/corpus-native \
@@ -121,6 +122,10 @@ and the CLI are layers over it, and all three read and write the same bytes.
   to the API regenerates it (`python .github/scripts/public_api.py write`),
   and CI's `semver` and `python-api` jobs fail a minor or patch that breaks
   the newest release's API.
+  A new public name also gets a docstring and a mention in its reference
+  page, and `python .github/scripts/api_index.py` regenerates
+  `docs/reference/api-index.md` (`tests/project/undocumented_api.txt` only
+  shrinks).
 - **`conformance`** — the corpus is a *shipped artifact*, not a test fixture:
   third-party implementations run it. The engine builds it
   (`crates/medh5/src/conformance/build.rs`).

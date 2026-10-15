@@ -19,15 +19,22 @@ a block pass that never ran a line: ten blocks failed on their first statement
 and were counted as passing.  A block that genuinely cannot be executed says so
 with an ``<!-- illustrative -->`` comment above its fence, on the page, where a
 reader sees it too.
+
+A tutorial is the exception to "the runner supplies the setup": its blocks build
+on each other, and the setup *is* the lesson.  A page whose first line after the
+title is ``<!-- sequential -->`` runs as one program: every block in order, in
+one scratch copy and one namespace.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
 import sys
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -81,25 +88,48 @@ OPTIONAL = frozenset(
 """Packages a page may import that a given CI job does not install."""
 
 
+SEQUENTIAL = "<!-- sequential -->"
+
+
+"""What a page whose blocks build on each other carries, first after its title."""
+
+
+def _parse(text: str) -> list[tuple[int, str, bool]]:
+    """``(line, code, marked)`` for every fenced Python block of a page."""
+    return [
+        (
+            text.count("\n", 0, match.start("code")) + 1,
+            match.group("code"),
+            MARKER in match.group("marker"),
+        )
+        for match in _FENCE.finditer(text)
+    ]
+
+
+def _is_sequential(text: str) -> bool:
+    """Whether the first line after the page's title is :data:`SEQUENTIAL`."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return len(lines) > 1 and lines[0].startswith("# ") and lines[1] == SEQUENTIAL
+
+
 def _blocks() -> list[tuple[Path, int, str, bool]]:
     """``(page, line, code, marked)`` for every fenced Python block."""
-    out: list[tuple[Path, int, str, bool]] = []
-    for page in [*PAGES, README]:
-        text = page.read_text(encoding="utf-8")
-        for match in _FENCE.finditer(text):
-            line = text.count("\n", 0, match.start("code")) + 1
-            out.append(
-                (
-                    page,
-                    line,
-                    match.group("code"),
-                    MARKER in match.group("marker"),
-                )
-            )
-    return out
+    return [
+        (page, line, code, marked)
+        for page in [*PAGES, README]
+        for line, code, marked in _parse(page.read_text(encoding="utf-8"))
+    ]
 
 
 BLOCKS = _blocks()
+
+
+SEQUENTIAL_PAGES = [
+    page for page in PAGES if _is_sequential(page.read_text(encoding="utf-8"))
+]
+
+
+"""The pages that run as one program: each block uses what the last made."""
 
 
 @pytest.fixture(scope="module")
@@ -268,6 +298,9 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     manifest, _ = scan(root)
     manifest.save(root / "cohort.json")
 
+    # The SEG and RTSTRUCT import guide's DICOM, where the job has the extras.
+    _dicom_examples(root)
+
     nifti = None
     try:
         import nibabel as nib
@@ -295,6 +328,92 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         "paths": [str(case), str(other)],
         "nifti": nifti,
     }
+
+
+DICOM_FRAME = "1.2.826.0.1.3680043.8.498.4711"
+
+
+"""The frame of reference the guide's CT series, SEG and RTSTRUCT share."""
+
+
+def _dicom_examples(root: Path) -> None:
+    """``dicom/ct/``, a CT series; ``dicom/seg.dcm``, a SEG of a liver and a
+    lesion on it; and ``dicom/plan.dcm``, a structure set of two ROIs named
+    ``Lesion`` and one ``Liver``.  Nothing where pydicom or highdicom is not
+    installed: the guide that reads them is skipped there."""
+    try:
+        import highdicom  # noqa: F401
+        from pydicom.uid import generate_uid
+    except ImportError:
+        return
+    from medh5.io.dicom import from_dicom
+    from medh5.io.dicom_seg import to_dicom_seg
+    from tests.helpers import (
+        square_contour,
+        write_dicom_series,
+        write_structure_set,
+    )
+
+    shape = (6, 16, 16)
+    series = write_dicom_series(
+        root / "dicom" / "ct",
+        patient_id="PSEUDO-1",
+        study_uid=generate_uid(),
+        study_date="20260101",
+        shape=shape,
+        spacing=(2.0, 1.0, 1.0),
+        origin=(0.0, 0.0, 0.0),
+        frame_uid=DICOM_FRAME,
+    )
+    # The SEG is exported from a sample of the same series, as a viewer would
+    # write one, and the guide imports it onto a sample with none.
+    drawn = root / "dicom" / "drawn.medh5"
+    from_dicom(root / "dicom" / "ct", drawn, group_by="study")
+    liver = np.zeros(shape, dtype=bool)
+    liver[1:4, 2:8, 2:8] = True
+    tumour = np.zeros(shape, dtype=bool)
+    tumour[2:5, 9:13, 9:13] = True
+    with medh5.amend(drawn) as w:
+        w.label_set(
+            LabelSet(
+                "organs-v1",
+                version="1.0.0",
+                classes=[
+                    LabelClass(1, "liver", "Liver", category="organ"),
+                    LabelClass(2, "lesion", "Lesion", category="lesion"),
+                ],
+            )
+        )
+        w.add_segmentation(
+            "organs",
+            grid="ct_tp0",
+            masks={1: liver, 2: tumour},
+            annotated_classes="all",
+        )
+    to_dicom_seg(drawn, "organs", series["paths"], root / "dicom" / "seg.dcm")
+    with medh5.open(drawn) as sample:
+        grid = sample.grids["ct_tp0"]
+        rois = {
+            1: ("Lesion", [("CLOSED_PLANAR", square_contour(grid, 1, (2, 5), (2, 5)))]),
+            2: (
+                "Lesion",
+                [("CLOSED_PLANAR", square_contour(grid, 3, (8, 11), (8, 11)))],
+            ),
+            3: (
+                "Liver",
+                [("CLOSED_PLANAR", square_contour(grid, 2, (10, 13), (2, 6)))],
+            ),
+        }
+        write_structure_set(root / "dicom" / "plan.dcm", rois, [DICOM_FRAME])
+    drawn.unlink()
+
+
+NEEDS: dict[str, tuple[str, ...]] = {
+    "guides/import-seg-rtstruct.md": ("dicom/seg.dcm", "dicom/plan.dcm"),
+}
+
+
+"""Workspace files a sequential page reads that only some jobs can write."""
 
 
 def _clinical_example() -> Any:
@@ -585,7 +704,12 @@ def _namespace(workspace: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
 
 
 def _runnable() -> list[tuple[Path, int, str]]:
-    return [(p, ln, code) for p, ln, code, marked in BLOCKS if not marked]
+    """The unmarked blocks that run alone: a sequential page's run in order."""
+    return [
+        (p, ln, code)
+        for p, ln, code, marked in BLOCKS
+        if not marked and p not in SEQUENTIAL_PAGES
+    ]
 
 
 @pytest.mark.parametrize(
@@ -602,9 +726,18 @@ def test_documented_python_runs(
     needs: the block is the unit of documentation, and one that no longer runs
     is a claim the code has stopped honouring.
     """
-    # A private copy per block, because the examples write: several pages
-    # create `case.medh5`, and one block clobbering the fixture for the next is
-    # a test order dependency rather than a documentation problem.
+    with _scratch(workspace, tmp_path) as namespace:
+        _execute(page, line, code, namespace)
+
+
+@contextlib.contextmanager
+def _scratch(workspace: dict[str, Any], tmp_path: Path) -> Iterator[dict[str, Any]]:
+    """A private copy of the workspace as the working directory, and a namespace.
+
+    A copy per test, because the examples write: several pages create
+    `case.medh5`, and one block clobbering the fixture for the next is a test
+    order dependency rather than a documentation problem.
+    """
     scratch = tmp_path / "docs"
     shutil.copytree(workspace["root"], scratch)
     # The open sample is a *separate* copy from the one the blocks write.  A
@@ -620,11 +753,41 @@ def test_documented_python_runs(
     here = Path.cwd()
     os.chdir(scratch)
     try:
-        _execute(page, line, code, namespace)
+        yield namespace
     finally:
         os.chdir(here)
         namespace["s"].close()
         namespace["_writer"].abort()
+
+
+@pytest.mark.parametrize(
+    "page", SEQUENTIAL_PAGES, ids=lambda p: str(p.relative_to(DOCS))
+)
+def test_documented_pages_run_in_order(
+    page: Path, workspace: dict[str, Any], tmp_path: Path
+) -> None:
+    """A sequential page runs as one program, top to bottom.
+
+    A tutorial's second block uses what its first wrote, so the blocks share
+    one scratch copy and one namespace, and the failure names the block that
+    stopped the page.
+    """
+    missing = [
+        name
+        for name in NEEDS.get(page.relative_to(DOCS).as_posix(), ())
+        if not (workspace["root"] / name).exists()
+    ]
+    if missing:
+        pytest.skip(f"this job does not write {missing}: pydicom or highdicom absent")
+    with _scratch(workspace, tmp_path) as namespace:
+        _run_in_order(page, page.read_text(encoding="utf-8"), namespace)
+
+
+def _run_in_order(page: Path, text: str, namespace: dict[str, Any]) -> None:
+    """Every unmarked block of *text* in turn, in one *namespace*."""
+    for line, code, marked in _parse(text):
+        if not marked:
+            _execute(page, line, code, namespace)
 
 
 def _execute(page: Path, line: int, code: str, namespace: dict[str, Any]) -> None:
@@ -696,6 +859,32 @@ def test_a_block_using_a_name_nobody_binds_fails() -> None:
         _execute(page, 3, "DataLoader(ds)\n", {})
     with pytest.raises(AssertionError, match="name 'DataLoader'"):
         _execute(page, 3, "DataLoader(ds)\n", {"torch": object()})
+
+
+def test_a_sequential_page_fails_at_the_block_that_fails() -> None:
+    """A page that runs in order carries its names from block to block, and a
+    failure names the block that stopped it, not the page."""
+    page = DOCS / "tutorials" / "example.md"
+    text = (
+        f"# Example\n\n{SEQUENTIAL}\n\n"
+        "```python\nmade = [1]\n```\n\n"
+        "```python\nmade.append(2)\n```\n\n"
+        f"{MARKER}\n```python\nmade.append(None)\n```\n\n"
+        "```python\nassert made == [1, 2, 3]\n```\n"
+    )
+    assert _is_sequential(text)
+    assert not _is_sequential(text.replace(SEQUENTIAL, "Prose first."))
+    namespace: dict[str, Any] = {}
+    with pytest.raises(AssertionError, match=r"example\.md:19 does not run"):
+        _run_in_order(page, text, namespace)
+    # The second block used what the first made; the marked one never ran.
+    assert namespace["made"] == [1, 2]
+
+
+def test_a_sequential_page_runs_only_in_order() -> None:
+    """Its blocks are not also run alone, where the second has no first."""
+    assert SEQUENTIAL_PAGES, "the clinical tutorial runs in order"
+    assert not {p for p, _, _ in _runnable()} & set(SEQUENTIAL_PAGES)
 
 
 @pytest.mark.parametrize("code", ["raise SystemExit(1)", 'raise SystemExit("no")'])

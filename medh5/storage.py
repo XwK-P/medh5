@@ -62,6 +62,7 @@ chunk_report = _core.chunk_report
 # -- codec profiles (§14.2) ------------------------------------------------------
 
 Role = Literal["image", "label", "aux"]
+"""What a dataset holds, which picks its codec profile (§14.2)."""
 
 COMPRESS_MIN_BYTES: int = _core.COMPRESS_MIN_BYTES
 """Datasets smaller than this are stored contiguous and unfiltered."""

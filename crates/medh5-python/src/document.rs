@@ -605,6 +605,12 @@ fn validate_against_schema(doc: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     Ok(engine::validate_against_schema(&py_to_json(doc)?))
 }
 
+/// Start a `SampleDocument` with its two required members, `identity` and `timepoints` (§2.4).
+///
+/// `subject_id` defaults to `sample_id`. `timepoints` is a `Timeline` or a list
+/// of timepoint ids, indexed in order; it defaults to a single `tp0`. Further
+/// keyword arguments are `identity` members, such as `sex` or `bodypart`
+/// (§12.1).
 #[pyfunction]
 #[pyo3(signature = (sample_id, subject_id=None, *, timepoints=None, **identity_fields))]
 fn new_document(

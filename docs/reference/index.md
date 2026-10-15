@@ -8,6 +8,7 @@ What everything is, rather than how to do anything. For task-shaped answers, see
 | | |
 |---|---|
 | **[Python API](python-api.md)** | Reading, writing, amending. |
+| **[API index](api-index.md)** | Every public Python name, its summary and where it is documented. |
 | **[Rust crate](rust.md)** | The format engine itself, as a Rust library. |
 | **[Command line](cli.md)** | Every `medh5` command. |
 | **[PyTorch and MONAI](torch.md)** | Datasets, samplers, collation, the MetaTensor adapter. |
@@ -26,6 +27,9 @@ What everything is, rather than how to do anything. For task-shaped answers, see
 | | |
 |---|---|
 | **[Sample document schema](schema.md)** | Every field of `/meta`. |
+| **[Clinical schema](clinical-schema.md)** | The `clinical/meta` descriptor and the clinical records. |
+| **[Task manifest schema](task-schema.md)** | Every field of a `medh5.task/1` manifest. |
+| **[Cache manifest schema](cache-schema.md)** | Every field of a `medh5.cache/1` manifest. |
 | **[Diagnostic codes](diagnostic-codes.md)** | All 100 codes `medh5 validate` can report. |
 | **[Cohort check codes](cohort-checks.md)** | The `C1xx`–`C5xx` codes `medh5 dataset check` reports. |
 | **[Task and cache codes](../spec/task-cache-1.md#9-finding-codes)** | The `T1xx`–`T4xx` codes `medh5 task` and `medh5 cache` report. |

@@ -273,6 +273,77 @@ def write_legacy_sample(
 # -- two visits, two raters (§7.4, §11.2) ----------------------------------
 
 
+def square_contour(
+    grid: Any, plane: float, rows: tuple[int, int], columns: tuple[int, int]
+) -> np.ndarray:
+    """A square on *plane* whose edges sit on voxel edges, around the voxels
+    of *rows* and *columns* (inclusive), in patient coordinates."""
+    (r0, r1), (c0, c1) = rows, columns
+    corners = [
+        (r0 - 0.5, c0 - 0.5),
+        (r0 - 0.5, c1 + 0.5),
+        (r1 + 0.5, c1 + 0.5),
+        (r1 + 0.5, c0 - 0.5),
+    ]
+    return grid.index_to_world(np.array([[plane, r, c] for r, c in corners], float))
+
+
+def write_structure_set(
+    out: Path,
+    rois: dict[int, tuple[str, list[tuple[str | None, np.ndarray]]]],
+    frames: list[str],
+    *,
+    roi_frames: dict[int, str | None] | None = None,
+) -> Path:
+    """An RTSTRUCT of *rois* --- ``{number: (name, [(type, points), ...])}``,
+    a type of ``None`` stating none --- listing *frames*.  Each ROI states the
+    frame *roi_frames* gives it (``None``: none), else the first listed."""
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import (
+        ExplicitVRLittleEndian,
+        RTStructureSetStorage,
+        generate_uid,
+    )
+
+    structure = Dataset()
+    structure.file_meta = FileMetaDataset()
+    structure.file_meta.MediaStorageSOPClassUID = RTStructureSetStorage
+    structure.file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    structure.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    structure.SOPClassUID = RTStructureSetStorage
+    structure.SOPInstanceUID = structure.file_meta.MediaStorageSOPInstanceUID
+    structure.Modality = "RTSTRUCT"
+    structure.StructureSetLabel = out.stem
+    structure.ReferencedFrameOfReferenceSequence = []
+    for uid in frames:
+        item = Dataset()
+        item.FrameOfReferenceUID = uid
+        structure.ReferencedFrameOfReferenceSequence.append(item)
+    structure.StructureSetROISequence = []
+    structure.ROIContourSequence = []
+    for number, (name, contours) in rois.items():
+        roi = Dataset()
+        roi.ROINumber = number
+        roi.ROIName = name
+        frame = (roi_frames or {}).get(number, frames[0] if frames else None)
+        if frame:
+            roi.ReferencedFrameOfReferenceUID = frame
+        structure.StructureSetROISequence.append(roi)
+        item = Dataset()
+        item.ReferencedROINumber = number
+        item.ContourSequence = []
+        for kind, points in contours:
+            contour = Dataset()
+            if kind is not None:
+                contour.ContourGeometricType = kind
+            contour.NumberOfContourPoints = len(points)
+            contour.ContourData = [float(v) for v in np.asarray(points).reshape(-1)]
+            item.ContourSequence.append(contour)
+        structure.ROIContourSequence.append(item)
+    structure.save_as(str(out), enforce_file_format=True)
+    return out
+
+
 def lesion(z: int, y: int, x: int, r: int) -> np.ndarray:
     mask = np.zeros(SHAPE, dtype=bool)
     mask[z - r : z + r, y - r : y + r, x - r : x + r] = True

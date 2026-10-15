@@ -22,6 +22,11 @@ use crate::records::{field, required, Kind};
 // -- identity ------------------------------------------------------------------------------
 
 record_class!(
+    /// The `identity` member of the sample document: who and what the sample is about (§12.1).
+    ///
+    /// `sample_id` and `subject_id` are required; a sample never spans subjects, so
+    /// splitting by file is subject-safe. Per-occasion identifiers belong to the
+    /// timepoints (§3.7).
     Identity,
     "Identity",
     "medh5.curation",
@@ -39,6 +44,10 @@ record_class!(
 );
 
 record_class!(
+    /// The `cohort` member of the sample document: dataset, site, scanner and split group (§12.2).
+    ///
+    /// `group_id` defaults to the subject (`grouping_key`) and is the grouping key
+    /// for leakage-free splits.
     Cohort,
     "Cohort",
     "medh5.curation",
@@ -62,6 +71,11 @@ record_class!(
 );
 
 record_class!(
+    /// One entry of `splits`: a claim that the sample belongs to a partition of a split set (§12.3).
+    ///
+    /// A claim, not an authority: the dataset-level manifest decides, and
+    /// `manifest_sha256` lets a reader tell a claim that predates the current
+    /// split.
     SplitClaim,
     "SplitClaim",
     "medh5.curation",
@@ -84,6 +98,10 @@ fn parse_deidentification(v: &Value) -> medh5::Result<id_engine::Deidentificatio
 }
 
 record_class!(
+    /// The `deidentification` member: how identifiers were removed from the sample (§11.4).
+    ///
+    /// `method` is required. `from_json` of an absent or empty document is `None`,
+    /// and a file without one is to be treated as potentially identifying.
     Deidentification,
     "Deidentification",
     "medh5.curation",
@@ -106,6 +124,9 @@ record_class!(
     ]
 );
 
+/// Parse the `splits` member of a sample document into a tuple of `SplitClaim`s (§12.3).
+///
+/// `None`, or anything but a list, gives an empty tuple.
 #[pyfunction]
 fn splits_from_json<'py>(py: Python<'py>, docs: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
     let doc = if docs.is_none() { None } else { Some(py_to_json(docs)?) };
@@ -116,6 +137,7 @@ fn splits_from_json<'py>(py: Python<'py>, docs: &Bound<'py, PyAny>) -> R<Bound<'
 // -- provenance ------------------------------------------------------------------------------
 
 record_class!(
+    /// An agent of the provenance graph: a person, software or organization that acts (§11.1).
     Agent,
     "Agent",
     "medh5.curation",
@@ -134,6 +156,11 @@ record_class!(
 );
 
 record_class!(
+    /// One activity of the provenance graph: what an agent did, with its inputs and outputs (§11.1).
+    ///
+    /// `type` is one of `import`, `annotate`, `review`, `predict`, `resample`,
+    /// `register`, `derive`, `deidentify`, `transcode` or `other`; `started` and
+    /// `ended` are RFC 3339 timestamps.
     Activity,
     "Activity",
     "medh5.curation",
@@ -378,6 +405,9 @@ impl Provenance {
     }
 }
 
+/// Return `value` if it is an RFC 3339 timestamp, else raise E604 (§11.1).
+///
+/// `where` names the field in the message of the `MEDH5ValidationError`.
 #[pyfunction]
 #[pyo3(signature = (value, *, r#where))]
 fn check_timestamp(value: &str, r#where: &str) -> R<String> {
@@ -388,6 +418,7 @@ fn check_timestamp(value: &str, r#where: &str) -> R<String> {
 // -- quality --------------------------------------------------------------------------------
 
 record_class!(
+    /// One agreement measurement of a quality record, such as a Dice against another rater (§11.2).
     Agreement,
     "Agreement",
     "medh5.curation",
@@ -403,6 +434,9 @@ record_class!(
 );
 
 record_class!(
+    /// A known defect recorded in a quality record: its code, severity, classes and note (§11.2).
+    ///
+    /// `severity` is `info` (the default), `warning` or `error`.
     Issue,
     "Issue",
     "medh5.curation",
@@ -418,6 +452,10 @@ record_class!(
 );
 
 record_class!(
+    /// What is known about an annotation's trustworthiness: status, confidence, agreement, issues (§11.2).
+    ///
+    /// An annotation names its record by its `quality` attribute. Status changes
+    /// are provenance activities (§11.1), not fields with a history of their own.
     QualityRecord,
     "QualityRecord",
     "medh5.curation",
@@ -441,6 +479,9 @@ record_class!(
     }
 );
 
+/// Parse the `quality` member of a sample document into a dict of key to `QualityRecord` (§11.2).
+///
+/// `None`, or anything but an object, gives an empty dict.
 #[pyfunction]
 fn quality_from_json<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
     let value = if doc.is_none() { None } else { Some(py_to_json(doc)?) };
@@ -452,6 +493,7 @@ fn quality_from_json<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> R<Bound<'
     Ok(out)
 }
 
+/// Serialize a mapping of key to `QualityRecord` (or its JSON form) as the `quality` member (§11.2).
 #[pyfunction]
 fn quality_to_json<'py>(py: Python<'py>, records: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     let mut map = indexmap::IndexMap::new();
@@ -462,6 +504,10 @@ fn quality_to_json<'py>(py: Python<'py>, records: &Bound<'py, PyAny>) -> R<Bound
     Ok(json_to_py(py, &q_engine::quality_to_json(&map))?)
 }
 
+/// Return a mean-Dice `Agreement` from a mapping of class id to that class's Dice (§11.2).
+///
+/// `against` names what the annotation was compared with. An empty mapping is
+/// refused: a mean over no class is not 0.
 #[pyfunction]
 #[pyo3(signature = (per_class, against=None))]
 fn dice_agreement(per_class: &Bound<'_, PyAny>, against: Option<String>) -> R<Agreement> {
@@ -476,6 +522,11 @@ fn dice_agreement(per_class: &Bound<'_, PyAny>, against: Option<String>) -> R<Ag
 // -- timeline --------------------------------------------------------------------------------
 
 record_class!(
+    /// One timepoint of the sample: an observation occasion, in DICOM terms usually one study (§3.7).
+    ///
+    /// `id` and `index`, the 0-based acquisition order, are required.
+    /// `days_from_baseline` survives date shifting and is what models should
+    /// consume.
     Timepoint,
     "Timepoint",
     "medh5.curation",

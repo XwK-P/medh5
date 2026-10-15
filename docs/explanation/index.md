@@ -10,6 +10,9 @@ mistaken for arbitrary.
   export that fails on purpose, and the reasoning. A refusal you do not
   understand looks like a bug; a refusal you do understand is usually telling
   you something true about your data.
+- **[Threads, processes and open files](concurrency.md)** — one HDF5 lock
+  per process, what runs outside it, `fork` and `exec`, writers, and when
+  threads help. Read it before adding either.
 - **[Design rationale](design-rationale.md)** — what 0.x could not express,
   the alternatives weighed for each load-bearing decision, the costs accepted,
   and the non-goals.

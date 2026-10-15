@@ -62,6 +62,7 @@ plane at z = 0 --- and those are exactly the two axes RAS↔LPS flips.
 
 
 def require_nibabel() -> Any:
+    """Import nibabel, or raise an ``ImportError`` naming the extra to install."""
     return require("nibabel", extra="nifti", purpose="NIfTI conversion")
 
 

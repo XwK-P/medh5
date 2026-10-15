@@ -125,6 +125,9 @@ forked worker either way. See [PyTorch and MONAI](../reference/torch.md#the-data
 
 ## Check a batch in several processes
 
+[Threads, processes and open files](../explanation/concurrency.md) says when
+threads help and when processes do.
+
 One lock covers the HDF5 library in a process, so files checked in one process
 take turns however many threads ask. `validate`, `verify`, `fix`, `index build`
 and `recompress` take `--workers N` and run the files in up to *N* processes:
