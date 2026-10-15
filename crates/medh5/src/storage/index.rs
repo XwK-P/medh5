@@ -285,12 +285,12 @@ pub fn build_index(
 pub fn write_index(root: &hdf5::Group, payload: &IndexPayload, codec: &CodecProfile) -> Result<hdf5::Group> {
     let index_root = match ops::child_group(root, "index") {
         Some(g) => g,
-        None => root.create_group("index")?,
+        None => ops::new_group(root, "index")?,
     };
     if ops::exists(&index_root, &payload.ann_id) {
         ops::unlink(&index_root, &payload.ann_id)?;
     }
-    let group = index_root.create_group(&payload.ann_id)?;
+    let group = ops::new_group(&index_root, &payload.ann_id)?;
     let store = |parent: &hdf5::Group, name: &str, array: NdArray, chunks: Option<Vec<usize>>| -> Result<()> {
         let layout = dataset_layout(&array.shape(), array.dtype().itemsize(), codec, Role::Label, chunks);
         data::create(parent, name, &array, &layout)?;
@@ -309,7 +309,7 @@ pub fn write_index(root: &hdf5::Group, payload: &IndexPayload, codec: &CodecProf
         None,
     )?;
     store(&group, "class_bboxes", NdArray::from(payload.class_bboxes.clone().into_dyn()), None)?;
-    let coords = group.create_group("fg_coords")?;
+    let coords = ops::new_group(&group, "fg_coords")?;
     for (class_id, arr) in &payload.fg_coords {
         store(&coords, &class_id.to_string(), NdArray::from(arr.clone().into_dyn()), None)?;
     }

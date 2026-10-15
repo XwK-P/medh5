@@ -90,6 +90,17 @@ pub fn is_dataset(group: &hdf5::Group, name: &str) -> bool {
     node_kind(group, name) == Some(NodeKind::Dataset)
 }
 
+/// Create the group `name` in `parent`, untimed.
+///
+/// HDF5 stamps a group with the time it was created and changed unless told
+/// not to, so two writes of the same content differ in bytes; a dataset is
+/// already written untimed (`h5::data`).  The times are not format content
+/// (no digest covers them), and without them a corpus built twice is the
+/// same bytes.  Every group the engine creates goes through here.
+pub fn new_group(parent: &hdf5::Group, name: &str) -> Result<hdf5::Group> {
+    Ok(parent.create_group_builder().obj_track_times(false).create(name)?)
+}
+
 /// The names in a group, sorted (HDF5's name order).
 pub fn members(group: &hdf5::Group) -> Result<Vec<String>> {
     super::alive(group)?;

@@ -328,7 +328,7 @@ impl CacheWriter {
         }
         let layout = header.output_layout()?;
         let file = AtomicFile::create(path)?;
-        file.handle().create_group("entries")?;
+        ops::new_group(file.handle(), "entries")?;
         Ok(CacheWriter {
             path: path.to_path_buf(),
             header,

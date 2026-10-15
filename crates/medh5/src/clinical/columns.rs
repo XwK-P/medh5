@@ -673,7 +673,7 @@ impl<'a> TableWriter<'a> {
             return Err(Error::coded("E807", format!("`{}` is required and cannot hold a null", spec.name)));
         }
         if self.masks.is_none() {
-            self.masks = Some(self.group.create_group(VALID)?);
+            self.masks = Some(ops::new_group(&self.group, VALID)?);
         }
         let values: Vec<u8> = valid.iter().map(|v| u8::from(*v)).collect();
         let masks = self.masks.clone().expect("created above");
@@ -702,7 +702,7 @@ impl<'a> TableWriter<'a> {
             }
             offsets.push(data.len() as u64);
         }
-        let column = self.group.create_group(spec.name)?;
+        let column = ops::new_group(&self.group, spec.name)?;
         self.create(&column, "data", NdArray::from_vec(&[data.len()], data)?)?;
         self.create(&column, "offsets", NdArray::from_vec(&[offsets.len()], offsets)?)?;
         let valid: Vec<bool> = cells.iter().map(Option::is_some).collect();

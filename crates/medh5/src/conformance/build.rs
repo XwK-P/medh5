@@ -256,6 +256,10 @@ pub(super) fn psi() -> Map<String, Value> {
     fields(json!({"method": "dicom-psi-profile"}))
 }
 
+/// The `created` every corpus sample records, in place of when it was
+/// built: a suite built twice is the same bytes.
+pub(super) const CREATED: &str = "2000-01-01T00:00:00Z";
+
 /// Create, fill, commit: `with medh5.create(...) as w:`.
 pub(super) fn write(
     path: &Path,
@@ -263,6 +267,7 @@ pub(super) fn write(
     body: impl FnOnce(&mut SampleWriter) -> Result<()>,
 ) -> Result<()> {
     let mut writer = create(path, Some(&stem(path)), subject, "portable", &[])?;
+    writer.created = Some(CREATED.to_string());
     body(&mut writer)?;
     writer.commit(true)?;
     Ok(())
@@ -763,9 +768,9 @@ fn longitudinal(path: &Path) -> Result<()> {
     mutate(path, |root| {
         let transforms = match ops::child_group(root, "transforms") {
             Some(g) => g,
-            None => root.create_group("transforms")?,
+            None => ops::new_group(root, "transforms")?,
         };
-        let group = transforms.create_group("tp0_to_tp1")?;
+        let group = ops::new_group(&transforms, "tp0_to_tp1")?;
         data::create(&group, "matrix", &NdArray::from(eye4()), &Layout::contiguous())?;
         // `units` is a MUST (§10.1); this file lacked it until E506 said so.
         for (key, value) in [("kind", "affine"), ("from_frame", FRAME0), ("to_frame", FRAME1), ("units", "mm")] {
@@ -1368,7 +1373,7 @@ fn instances_two_classes(root: &hdf5::Group) -> Result<()> {
     root.unlink("annotations/organs")?;
     let annotations = root.group("annotations")?;
     for (name, (lo, hi), class_id) in [("organs", (1.5f32, 5.5f32), 1u16), ("organs_rater2", (6.5, 9.5), 2)] {
-        let group = annotations.create_group(name)?;
+        let group = ops::new_group(&annotations, name)?;
         let contiguous = Layout::contiguous();
         data::create(&group, "boxes", &NdArray::from_vec(&[1, 3, 2], vec![lo, hi, lo, hi, lo, hi])?, &contiguous)?;
         data::create(&group, "class_ids", &NdArray::from_vec(&[1], vec![class_id])?, &contiguous)?;
@@ -2340,7 +2345,7 @@ fn seventh_batch(cases: &mut Vec<Case>) {
             &["E004"],
             |f| {
                 f.unlink("meta")?;
-                f.create_group("meta")?;
+                ops::new_group(f, "meta")?;
                 Ok(())
             },
         ),
@@ -2364,7 +2369,11 @@ fn seventh_batch(cases: &mut Vec<Case>) {
             |f| {
                 let images = f.group("images")?;
                 let old = images.dataset("CT")?;
-                let text = images.new_dataset::<hdf5::types::FixedAscii<4>>().shape(SHAPE).create("CT.text")?;
+                let text = images
+                    .new_dataset::<hdf5::types::FixedAscii<4>>()
+                    .obj_track_times(false)
+                    .shape(SHAPE)
+                    .create("CT.text")?;
                 for attr in attrs::names(&old)? {
                     attrs::copy_raw(&old, &text, &attr)?;
                 }

@@ -57,6 +57,13 @@ wrote the suite to suite/: 163 cases, see suite/README.md
 Everything an implementer needs is in that directory. Being measured against
 the spec does not require installing this package.
 
+**The suite is reproducible.** Built twice, by the same release, it is the
+same bytes: no file records when it was written. Every sample's `created` is
+`2000-01-01T00:00:00Z`, and no group carries HDF5's creation and
+modification times. So a mirror checks a copy of the suite by publishing it
+again with the release that made it and comparing the two `SHA256SUMS`, with
+no need to trust the copy.
+
 ## The task-and-cache fixtures
 
 The corpus scores a format validator. `companion/` scores an implementation of
