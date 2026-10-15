@@ -191,6 +191,7 @@ __all__ = [
     "SamplingIndex",
     "Skeleton",
     "SplitClaim",
+    "StagedFileHandle",
     "TARGET_STATUSES",
     "TASKS",
     "TASK_SCHEMA",
@@ -462,6 +463,7 @@ __all__ = [
     "resolve_between",
     "resolve_profile_name",
     "rules_for",
+    "same_file",
     "sample_field",
     "sampling_check_pair_mode",
     "sampling_coerce_patch_size",
@@ -488,6 +490,7 @@ __all__ = [
     "source_resolve",
     "spatial_chunk_for",
     "splits_from_json",
+    "stage_file",
     "stale_index_entries",
     "storage_dtype",
     "subtrees_identical",
@@ -514,6 +517,7 @@ __all__ = [
     "verify_root",
     "voxel_volume",
     "world_to_index",
+    "write_atomic",
     "written_version",
 ]
 
@@ -3581,9 +3585,9 @@ class StagedFileHandle:
     def __enter__(self) -> Self: ...
     def __exit__(
         self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
+        exc_type: type[BaseException] | None = None,
+        _exc: BaseException | None = None,
+        _tb: TracebackType | None = None,
     ) -> bool: ...
 
 @final
