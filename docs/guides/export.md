@@ -97,6 +97,20 @@ marching-squares fallback: the contours it would produce are not the contours
 anyone drew, and an RTSTRUCT is a clinical document that asserts they are. Export
 contours you imported, or drew, as contours.
 
+**Markers go out as POINT ROIs.** `--points ANN` (`points=` in Python) writes a
+`points` annotation beside the contours — the one an import of POINT ROIs
+made, or landmarks of your own — one ROI per class, each row a `POINT`
+contour of one point, with `RTROIInterpretedType` `MARKER` (contour ROIs are
+`ORGAN`):
+
+```bash
+medh5 convert to-rtstruct case.medh5 contours out.dcm \
+    --points contours_points --source ct/1.dcm --source ct/2.dcm ...
+```
+
+Every row needs a class (`E402` otherwise), and a class in both annotations is
+refused: an ROI is drawn as areas or as points, not both.
+
 Each ROI takes its class's display name and the label set's colour for it, and
 text beyond ASCII is written as UTF-8 under `SpecificCharacterSet` `ISO_IR 192`.
 The names are used only when every class exported has its own, and each fits

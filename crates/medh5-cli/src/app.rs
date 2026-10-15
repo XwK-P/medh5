@@ -595,6 +595,21 @@ fn convert() -> Vec<Command> {
                      ROIs apart; repeatable",
                 ))
                 .arg(opt(
+                    "points_id",
+                    "points-id",
+                    "id for the points annotation POINT ROIs import into (default: the contours' id + _points)",
+                ))
+                .arg(
+                    opt(
+                        "open_curves",
+                        "open-curves",
+                        "what an ROI of open curves becomes: omit (left out with a warning; polylines arrive in \
+                         2.2.0)",
+                    )
+                    .value_parser(["omit"])
+                    .default_value("omit"),
+                )
+                .arg(opt(
                     "frame_salt",
                     "frame-salt",
                     "the salt `medh5 scrub` pseudonymised the sample's frames with: the RTSTRUCT's frame is compared \
@@ -608,6 +623,7 @@ fn convert() -> Vec<Command> {
                 .arg(positional("annotation", "the contour annotation to export"))
                 .arg(positional("out", "the RTSTRUCT file to write"))
                 .arg(append("source", "source", "a source DICOM file; repeat once per slice").required(true))
+                .arg(opt("points", "points", "a points annotation to write as POINT ROIs (MARKER)"))
                 .arg(opt(
                     "frame_salt",
                     "frame-salt",

@@ -465,6 +465,8 @@ def _from_rtstruct(args: Any) -> int:
         # `--frame-salt`, where the grammar gives this command one.
         frame_salt=getattr(args, "frame_salt", None),
         roi_classes=_numbered(getattr(args, "roi_classes", None), "roi"),
+        points_id=getattr(args, "points_id", None),
+        open_curves=getattr(args, "open_curves", None) or "omit",
     )
     return _finish(report, args)
 
@@ -481,6 +483,7 @@ def _to_rtstruct(args: Any) -> int:
         args.out,
         frame_salt=args.frame_salt,
         report=report,
+        points=getattr(args, "points", None),
     )
     return _finish(report, args)
 

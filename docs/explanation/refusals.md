@@ -253,16 +253,20 @@ source images in another frame than the contours', on export (`E414`). Stored
 as read, contours on an RAS grid or one in metres landed centimetres to metres
 from the anatomy.
 
-**Only areas import.** A medh5 contour is a closed polygon (§8.6), so an import
-takes the ROIs drawn as `CLOSED_PLANAR` contours, and `CLOSEDPLANAR_XOR` ones
-that are nested or apart on every slice, whose exclusive-or is then the holes
-nesting describes. An ROI of `POINT`, `OPEN_PLANAR` or `OPEN_NONPLANAR`
-contours is left out with a warning: filling a line, or recording a class
-examined with nothing in it, would invent an area nobody drew. An ROI mixing
-areas with points or lines is refused, since which of the two it is cannot be
-told, and so is one mixing exclusive-or contours with plain ones, which PS3.3
-C.8.8.6.1 forbids, and one whose exclusive-or contours cross, which nesting no
-longer describes.
+**Areas import as contours, markers as points; open curves are left out.** A
+medh5 contour is a closed polygon (§8.6), so an import takes the ROIs drawn as
+`CLOSED_PLANAR` contours, and `CLOSEDPLANAR_XOR` ones that are nested or apart
+on every slice, whose exclusive-or is then the holes nesting describes. An ROI
+of `POINT` contours becomes rows of a `points` annotation (§8.5), and a POINT
+contour of more than one point is refused: which point it marks cannot be
+told. An ROI of `OPEN_PLANAR` or `OPEN_NONPLANAR` contours is left out with a
+warning naming `open_curves="omit"`: filling a line, or recording a class
+examined with nothing in it, would invent an area nobody drew, and a line
+has no kind to go into before `polylines` (format 1.2, medh5 2.2.0). An ROI
+mixing areas with points or lines is refused, since which of the two it is
+cannot be told, and so is one mixing exclusive-or contours with plain ones,
+which PS3.3 C.8.8.6.1 forbids, and one whose exclusive-or contours cross,
+which nesting no longer describes.
 
 **Every contour must lie in a slice of the grid.** One between two slices,
 across several (drawn on another orientation, or not planar) or outside the grid
@@ -279,6 +283,11 @@ imported such a pair as 105 voxels where 121 were drawn, its roles nested per
 ROI and its rasteriser per class. The refusal names the ROIs and the slice,
 and `--roi NUMBER=KEY` imports them as classes of their own. ROIs of one name
 that cross or lie apart are combined, with a `merged_rois` note.
+
+**Export refuses a class drawn both ways.** `to-rtstruct --points` writes a
+`points` annotation as POINT ROIs beside the contours; a class in both is
+refused, since one ROI is areas or points, never both, and so is a point of no
+class (`E402`): an ROI is a class.
 
 **Export refuses a mask.** `to-rtstruct` on a voxel annotation is an error, not
 a marching-squares fallback: the contours it would produce are not the contours

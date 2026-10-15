@@ -292,8 +292,9 @@ Writing needs `highdicom` (`pip install "medh5[dicomseg]"`).
 ```
 $ medh5 convert from-rtstruct plan.dcm case.medh5 --id contours
 $ medh5 convert from-rtstruct plan.dcm case.medh5 --rasterize
+$ medh5 convert from-rtstruct plan.dcm case.medh5 --points-id markers
 $ medh5 convert to-rtstruct case.medh5 contours out.dcm \
-    --source ct/1.dcm --source ct/2.dcm ...
+    --points markers --source ct/1.dcm --source ct/2.dcm ...
 ```
 
 <!-- illustrative -->
@@ -308,17 +309,27 @@ and the rule it used goes into the provenance graph; a class whose contours
 enclose no voxel centre is a warning, since its empty mask reads as examined
 and absent.
 
-**Only areas import.** A medh5 contour is a closed polygon, so an ROI drawn as
-`CLOSED_PLANAR` contours imports, and so does one drawn as `CLOSEDPLANAR_XOR`
-contours that are nested or apart on every slice, where their exclusive-or is
-the holes the import marks. Exclusive-or contours that cross are refused,
-naming the ROI and the slice, and so is an ROI mixing exclusive-or with another
-type (PS3.3 C.8.8.6.1). An ROI of `POINT`, `OPEN_PLANAR` or `OPEN_NONPLANAR`
-contours — a marker, a brachytherapy applicator — is left out with a warning
-per type (`contour_type`), so no class is minted or marked examined for it; an
-ROI mixing areas with points or curves is refused. A contour stating no type
-is read as `CLOSED_PLANAR`, on a recorded guess, and one of fewer than three
-points is dropped with a warning.
+**Areas import as contours, markers as points.** A medh5 contour is a closed
+polygon, so an ROI drawn as `CLOSED_PLANAR` contours imports, and so does one
+drawn as `CLOSEDPLANAR_XOR` contours that are nested or apart on every slice,
+where their exclusive-or is the holes the import marks. Exclusive-or contours
+that cross are refused, naming the ROI and the slice, and so is an ROI mixing
+exclusive-or with another type (PS3.3 C.8.8.6.1). An ROI of `POINT` contours —
+a marker — imports as rows of a `points` annotation (§8.5), `--points-id ID`
+(`points_id=`, `<id>_points` by default): one row per contour, in the grid's
+world coordinates and the contours' frame, of the ROI's class and named for
+the ROI, with `task` `other`, since a marker is no detection finding; a POINT
+contour of more than one point is refused, and a structure set of points
+alone writes no contours annotation. An explicit `annotated_classes=` list
+is split between the two: a class drawn as points is examined in the points
+annotation, every other class it names in the contours one; `all` applies to
+the contours only. An ROI of `OPEN_PLANAR` or `OPEN_NONPLANAR` contours — a
+brachytherapy applicator — is left out with a warning per type
+(`contour_type`), so no class is minted or marked examined for it:
+`--open-curves omit` (`open_curves="omit"`) is the only value until open
+curves arrive as `polylines` in 2.2.0. An ROI mixing areas with points or
+curves is refused. A contour stating no type is read as `CLOSED_PLANAR`, on a
+recorded guess, and one of fewer than three points is dropped with a warning.
 
 **Every contour lies in a slice of the grid**, along its first axis, within a
 tenth of a slice and at least 0.01 mm, the bound the DICOM import holds slices
@@ -378,7 +389,10 @@ that combine an ROI's contours by exclusive-or or even-odd fill read as medh5
 does. **Crossing contours mean their union** in medh5, and those readers cancel
 the overlap, so two contours of one class that cross on a plane are a warning
 (`crossing_contours`) naming the planes: merge them into one outline where
-such a reader matters.
+such a reader matters. `--points ANN` (`points=`) also writes a `points`
+annotation, one ROI per class of `POINT` contours of one point each, with
+`RTROIInterpretedType` `MARKER` (contour ROIs are `ORGAN`); a row with no
+class (`E402`) and a class in both annotations are refused.
 
 ### nnU-Net v2
 
