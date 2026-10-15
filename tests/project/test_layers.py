@@ -209,13 +209,8 @@ def test_the_guard_refuses_what_2_0_2_did() -> None:
 
 # Tuples the engine also binds that another workstream moves onto `_core`.
 # Each entry names a module attribute; the list must be empty at release.
-VOCABULARY_ALLOWED: frozenset[str] = frozenset(
-    {
-        # W21-11 PR 5 binds the task and cache vocabularies.
-        "medh5.task.LABELS",
-        "medh5.task.STATUSES",
-    }
-)
+# W21-11 (#45) bound the task and cache vocabularies, which emptied it.
+VOCABULARY_ALLOWED: frozenset[str] = frozenset()
 
 
 def _modules() -> list[str]:
