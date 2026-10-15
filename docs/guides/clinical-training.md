@@ -171,6 +171,27 @@ What each part of a batch means, and the masks that keep it honest:
   still train but whose loss term should be masked. It reads occurrences: a `cancelled` outcome
   did not happen and labels nothing, and a `planned` one censors the window it may fall in.
 
+**Mask a loss per class when classes come from different annotations.** `ignore` is one mask for
+the slot: the ignore regions of every annotation that labels or examined one of its classes. When
+rater A labels the liver with an uncertain band and rater B the tumour without one, the band masks
+tumour voxels too, and that supervision is lost. `class_ignore=True` adds `class_ignore[slot]`,
+`(B, K, *patch)`: channel *k* holds only the regions of the annotations of class *k* (1.0 §7.7: a
+region belongs to its annotation), and the padding.
+
+```python
+import torch
+from medh5.torch import ClinicalTaskDataset, collate_clinical
+
+per_class = ClinicalTaskDataset("cohort/progression.task.json", partition="train",
+                                class_ignore=True)
+batch = collate_clinical([per_class[i] for i in range(len(per_class))])
+mask = ~batch["class_ignore"]["ct"]                       # (B, K, *patch)
+loss = torch.nn.functional.binary_cross_entropy_with_logits(
+    torch.zeros_like(batch["label"]["ct"]), batch["label"]["ct"], reduction="none")
+loss = (loss * mask).sum() / mask.sum().clamp(min=1)
+assert torch.equal(batch["class_ignore"]["ct"].any(dim=1), batch["ignore"]["ct"])
+```
+
 **Learned preprocessing is fitted on the training partition.** The concept vocabulary and its
 per-concept value statistics record the split they were fitted on (`fitted_on`); a vocabulary fitted
 on anything else is refused (T405).
@@ -319,6 +340,22 @@ from medh5.torch import collate_clinical, worker_init_fn
 
 loader = DataLoader(train, batch_size=8, num_workers=4, persistent_workers=True,
                     worker_init_fn=worker_init_fn, collate_fn=collate_clinical)
+```
+
+`FileGroupedSampler` takes a clinical dataset too: it groups rows by subject, whose rows all read
+the same sources, so a worker opens a subject's files once per epoch. Under DDP it is also the
+sampler that shards the rows (see [the torch reference](../reference/torch.md#keeping-a-files-items-together)):
+
+```python
+from torch.utils.data import DataLoader
+from medh5.torch import ClinicalTaskDataset, FileGroupedSampler, collate_clinical
+
+train = ClinicalTaskDataset("cohort/progression.task.json", partition="train")
+sampler = FileGroupedSampler(train, seed=0, num_replicas=2, rank=1)
+loader = DataLoader(train, batch_size=4, sampler=sampler, collate_fn=collate_clinical)
+for epoch in range(2):
+    sampler.set_epoch(epoch)      # on every rank
+    rows = [m["row_id"] for batch in loader for m in batch["meta"]]
 ```
 
 The dataset holds only what pickles: the manifest, the preflight's columns, the fitted vocabulary

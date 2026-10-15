@@ -522,6 +522,59 @@ class TestGridPatchDataset:
         assert per_file > 1
         assert tuple(ds[0]["images"]["CT_tp0"].shape) == (8, 8, 8)
         assert ds[0]["meta"]["patch"]["strategy"] == "grid"
+        assert ds[0]["meta"]["cover"] == {"file": 0, "index": 0, "of": per_file}
+        last = ds[len(ds) - 1]["meta"]["cover"]
+        assert last == {"file": 2, "index": per_file - 1, "of": per_file}
+
+    def test_a_cover_stitches_back_into_each_volume(self, indexed_cohort):
+        """An identity model, two workers, shuffled: every file comes back
+        as its image, once its last patch arrives."""
+        from medh5.torch import GridStitcher
+
+        paths = [*indexed_cohort, indexed_cohort[0]]  # one file listed twice
+        ds = GridPatchDataset(paths, (8, 10, 10), overlap=3, images=["CT_tp0"])
+        stitcher = GridStitcher(ds, mode="gaussian")
+        assert set(stitcher.pending.values()) == {len(ds) // 4, 2 * len(ds) // 4}
+        loader = DataLoader(
+            ds,
+            batch_size=3,
+            shuffle=True,
+            num_workers=2,
+            worker_init_fn=worker_init_fn,
+            collate_fn=collate,
+            generator=torch.Generator().manual_seed(0),
+        )
+        volumes: list[tuple[str, Any]] = []
+        for batch in loader:
+            volumes += stitcher.add(batch["images"]["CT_tp0"], batch["meta"])
+        assert stitcher.finish() == []
+        assert sorted(path for path, _ in volumes) == sorted(map(str, paths))
+        assert stitcher.pending == {}
+        for path, volume in volumes:
+            with medh5.open(path) as sample:
+                image = sample.images["CT_tp0"].read(physical=True, dtype=np.float32)
+            assert np.allclose(volume, image, atol=1e-3), path
+
+    def test_finish_names_a_file_missing_patches(self, indexed_cohort):
+        from medh5.torch import GridStitcher
+
+        ds = GridPatchDataset(indexed_cohort[:2], 8, images=["CT_tp0"])
+        stitcher = GridStitcher(ds, channels=1, mode="constant")
+        items = [ds[i] for i in range(len(ds) - 1)]
+        done = []
+        for item in items:
+            prediction = item["images"]["CT_tp0"][None, None]
+            done += stitcher.add(prediction, [item["meta"]])
+        assert [path for path, _ in done] == [str(indexed_cohort[0])]
+        assert stitcher.pending == {str(indexed_cohort[1]): 1}
+        with pytest.raises(MEDH5ValidationError, match=r"case1\.medh5: 1 missing"):
+            stitcher.finish()
+        with pytest.raises(MEDH5ValidationError, match="arrived twice"):
+            stitcher.add(items[-1]["images"]["CT_tp0"][None, None], [items[-1]["meta"]])
+        (partial,) = stitcher.finish(partial=True)
+        assert partial[0] == str(indexed_cohort[1])
+        assert partial[1].shape == (1, *SHAPE)
+        assert np.isnan(partial[1]).any()
 
 
 class TestPairedPatchDataset:
@@ -1425,6 +1478,109 @@ class TestHandleCache:
             thread.join()
         cache.close_all()
         assert not failures, failures[:1]
+
+
+class _Grouped:
+    """A dataset reduced to what `FileGroupedSampler` reads: its groups."""
+
+    GROUPS = ([0, 1, 2], [3, 4], [5], [6, 7, 8, 9], [10, 11, 12])
+
+    def __init__(self, groups: Any = GROUPS) -> None:
+        self._groups = [list(g) for g in groups]
+
+    def file_groups(self) -> list[list[int]]:
+        return self._groups
+
+
+class TestFileGroupedSamplerDDP:
+    """Each rank reads one contiguous share of the epoch's file order."""
+
+    def _sampler(self, **kwargs: Any) -> Any:
+        from medh5.torch import FileGroupedSampler
+
+        return FileGroupedSampler(_Grouped(), seed=7, **kwargs)
+
+    def test_ddp_ranks_partition_the_epoch(self):
+        for replicas in (2, 3, 4):
+            shares = []
+            for rank in range(replicas):
+                sampler = self._sampler(num_replicas=replicas, rank=rank)
+                sampler.set_epoch(3)
+                shares.append(list(sampler))
+            one = self._sampler()
+            one.set_epoch(3)
+            whole = list(one)
+            joined = [i for share in shares for i in share]
+            # The one-replica order, extended cyclically to fill the last share.
+            assert joined[: len(whole)] == whole
+            assert joined[len(whole) :] == whole[: len(joined) - len(whole)]
+            assert {len(share) for share in shares} == {len(shares[0])}
+
+    def test_a_file_is_split_only_at_a_slice_boundary(self):
+        groups = _Grouped.GROUPS
+        file_of = {i: f for f, group in enumerate(groups) for i in group}
+        for replicas in (2, 3, 4):
+            ranks: dict[int, set[int]] = {}
+            for rank in range(replicas):
+                sampler = self._sampler(num_replicas=replicas, rank=rank)
+                for j, index in enumerate(sampler):
+                    if rank * len(sampler) + j >= len(file_of):
+                        break  # the cyclic padding repeats the epoch's start
+                    ranks.setdefault(file_of[index], set()).add(rank)
+            split = [f for f, seen in ranks.items() if len(seen) > 1]
+            assert len(split) <= replicas - 1, (replicas, ranks)
+            for f in split:
+                seen = sorted(ranks[f])
+                assert seen == list(range(seen[0], seen[-1] + 1)), "neighbours"
+
+    def test_one_replica_is_the_2_0_2_order(self):
+        """With one replica the order is 2.0.2's: the same generator calls."""
+        sampler = self._sampler()
+        sampler.set_epoch(3)
+        assert list(sampler) == GOLDEN_2_0_2
+        assert len(sampler) == 13
+
+    def test_drop_last_truncates(self):
+        shares = [
+            list(self._sampler(num_replicas=3, rank=rank, drop_last=True))
+            for rank in range(3)
+        ]
+        assert [len(share) for share in shares] == [4, 4, 4]
+        joined = [i for share in shares for i in share]
+        assert len(set(joined)) == 12
+        assert len(self._sampler(num_replicas=3, rank=0, drop_last=True)) == 4
+        assert len(self._sampler(num_replicas=3, rank=0)) == 5
+
+    def test_the_length_is_the_same_every_epoch(self):
+        sampler = self._sampler(num_replicas=4, rank=3)
+        for epoch in range(4):
+            sampler.set_epoch(epoch)
+            assert len(list(sampler)) == len(sampler) == 4
+        assert sampler.num_replicas == 4 and sampler.rank == 3
+
+    def test_a_rank_out_of_range_is_refused(self):
+        with pytest.raises(ValueError, match="rank must be in"):
+            self._sampler(num_replicas=2, rank=2)
+        with pytest.raises(ValueError, match="rank must be in"):
+            self._sampler(num_replicas=2, rank=-1)
+        with pytest.raises(ValueError, match="num_replicas must be at least 1"):
+            self._sampler(num_replicas=0, rank=0)
+
+    def test_defaults_come_from_torch_distributed(self, monkeypatch):
+        import torch.distributed as dist
+
+        assert (self._sampler().num_replicas, self._sampler().rank) == (1, 0)
+        monkeypatch.setattr(dist, "is_available", lambda: True)
+        monkeypatch.setattr(dist, "is_initialized", lambda: True)
+        monkeypatch.setattr(dist, "get_world_size", lambda: 3)
+        monkeypatch.setattr(dist, "get_rank", lambda: 2)
+        sampler = self._sampler()
+        assert (sampler.num_replicas, sampler.rank) == (3, 2)
+        assert (self._sampler(num_replicas=2, rank=0).num_replicas) == 2
+
+
+GOLDEN_2_0_2 = [8, 9, 7, 6, 2, 0, 1, 5, 11, 12, 10, 3, 4]
+"""2.0.2's order of `_Grouped.GROUPS` at seed 7, epoch 3."""
 
 
 class TestLoaders:

@@ -161,6 +161,7 @@ nav:
       - Profiles and validation levels: reference/profiles-and-levels.md
       - Sample document schema: reference/schema.md
       - Diagnostic codes: reference/diagnostic-codes.md
+      - The cohort manifest: reference/cohort-manifest.md
       - Cohort check codes: reference/cohort-checks.md
       - Runnable examples: examples/index.md
 

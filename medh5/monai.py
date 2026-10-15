@@ -22,7 +22,7 @@ which need neither MONAI nor torch, so the geometry is testable without either.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -35,6 +35,7 @@ from medh5.geometry import Grid
 from medh5.labels import IGNORE_ID
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from medh5._monai_readers import LoadMedH5d, MedH5Reader
     from medh5.sample import Sample
 
 SPACES = ("LPS", "RAS")
@@ -134,7 +135,10 @@ def meta_dict(
     Keys follow MONAI's own names where it has them (``affine``,
     ``original_affine``, ``spatial_shape``, ``space``) so its transforms find
     what they expect, plus the MEDH5 identifiers a writer needs to put the
-    result back where it came from.
+    result back where it came from.  An identifier the sample does not have
+    --- a ``frame_uid``, ``value_units``, ``modality``, ``timepoint``,
+    ``subject_id`` or, outside a collection, ``sample_key`` --- is ``"none"``,
+    MONAI's own spelling, because its collate refuses a ``None``.
     """
     image = sample.images[image_id]
     grid = _grid_for(sample, image_id, level)
@@ -152,20 +156,72 @@ def meta_dict(
         "original_channel_dim": (
             "no_channel" if grid.channel_axis is None else int(grid.channel_axis)
         ),
-        "medh5": {
-            "path": sample.path,
-            "sample_id": sample.identity.sample_id,
-            "subject_id": sample.identity.subject_id,
-            "image_id": image_id,
-            "grid_id": grid.grid_id,
-            "timepoint": grid.timepoint,
-            "frame_uid": grid.frame_uid,
-            "modality": image.modality,
-            "value_units": image.value_units,
-            "coord_system": grid.coord_system,
-            "units": grid.units,
-        },
+        "medh5": _spelled(
+            {
+                "path": sample.path,
+                "sample_key": _sample_key(sample),
+                "sample_id": sample.identity.sample_id,
+                "subject_id": sample.identity.subject_id,
+                "image_id": image_id,
+                "grid_id": grid.grid_id,
+                "timepoint": grid.timepoint,
+                "frame_uid": grid.frame_uid,
+                "modality": image.modality,
+                "value_units": image.value_units,
+                "coord_system": grid.coord_system,
+                "units": grid.units,
+            }
+        ),
     }
+
+
+_NONE = "none"
+"""How the metadata spells an absent value: MONAI's own ``TraceKeys.NONE``.
+
+MONAI's ``list_data_collate`` refuses a ``None`` anywhere in an item's
+metadata, and every sample without a ``frame_uid`` --- every NIfTI and nnU-Net
+import --- carried one, so no batch of them could be formed.
+:func:`from_metatensor` reads ``"none"`` back as ``None``.
+"""
+
+_ABSENT = (
+    "frame_uid",
+    "modality",
+    "sample_key",
+    "subject_id",
+    "timepoint",
+    "value_units",
+)
+"""The ``meta["medh5"]`` keys whose value may be absent, spelled :data:`_NONE`."""
+
+
+def _spelled(medh5_meta: dict[str, Any]) -> dict[str, Any]:
+    """*medh5_meta* with an absent value spelled :data:`_NONE`."""
+    for key in _ABSENT:
+        if key in medh5_meta and medh5_meta[key] is None:
+            medh5_meta[key] = _NONE
+    return medh5_meta
+
+
+def _unspelled(medh5_meta: Mapping[str, Any]) -> dict[str, Any]:
+    """*medh5_meta* with :data:`_NONE` read back as ``None``."""
+    out = dict(medh5_meta)
+    for key in _ABSENT:
+        if out.get(key) == _NONE:
+            out[key] = None
+    return out
+
+
+def _sample_key(sample: Sample) -> str | None:
+    """The collection member key *sample* was opened as, or ``None`` for a
+    standalone file: its root group's name under ``/samples`` (§2.2)."""
+    from medh5.collection import SAMPLES_GROUP
+
+    name = str(sample.root.name)
+    prefix = SAMPLES_GROUP.rstrip("/") + "/"
+    if not prefix.startswith("/"):
+        prefix = "/" + prefix
+    return name[len(prefix) :] if name.startswith(prefix) else None
 
 
 def to_metatensor(
@@ -278,6 +334,8 @@ def from_metatensor(tensor: Any) -> tuple[npt.NDArray[Any], dict[str, Any]]:
     tensor's own declared space, and ``units`` --- millimetres, MONAI's,
     unless :func:`to_metatensor` passed a ``px`` grid through --- so a caller
     can hand it to ``SampleWriter.add_grid`` without re-deriving anything.
+    ``medh5`` is the tensor's ``meta["medh5"]``, with ``"none"`` read back as
+    ``None``.
 
     A tensor whose metadata states no ``affine`` or no ``space`` is refused.
     A ``MetaTensor`` always states both, and anything else has no geometry:
@@ -299,7 +357,7 @@ def from_metatensor(tensor: Any) -> tuple[npt.NDArray[Any], dict[str, Any]]:
         )
     affine = np.asarray(meta["affine"], dtype=np.float64)
     spacing, origin, direction = decompose_affine(affine)
-    medh5_meta = meta.get("medh5", {}) or {}
+    medh5_meta = _unspelled(meta.get("medh5", {}) or {})
     return array, {
         "spacing": [float(v) for v in spacing],
         "origin": [float(v) for v in origin],
@@ -343,25 +401,38 @@ def to_dict(
     for image_id in wanted:
         item[image_id] = to_metatensor(sample, image_id, physical=physical, space=space)
     for ann_id in annotations:
-        ann = sample.annotations[ann_id]
-        if not isinstance(ann, VoxelAnnotation):
-            # Checked before `labelmap()`, which a box or a point lacks.
-            raise MEDH5ValidationError(
-                f"{sample.path}: annotation {ann_id!r} is {ann.kind!r}, and "
-                "to_dict reads voxel annotations (segmentations) only, as label "
-                "volumes"
-            )
-        # `int64`, the dtype torch indexes and one-hots with.  `int16` wrapped
-        # every class id above 32767 -- §5.3 gives them the full `uint16` range
-        # -- and turned the ignore id 65535 into -1 without anything saying so.
-        planes = np.asarray(ann.labelmap(), dtype=np.int64)
-        # `labelmap()` writes the ignore region as the annotation's own
-        # `ignore_id`, in band or from its sibling mask (§7.7), and a file may
-        # declare another id than 65535.  Every item carries 65535, so one
-        # `ignore_index=65535` masks it out of the loss whatever the file says.
-        planes[sample.ignore_region(ann_id)] = IGNORE_ID
-        item[ann_id] = _metatensor(planes, _annotation_meta(sample, ann, space=space))
+        planes, meta = _label_volume(sample, ann_id, space=space)
+        item[ann_id] = _metatensor(planes, meta)
     return item
+
+
+def _label_volume(
+    sample: Sample, ann_id: str, *, space: str | None = None, reader: str = "to_dict"
+) -> tuple[npt.NDArray[np.int64], dict[str, Any]]:
+    """One voxel annotation as MONAI receives it: an ``int64`` label volume,
+    65535 in its §7.7 ignore region, and the metadata of its own grid.
+
+    *reader* names the caller in the refusal of an annotation that is not
+    voxels.
+    """
+    ann = sample.annotations[ann_id]
+    if not isinstance(ann, VoxelAnnotation):
+        # Checked before `labelmap()`, which a box or a point lacks.
+        raise MEDH5ValidationError(
+            f"{sample.path}: annotation {ann_id!r} is {ann.kind!r}, and "
+            f"{reader} reads voxel annotations (segmentations) only, as label "
+            "volumes"
+        )
+    # `int64`, the dtype torch indexes and one-hots with.  `int16` wrapped
+    # every class id above 32767 -- §5.3 gives them the full `uint16` range
+    # -- and turned the ignore id 65535 into -1 without anything saying so.
+    planes = np.asarray(ann.labelmap(), dtype=np.int64)
+    # `labelmap()` writes the ignore region as the annotation's own
+    # `ignore_id`, in band or from its sibling mask (§7.7), and a file may
+    # declare another id than 65535.  Every item carries 65535, so one
+    # `ignore_index=65535` masks it out of the loss whatever the file says.
+    planes[sample.ignore_region(ann_id)] = IGNORE_ID
+    return planes, _annotation_meta(sample, ann, space=space)
 
 
 def _annotation_meta(
@@ -379,20 +450,43 @@ def _annotation_meta(
         # A label volume is spatial whatever its grid holds: `labelmap()` has
         # no channel axis, so there is none to name.
         "original_channel_dim": "no_channel",
-        "medh5": {
-            "path": sample.path,
-            "sample_id": sample.identity.sample_id,
-            "subject_id": sample.identity.subject_id,
-            "annotation_id": ann.ann_id,
-            "grid_id": ann.grid_id,
-            "coord_system": grid.coord_system,
-            "units": grid.units,
-        },
+        "medh5": _spelled(
+            {
+                "path": sample.path,
+                "sample_key": _sample_key(sample),
+                "sample_id": sample.identity.sample_id,
+                "subject_id": sample.identity.subject_id,
+                "annotation_id": ann.ann_id,
+                "grid_id": ann.grid_id,
+                "coord_system": grid.coord_system,
+                "units": grid.units,
+            }
+        ),
     }
+
+
+_READERS = ("LoadMedH5d", "MedH5Reader")
+"""Names served from :mod:`medh5._monai_readers`, which imports MONAI: they
+subclass MONAI's own ``ImageReader`` and ``MapTransform``, so they are defined
+when first asked for, and ``import medh5.monai`` imports no MONAI."""
+
+
+def __getattr__(name: str) -> Any:
+    if name in _READERS:
+        from medh5 import _monai_readers
+
+        return getattr(_monai_readers, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *_READERS})
 
 
 __all__ = [
     "SPACES",
+    "LoadMedH5d",
+    "MedH5Reader",
     "affine_for",
     "available",
     "convert_affine",

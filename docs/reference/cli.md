@@ -138,6 +138,16 @@ fact that the tool did not verify the content it just re-attested. `--by` names
 who made the change, in the same record. Only the restamp records them, so
 `--reason` or `--by` without `--rewrite-digests` is a usage error.
 
+It is also the one amendment of a file whose attestation broke. Every other
+command that amends a file (`fix` without it, `scrub --apply`, a split claim,
+`clinical augment` and `strip`, `seg`) refuses one whose `content_id` no longer
+recomputes (`E702`) or that holds a digest, or declares a `digest_algo`, it
+cannot read (`E703`), and names this repair. A file declaring an algorithm
+§2.1 does not permit is restamped in `sha256`, and the activity's parameters
+record the change (`"digest_algo": {"from": "blake3", "to": "sha256"}`).
+Without `--rewrite-digests`, such a file is diagnosed as `E703`, naming the
+repair.
+
 ## Longitudinal
 
 ### `medh5 timeline`
@@ -333,13 +343,32 @@ Extract — every member, or only the keys named — or list what is inside.
 ### `medh5 dataset index`
 
 ```
-medh5 dataset index ROOT -o manifest.json [--strict] [--json]
+medh5 dataset index ROOT -o manifest.json [--strict] [--absolute] [--json]
 ```
 
 Metadata-only scan of a directory tree. Reports what would not open instead of
 aborting; `--strict` makes the first failure fatal. Follows symlinked
 directories (each once), matches suffixes in any case, and skips AppleDouble
 `._*` files.
+
+The manifest's paths are [relative to the manifest](cohort-manifest.md) where
+they lie beneath its directory, and absolute otherwise, so it opens from any
+directory and moves with its cohort; `--absolute` writes every path absolute.
+
+### `medh5 dataset upgrade`
+
+```
+medh5 dataset upgrade manifest.json -o upgraded.json [--base DIR] [--json]
+```
+
+Rewrites a manifest written before 2.1, whose paths are relative to the
+directory its scan ran in, as a [`medh5.dataset/1`](cohort-manifest.md)
+manifest: every path beneath the manifest's directory is written relative to
+it, and the rest absolute. `--base` names the
+directory the old paths are relative to (by default the working directory, as
+2.0 read them). Refuses, writing nothing, when any entry's file does not exist
+under that directory. The cohort commands read such a manifest as 2.0 did, and
+warn where 3.0 will read it otherwise.
 
 ### `medh5 dataset split`
 

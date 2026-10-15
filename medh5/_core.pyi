@@ -126,6 +126,7 @@ __all__ = [
     "LabelClass",
     "LabelSet",
     "MANAGED_ROOT_ATTRS",
+    "MANIFEST_SCHEMA",
     "MANIFEST_SUFFIXES",
     "MAX_CHUNK_BYTES",
     "MAX_CLASS_ID",
@@ -335,6 +336,7 @@ __all__ = [
     "dataset_layout",
     "dataset_make_splits",
     "dataset_manifest_json",
+    "dataset_manifest_legacy",
     "dataset_manifest_load",
     "dataset_manifest_save",
     "dataset_manifest_sha256",
@@ -613,6 +615,7 @@ LESION_VALUES: tuple[str, ...]
 LEVELS: tuple[str, ...]
 LOCALIZED_BBOX_FRACTION: float
 MANAGED_ROOT_ATTRS: tuple[str, ...]
+MANIFEST_SCHEMA: str
 MANIFEST_SUFFIXES: tuple[str, ...]
 MAX_CHUNK_BYTES: float
 MAX_CLASS_ID: int
@@ -1121,8 +1124,22 @@ def dataset_manifest_json(doc: Any) -> Any:
     """The full manifest JSON (with its `sha256`)."""
     ...
 
-def dataset_manifest_load(path: str | os.PathLike[str]) -> Any: ...
-def dataset_manifest_save(doc: Any, path: str | os.PathLike[str]) -> str: ...
+def dataset_manifest_legacy(doc: Any) -> bool:
+    """Whether a manifest is legacy (no `schema`); an unknown schema is refused."""
+    ...
+
+def dataset_manifest_load(
+    path: str | os.PathLike[str], *, base: str | os.PathLike[str] | None = None
+) -> tuple[Any, bool]:
+    """`(manifest JSON, legacy and read otherwise than 3.0 will read it)`."""
+    ...
+
+def dataset_manifest_save(
+    doc: Any, path: str | os.PathLike[str], *, paths: str = "keep"
+) -> str:
+    """Written with paths as `paths` says: `"keep"`, `"relative"` or `"absolute"`."""
+    ...
+
 def dataset_manifest_sha256(doc: Any) -> str: ...
 def dataset_manifest_stale(doc: Any) -> list[str]: ...
 def dataset_moments_from_json(doc: Any) -> tuple[int, float, float, float, float, int]:

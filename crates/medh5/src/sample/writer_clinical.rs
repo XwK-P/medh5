@@ -242,11 +242,14 @@ impl SampleWriter {
     /// dropped and re-added history took.
     ///
     /// The amended file is still in place --- the commit replaces it only
-    /// after this --- so what it held is read from it, payload digests
-    /// included: a payload removed and written again under its own id is
-    /// compared with the one it replaced, by its datasets' digests.  A
-    /// version the amendment dropped (`drop_clinical`) and did not add again
-    /// is gone, not changed; one added again is held to what it was.
+    /// after this, and an amendment written elsewhere never replaces it ---
+    /// so what it held is read from it, payload digests included: a payload
+    /// removed and written again under its own id is compared with the one
+    /// it replaced, by its datasets' digests and the attribute lines 1.0
+    /// §13.2 gives it (1.1 §7.3).  A version the amendment dropped
+    /// (`drop_clinical`, or a clinical group the amendment left behind) and
+    /// did not add again is gone, not changed; one added again is held to
+    /// what it was.
     pub(crate) fn check_held(&self) -> Result<()> {
         let inherited = self.clinical_source == ClinicalSource::Inherited;
         if !inherited && (self.inherited_events.is_empty() || self.clinical.is_none()) {
@@ -254,7 +257,7 @@ impl SampleWriter {
         }
         // Read nothing that cannot be read: a source whose tables do not
         // read fails the commit's validation anyway.
-        let Ok(file) = open_read(&self.path) else { return Ok(()) };
+        let Ok(file) = open_read(self.source.as_deref().unwrap_or(&self.path)) else { return Ok(()) };
         let source = file.as_group()?;
         let Ok(Some(held)) = Clinical::open(&source, false) else { return Ok(()) };
         let (events, links) = match &self.clinical {
@@ -347,6 +350,12 @@ impl SampleWriter {
                         other => OBJECT_GROUPS.iter().filter(|(k, _)| *k == other).map(|(_, g)| (*g, target)).collect(),
                     };
                     for (group, name) in objects {
+                        // What §13.2 covers of the object is attested with
+                        // its bytes: a slope rescales every voxel read.
+                        let lines = object_attrs(&source, group, name)?;
+                        if lines.is_some() && lines != object_attrs(&root, group, name)? {
+                            return Err(changed(format!("{kind} {}", repr_str(target)), id));
+                        }
                         let was = object_digests(&source, group, name, &algo, true)?;
                         // Digests that differ are settled by the content: a
                         // digest restamped over unchanged bytes (`medh5 fix
@@ -389,6 +398,26 @@ fn attested<'a>(events: &'a [Event], links: &'a [Link]) -> HashMap<&'a str, Vec<
         found.dedup();
     }
     out
+}
+
+/// The attribute line 1.0 §13.2 gives object `name` in `group`: the
+/// canonical JSON of the attributes `content_id` covers on it.  `None` when
+/// there is no such object.
+fn object_attrs(root: &hdf5::Group, group: &str, name: &str) -> Result<Option<String>> {
+    let path = format!("{group}/{name}");
+    let names = crate::sample::reader::attr_name_map_of(root)?.shift_remove(&path).unwrap_or_default();
+    let canonical = crate::integrity::digest::canonical_attrs;
+    Ok(match ops::node_kind(root, &path) {
+        Some(ops::NodeKind::Group) => {
+            let g = root.group(&path)?;
+            Some(canonical(&g, &names)?)
+        }
+        Some(ops::NodeKind::Dataset) => {
+            let d = root.dataset(&path)?;
+            Some(canonical(&d, &names)?)
+        }
+        _ => None,
+    })
 }
 
 /// The digest of every dataset of object `name` in `group` (the object

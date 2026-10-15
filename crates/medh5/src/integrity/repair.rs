@@ -12,10 +12,11 @@ use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
-use super::{restated, stale_index_entries, stamp_digests};
+use super::{restated, stale_index_entries, stamp_digests, verify_root};
 use crate::geometry::grid::read_grid;
 use crate::h5::{attrs, ops};
 use crate::json::repr_str;
+use crate::sample::writer::{amend_reattesting, unknown_algo};
 use crate::sample::{amend, open_sample};
 use crate::storage::index::DEFAULT_OCCUPANCY_FACTOR;
 use crate::{Error, Result, VERSION};
@@ -102,9 +103,24 @@ impl Repair {
 }
 
 /// What a file needs, without touching it.
+///
+/// A file declaring a `digest_algo` outside §2.1 cannot be verified, and is
+/// refused (E703) with the repair that re-attests it named.
 pub fn diagnose(path: &Path) -> Result<Diagnosis> {
+    diagnose_with(path, false)
+}
+
+/// [`diagnose`]; `reattesting`, for a re-attestation, the root of a file
+/// declaring a `digest_algo` outside §2.1 is left unverified rather than
+/// refused --- its `content_id` is unjudged --- and its datasets are each
+/// verified in the algorithm their digest names.
+fn diagnose_with(path: &Path, reattesting: bool) -> Result<Diagnosis> {
     let sample = open_sample(path)?;
-    let result = sample.verify(None)?;
+    let unknown = unknown_algo(&sample.root)?;
+    if let (Some(algo), false) = (&unknown, reattesting) {
+        return Err(unknown_algo_refused(path, algo));
+    }
+    let result = verify_root(&sample.root, Some(&sample.attr_name_map()?), None, unknown.is_none())?;
     let indexable: std::collections::BTreeSet<String> = sample
         .annotations()?
         .iter()
@@ -122,6 +138,23 @@ pub fn diagnose(path: &Path) -> Result<Diagnosis> {
         missing_index: indexable.difference(&present).cloned().collect(),
         content_id_ok: result.content_id_ok(),
     })
+}
+
+/// E703 for the file at `path`, declaring the `digest_algo` `algo` outside
+/// §2.1, naming the repair.
+pub(crate) fn unknown_algo_refused(path: &Path, algo: &str) -> Error {
+    Error::coded(
+        "E703",
+        format!(
+            "{} declares digest_algo {}: unsupported digest algorithm {}; §2.1 permits sha256, sha512 and blake2b, \
+             so its digests can be neither checked nor kept. Re-attest it deliberately with `medh5 fix \
+             --rewrite-digests --reason ...`, which restamps it in sha256 and records the reason in the file's \
+             provenance",
+            repr_str(&path.to_string_lossy()),
+            repr_str(algo),
+            repr_str(algo)
+        ),
+    )
 }
 
 /// Options for [`fix`].
@@ -153,13 +186,15 @@ fn check_options(options: &FixOptions) -> Result<()> {
 /// them.  A file the validator rejects is not restamped: the commit refuses
 /// to write it, as it refuses every file it would fail (§15).
 pub fn fix(path: &Path, options: &FixOptions) -> Result<Repair> {
-    let diagnosis = diagnose(path)?;
+    if options.rebuild_index || options.rewrite_digests {
+        check_options(options)?;
+    }
+    let diagnosis = diagnose_with(path, options.rewrite_digests)?;
     let mut repair =
         Repair { path: path.to_string_lossy().into_owned(), diagnosis: diagnosis.clone(), ..Default::default() };
     if !options.rebuild_index && !options.rewrite_digests {
         return Ok(repair);
     }
-    check_options(options)?;
     if options.rebuild_index && !options.rewrite_digests && diagnosis.needs_digests() {
         let mut message = format!(
             "{}: cannot rebuild the index without restamping digests, and this file has {} that no longer match its bytes",
@@ -196,7 +231,10 @@ pub fn fix(path: &Path, options: &FixOptions) -> Result<Repair> {
         repair.notes.push(note);
         return Ok(repair);
     }
-    let mut writer = amend(path, None)?;
+    // Re-attesting is the one amendment of a file whose attestation broke
+    // (§14.4); anything else amends as every writer does, and is refused it.
+    let replaced = if options.rewrite_digests { unknown_algo(&open_sample(path)?.root)? } else { None };
+    let mut writer = if options.rewrite_digests { amend_reattesting(path, None)? } else { amend(path, None)? };
     let result = (|| -> Result<()> {
         if options.rewrite_digests {
             // Restamped before the index is planned: an entry pins its
@@ -238,20 +276,28 @@ pub fn fix(path: &Path, options: &FixOptions) -> Result<Repair> {
             restamped.dedup();
             let mut fields = Map::new();
             fields.insert("tool".into(), Value::String("medh5 fix --rewrite-digests".into()));
-            fields.insert(
-                "params".into(),
-                json!({
-                    "reason": options.reason,
-                    "restamped": if restamped.is_empty() { json!("all") } else { json!(restamped) },
-                    "verified_content": false,
-                }),
-            );
+            let mut params = json!({
+                "reason": options.reason,
+                "restamped": if restamped.is_empty() { json!("all") } else { json!(restamped) },
+                "verified_content": false,
+            });
+            if let Some(algo) = &replaced {
+                params["digest_algo"] = json!({"from": algo, "to": writer.digest_algo()});
+            }
+            fields.insert("params".into(), params);
             writer.activity("other", Some(&agent.id), None, fields)?;
             repair.rewrote_digests = true;
             repair.notes.push(
                 "digests were recomputed from the current bytes; this asserts nothing about whether those bytes are correct"
                     .into(),
             );
+            if let Some(algo) = &replaced {
+                repair.notes.push(format!(
+                    "the file declared digest_algo {}, which §2.1 does not permit; it was restamped in {}",
+                    repr_str(algo),
+                    writer.digest_algo()
+                ));
+            }
         }
         writer.commit(true)?;
         Ok(())

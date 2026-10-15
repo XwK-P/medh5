@@ -865,6 +865,12 @@ impl Sample {
 
     /// Verify digests, `content_id` and index currency.
     pub fn verify(&self, partial: Option<&[String]>) -> Result<VerifyResult> {
+        if partial.is_none() {
+            if let Some(algo) = crate::sample::writer::unknown_algo(&self.root)? {
+                let shown = self.path.clone().unwrap_or_else(|| PathBuf::from(self.root.name()));
+                return Err(crate::integrity::repair::unknown_algo_refused(&shown, &algo));
+            }
+        }
         verify_root(&self.root, Some(&self.attr_name_map()?), partial, true)
     }
 
