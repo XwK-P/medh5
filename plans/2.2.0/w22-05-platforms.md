@@ -16,7 +16,7 @@
 > (E5, E6, E10), then `plans/2.2.0/w22-05-platforms.md` in full. Work from the
 > latest `main` on `w22/platforms`; PR 1 goes first, before every other 2.2.0
 > pull request, because it changes the interpreter floor and the CI matrix all of
-> them run. The other pull requests are independent; PR 5 and PR 6 are
+> them run. The other pull requests are independent; PR 4 and PR 5 are
 > conditional, and you check their condition first and say what you found. Every
 > CI change carries its `test_packaging.py` change. Things only the maintainer can
 > do go in the pull request description. Run the local gate from `CLAUDE.md`, add
@@ -29,9 +29,8 @@
 | 1 | 05.1 Python 3.11 is the floor | S |
 | 2 | 05.2 musllinux wheels and a static musl CLI | M |
 | 3 | 05.3 macOS x86_64 cross-built on arm64 | S–M |
-| 4 | 05.4 Windows arm64, if 2.1.0 deferred it | S–M |
-| 5 | 05.5 `abi3t`, if its conditions hold | S |
-| 6 | 05.6 HDF5's own close-on-exec, if released | S |
+| 4 | 05.4 `abi3t`, if its conditions hold | S |
+| 5 | 05.5 HDF5's own close-on-exec, if released | S |
 
 ## Items
 
@@ -78,19 +77,14 @@
 - **Tests.** The Homebrew target regex and the release tuples still agree.
 - **Changelog.** `<!-- no entry: CI only -->`.
 
-### 05.4 Windows arm64, if 2.1.0 deferred it (PR 4)
-
-- **Change.** W21-01 item 01.3's Windows arm64 half, if 2.1.0 did not ship it and
-  `windows-11-arm` runners are now available to the repository.
-
-### 05.5 `abi3t`, if its conditions hold (PR 5, E6)
+### 05.4 `abi3t`, if its conditions hold (PR 4, E6)
 
 - **Change.** If CPython 3.15 is final and NumPy and h5py ship cp315t wheels on
   every target: PyO3's `abi3t-py315` gives one `cp315-abi3t` wheel for every later
   free-threaded version, beside the cp314t wheel. Otherwise, record what is
   missing in the pull request and change nothing.
 
-### 05.6 HDF5's own close-on-exec, if released (PR 6, E10)
+### 05.5 HDF5's own close-on-exec, if released (PR 5, E10)
 
 - **Change.** If an hdf5-metno-src release ships an HDF5 whose sec2 driver opens
   with `O_CLOEXEC` and whose `Wopen` adds `_O_NOINHERIT` (the upstream request

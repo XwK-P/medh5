@@ -18,12 +18,15 @@ jobs:
       contents: read
 
   advisories:
-    # No advisory against what the release compiles in or what its extras
-    # install, unless SECURITY.md says why it does not apply: an advisory
+    # No advisory against what the release compiles in or what the package
+    # requires, unless SECURITY.md says why it does not apply: an advisory
     # published after the pull request merged stops the release here, before
-    # anything is published.
+    # anything is published.  One against what an extra installs is reported
+    # in the run's summary and dispositioned in SECURITY.md, and does not.
     name: Advisories on the tagged commit
     uses: ./.github/workflows/advisories.yml
+    with:
+      release: true
     permissions:
       contents: read
 
@@ -121,14 +124,24 @@ jobs:
           version = Version(raw)
           wheels = sorted(pathlib.Path("dist").glob("*.whl"))
           sdists = sorted(pathlib.Path("dist").glob("*.tar.gz"))
-          # One abi3 wheel per platform the project ships.
-          platforms = ("manylinux_2_28_x86_64", "manylinux_2_28_aarch64",
-                       "macosx_11_0_arm64", "macosx_11_0_x86_64", "win_amd64")
+          # Each target the project ships, with its wheels' platform tag: an
+          # abi3 wheel, one for free-threaded CPython 3.14 (which cannot load
+          # the abi3 one), and the binary.
+          platforms = {
+              "x86_64-unknown-linux-gnu": "manylinux_2_28_x86_64",
+              "aarch64-unknown-linux-gnu": "manylinux_2_28_aarch64",
+              "aarch64-apple-darwin": "macosx_11_0_arm64",
+              "x86_64-apple-darwin": "macosx_11_0_x86_64",
+              "x86_64-pc-windows-msvc": "win_amd64",
+          }
           problems = []
-          for platform in platforms:
-              found = [w for w in wheels if w.name.endswith(f"-cp310-abi3-{platform}.whl")]
-              if len(found) != 1:
-                  problems.append(f"{len(found)} wheels for {platform}")
+          for platform in platforms.values():
+              for abi in ("cp310-abi3", "cp314-cp314t"):
+                  found = [w for w in wheels if w.name.endswith(f"-{abi}-{platform}.whl")]
+                  if len(found) != 1:
+                      problems.append(f"{len(found)} {abi} wheels for {platform}")
+          if len(wheels) != 2 * len(platforms):
+              problems.append(f"{len(wheels)} wheels, not {2 * len(platforms)}")
           if len(sdists) != 1:
               problems.append(f"{len(sdists)} sdists")
           for dist in [*wheels, *sdists]:
@@ -145,12 +158,10 @@ jobs:
                   if not any(n.endswith(f".dist-info/licenses/{notice}") for n in names):
                       problems.append(f"{wheel.name} lacks {notice}")
           binaries = sorted(p.name for p in pathlib.Path("cli").iterdir())
-          for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
-                         "aarch64-apple-darwin", "x86_64-apple-darwin"):
-              if f"medh5-{raw}-{target}.tar.gz" not in binaries:
+          for target in platforms:
+              archive = "zip" if "windows" in target else "tar.gz"
+              if f"medh5-{raw}-{target}.{archive}" not in binaries:
                   problems.append(f"no binary for {target}")
-          if f"medh5-{raw}-x86_64-pc-windows-msvc.zip" not in binaries:
-              problems.append("no binary for x86_64-pc-windows-msvc")
           # Each archive carries the licences of what the binary links.
           import tarfile
           for archive in sorted(pathlib.Path("cli").iterdir()):
@@ -199,6 +210,38 @@ jobs:
           path: release-notes.md
           if-no-files-found: error
 
+  attest:
+    name: Attest every artifact's build
+    # A signed statement, per file, that this workflow built it from this
+    # commit: the binaries and their archives on the release page, the wheels
+    # and the sdist (which PyPI's own attestations cover too).  `gh
+    # attestation verify` checks one against the repository.  The only job
+    # that may write attestations; the release waits for them.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cli
+          path: cli/
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            cli/*.tar.gz
+            cli/*.zip
+            dist/*.whl
+            dist/*.tar.gz
+
   # Every publishing step below can run again: a re-run after a partial
   # release skips what is already published *and identical* to this run's
   # build, publishes what is missing, and fails on anything published from
@@ -237,11 +280,13 @@ jobs:
 
   crates:
     name: Publish to crates.io
-    # medh5-sys, then medh5, then medh5-cli, one at a time, each in the index
-    # before the next, which resolves against it.  Each is verified --- built
-    # from its package, running every dependency's build script --- without
-    # the token in the environment, then uploaded with it.  medh5-python is
-    # `publish = false`.
+    # In three stages.  Every crate is verified first --- built from its
+    # package, as CI's `rust` job builds them --- with no token anywhere, and
+    # any version crates.io already has is held to this commit's: a failure
+    # publishes nothing.  Then trusted publishing exchanges this job's OIDC
+    # identity for a short-lived token; then medh5-sys, medh5 and medh5-cli
+    # are published, each not already there, each in the index before the
+    # next, which resolves against it.  medh5-python is `publish = false`.
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -250,30 +295,38 @@ jobs:
       url: https://crates.io/crates/medh5
     permissions:
       contents: read
+      id-token: write   # OIDC exchange for trusted publishing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The Rust CI built and tested this commit with (rust-toolchain.toml).
       - run: rustup toolchain install --no-self-update
+      - name: Verify every crate, and what crates.io already has
+        run: python3 .github/scripts/release.py crates verify
+      # Only this repository's crates have trusted publishers; a fork's
+      # exchange would fail, so a fork's release stops after verifying.
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth
+        if: github.repository == 'medh5-project/medh5'
       - name: cargo publish, each crate not already there
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           CANONICAL: ${{ github.repository == 'medh5-project/medh5' }}
         run: |
           if [[ -z "$CARGO_REGISTRY_TOKEN" ]]; then
             if [[ "$CANONICAL" == true ]]; then
-              echo "::error::CARGO_REGISTRY_TOKEN is not set, so the crates cannot be published"
+              echo "::error::crates.io issued no token, so the crates cannot be published: each needs a trusted publisher for this workflow (CONTRIBUTING.md)"
               exit 1
             fi
-            echo "::warning::CARGO_REGISTRY_TOKEN is not set, so the crates were not published"
+            echo "::warning::a fork has no trusted publisher, so the crates were not published"
             exit 0
           fi
-          python3 .github/scripts/release.py crates
+          python3 .github/scripts/release.py crates publish
 
   github-release:
     name: Create the GitHub Release
     # After the registries rather than beside them, so a release is never
     # announced for a version that `pip install` or `cargo install` cannot find.
-    needs: [build, publish, crates]
+    needs: [build, attest, publish, crates]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

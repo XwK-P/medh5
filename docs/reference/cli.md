@@ -33,6 +33,18 @@ is named on stderr — and, with `--json`, is an entry of its own,
 the files after it are still processed; the command then exits with 1. Output
 that cannot be written (a full disk) fails the command too.
 
+`validate`, `verify`, `fix`, `index build` and `recompress` take
+`--workers N`: up to *N* processes run the files, each its own, and what is
+printed — the text, the `--json` document, the exit code — is what one
+process prints, byte for byte, in the order the files were given. `0` and `1`
+(the default) run them in this process. Processes, not threads: one lock
+covers the HDF5 library in each process, its filters included, so threads
+would take turns. The paths of a command that writes that name one file —
+the same path twice, or a hard link — go to one process, in order. A process
+that dies fails the file it held, named on stderr; the others take what it had
+not begun. `medh5 dataset stats --workers` is threads in one process, and
+reads only.
+
 A command that changes a file in place — `fix`, `index build`, `seg convert`,
 `scrub --apply`, `recompress` without `--out`, `dataset split --write-claims`,
 `clinical augment` without `--out` — writes the new version beside it and
@@ -71,7 +83,7 @@ An annotated object listing — `h5ls` with each object's role in the spec.
 ### `medh5 validate`
 
 ```
-medh5 validate PATH... [--level L] [--profile P] [--codes-revision N] [-v] [--json]
+medh5 validate PATH... [--level L] [--profile P] [--codes-revision N] [-v] [--workers N] [--json]
 ```
 
 Check against the specification. `--level` is `structural`, `semantic`
@@ -93,7 +105,7 @@ case.medh5: FAILED [semantic] profiles=core (1 errors, 0 warnings)
 ### `medh5 verify`
 
 ```
-medh5 verify PATH... [--key K] [--partial OBJ] [--json]
+medh5 verify PATH... [--key K] [--partial OBJ] [--workers N] [--json]
 ```
 
 Recompute every object's digest and the root `content_id`. `--partial` limits
@@ -118,7 +130,7 @@ so none of its files has either.
 ### `medh5 fix`
 
 ```
-medh5 fix PATH... [--rebuild-index] [--rewrite-digests --reason WHY [--by WHO]] [--json]
+medh5 fix PATH... [--rebuild-index] [--rewrite-digests --reason WHY [--by WHO]] [--workers N] [--json]
 ```
 
 With no flags: diagnose and change nothing. `fix` exits 0 only when nothing is
@@ -204,7 +216,7 @@ refused conversion leaves the file untouched.
 ### `medh5 index build`
 
 ```
-medh5 index build PATH... [--max-coords N] [--occupancy K] [--seed S] [--json]
+medh5 index build PATH... [--max-coords N] [--occupancy K] [--seed S] [--workers N] [--json]
 ```
 
 Build or refresh sampling indices, which make foreground patch sampling O(1) in
@@ -541,7 +553,7 @@ See [Migrate from 0.x](../guides/migrate-0x.md) for the two-pass procedure.
 ### `medh5 recompress`
 
 ```
-medh5 recompress PATH... --profile P [--rechunk] [--json]
+medh5 recompress PATH... --profile P [--rechunk] [--workers N] [--json]
 medh5 recompress PATH --profile P --out FILE [--rechunk] [--json]
 ```
 

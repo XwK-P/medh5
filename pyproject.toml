@@ -170,6 +170,7 @@ include = [
   # unpacked sdist as they do from a checkout.
   { path = ".github/dependabot.yml", format = "sdist" },
   { path = ".pre-commit-config.yaml", format = "sdist" },
+  { path = "deny.toml", format = "sdist" },
   { path = ".github/scripts/*.py", format = "sdist" },
   { path = ".github/scripts/*.sh", format = "sdist" },
   { path = ".github/workflows/*.yml", format = "sdist" },

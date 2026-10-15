@@ -123,6 +123,37 @@ loader = DataLoader(dataset, batch_size=2, num_workers=8,
 rather than required — the cache is PID-keyed and resets on first use in a
 forked worker either way. See [PyTorch and MONAI](../reference/torch.md#the-dataloader).
 
+## Check a batch in several processes
+
+One lock covers the HDF5 library in a process, so files checked in one process
+take turns however many threads ask. `validate`, `verify`, `fix`, `index build`
+and `recompress` take `--workers N` and run the files in up to *N* processes:
+
+```
+$ medh5 verify --workers 4 data/*.medh5
+```
+
+The output — the text, the `--json` document and the exit code — is the
+one-process run's, byte for byte, printed in input order. Over 32 files of
+96×192×192 on four cores, with the native binary:
+
+| Command | 1 process | 2 | 4 |
+|---|---|---|---|
+| `verify` | 10.1 s | 5.2 s | 2.7 s |
+| `index build` | 17.4 s | 9.1 s | 4.6 s |
+| `recompress --profile archive` | 128 s | 64 s | 45 s |
+| `validate` | 0.07 s | 0.05 s | 0.04 s |
+
+A worker costs a process start, which the Python console script pays as an
+interpreter start, about 0.1 s each: `validate`, which reads structure rather
+than data, finishes before that pays off, and is slower there with workers
+(0.25 s at one, 0.5 s at four). The default, 1, runs in one process.
+
+Within one Python process, the calls that work over large arrays — copying a
+mask into the engine's layout, `curation.agreement.dice` and `iou`, the
+geometric encoders and `to_world` — release the GIL while they work, so other
+Python threads keep running.
+
 ## Keep a file's patches together
 
 Each worker keeps its 32 most recently used files open. `shuffle=True`

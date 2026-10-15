@@ -28,6 +28,7 @@ mod labels;
 mod perf;
 mod scrub;
 mod seg;
+mod workers;
 
 use common::Ctx;
 pub use common::{top_level_message, Host, EXIT_ERROR, EXIT_OK, EXIT_USAGE};
@@ -73,6 +74,11 @@ impl Host for NativeHost {
 
     fn throughput(&self, path: &str, patch: i64, workers: i64, annotation: Option<&str>) -> Result<Value, String> {
         measure_throughput(&Self::python(), path, patch, workers, annotation)
+    }
+
+    /// This binary again.
+    fn worker_command(&self) -> Option<Vec<OsString>> {
+        std::env::current_exe().ok().map(|exe| vec![exe.into_os_string()])
     }
 }
 
@@ -192,6 +198,12 @@ pub fn utf8_args(args: impl IntoIterator<Item = OsString>) -> Result<Vec<String>
 /// Run the command line on `args` (without the program name); the exit code.
 pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host: &dyn Host) -> i32 {
     medh5::h5::init();
+    // A worker of a `--workers` run: not a command anyone types, so not in
+    // the grammar.
+    if args.first().map(String::as_str) == Some("__worker") {
+        let _ = err.flush();
+        return workers::serve(&args[1..], &mut std::io::stdin().lock(), out);
+    }
     let argv = std::iter::once("medh5".to_string()).chain(args.iter().cloned());
     let mut command = app::command();
     let mut ctx = Ctx::new(out, err, host);

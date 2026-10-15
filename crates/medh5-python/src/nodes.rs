@@ -159,18 +159,34 @@ pub fn dataset_arg<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Bound<'py, Dataset>
 /// A stored dataset: shape, dtype, chunks, filters, attributes and `ds[...]`.
 #[pyclass(module = "medh5.nodes", name = "Dataset", frozen)]
 pub struct Dataset {
-    pub ds: medh5::hdf5::Dataset,
+    /// `None` only once dropped: see `Drop`.
+    handle: Option<medh5::hdf5::Dataset>,
 }
 
 impl Dataset {
     pub fn wrap(ds: medh5::hdf5::Dataset) -> Self {
-        Dataset { ds }
+        Dataset { handle: Some(ds) }
+    }
+
+    pub fn ds(&self) -> &medh5::hdf5::Dataset {
+        self.handle.as_ref().expect("a dataset's handle is taken only when it is dropped")
     }
 
     /// The dataset, refused once its file has been closed.
     fn live(&self) -> R<&medh5::hdf5::Dataset> {
-        medh5::h5::alive(&self.ds)?;
-        Ok(&self.ds)
+        medh5::h5::alive(self.ds())?;
+        Ok(self.ds())
+    }
+}
+
+impl Drop for Dataset {
+    /// Closing a dataset's last handle flushes its chunk cache --- compression
+    /// and writes, tens of milliseconds for a volume --- so it runs with the
+    /// GIL released, as the write that filled the cache did.
+    fn drop(&mut self) {
+        if let Some(ds) = self.handle.take() {
+            Python::attach(|py| py.detach(move || drop(ds)));
+        }
     }
 }
 
@@ -240,7 +256,7 @@ impl Dataset {
         if data::is_strings(self.live()?) {
             return Ok(crate::convert::numpy(py)?.call_method1("dtype", ("O",))?);
         }
-        Ok(dtype_to_py(py, data::dtype(&self.ds)?)?)
+        Ok(dtype_to_py(py, data::dtype(self.ds())?)?)
     }
     #[getter]
     fn nbytes(&self) -> R<usize> {
@@ -266,21 +282,21 @@ impl Dataset {
     }
     #[getter]
     fn attrs(&self) -> Attrs {
-        Attrs { node: Node::Dataset(self.ds.clone()) }
+        Attrs { node: Node::Dataset(self.ds().clone()) }
     }
     fn __len__(&self) -> R<usize> {
         Ok(self.live()?.shape().first().copied().ok_or_else(|| PyTypeError::new_err("len() of unsized object"))?)
     }
     fn __getitem__<'py>(&self, py: Python<'py>, key: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         if data::is_strings(self.live()?) {
-            return Ok(strings_array(py, &self.ds)?.get_item(key)?);
+            return Ok(strings_array(py, self.ds())?.get_item(key)?);
         }
-        let ndim = self.ds.shape().len();
+        let ndim = self.ds().shape().len();
         if ndim == 0 {
-            return Ok(nd_to_py(py, data::read(&self.ds)?).call_method1("__getitem__", (key,))?);
+            return Ok(nd_to_py(py, data::read(self.ds())?).call_method1("__getitem__", (key,))?);
         }
         let index = dataset_key(key, ndim)?;
-        let ds = self.ds.clone();
+        let ds = self.ds().clone();
         let block = py.detach(move || data::read_region(&ds, &index))?;
         Ok(nd_to_py(py, block))
     }
@@ -288,9 +304,9 @@ impl Dataset {
     /// string dataset as an object array of `str`.
     fn read<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
         if data::is_strings(self.live()?) {
-            return strings_array(py, &self.ds);
+            return strings_array(py, self.ds());
         }
-        let ds = self.ds.clone();
+        let ds = self.ds().clone();
         Ok(nd_to_py(py, py.detach(move || data::read(&ds))?))
     }
     /// `numpy.asarray(ds)`: the whole dataset, read.  A read always makes a
@@ -323,8 +339,8 @@ impl Dataset {
         }
     }
     fn __repr__(&self) -> String {
-        if self.ds.is_valid() {
-            format!("<medh5 Dataset {} shape {:?}>", medh5::json::repr_str(&self.ds.name()), self.ds.shape())
+        if self.ds().is_valid() {
+            format!("<medh5 Dataset {} shape {:?}>", medh5::json::repr_str(&self.ds().name()), self.ds().shape())
         } else {
             "<closed medh5 Dataset>".into()
         }

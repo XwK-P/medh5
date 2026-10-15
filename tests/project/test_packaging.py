@@ -17,6 +17,7 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sysconfig
 import tarfile
 from importlib.metadata import distribution
@@ -31,8 +32,10 @@ from tests.helpers import ROOT, write_sample
 PYPROJECT = ROOT / "pyproject.toml"
 CI = ROOT / ".github/workflows/ci.yml"
 BUILD = ROOT / ".github/workflows/build.yml"
+FUZZ = ROOT / ".github/workflows/fuzz.yml"
 RELEASE = ROOT / ".github/workflows/release.yml"
 ADVISORIES = ROOT / ".github/workflows/advisories.yml"
+LOCK_REFRESH = ROOT / ".github/workflows/lock-refresh.yml"
 
 
 WORKSPACE = ROOT / "Cargo.toml"
@@ -792,6 +795,68 @@ class TestRepositoryGates:
         pull = advisories.split("\n  pull_request:\n", 1)[1]
         assert pull.split("\n", 1)[0].strip() == 'branches: [main, "release/**"]'
 
+    def test_an_advisory_against_an_extra_does_not_hold_a_release(self):
+        """`pip-audit --strict` audited NumPy with every extra, and the release
+        waited on it: a PyTorch advisory with no fix would have held a medh5
+        release that changes nothing PyTorch installs.  What the package
+        requires still blocks; the extras block every run but the release's,
+        which reports them in its summary."""
+        text = ADVISORIES.read_text(encoding="utf-8")
+        call = text.split("\n  workflow_call:\n", 1)[1].split("\n  pull_request:", 1)[0]
+        release = r"^      release:\n(?:        .*\n)*?        type: boolean$"
+        assert re.search(release, call, re.M)
+        jobs = _jobs(text)
+        assert "continue-on-error" not in jobs["pypi"]
+        assert 'print(*sorted(project["dependencies"])' in jobs["pypi"]
+        assert "optional-dependencies" not in jobs["pypi"]
+        extras = jobs["pypi-extras"]
+        assert "    continue-on-error: ${{ inputs.release == true }}\n" in extras
+        assert '"optional-dependencies"' in extras
+        assert '>> "$GITHUB_STEP_SUMMARY"' in extras
+        assert 'exit "$status"' in extras
+        caller = _jobs(RELEASE.read_text(encoding="utf-8"))["advisories"]
+        assert "    with:\n      release: true\n" in caller
+
+    def test_the_lock_is_refreshed_weekly_but_not_the_native_inventory(self):
+        """Cargo.lock moved only by hand: Dependabot cannot regenerate
+        THIRD_PARTY_NOTICES with it.  A weekly workflow refreshes it within
+        the crates' `rust-version` and opens a pull request, and puts back
+        every crate that builds a library of SECURITY.md's native inventory,
+        whose row and advisories a person reads again; its bumps are listed."""
+        refresh = _release_script("lock_refresh.py")
+        security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        # The crates test_the_native_inventory_is_what_the_lock_builds names.
+        native = ["hdf5-metno-src", "libz-sys", "lz4-sys", "zstd-sys"]
+        assert refresh.native_crates(security) == native
+        lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
+        before = refresh.locked(lock)
+        assert all(len(before[name]) == 1 for name in native)
+        after = {**before, "libz-sys": ["9.9.9"], "serde": ["9.9.9"]}
+        moves = refresh.held_back(before, after, native)
+        assert moves == [("libz-sys", before["libz-sys"][0], "9.9.9")]
+        assert refresh.held_back(before, before, native) == []
+        with pytest.raises(SystemExit, match="zstd-sys"):
+            refresh.held_back(before, {**before, "zstd-sys": ["1", "2"]}, native)
+        body = refresh.summary(moves)
+        assert f"| `libz-sys` | {before['libz-sys'][0]} | 9.9.9 |" in body
+        assert "serde" not in body
+        assert "No crate" in refresh.summary([])
+        script = (ROOT / ".github/scripts/lock_refresh.py").read_text(encoding="utf-8")
+        assert '"CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS": "fallback"' in script
+        assert '"--precise", old' in script and "third_party_notices.py" in script
+        text = LOCK_REFRESH.read_text(encoding="utf-8")
+        assert '    - cron: "17 6 * * 1"\n' in text
+        assert "\n  workflow_dispatch:\n" in text
+        (job,) = _jobs(text).values()
+        assert "          ref: main\n" in job
+        assert "python .github/scripts/lock_refresh.py --summary" in job
+        assert "uses: peter-evans/create-pull-request@" in job
+        assert "branch: deps/cargo-lock" in job
+        # A pull request opened with GITHUB_TOKEN runs no workflows.
+        assert "secrets.LOCK_REFRESH_TOKEN" in job and "close and reopen" in job
+        dependabot = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
+        assert "lock-refresh.yml" in dependabot
+
     def test_the_weekly_audit_reads_every_line(self):
         """A scheduled workflow runs on the default branch only, so the weekly
         audit saw `main`'s lock and never the patch line's.  Each job audits
@@ -800,7 +865,7 @@ class TestRepositoryGates:
         skipped check as passing."""
         text = ADVISORIES.read_text(encoding="utf-8")
         jobs = _jobs(text)
-        assert sorted(jobs) == ["pypi", "rustsec"]
+        assert sorted(jobs) == ["pypi", "pypi-extras", "rustsec"]
         for name, job in jobs.items():
             assert not re.search(r"^    if:", job, re.M), name
             assert 'fromJSON(\'["main", "release/2.0"]\')' in job, name
@@ -813,6 +878,31 @@ class TestRepositoryGates:
             assert "id: line" in steps[0], name
             for step in steps[1:]:
                 assert "if: steps.line.outputs.exists == 'true'" in step, name
+
+    def test_fuzzing_runs_on_a_dated_nightly(self):
+        """Nothing fuzzed the readers: 2.0.2's denial-of-service bugs were
+        found by hand.  The fuzz targets run twice a week on a nightly named
+        by its date (one that moves would change the instrumentation under
+        the corpus), each job bounded.  A run uploads nothing: a public
+        repository's artifacts are public, and the input that broke a run
+        works as an exploit until its fix ships."""
+        text = FUZZ.read_text(encoding="utf-8")
+        assert re.search(r"^  FUZZ_TOOLCHAIN: nightly-\d{4}-\d{2}-\d{2}$", text, re.M)
+        assert re.search(r'^    - cron: "[^"]+"$', text, re.M)
+        (job,) = _jobs(text).values()
+        assert re.search(r"^    timeout-minutes: (\d+)$", job, re.M)[1] == "60"  # type: ignore[index]
+        assert "cargo install cargo-fuzz --version 0.13.2 --locked" in job
+        assert 'cargo +"$FUZZ_TOOLCHAIN" fuzz run "$TARGET"' in job
+        assert "upload-artifact" not in job
+        if (ROOT / "PKG-INFO").is_file():
+            return  # the sdist carries no fuzz targets
+        # Every target runs, in a workspace of its own: the root's lock and
+        # notices never see it.
+        fuzz = (ROOT / "fuzz/Cargo.toml").read_text(encoding="utf-8")
+        declared = re.findall(r'^path = "fuzz_targets/(\w+)\.rs"$', fuzz, re.M)
+        targets = re.search(r"^        target: \[(.*)\]$", job, re.M)
+        assert targets and [t.strip() for t in targets[1].split(",")] == declared
+        assert "\n[workspace]\n" in fuzz and "publish = false" in fuzz
 
     def test_the_release_runs_ci_on_the_tagged_commit(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -844,7 +934,7 @@ class TestDistribution:
             for name, job in jobs.items()
             if re.search(r"^    continue-on-error: true$", job, re.M)
         }
-        assert informational == {"test-python-next"}
+        assert informational == {"test-python-next", "test-no-gil"}
         assert sorted(needs) == sorted(set(jobs) - informational)
         assert re.search(r"^    if: always\(\)$", gate, re.M)
         # A cancelled job fails the gate too, named apart in the summary.
@@ -903,7 +993,57 @@ class TestDistribution:
             if targets:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
-        assert downloading == 13
+        assert downloading == 15
+
+    def test_every_shipped_target_is_built_released_and_noticed(self):
+        """The targets were listed four times --- the build jobs, the
+        release's wheel platforms, its binaries, and the notices' platform
+        filter --- and nothing held the lists together: a target added to one
+        would ship without its notices, or be built and never released."""
+        jobs = _jobs(CI.read_text(encoding="utf-8"))
+        built = {
+            re.search(r"^      target: (\S+)$", job, re.M)[1]  # type: ignore[index]
+            for job in jobs.values()
+            if "uses: ./.github/workflows/build.yml" in job
+        }
+        verify = _jobs(RELEASE.read_text(encoding="utf-8"))["build"]
+        table = verify.split("platforms = {", 1)[1].split("}", 1)[0]
+        released = dict(re.findall(r'"([\w-]+)": "(\w+)",', table))
+        notices = _release_script("third_party_notices.py")
+        assert built == set(released) == set(notices.TARGETS)
+        for target, platform in released.items():
+            # Each wheel tag names the target's architecture as its platform
+            # does: aarch64 on Linux, arm64 on macOS, amd64 on Windows.
+            arch = target.split("-")[0]
+            names = {"aarch64": ("aarch64", "arm64"), "x86_64": ("x86_64", "amd64")}
+            assert platform.endswith(names[arch]), (target, platform)
+        # Each platform's wheels: abi3, and one for free-threaded 3.14.
+        assert '("cp310-abi3", "cp314-cp314t")' in verify
+        assert 'f"medh5-{raw}-{target}.{archive}"' in verify
+
+    def test_free_threaded_python_gets_a_wheel_of_its_own(self):
+        """Free-threaded CPython cannot load an abi3 extension, so medh5 did
+        not install there without a compiler.  Each build makes a second,
+        cp314t wheel (the module still asks for the GIL); a gating job tests
+        it, and one with the GIL forced off informs."""
+        build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
+        assert "MEDH5_FT_PYTHON=/opt/python/cp314-cp314t/bin/python" in build
+        assert '--interpreter "$MEDH5_FT_PYTHON"' in build
+        workflow = _jobs(BUILD.read_text(encoding="utf-8"))["build"]
+        assert 'python-version: "3.14t"' in workflow
+        assert "MEDH5_FT_PYTHON: ${{ steps.free-threaded.outputs.python-path }}" in (
+            workflow
+        )
+        jobs = _jobs(CI.read_text(encoding="utf-8"))
+        for name in ("test-free-threaded", "test-no-gil"):
+            assert 'python-version: "3.14t"' in jobs[name], name
+            assert "dist/*-cp314t-*.whl" in jobs[name], name
+        assert 'PYTHON_GIL: "0"' in jobs["test-no-gil"]
+        assert "sys._is_gil_enabled()" in jobs["test-free-threaded"]
+        # Every other job installs the abi3 wheel by name: two wheels match
+        # `dist/*.whl` now.
+        for name, job in jobs.items():
+            assert "dist/*.whl" not in job, name
 
     def test_the_intel_mac_skips_pull_requests_and_nothing_else(self):
         """The Intel Mac build was the slowest job of every run (14 to 23
@@ -1089,6 +1229,31 @@ class TestDistribution:
         sums = {brew.archive("2.0.0", t): "0" * 64 for t in brew.TARGETS.values()}
         formula = brew.formula("2.0.0", sums, "medh5-project/medh5")
         assert f"  license all_of: {json.dumps(declared)}\n" in formula
+
+    def test_no_crate_brings_a_licence_the_package_does_not_declare(self):
+        """Nothing checked a new crate's licence against the expression the
+        wheels publish: one under the MPL would have shipped under metadata
+        that does not name it.  `cargo deny` allows exactly that expression's
+        licences, and ci.yml's rust job runs it with sources and bans."""
+        (expression,) = re.findall(
+            r'^license = "([^"]+)"$', PYPROJECT.read_text(encoding="utf-8"), re.M
+        )
+        # Read by pattern: Python 3.10, which the suite still runs on, has no
+        # tomllib.
+        deny = (ROOT / "deny.toml").read_text(encoding="utf-8")
+        allow = re.search(r"^allow = \[([^\]]*)\]$", deny, re.M)
+        assert allow
+        allowed = re.findall(r'"([^"]+)"', allow[1])
+        assert sorted(allowed) == sorted(expression.split(" AND "))
+        assert len(allowed) == len(set(allowed))
+        assert re.search(r'^unknown-registry = "deny"$', deny, re.M)
+        assert re.search(r'^unknown-git = "deny"$', deny, re.M)
+        clarify = deny.split("[[licenses.clarify]]", 1)[1]
+        assert 'crate = "hdf5-metno-src"' in clarify
+        assert re.search(r'path = "ext/hdf5/LICENSE", hash = 0x[0-9a-f]{8}', clarify)
+        rust = _jobs(CI.read_text(encoding="utf-8"))["rust"]
+        assert "cargo install cargo-deny --version 0.20.2 --locked" in rust
+        assert "cargo deny --locked check licenses bans sources" in rust
 
     def test_every_extra_is_one_the_package_asks_for(self):
         """An extra promises that something in the package needs it, so the
@@ -1291,13 +1456,13 @@ class TestDistribution:
             "crates.io: medh5-cli 2.0.0 is not published",
         ]
 
-    def test_a_crate_is_verified_without_the_token_and_indexed_before_the_next(
-        self, monkeypatch
-    ):
-        """`cargo publish` verified each crate with the token in the
-        environment of every dependency's build script, and waited for the
-        index only so long before warning and succeeding --- after which the
-        next crate, which resolves the one before through the index, failed."""
+    def test_every_crate_is_verified_before_any_is_published(self, monkeypatch):
+        """`cargo publish` verified each crate with a long-lived token in the
+        environment of every dependency's build script, one crate at a time,
+        so a failure verifying `medh5-cli` left `medh5-sys` and `medh5`
+        published.  Every crate is verified first, with no token, as CI's
+        `rust` job packages them; trusted publishing then issues a token for
+        the upload alone, and each crate is in the index before the next."""
         release = _release_script("release.py")
         steps: list[tuple[str, ...]] = []
 
@@ -1314,16 +1479,36 @@ class TestDistribution:
             "wait_for_index",
             lambda name, version: steps.append(("index", name)),
         )
-        assert release.publish_crates() == 0
+        assert release.main(["crates", "verify"]) == 0
+        packages = ("-p", "medh5-sys", "-p", "medh5", "-p", "medh5-cli")
+        assert steps == [("cargo", "package", "--locked", *packages, "no token")]
+        steps.clear()
+        assert release.main(["crates", "publish"]) == 0
         assert steps == [
             step
             for name in ("medh5-sys", "medh5", "medh5-cli")
             for step in (
-                ("cargo", "package", "-p", name, "--locked", "no token"),
-                ("cargo", "publish", "-p", name, "--locked", "--no-verify", "token"),
+                ("cargo", "publish", "--locked", "--no-verify", "-p", name, "token"),
                 ("index", name),
             )
         ]
+        # The verification is CI's own, so the release's is never the first.
+        rust = _jobs(CI.read_text(encoding="utf-8"))["rust"]
+        assert f"cargo package --locked {' '.join(packages)}" in rust
+        jobs = _jobs(RELEASE.read_text(encoding="utf-8"))
+        crates = jobs["crates"]
+        order = [
+            crates.index("release.py crates verify"),
+            crates.index("uses: rust-lang/crates-io-auth-action@"),
+            crates.index("release.py crates publish"),
+        ]
+        assert order == sorted(order)
+        assert "CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}" in crates
+        assert "secrets.CARGO_REGISTRY_TOKEN" not in RELEASE.read_text(encoding="utf-8")
+        assert "id-token: write" in crates
+        # The token reaches the publishing step alone.
+        verify_step = crates.split("release.py crates verify", 1)[0].rsplit("- ", 1)[1]
+        assert "CARGO_REGISTRY_TOKEN" not in verify_step
         # Where cargo looks a crate up, and what it finds there.
         names = ("medh5-sys", "Serde", "abc", "ab", "a")
         assert [release.index_path(n) for n in names] == [
@@ -1340,6 +1525,25 @@ class TestDistribution:
         assert release.in_index("medh5-sys", "2.0.0")
         assert not release.in_index("medh5-sys", "2.0.1")
         assert not release.in_index("medh5", "2.0.0")
+
+    def test_every_artifact_is_attested_before_the_release(self):
+        """The binaries' archives on the release page had a checksum file and
+        nothing that said who built them.  One job attests every archive,
+        wheel and sdist, the only one allowed to, and the release waits for
+        it."""
+        jobs = _jobs(RELEASE.read_text(encoding="utf-8"))
+        attest = jobs["attest"]
+        assert re.search(r"^    needs: build$", attest, re.M)
+        assert re.search(r"uses: actions/attest@[0-9a-f]{40} # v4\.", attest)
+        for pattern in ("cli/*.tar.gz", "cli/*.zip", "dist/*.whl", "dist/*.tar.gz"):
+            assert f"            {pattern}\n" in attest, pattern
+        writers = {n for n, j in jobs.items() if "attestations: write" in j}
+        assert writers == {"attest"}
+        needs = re.search(r"^    needs: \[(.*)\]$", jobs["github-release"], re.M)
+        assert needs and "attest" in needs[1].split(", ")
+        install = (ROOT / "docs/install.md").read_text(encoding="utf-8")
+        assert "gh attestation verify" in install
+        assert "--repo medh5-project/medh5" in install
 
     def test_every_publishing_step_can_run_again(self):
         """`cargo publish --workspace` refused a re-run once one crate was up,
@@ -1379,6 +1583,7 @@ class TestDistribution:
         needed = [
             ".github/dependabot.yml",
             ".pre-commit-config.yaml",
+            "deny.toml",
             ".github/workflows/ci.yml",
             ".github/workflows/release.yml",
             *(
@@ -1417,10 +1622,27 @@ class TestDistribution:
         (tmp_path / "corpus").mkdir()
         write_sample(tmp_path / "corpus" / "case.medh5")
         assert damaged.main([binary, str(tmp_path / "corpus"), "--runs", "6"]) == 0
+        # The shapes of 2.0.2's denial-of-service bugs, as the binary writes
+        # them, each reported as an error within bounds; a valid file is not.
+        hostile = tmp_path / "robustness"
+        subprocess.run(
+            [binary, "conformance", "build", "--robustness", str(hostile)], check=True
+        )
+        assert len(list(hostile.glob("*.medh5"))) == 4
+        corpus = [binary, str(tmp_path / "corpus"), "--runs", "1"]
+        assert damaged.main([*corpus, "--structural", str(hostile)]) == 0
+        # A valid file is not an error.  (What follows the colon is the
+        # binary's stderr, which on a free-threaded interpreter holds the
+        # warning that the GIL was re-enabled.)
+        valid = damaged.structural(binary, tmp_path / "corpus" / "case.medh5")
+        assert valid is not None and valid.startswith("exit 0, not 1:")
         jobs = _jobs(CI.read_text(encoding="utf-8"))
-        assert "damaged.py" in _jobs(BUILD.read_text(encoding="utf-8"))["build"]
+        build = _jobs(BUILD.read_text(encoding="utf-8"))["build"]
         msvc = jobs["msvc-from-crates-io"]
-        assert "rm -r ws/.cargo" in msvc and "damaged.py" in msvc
+        assert "rm -r ws/.cargo" in msvc
+        for job in (build, msvc):
+            assert "conformance build --robustness" in job
+            assert re.search(r"damaged\.py .* --structural ", job)
         assert "cargo clean --release -p hdf5-metno-src" in msvc
         # The job's bash rewrote `/DNDEBUG` into `C:/Program Files/Git/DNDEBUG`.
         assert "CFLAGS_x86_64_pc_windows_msvc: -DNDEBUG" in msvc

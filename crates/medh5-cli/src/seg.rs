@@ -22,6 +22,7 @@ use medh5::storage::index::{build_index, IndexPayload, SamplingIndex};
 use medh5::Error;
 
 use crate::common::*;
+use crate::workers::{run_files, FileOutcome};
 
 pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     if name == "seg" {
@@ -254,48 +255,51 @@ struct Built {
 }
 
 fn index_build(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
-    let as_json = flag(m, "json");
+    let paths = get_paths(m, "paths");
+    let outcomes = run_files("index build", m, ctx, &paths)?;
+    let mut indexed = Map::new();
+    for (path, outcome) in paths.iter().zip(&outcomes) {
+        indexed.insert(path.clone(), outcome.entry.clone());
+    }
+    ctx.emit(&Value::Object(indexed), flag(m, "json"));
+    Ok(if outcomes.iter().all(|o| o.ok) { EXIT_OK } else { EXIT_ERROR })
+}
+
+/// One file of `index build`: its entry is the annotations with a current
+/// index, as when each was rebuilt.
+pub(crate) fn index_build_one(path: &str, m: &ArgMatches) -> medh5::Result<FileOutcome> {
     // The parser holds both in range: at least one coordinate, a block of 0
     // or more --- and `--occupancy 0` builds no occupancy map.
     let max_coords = get_i64(m, "max_coords").unwrap_or(1) as usize;
     let occupancy = get_i64(m, "occupancy").filter(|&n| n > 0).map(|n| n as usize);
     let seed = get_i64(m, "seed").unwrap_or(0);
-    let mut indexed = Map::new();
-    let mut failed = false;
-    for path in get_paths(m, "paths") {
-        let done = match build_file(&path, max_coords, occupancy, seed) {
-            Ok(done) => done,
-            Err(e) => {
-                // An entry of its own carrying the error, as every batch
-                // command gives a file it could not process.
-                indexed.insert(path.clone(), ctx.file_failed(&path, &e));
-                failed = true;
-                continue;
-            }
-        };
-        if !as_json {
-            let current: Vec<&str> =
-                done.indexable.iter().filter(|name| !done.built.contains(name)).map(String::as_str).collect();
-            let mut said = Vec::new();
-            if !done.built.is_empty() {
-                said.push(format!("built index for {}", done.built.join(", ")));
-            }
-            if !current.is_empty() {
-                said.push(format!("index current for {}", current.join(", ")));
-            }
-            ctx.print(match (said.is_empty(), done.built.is_empty()) {
-                // An index is optional per annotation (§14.3), and a mask has
-                // no classes to index: a file without one to index is done.
-                (true, _) => format!("{path}: nothing to index: no voxel annotation with classes"),
-                (false, true) => format!("{path}: {}; the file is unchanged", said.join("; ")),
-                (false, false) => format!("{path}: {}", said.join("; ")),
-            });
+    let done = match build_file(path, max_coords, occupancy, seed) {
+        Ok(done) => done,
+        // An entry of its own carrying the error, as every batch command
+        // gives a file it could not process.
+        Err(e) => return Ok(FileOutcome::failed(path, &e)),
+    };
+    let mut outcome = FileOutcome::new();
+    if !flag(m, "json") {
+        let current: Vec<&str> =
+            done.indexable.iter().filter(|name| !done.built.contains(name)).map(String::as_str).collect();
+        let mut said = Vec::new();
+        if !done.built.is_empty() {
+            said.push(format!("built index for {}", done.built.join(", ")));
         }
-        // Every annotation with a current index now, as when each was rebuilt.
-        indexed.insert(path, json!(done.indexable));
+        if !current.is_empty() {
+            said.push(format!("index current for {}", current.join(", ")));
+        }
+        outcome.print(match (said.is_empty(), done.built.is_empty()) {
+            // An index is optional per annotation (§14.3), and a mask has
+            // no classes to index: a file without one to index is done.
+            (true, _) => format!("{path}: nothing to index: no voxel annotation with classes"),
+            (false, true) => format!("{path}: {}; the file is unchanged", said.join("; ")),
+            (false, false) => format!("{path}: {}", said.join("; ")),
+        });
     }
-    ctx.emit(&Value::Object(indexed), as_json);
-    Ok(if failed { EXIT_ERROR } else { EXIT_OK })
+    outcome.entry = json!(done.indexable);
+    Ok(outcome)
 }
 
 /// Index the voxel annotations of `path` --- every one but a `mask`, as the

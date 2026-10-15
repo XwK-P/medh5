@@ -3,9 +3,10 @@
 #
 #     .github/scripts/build-dist.sh TARGET
 #
-# The wheel goes to dist/ (one abi3 wheel serves CPython 3.10 and later) and the
-# binary, archived with its licence, the notices of what it links and its
-# README, to cli/.  CI runs this on every
+# The wheels go to dist/ --- one abi3 wheel serves CPython 3.10 and later, and
+# a second serves free-threaded CPython 3.14, which the stable ABI does not
+# cover --- and the binary, archived with its licence, the notices of what it
+# links and its README, to cli/.  CI runs this on every
 # platform the project ships --- inside a manylinux_2_28 container on Linux, so
 # both run on any glibc from 2.28 --- and the release publishes what CI built.
 set -euo pipefail
@@ -28,6 +29,7 @@ rustup_sha256_aarch64=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae4
 if [[ -x /opt/python/cp312-cp312/bin/python ]]; then
   # A manylinux container: its own Python, with CMake and Rust installed here.
   python=/opt/python/cp312-cp312/bin/python
+  MEDH5_FT_PYTHON=/opt/python/cp314-cp314t/bin/python
   "$python" -m pip install --quiet "maturin==$maturin_version" "cmake==$cmake_version"
   export PATH="$(dirname "$python"):$HOME/.cargo/bin:$PATH"
   if ! command -v rustup >/dev/null; then
@@ -48,7 +50,8 @@ if [[ -x /opt/python/cp312-cp312/bin/python ]]; then
   fi
   compatibility=(--compatibility manylinux_2_28)
 else
-  # A hosted runner: Python from setup-python, CMake and rustup preinstalled.
+  # A hosted runner: Python from setup-python, CMake and rustup preinstalled;
+  # build.yml names its free-threaded Python in MEDH5_FT_PYTHON.
   python=python
   "$python" -m pip install --quiet "maturin==$maturin_version"
   compatibility=()
@@ -59,6 +62,15 @@ rustup toolchain install --no-self-update
 
 # (The `+` form: an empty array is "unbound" to the bash 3.2 macOS ships.)
 maturin build --release --locked --out dist --interpreter "$python" ${compatibility[@]+"${compatibility[@]}"}
+# Free-threaded CPython cannot load an abi3 extension, so it gets one built for
+# it: `-cp314-cp314t-<platform>.whl`.  Only PyO3 and the extension compile
+# again; the engine and HDF5 are the build above's.  The module still asks for
+# the GIL (`gil_used = true`), which CPython then turns on as it imports it.
+if [[ -z "${MEDH5_FT_PYTHON:-}" ]]; then
+  echo "MEDH5_FT_PYTHON names no free-threaded Python to build the cp314t wheel with" >&2
+  exit 1
+fi
+maturin build --release --locked --out dist --interpreter "$MEDH5_FT_PYTHON" ${compatibility[@]+"${compatibility[@]}"}
 # The binary, from the same checkout and lock as the wheel.  Cargo reuses what
 # maturin compiled only where the two builds agree on target and flags; where
 # they do not, the graph compiles again, HDF5 included --- CI time, nothing else.
