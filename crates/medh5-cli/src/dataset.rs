@@ -199,7 +199,7 @@ fn split(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         Vec::new()
     };
     if let Some(out) = get_str(m, "out") {
-        std::fs::write(out, medh5::json::pretty(&record.to_json()) + "\n").map_err(|e| os_error(&e, out))?;
+        medh5::h5::file::write_atomic(Path::new(out), (medh5::json::pretty(&record.to_json()) + "\n").as_bytes())?;
     }
     if flag(m, "json") {
         let mut payload = match record.to_json() {
@@ -301,7 +301,7 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     }
     let result = compute_stats(&paths, &options, workers)?;
     if let Some(out) = get_str(m, "out") {
-        std::fs::write(out, medh5::json::pretty(&result.to_json()) + "\n").map_err(|e| os_error(&e, out))?;
+        medh5::h5::file::write_atomic(Path::new(out), (medh5::json::pretty(&result.to_json()) + "\n").as_bytes())?;
     }
     if flag(m, "json") {
         ctx.emit(&result.to_json(), true);

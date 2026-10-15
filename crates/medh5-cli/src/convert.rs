@@ -128,7 +128,7 @@ pub fn finish(report: &ConversionReport, m: &ArgMatches, ctx: &mut Ctx) -> CmdRe
                 repr_str(output)
             )));
         }
-        std::fs::write(path, pretty(&report.to_json()) + "\n").map_err(|e| medh5::error::os_error(&e, path))?;
+        medh5::h5::file::write_atomic(Path::new(path), (pretty(&report.to_json()) + "\n").as_bytes())?;
     }
     if flag(m, "json") {
         ctx.emit(&report.to_json(), true);
