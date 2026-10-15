@@ -443,6 +443,9 @@ w.document.label_set["liver"].properties["window"] = [-150, 250]
 assert w.document.label_set["liver"].properties["window"] == [-150, 250]
 ```
 
+[Choose and map a label set](../guides/label-sets.md) is the how-to: picking a vocabulary,
+fixing a cohort whose files disagree, and comparing two numberings.
+
 Bundled vocabularies:
 
 ```

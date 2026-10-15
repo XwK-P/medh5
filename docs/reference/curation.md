@@ -142,13 +142,16 @@ meanings, or a class name the two resolve to different ids, is refused (`C102`,
 as `dataset check` refuses it in a cohort) rather than scored. Where a file has
 no label set, its ids are compared as numbers.
 
-`match_by` chooses how objects pair. `"auto"` is the rule above; `"iou"` pairs
-by where the objects are even where both carry ids; `"instance_id"` pairs by id
-and refuses two samples, because an id names an object only within its own
-sample (§7.4). No id map across samples exists: the format defines no identity
-across them.
+`match_by` (a `medh5.curation.agreement.MatchBy`) chooses how objects pair.
+`"auto"` is the rule above; `"iou"` pairs by where the objects are even where
+both carry ids; `"instance_id"` pairs by id and refuses two samples, because an
+id names an object only within its own sample (§7.4). No id map across samples
+exists: the format defines no identity across them.
 
 ### Two vocabularies
+
+[Choose and map a label set](../guides/label-sets.md#compare-raters-who-numbered-differently)
+walks through one comparison, and recording it.
 
 Two raters' files often number one vocabulary differently: liver is 1 in one
 and 6 in the other. Compared by id that is refused (`C102`); `map_classes` says
@@ -166,6 +169,8 @@ by_key.per_class          # {"liver": 0.94}: keyed by a's classes
 by_key.b_class_ids        # {"liver": 6}: the class of b each was scored against
 by_key.skipped            # a key b's label set lacks, and why: never scored 0
 ```
+
+`map_classes` (a `medh5.curation.agreement.ClassMap`) is one of:
 
 - `"id"` (the default): one id is one class on both sides.
 - `"key"`: classes of one key are compared. Both sides need an inline label

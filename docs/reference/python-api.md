@@ -85,7 +85,7 @@ g = s.grids["ct_tp0"]
 g.shape, g.spacing, g.origin, g.direction
 g.affine                   # (n+1, n+1) index -> world
 g.spatial_shape            # spatial axes only, for a 4-D grid
-g.coord_system             # "LPS"
+g.coord_system             # "LPS", one of medh5.geometry.COORD_SYSTEMS
 g.timepoint                # "tp0"
 g.frame_uid                # frame of reference
 g.physical_size            # extent per spatial axis, in g.units
@@ -645,9 +645,10 @@ MEDH5Error
 so a caller can branch on the defect rather than on the message text.
 
 A file that is missing, a directory or unreadable raises the subclass that
-says so, with the system's `errno` and the `filename`, so `except
-FileNotFoundError` catches a missing sample; `str()` is the message alone, as
-before.
+says so (`medh5.errors.MEDH5FileNotFoundError`,
+`medh5.errors.MEDH5IsADirectoryError`, `medh5.errors.MEDH5PermissionError`),
+with the system's `errno` and the `filename`, so `except FileNotFoundError`
+catches a missing sample; `str()` is the message alone, as before.
 
 `MEDH5Error` is the base of the errors this package defines, not of every
 error it raises. HDF5 failing to read a file's bytes — a damaged chunk, say —

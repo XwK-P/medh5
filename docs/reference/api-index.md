@@ -40,7 +40,11 @@ compiled extension the modules re-export from, not an API of its own.
 | `LabelSet` | class | A controlled vocabulary (§5.1). | [Annotation kinds › Label sets](annotations.md#label-sets) |
 | `MEDH5Error` | exception | Base of the package's own exceptions: a file, version, schema, validation or integrity error. | [Python API › Exceptions](python-api.md#exceptions) |
 | `MEDH5FileError` | exception | A file cannot be opened, is not HDF5, or is structurally unreadable. | [Python API › Amending](python-api.md#amending) |
+| `MEDH5FileNotFoundError` | exception | The file does not exist. | [Python API › Exceptions](python-api.md#exceptions) |
 | `MEDH5IntegrityError` | exception | A digest or `content_id` does not match the data it covers. |  |
+| `MEDH5IOError` | exception | A read or write the engine could not complete: HDF5 failing a damaged chunk, say. | [Python API › Exceptions](python-api.md#exceptions) |
+| `MEDH5IsADirectoryError` | exception | The path names a directory, not a file. | [Python API › Exceptions](python-api.md#exceptions) |
+| `MEDH5PermissionError` | exception | The file exists but may not be read (or written). | [Python API › Exceptions](python-api.md#exceptions) |
 | `MEDH5SchemaError` | exception | The sample document is absent, is not JSON, or violates its JSON Schema. |  |
 | `MEDH5ValidationError` | exception | Input rejected by a writer, or a validation failure raised as an exception. | [Python API › Opening](python-api.md#opening) |
 | `MEDH5VersionError` | exception | The file's `medh5_version` is one this operation cannot work with. | [Python API › Amending](python-api.md#amending) |
@@ -49,8 +53,8 @@ compiled extension the modules re-export from, not an API of its own.
 | `open_collection` | function | Open a `.medh5c` shard, read-only. | [Python API › Opening](python-api.md#opening) |
 | `open_sample` | function | Open a `.medh5` sample file, read-only. | [Python API › Opening](python-api.md#opening) |
 | `pack` | function | Copy sample files into one collection shard (spec §2.2). | [Python API › Collections](python-api.md#collections) |
-| `Patch` | class | One draw: where to read, and how the location was chosen. |  |
-| `PatchSampler` | class | Choose patch windows in a volume (spec §14.3). | [PyTorch and MONAI › PatchDataset — random patches](torch.md#patchdataset--random-patches) |
+| `Patch` | class | One draw: where to read, and how the location was chosen. | [Python API › Sampling patches](python-api.md#sampling-patches) |
+| `PatchSampler` | class | Choose patch windows in a volume (spec §14.3). | [Python API › Sampling patches](python-api.md#sampling-patches) |
 | `PROFILES` | constant (`tuple`) |  | [Storage › Codec profiles](storage.md#codec-profiles) |
 | `Provenance` | class | Who did what (§11.1): agents and the activities they performed. | [Curation records › Provenance](curation.md#provenance) |
 | `QualityRecord` | class | What is known about an annotation's trustworthiness: status, confidence, agreement, issues (§11.2). |  |
@@ -64,8 +68,8 @@ compiled extension the modules re-export from, not an API of its own.
 | `Timepoint` | class | One timepoint of the sample: an observation occasion, in DICOM terms usually one study (§3.7). | [Curation records › Editing a record](curation.md#editing-a-record) |
 | `TimepointPair` | class | One ordered pair of visits, and the change label spanning it, if any. |  |
 | `TimepointPairSampler` | class | Enumerate the visit pairs a longitudinal model trains on (§3.7, §9). | [PyTorch and MONAI › PairedPatchDataset — the same place at two visits](torch.md#pairedpatchdataset--the-same-place-at-two-visits) |
-| `Track` | class | Every observation of one physical object, ordered by timepoint. |  |
-| `Tracking` | class | `{instance_id: Track}` with the coverage needed to tell *resolved* from *unexamined*. | [Python API › Tracking](python-api.md#tracking) |
+| `Track` | class | Every observation of one physical object, ordered by timepoint. | [Curation records › Tracking](curation.md#tracking) |
+| `Tracking` | class | `{instance_id: Track}` with the coverage needed to tell *resolved* from *unexamined*, and the reason for every absence. | [Curation records › Tracking](curation.md#tracking) |
 | `unpack` | function | Extract sample roots back into standalone files (spec §2.2). | [Python API › Collections](python-api.md#collections) |
 | `validate_cache` | function | Validate a cache: its checksums, every source pin, and — given a task — that it was built for this task, fitted on this task's training partition, and (`check_rows`) that each row's entry was built at its cutoff, from versions it admits, of its own subject's sources. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `VoxelAnnotation` | class | The uniform read contract of the five voxel encodings (spec §7). |  |
@@ -361,7 +365,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `Cohort` | class | The `cohort` member of the sample document: dataset, site, scanner and split group (§12.2). | [Curation records › Editing a record](curation.md#editing-a-record) |
 | `compare` | function | Compare two annotations, choosing the comparison their kinds support. | [Curation records › Agreement](curation.md#agreement) |
 | `compare_instances` | function | Object-level agreement between two instance-carrying annotations. | [Curation records › Agreement](curation.md#agreement) |
-| `compare_voxel` | function | Per-class Dice or IoU between two voxel annotations on the same grid. |  |
+| `compare_voxel` | function | Per-class Dice or IoU between two voxel annotations on the same grid. | [Curation records › Two vocabularies](curation.md#two-vocabularies) |
 | `DATE_PATTERN` | constant (`Pattern`) | An ISO-8601 calendar date prefix, as `date` must start (the engine's). |  |
 | `Deidentification` | class | The `deidentification` member: how identifiers were removed from the sample (§11.4). | [Curation records › Editing a record](curation.md#editing-a-record) |
 | `dice_agreement` | function | Return a mean-Dice `Agreement` from a mapping of class id to that class's Dice (§11.2). |  |
@@ -381,18 +385,19 @@ compiled extension the modules re-export from, not an API of its own.
 | `QUALITY_STATUS` | constant (`tuple`) |  |  |
 | `quality_to_json` | function | Serialize a mapping of key to `QualityRecord` (or its JSON form) as the `quality` member (§11.2). |  |
 | `QualityRecord` | class | What is known about an annotation's trustworthiness: status, confidence, agreement, issues (§11.2). |  |
+| `REASONS` | constant (`tuple`) | Why an unseen object is or is not a finding (§7.4), in precedence order. | [Curation records › Tracking](curation.md#tracking) |
 | `RESOLVED` | constant (`str`) |  |  |
 | `RFC3339` | constant (`Pattern`) | The timestamp form §11.1 requires; `check_timestamp` is the rule. |  |
 | `SEX_VALUES` | constant (`tuple`) |  |  |
 | `SplitAudit` | class | What a cohort's split claims say, and where they disagree. |  |
 | `SplitClaim` | class | One entry of `splits`: a claim that the sample belongs to a partition of a split set (§12.3). | [Build and split a cohort › What the digest covers](../guides/cohorts.md#what-the-digest-covers) |
 | `splits_from_json` | function | Parse the `splits` member of a sample document into a tuple of `SplitClaim`s (§12.3). |  |
-| `STATES` | constant (`tuple`) |  |  |
+| `STATES` | constant (`tuple`) |  | [Curation records › Tracking](curation.md#tracking) |
 | `Timeline` | class | The sample's timepoints, in acquisition order; indexable by position or id. | [Python API › Timepoints](python-api.md#timepoints) |
 | `Timepoint` | class | One timepoint of the sample: an observation occasion, in DICOM terms usually one study (§3.7). | [Curation records › Editing a record](curation.md#editing-a-record) |
 | `TIMEPOINT_FIELDS` | constant (`frozenset`) |  |  |
-| `Track` | class | Every observation of one physical object, ordered by timepoint. |  |
-| `Tracking` | class | `{instance_id: Track}` with the coverage needed to tell *resolved* from *unexamined*. | [Python API › Tracking](python-api.md#tracking) |
+| `Track` | class | Every observation of one physical object, ordered by timepoint. | [Curation records › Tracking](curation.md#tracking) |
+| `Tracking` | class | `{instance_id: Track}` with the coverage needed to tell *resolved* from *unexamined*, and the reason for every absence. | [Curation records › Tracking](curation.md#tracking) |
 | `UNEXAMINED` | constant (`str`) |  |  |
 | `VoxelAgreement` | class | Per-class agreement between two voxel annotations. |  |
 
@@ -401,13 +406,15 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `box_iou` | function | IoU of two `(S, 2)` boxes in the same space. |  |
+| `ClassMap` | type | Which class of `b` each class of `a` is compared with: by id (one vocabulary), by key (two inline label sets), or an explicit one-to-one map. | [Curation records › Two vocabularies](curation.md#two-vocabularies) |
 | `compare` | function | Compare two annotations, choosing the comparison their kinds support. | [Curation records › Agreement](curation.md#agreement) |
 | `compare_instances` | function | Object-level agreement between two instance-carrying annotations. | [Curation records › Agreement](curation.md#agreement) |
-| `compare_voxel` | function | Per-class Dice or IoU between two voxel annotations on the same grid. |  |
+| `compare_voxel` | function | Per-class Dice or IoU between two voxel annotations on the same grid. | [Curation records › Two vocabularies](curation.md#two-vocabularies) |
 | `DEFAULT_IOU` | constant (`float`) |  |  |
 | `dice` | function | Sørensen--Dice, or `None` when both masks are empty. | [Curation records › Agreement](curation.md#agreement) |
 | `InstanceAgreement` | class | Object-level agreement: what matched, what did not, and how. |  |
 | `iou` | function | Intersection over union, or `None` when both masks are empty. | [Curation records › Agreement](curation.md#agreement) |
+| `MatchBy` | type | How objects are paired: by `instance_id` within one sample where both sides share ids (`auto`), always by IoU, or by id (one sample only). | [Curation records › Agreement](curation.md#agreement) |
 | `OBJECT_KINDS` | constant (`tuple`) | Kinds whose objects carry an axis-aligned box that IoU can be taken over. |  |
 | `VoxelAgreement` | class | Per-class agreement between two voxel annotations. |  |
 
@@ -525,7 +532,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `read_document` | function | The sample document under a sample root, parsed: a later minor's as its supported projection (1.1 §2.2). |  |
 | `read_document_text` | function | The raw `/meta` text under a sample root (`sample.root`). |  |
 | `SampleDocument` | class | The whole document, typed. | [Python API › Identity and structure](python-api.md#identity-and-structure) |
-| `schema` | function | The sample-document JSON Schema, parsed. | [Cache manifest schema](cache-schema.md) |
+| `schema` | function | The sample-document JSON Schema, parsed: a fresh dict on every call, so a caller's edit stays the caller's. | [Cache manifest schema](cache-schema.md) |
 | `schema_text` | function | The sample-document JSON Schema (draft 2020-12), as published: the engine's embedded copy of `medh5-sample-1.0.schema.json`. | [Sample document schema](schema.md) |
 | `validate_against_schema` | function | Validate a document, returning human-readable messages (empty when valid). |  |
 
@@ -541,7 +548,11 @@ compiled extension the modules re-export from, not an API of its own.
 | `Domain` | type | The area of the specification a diagnostic code belongs to (§15.2). |  |
 | `MEDH5Error` | exception | Base of the package's own exceptions: a file, version, schema, validation or integrity error. | [Python API › Exceptions](python-api.md#exceptions) |
 | `MEDH5FileError` | exception | A file cannot be opened, is not HDF5, or is structurally unreadable. | [Python API › Amending](python-api.md#amending) |
+| `MEDH5FileNotFoundError` | exception | The file does not exist. | [Python API › Exceptions](python-api.md#exceptions) |
 | `MEDH5IntegrityError` | exception | A digest or `content_id` does not match the data it covers. |  |
+| `MEDH5IOError` | exception | A read or write the engine could not complete: HDF5 failing a damaged chunk, say. | [Python API › Exceptions](python-api.md#exceptions) |
+| `MEDH5IsADirectoryError` | exception | The path names a directory, not a file. | [Python API › Exceptions](python-api.md#exceptions) |
+| `MEDH5PermissionError` | exception | The file exists but may not be read (or written). | [Python API › Exceptions](python-api.md#exceptions) |
 | `MEDH5SchemaError` | exception | The sample document is absent, is not JSON, or violates its JSON Schema. |  |
 | `MEDH5ValidationError` | exception | Input rejected by a writer, or a validation failure raised as an exception. | [Python API › Opening](python-api.md#opening) |
 | `MEDH5VersionError` | exception | The file's `medh5_version` is one this operation cannot work with. | [Python API › Amending](python-api.md#amending) |
@@ -559,6 +570,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `build_affine` | function | Return the `(S+1, S+1)` index-to-world affine built from spacing, origin and direction (§3.3). |  |
 | `check_orthonormal` | function | Return `direction` as a float array, raising E102 unless it is orthonormal to within `tol`. |  |
 | `check_pyramid` | function | Return a message for each pyramid level whose geometry breaks the derivation rule (§4.3). |  |
+| `COORD_SYSTEMS` | constant (`tuple`) |  | [Python API › Geometry](python-api.md#geometry) |
 | `decompose_affine` | function | Split an index-to-world affine back into `(spacing, origin, direction)` arrays (§3.3). |  |
 | `derive_level_grid` | function | Derive the `Grid` of one pyramid level from level 0 and its per-axis downsample factors (§4.3). |  |
 | `DOWNSAMPLE_METHODS` | constant (`tuple`) |  |  |
@@ -758,7 +770,7 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `convert_world` | function | Re-express a 3-D index→world affine between RAS and LPS. |  |
-| `COORD_SYSTEMS` | constant (`tuple`) |  |  |
+| `COORD_SYSTEMS` | constant (`tuple`) |  | [Python API › Geometry](python-api.md#geometry) |
 | `from_nifti` | function | Write one sample from a set of co-registered NIfTI volumes. | [Converters › Conversion reports](converters.md#conversion-reports) |
 | `import_seg_nifti` | function | Add NIfTI masks to an existing sample, checking they sit on its grid. | [Converters › NIfTI](converters.md#nifti) |
 | `RAS_TO_LPS` | constant (`ndarray`) | World-axis sign flip. |  |
@@ -802,7 +814,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `available` | function | Every vocabulary name `load` accepts, bundled and registered. | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
 | `BACKGROUND_ID` | constant (`int`) |  |  |
 | `canonical_json` | function | Return the canonical JSON bytes of a document: sorted keys, no whitespace, UTF-8 (§5.1). |  |
-| `check` | function | Whether sample files share one vocabulary, as `medh5 labels check --json`. | [Profiles and validation levels › Levels — how much to check](profiles-and-levels.md#levels--how-much-to-check) |
+| `check` | function | Whether sample files share one vocabulary, as `medh5 labels check --json`. | [Choose and map a label set › Find where a cohort disagrees](../guides/label-sets.md#find-where-a-cohort-disagrees) |
 | `check_class_id` | function | Return `class_id` if it is an assignable class id, 1 to 65534 (§5.3). |  |
 | `CLOSURES` | constant (`tuple`) |  |  |
 | `describe` | function | Name -&gt; `{id, version, classes, sha256}`. | [Python API › Sub-packages](python-api.md#sub-packages) |
@@ -833,7 +845,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `MedH5Reader` | class | A MONAI `ImageReader` for `.medh5` samples and collection members. | [PyTorch and MONAI › A reader for `LoadImage`](torch.md#a-reader-for-loadimage) |
 | `meta_dict` | function | The metadata MONAI carries alongside a tensor. | [PyTorch and MONAI › MONAI](torch.md#monai) |
 | `require_monai` | function | Import MONAI, or explain how to install it. |  |
-| `SPACES` | constant (`tuple`) |  |  |
+| `SPACES` | constant (`tuple`) |  | [Python API › Geometry](python-api.md#geometry) |
 | `to_dict` | function | A MONAI dictionary-transform item: `{image_id: MetaTensor, ...}`. | [PyTorch and MONAI › MONAI](torch.md#monai) |
 | `to_metatensor` | function | One image (or ROI of it) as a MONAI `MetaTensor`. | [PyTorch and MONAI › MONAI](torch.md#monai) |
 
@@ -873,13 +885,13 @@ compiled extension the modules re-export from, not an API of its own.
 | `blend_weights` | function | The weight of each voxel of a patch when patches are stitched back. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
 | `coerce_patch_size` | function | Broadcast a scalar patch size across *ndim* spatial axes. |  |
 | `grid_patches` | function | Deterministic sliding-window cover of a volume — the inference path. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
-| `iter_patches` | function | The patches of `PatchSampler.draws`, one at a time. |  |
+| `iter_patches` | function | The patches of `PatchSampler.draws`, drawn one per `next()`. | [Python API › Sampling patches](python-api.md#sampling-patches) |
 | `PAIR_MODES` | constant (`tuple`) |  |  |
 | `PairReport` | class | What a paired dataset kept and what it skipped. |  |
-| `Patch` | class | One draw: where to read, and how the location was chosen. |  |
+| `Patch` | class | One draw: where to read, and how the location was chosen. | [Python API › Sampling patches](python-api.md#sampling-patches) |
 | `PatchAggregator` | class | Stitch patch predictions back into one volume. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
-| `PatchSampler` | class | Choose patch windows in a volume (spec §14.3). | [PyTorch and MONAI › PatchDataset — random patches](torch.md#patchdataset--random-patches) |
-| `Seed` | type | What seeds a draw: an integer, a sequence of integers — `(seed, epoch, index)` — a `numpy.random.Generator`, which supplies one seed and advances, or `None` for fresh entropy. |  |
+| `PatchSampler` | class | Choose patch windows in a volume (spec §14.3). | [Python API › Sampling patches](python-api.md#sampling-patches) |
+| `Seed` | type | What seeds a draw: an integer, a sequence of integers — `(seed, epoch, index)` — a `numpy.random.Generator`, which supplies one seed and advances, or `None` for fresh entropy. | [Python API › Sampling patches](python-api.md#sampling-patches) |
 | `STRATEGIES` | constant (`tuple`) |  |  |
 | `TimepointPair` | class | One ordered pair of visits, and the change label spanning it, if any. |  |
 | `TimepointPairSampler` | class | Enumerate the visit pairs a longitudinal model trains on (§3.7, §9). | [PyTorch and MONAI › PairedPatchDataset — the same place at two visits](torch.md#pairedpatchdataset--the-same-place-at-two-visits) |
@@ -899,7 +911,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `Codec` | class | One codec setting. | [Storage › Codec profiles](storage.md#codec-profiles) |
 | `CodecProfile` | class | A named pairing of codecs for image data and for label/field data. |  |
 | `COMPRESS_MIN_BYTES` | constant (`int`) | Datasets smaller than this are stored contiguous and unfiltered. |  |
-| `dataset_kwargs` | function | The layout the writer gives one dataset: `{}` when it is stored contiguous (small or empty), else `{"chunks": ..., "codec": ...}`, the codec being *profile*'s for *role* — a `CodecProfile` of your own as much as a named one. | [Storage › Codec profiles](storage.md#codec-profiles) |
+| `dataset_layout` | function | The layout the writer gives one dataset: `{}` when it is stored contiguous (small or empty), else `{"chunks": ..., "codec": ...}`, the codec being *profile*'s for *role* — a `CodecProfile` of your own as much as a named one. | [Storage › Codec profiles](storage.md#codec-profiles) |
 | `DEFAULT_L3_BYTES` | constant (`int`) |  |  |
 | `DEFAULT_MAX_COORDS` | constant (`int`) |  |  |
 | `DEFAULT_OCCUPANCY_FACTOR` | constant (`int`) |  |  |
@@ -984,9 +996,9 @@ compiled extension the modules re-export from, not an API of its own.
 | `open_cached` | function | Open a sample — or a collection member — through the per-worker cache. |  |
 | `PairedPatchDataset` | class | Corresponding patches from two visits of one subject (§3.7, §10). | [PyTorch and MONAI › PairedPatchDataset — the same place at two visits](torch.md#pairedpatchdataset--the-same-place-at-two-visits) |
 | `PairReport` | class | What a paired dataset kept and what it skipped. |  |
-| `Patch` | class | One draw: where to read, and how the location was chosen. |  |
+| `Patch` | class | One draw: where to read, and how the location was chosen. | [Python API › Sampling patches](python-api.md#sampling-patches) |
 | `PatchDataset` | class | `samples_per_volume` patches from each file, drawn by a sampler. | [Threads, processes and open files › Fork and exec](../explanation/concurrency.md#fork-and-exec) |
-| `PatchSampler` | class | Choose patch windows in a volume (spec §14.3). | [PyTorch and MONAI › PatchDataset — random patches](torch.md#patchdataset--random-patches) |
+| `PatchSampler` | class | Choose patch windows in a volume (spec §14.3). | [Python API › Sampling patches](python-api.md#sampling-patches) |
 | `require_torch` | function | Without PyTorch, raise an `ImportError` that says how to install it — or, when it is installed and fails to import, why. |  |
 | `set_cache_size` | function | Resize this process's cache: how many files each worker keeps open. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
 | `stack_images` | function | Channel-stack several images into one `(B, C, *patch)` tensor. |  |

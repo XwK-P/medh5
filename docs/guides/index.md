@@ -13,6 +13,7 @@ minutes.
 | **[Classification and change labels](classification.md)** | Choosing a scope; labels that span an interval. |
 | **[Partial labels and coverage](partial-labels.md)** | Recording what you looked for, not just what you found. |
 | **[Record review, provenance and agreement](review-and-provenance.md)** | Who drew a mask and who checked it, its quality, and how far two raters agree. |
+| **[Choose and map a label set](label-sets.md)** | A vocabulary for a cohort, the clashes `dataset check` finds, relabelling, and raters who numbered differently. |
 
 ## Getting data in
 

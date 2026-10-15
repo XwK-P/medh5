@@ -6,11 +6,9 @@ medh5.Agent
 medh5.Instance
 medh5.MEDH5IntegrityError
 medh5.MEDH5SchemaError
-medh5.Patch
 medh5.QualityRecord
 medh5.SplitAudit
 medh5.TimepointPair
-medh5.Track
 medh5.VoxelAnnotation
 medh5.__format_version__
 medh5.annotations.ANNOTATION_KINDS
@@ -189,10 +187,8 @@ medh5.curation.QualityRecord
 medh5.curation.RESOLVED
 medh5.curation.RFC3339
 medh5.curation.SEX_VALUES
-medh5.curation.STATES
 medh5.curation.SplitAudit
 medh5.curation.TIMEPOINT_FIELDS
-medh5.curation.Track
 medh5.curation.UNEXAMINED
 medh5.curation.VoxelAgreement
 medh5.curation.agreement.DEFAULT_IOU
@@ -200,11 +196,9 @@ medh5.curation.agreement.InstanceAgreement
 medh5.curation.agreement.OBJECT_KINDS
 medh5.curation.agreement.VoxelAgreement
 medh5.curation.agreement.box_iou
-medh5.curation.agreement.compare_voxel
 medh5.curation.build_tracks
 medh5.curation.carries_instance_ids
 medh5.curation.check_timestamp
-medh5.curation.compare_voxel
 medh5.curation.dice_agreement
 medh5.curation.quality_from_json
 medh5.curation.quality_to_json
@@ -343,7 +337,6 @@ medh5.io.legacy.load_sidecar
 medh5.io.legacy.read_legacy
 medh5.io.legacy.write_sidecar
 medh5.io.merge_reports
-medh5.io.nifti.COORD_SYSTEMS
 medh5.io.nifti.RAS_TO_LPS
 medh5.io.nifti.convert_world
 medh5.io.nifti.require_nibabel
@@ -369,7 +362,6 @@ medh5.labels.canonical_json
 medh5.labels.check_class_id
 medh5.labels.from_keys
 medh5.labels.unregister
-medh5.monai.SPACES
 medh5.monai.require_monai
 medh5.nodes.Attrs
 medh5.nodes.Group
@@ -383,12 +375,9 @@ medh5.sample.TimepointView
 medh5.sample.annotation_id
 medh5.sampling.PAIR_MODES
 medh5.sampling.PairReport
-medh5.sampling.Patch
 medh5.sampling.STRATEGIES
-medh5.sampling.Seed
 medh5.sampling.TimepointPair
 medh5.sampling.coerce_patch_size
-medh5.sampling.iter_patches
 medh5.sampling.window_around
 medh5.storage.BLOSC2_FILTER_ID
 medh5.storage.BLOSC_FILTER_ID
@@ -438,7 +427,6 @@ medh5.torch.ALIGNMENTS
 medh5.torch.AVAILABLE
 medh5.torch.LABEL_FORMATS
 medh5.torch.PairReport
-medh5.torch.Patch
 medh5.torch.TimepointPair
 medh5.torch.clinical.PAD
 medh5.torch.clinical.UNKNOWN
