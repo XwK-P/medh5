@@ -54,7 +54,9 @@ replaced at the path given only, and its other names keep the old version —
 after `scrub --apply`, remove them. A link in a directory anyone can write to,
 such as `/tmp`, that neither you nor the directory's owner owns is not
 followed: the command refuses the file, as the system would refuse to open it
-through the link.
+through the link. Every other file a command writes — a manifest, a split, a
+report, an export — is replaced the same way, so an interrupted command leaves
+the old file whole.
 
 ## Inspecting
 

@@ -1153,6 +1153,16 @@ _SITES = {
 }
 
 
+def _another_group() -> int | None:
+    """A group this process may give a file besides the one its new files
+    get: a supplementary group, or, as root, any other."""
+    egid = os.getegid()
+    others = [g for g in os.getgroups() if g != egid]
+    if others:
+        return others[0]
+    return (65533 if egid == 65534 else 65534) if os.geteuid() == 0 else None
+
+
 @pytest.mark.parametrize(("write", "suffix"), _SITES.values(), ids=list(_SITES))
 class TestOneReplace:
     """Every file medh5 writes from Python is replaced as an amendment
@@ -1186,6 +1196,25 @@ class TestOneReplace:
         write(target, "after\n")
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
         assert target.read_bytes() == b"after\n"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX groups")
+    def test_S14_4_the_file_s_group_is_kept(
+        self, tmp_path: Path, write: Any, suffix: str
+    ):
+        """The replacement belonged to the writer's primary group, so a file
+        of a shared project group left it."""
+        group = _another_group()
+        if group is None:  # pragma: no cover - GitHub's runner user has one
+            pytest.skip("no group but the primary one")
+        target = tmp_path / f"shared{suffix}"
+        target.write_bytes(b"before\n")
+        os.chown(target, -1, group)
+        target.chmod(0o640)
+        write(target, "after\n")
+        assert (target.stat().st_gid, stat.S_IMODE(target.stat().st_mode)) == (
+            group,
+            0o640,
+        )
 
     def test_S14_4_a_read_only_file_is_replaced_and_stays_read_only(
         self, tmp_path: Path, write: Any, suffix: str

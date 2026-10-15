@@ -683,9 +683,12 @@ pub fn outside_references(handle: &hdf5::File) -> Result<Vec<(String, String)>> 
     })
 }
 
-/// The identity of a file a handle had open:
-/// `(st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns)`.
-pub(crate) type FileIdentity = (u64, u64, u64, i128, i128);
+/// The identity of a file a handle had open: `(volume, file id, size,
+/// modification time, change time)` --- on POSIX `(st_dev, st_ino, st_size,
+/// st_mtime_ns, st_ctime_ns)`, on Windows the volume serial number, the
+/// file's id, its end of file, and its last-write and change times (in
+/// 100-nanosecond ticks).
+pub(crate) type FileIdentity = (u64, u128, u64, i128, i128);
 
 fn checked_files() -> &'static Mutex<HashMap<FileIdentity, ()>> {
     static CHECKED: std::sync::OnceLock<Mutex<HashMap<FileIdentity, ()>>> = std::sync::OnceLock::new();
@@ -699,28 +702,93 @@ pub(crate) fn identity(meta: &std::fs::Metadata) -> Option<FileIdentity> {
     use std::os::unix::fs::MetadataExt;
     Some((
         meta.dev(),
-        meta.ino(),
+        u128::from(meta.ino()),
         meta.size(),
         meta.mtime() as i128 * 1_000_000_000 + meta.mtime_nsec() as i128,
         meta.ctime() as i128 * 1_000_000_000 + meta.ctime_nsec() as i128,
     ))
 }
 
-/// The descriptor HDF5 reads `handle` through, when its driver has one.
-#[cfg(unix)]
-fn descriptor(handle: &hdf5::File) -> Option<std::os::raw::c_int> {
-    use hdf5::file::FileDriver;
-    // Only the default (sec2) driver's handle is a POSIX descriptor.
-    if !matches!(handle.access_plist().ok()?.get_driver().ok()?, FileDriver::Sec2) {
-        return None;
+/// The identity of the file a Windows handle has open.
+///
+/// The volume serial number and 128-bit file id come from `FileIdInfo`;
+/// where a file system refuses it (FAT, some SMB shares), from
+/// `GetFileInformationByHandle`'s 32-bit serial and 64-bit file index, so a
+/// file is keyed one way for as long as its volume is.
+///
+/// What is left: a program can set a file's change time on Windows, which
+/// POSIX's ctime cannot be, so an edit in place that restores the size and
+/// both times, within this process's lifetime, skips the re-check.  That is
+/// a deliberate forgery by a process that could write the file anyway, and
+/// still more than 1.x's file index alone told.
+#[cfg(windows)]
+fn windows_identity(handle: windows_sys::Win32::Foundation::HANDLE) -> Option<FileIdentity> {
+    use std::mem::{size_of, MaybeUninit};
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileBasicInfo, FileIdInfo, FileStandardInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FILE_ID_INFO, FILE_INFO_BY_HANDLE_CLASS, FILE_STANDARD_INFO,
+    };
+
+    /// One class of information about the file, or `None` when refused.
+    ///
+    /// # Safety
+    /// `handle` is open, and `T` is the structure `class` fills.
+    unsafe fn info<T>(handle: HANDLE, class: FILE_INFO_BY_HANDLE_CLASS) -> Option<T> {
+        let mut out = MaybeUninit::<T>::zeroed();
+        // SAFETY: as the caller promises; the buffer is a `T`, of its size.
+        let done =
+            unsafe { GetFileInformationByHandleEx(handle, class, out.as_mut_ptr().cast(), size_of::<T>() as u32) };
+        // SAFETY: the call succeeded, so it filled the structure.
+        (done != 0).then(|| unsafe { out.assume_init() })
     }
-    super::locked(|| unsafe {
-        let mut found: *mut c_void = std::ptr::null_mut();
-        if crate::h5sys::h5f::H5Fget_vfd_handle(handle.id(), h5p::H5P_DEFAULT, &mut found) < 0 || found.is_null() {
-            return None;
+
+    // SAFETY: `handle` is the open handle behind HDF5's descriptor, and each
+    // structure is the one its class fills.
+    let basic: FILE_BASIC_INFO = unsafe { info(handle, FileBasicInfo)? };
+    // SAFETY: as above.
+    let standard: FILE_STANDARD_INFO = unsafe { info(handle, FileStandardInfo)? };
+    // SAFETY: as above.
+    let (volume, file) = match unsafe { info::<FILE_ID_INFO>(handle, FileIdInfo) } {
+        Some(id) => (id.VolumeSerialNumber, u128::from_le_bytes(id.FileId.Identifier)),
+        None => {
+            let mut by = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+            // SAFETY: as above; the call fills the structure it is given.
+            if unsafe { GetFileInformationByHandle(handle, by.as_mut_ptr()) } == 0 {
+                return None;
+            }
+            // SAFETY: the call succeeded, so it filled the structure.
+            let by = unsafe { by.assume_init() };
+            let index = u128::from(by.nFileIndexHigh) << 32 | u128::from(by.nFileIndexLow);
+            (u64::from(by.dwVolumeSerialNumber), index)
         }
-        Some(*found.cast::<std::os::raw::c_int>())
-    })
+    };
+    Some((
+        volume,
+        file,
+        u64::try_from(standard.EndOfFile).ok()?,
+        i128::from(basic.LastWriteTime),
+        i128::from(basic.ChangeTime),
+    ))
+}
+
+/// Whether no other handle may write the file `path` names, and it is still
+/// the file `id` identifies.
+///
+/// Windows does not promise a file's times are current until every handle
+/// that wrote it has closed, so a file rewritten to its old length through a
+/// handle still open could keep its old identity.  Opening it for reading
+/// while refusing to share writing fails while any handle may write it; a
+/// file that is being written is checked, not remembered.
+#[cfg(windows)]
+fn unshared(path: &Path, id: &FileIdentity) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    let Ok(probe) = std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(path) else {
+        return false;
+    };
+    windows_identity(probe.as_raw_handle()).is_some_and(|p| (p.0, p.1) == (id.0, id.1))
 }
 
 /// The identity of the file `handle` holds open --- not whatever `path` names
@@ -729,29 +797,35 @@ fn descriptor(handle: &hdf5::File) -> Option<std::os::raw::c_int> {
 /// Between an open and a stat by name, another process can atomically replace
 /// the path; recording the replacement as checked would let it skip the check
 /// on its next open, and the next `recompress` would copy whatever it points
-/// at.  So on POSIX the identity comes from the descriptor HDF5 read through:
-/// device, inode, size, and modification and change times.
+/// at.  So the identity comes from the descriptor HDF5 read through: the
+/// file's volume and id, its size, and its modification and change times.
 ///
-/// Elsewhere there is none.  Size and modification time alone do not tell two
-/// files apart --- an archive extracts many with one mtime, and the time is
-/// the author's to set --- so keying on them let a crafted file of a checked
-/// file's length and time skip the check (1.x keyed Windows on the volume
-/// serial and file index, which `std` cannot read).  No
-/// identity means no memo: the file is checked on every open rather than
-/// trusted on a guess.
+/// Size and modification time alone do not tell two files apart --- an
+/// archive extracts many with one mtime, and the time is the author's to set
+/// --- so keying on them would let a crafted file of a checked file's length
+/// and time skip the check.  A file with no identity (another driver, another
+/// system, and on Windows a file another handle may be writing) is checked on
+/// every open rather than trusted on a guess.
 pub(crate) fn opened_identity(handle: &hdf5::File, path: Option<&Path>) -> Option<FileIdentity> {
+    #[cfg(not(windows))]
+    let _ = path;
+    let fd = super::file::descriptor(handle)?;
     #[cfg(unix)]
     {
         use std::os::unix::io::FromRawFd;
-        let _ = path;
-        let fd = descriptor(handle)?;
         // Borrowed for one `fstat`: HDF5 owns the descriptor and closes it.
+        // SAFETY: `fd` is HDF5's open descriptor, which outlives the call.
         let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
         identity(&file.metadata().ok()?)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = (handle, path);
+        let id = windows_identity(super::file::os_handle(fd)?)?;
+        path.is_some_and(|p| unshared(p, &id)).then_some(id)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = fd;
         None
     }
 }
@@ -1056,7 +1130,6 @@ mod tests {
     }
 
     /// An unchanged file is checked once; the memo is what keeps re-opens cheap.
-    #[cfg(unix)]
     #[test]
     fn s2_an_unchanged_file_is_remembered() {
         let dir = tempfile::tempdir().unwrap();
@@ -1067,16 +1140,46 @@ mod tests {
         assert!(checked_files().lock().unwrap().contains_key(&key));
     }
 
-    /// Without the opened file's identity nothing is remembered, so
-    /// every open is checked --- a file of a checked file's length and
-    /// modification time is not taken for it.
-    #[cfg(not(unix))]
+    /// Windows does not promise a file's times are current while a handle
+    /// that may write it is open, so such a file is checked on every open.
+    #[cfg(windows)]
     #[test]
-    fn s2_without_an_identity_every_open_is_checked() {
+    fn s2_a_file_another_handle_may_write_is_not_remembered() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("clean.medh5");
         plain(&path);
+        let writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         let handle = crate::h5::file::open_read(&path).unwrap();
         assert!(opened_identity(&handle, Some(&path)).is_none());
+        drop(writer);
+        assert!(opened_identity(&handle, Some(&path)).is_some());
+    }
+
+    /// A file rewritten in place to its old length, its modification time
+    /// put back, is a new identity: the change time moved, which a write
+    /// cannot help.  So it is checked again rather than remembered.
+    #[test]
+    fn s2_a_file_changed_in_place_is_checked_again() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clean.medh5");
+        plain(&path);
+        let before = {
+            let handle = crate::h5::file::open_read(&path).unwrap();
+            opened_identity(&handle, Some(&path)).expect("a sec2 file has an identity")
+        };
+        let bytes = std::fs::read(&path).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        // Past the clock's tick, so the change time can move.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.write_all(&bytes).unwrap();
+        file.set_modified(modified).unwrap();
+        drop(file);
+        let handle = crate::h5::file::open_read(&path).unwrap();
+        let after = opened_identity(&handle, Some(&path)).unwrap();
+        assert_eq!((after.0, after.1, after.2, after.3), (before.0, before.1, before.2, before.3));
+        assert_ne!(after.4, before.4, "the change time moved");
+        assert!(checked_files().lock().unwrap().contains_key(&after), "checked under its new identity");
     }
 }

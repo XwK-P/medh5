@@ -6,9 +6,8 @@
 
 use std::path::Path;
 
-/// The sites still writing in place, by file: W21-05 PR 2 moves them, and
-/// this list is empty at release.
-const ALLOWED: [&str; 3] = ["clinical.rs", "convert.rs", "dataset.rs"];
+/// The sites still writing in place, by file: none since 2.1.
+const ALLOWED: [&str; 0] = [];
 
 /// `source` without its `#[cfg(test)]` code: what ships.
 fn shipped(source: &str) -> &str {

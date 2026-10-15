@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pickle
 import re
 import shutil
+import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -259,6 +262,23 @@ class TestManifest:
         assert main(["task", "reconcile", str(python), "-o", str(native)]) == 0
         assert python.read_bytes() == native.read_bytes()
         assert TaskManifest.load(python).identity_namespace == "hôpital"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX groups")
+    def test_S3_1_a_saved_manifest_keeps_its_group(self, setup, tmp_path: Path):
+        """A save replaces the file through the engine (1.0 §14.4), which
+        carries the replaced file's group: a manifest shared with a project
+        group stays that group's."""
+        task, _ = setup
+        egid = os.getegid()
+        others = [g for g in os.getgroups() if g != egid]
+        group = others[0] if others else (65534 if os.geteuid() == 0 else None)
+        if group is None:  # pragma: no cover - GitHub's runner user has one
+            pytest.skip("no group but the primary one")
+        path = task.save(tmp_path / "cohort" / "shared.task.json")
+        os.chown(path, -1, group)
+        path.chmod(0o640)
+        task.save(path)
+        assert (path.stat().st_gid, stat.S_IMODE(path.stat().st_mode)) == (group, 0o640)
 
     @pytest.mark.parametrize("spelling", ["NaN", "Infinity", "-Infinity"])
     def test_S3_1_a_manifest_holding_nan_is_not_json(
