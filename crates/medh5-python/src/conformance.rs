@@ -111,6 +111,20 @@ fn conformance_score<'py>(
     Ok(results_to_py(py, &results)?)
 }
 
+#[pyfunction]
+fn conformance_score_companion<'py>(
+    py: Python<'py>,
+    root: PathBuf,
+    submitted: &Bound<'py, PyAny>,
+) -> R<Bound<'py, PyList>> {
+    let entries: Vec<Value> = match py_to_json(submitted)? {
+        Value::Array(items) => items,
+        other => vec![other],
+    };
+    let results = engine::companion::score(&root, &entries)?;
+    Ok(results_to_py(py, &results)?)
+}
+
 // -- bench -------------------------------------------------------------------------------
 
 /// A count from Python, where a negative one reaches the engine as 0, which
@@ -238,6 +252,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(conformance_check_checksums, m)?,
         wrap_pyfunction!(conformance_load_manifest, m)?,
         wrap_pyfunction!(conformance_score, m)?,
+        wrap_pyfunction!(conformance_score_companion, m)?,
         wrap_pyfunction!(bench_timed, m)?,
         wrap_pyfunction!(bench_benchmark_file, m)?,
         wrap_pyfunction!(bench_synthetic_pair, m)?,

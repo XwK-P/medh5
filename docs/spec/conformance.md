@@ -50,7 +50,7 @@ wrote the suite to suite/: 163 cases, see suite/README.md
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |
 | `medh5-clinical-1.schema.json` | the JSON Schema for `clinical/meta` and clinical records (1.1) |
 | `medh5-task-1.schema.json`, `medh5-cache-1.schema.json` | the [task and cache contract](task-cache-1.md)'s schemas — published here for convenience, not scored by the corpus |
-| `companion/` | the task-and-cache fixtures: task manifests over the suite's clinical samples, and `expected.json` (below) |
+| `companion/` | the task-and-cache fixtures: task manifests over the suite's clinical samples, feature caches under `caches/`, and `expected.json` (below) |
 | `SHA256SUMS` | over every file above |
 | `README.md` | the contract, generated with the suite |
 
@@ -81,6 +81,29 @@ compared on more than their error codes.
 
 ```
 $ medh5 task preflight suite/companion/valid-two-subjects.task.json --json
+```
+
+`companion/caches/` holds nine feature caches over the same samples: a valid
+cache of each level, event and patient, and one for each code from `T401` to
+`T407`. Each is listed in `companion/expected.json` at the level `cache`, with
+the findings validating it must report, and with the task it is validated
+against where a finding is about the task or the cache is patient-level. A
+cache validated with its task resolves its sources against the task's
+directory, and one validated alone against its own (task-cache-1 §7.1).
+
+```
+$ medh5 cache validate suite/companion/caches/T406-whole-history.medh5cache --task suite/companion/valid-two-subjects.task.json --json
+```
+
+Hand back what checking every fixture reported, one report per fixture naming
+it by `file` (or `path`, as `cache validate` prints it), and score it with
+`--companion`. A report's `findings` must equal the fixture's, its `ok` must
+agree with them, and for a fixture that states its rows, each row must match
+— a row reported that the fixture does not state fails it, as a row left out
+does.
+
+```
+$ medh5 conformance score suite/ reports.json --companion
 ```
 
 ## Running it against your implementation

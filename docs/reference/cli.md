@@ -750,7 +750,7 @@ Schemas (`/meta`, the clinical profile, and the task and cache contract's),
 ### `medh5 conformance score`
 
 ```
-medh5 conformance score SUITE RESULTS.json [--format-version V] [--codes-revision N] [--json]
+medh5 conformance score SUITE RESULTS.json [--format-version V] [--codes-revision N] [--companion] [--json]
 ```
 
 Score any implementation's results against a published suite. See
@@ -763,6 +763,11 @@ files under `changed`.
 an earlier one, and `--codes-revision` only those whose codes that revision of
 the code table holds, ignoring any later code reported. Cases left out are
 counted under `skipped`.
+
+`--companion` scores the task-and-cache fixtures under `companion/` instead:
+`RESULTS.json` holds what `task validate`, `task preflight` and `cache
+validate` reported on each with `--json`, naming its fixture by `file` or
+`path`. No version or revision bounds them.
 
 ## Related
 

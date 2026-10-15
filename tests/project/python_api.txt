@@ -2094,6 +2094,7 @@ medh5.conformance.load_manifest	function	(root)
 medh5.conformance.publish	function	(outdir, *, names=None)
 medh5.conformance.run_corpus	function	(outdir, *, names=None)
 medh5.conformance.score	function	(root, submitted, *, format_version=None, codes_revision=None)
+medh5.conformance.score_companion	function	(root, submitted)
 medh5.conformance.summarize	function	(results)
 medh5.create	function	(path, *, sample_id=None, subject_id=None, codec='balanced', profiles=None)
 medh5.curation	module

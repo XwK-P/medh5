@@ -240,6 +240,25 @@ def score(
     ]
 
 
+def score_companion(
+    root: str | os.PathLike[str], submitted: Sequence[dict[str, Any]]
+) -> list[CaseResult]:
+    """Score another implementation of the task-and-cache contract against the
+    fixtures under ``companion/`` of a published suite.
+
+    Each submitted report is what checking a fixture printed --- ``medh5 task
+    validate``, ``task preflight`` or ``cache validate`` with ``--json`` ---
+    naming the fixture by ``file`` (or ``path``): its ``findings``, and its
+    ``ok`` and ``rows`` where it has them.  A result's expected errors are the
+    fixture's findings; any other difference (a row, ``ok``) is its ``error``.
+    A fixture with no report fails.
+    """
+    return [
+        CaseResult.from_json(doc)
+        for doc in _core.conformance_score_companion(os.fspath(root), list(submitted))
+    ]
+
+
 def summarize(results: Sequence[CaseResult]) -> dict[str, Any]:
     """The ``--json`` summary of a run or a score."""
     failures = [r for r in results if not r.ok]
@@ -266,5 +285,6 @@ __all__ = [
     "publish",
     "run_corpus",
     "score",
+    "score_companion",
     "summarize",
 ]

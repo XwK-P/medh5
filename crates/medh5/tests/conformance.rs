@@ -102,14 +102,17 @@ fn the_task_and_cache_fixtures_hold() {
     let dir = tempfile::tempdir().unwrap();
     let names: Vec<String> = SOURCES.iter().map(|f| f.trim_end_matches(".medh5").to_string()).collect();
     build_corpus(dir.path(), Some(&names)).unwrap();
-    let written = write_fixtures(dir.path()).unwrap();
-    assert!(written.len() >= 14);
-    let codes: std::collections::BTreeSet<String> = written.iter().flat_map(|f| f.findings.iter().cloned()).collect();
-    for code in ["T101", "T102", "T103", "T201", "T202", "T203", "T204", "T301", "T302", "T303", "T304", "T305", "T306"]
-    {
-        assert!(codes.contains(code), "no fixture for {code}");
-    }
+    write_fixtures(dir.path()).unwrap();
+    // Every code of the contract has a fixture, the caches' with the tasks'
+    // (task-cache-1 §9): a code added without one fails here.
+    let expected = medh5::conformance::companion::load_expected(dir.path()).unwrap();
+    let fixtures = expected["fixtures"].as_array().unwrap();
+    let codes: std::collections::BTreeSet<&str> =
+        fixtures.iter().flat_map(|f| f["findings"].as_array().unwrap()).filter_map(Value::as_str).collect();
+    let table: std::collections::BTreeSet<&str> = medh5::companion::CODES.iter().map(|(code, _)| *code).collect();
+    assert_eq!(codes, table);
     let results = run_fixtures(dir.path()).unwrap();
+    assert_eq!(results.len(), fixtures.len());
     let failures: Vec<_> = results.iter().filter(|r| !r.ok()).collect();
     assert!(failures.is_empty(), "{failures:#?}");
 
@@ -117,7 +120,37 @@ fn the_task_and_cache_fixtures_hold() {
     let suite = tempfile::tempdir().unwrap();
     publish(suite.path(), Some(&names)).unwrap();
     assert!(suite.path().join("companion/expected.json").exists());
+    assert!(suite.path().join("companion/caches/valid-patient.medh5cache").exists());
     assert!(check_checksums(suite.path()).unwrap().is_empty());
+}
+
+/// task-cache-1 §8: the scorer reads another implementation's reports, and a
+/// cache report that misses its finding, or a row it does not state, fails.
+#[test]
+fn s8_the_companion_scorer_scores_reports() {
+    use medh5::conformance::companion::{load_expected, score, SOURCES};
+    let dir = tempfile::tempdir().unwrap();
+    let names: Vec<String> = SOURCES.iter().map(|f| f.trim_end_matches(".medh5").to_string()).collect();
+    publish(dir.path(), Some(&names)).unwrap();
+    let expected = load_expected(dir.path()).unwrap();
+    // The fixtures' own findings, as a minimal report.
+    let reports: Vec<Value> = expected["fixtures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rows"].as_object().is_none_or(|rows| rows.is_empty()))
+        .map(|f| json!({"file": f["file"], "findings": f["findings"]}))
+        .collect();
+    let results = score(dir.path(), &reports).unwrap();
+    let failed: Vec<&str> = results.iter().filter(|r| !r.ok()).map(|r| r.case.name.as_str()).collect();
+    // Only the fixtures stating rows, which this report leaves out.
+    assert_eq!(failed, ["valid-two-subjects", "valid-self-asserted-mask"]);
+    let mut wrong = reports.clone();
+    let t407 = wrong.iter_mut().find(|r| r["file"] == "caches/T407-another-versions-text.medh5cache").unwrap();
+    t407["findings"] = json!([]);
+    let results = score(dir.path(), &wrong).unwrap();
+    let t407 = results.iter().find(|r| r.case.name == "T407-another-versions-text").unwrap();
+    assert_eq!(t407.missing, ["T407"]);
 }
 
 /// A suite built twice is the same bytes, so a mirror can check a published

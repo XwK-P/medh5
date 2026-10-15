@@ -728,6 +728,12 @@ fn conformance() -> Command {
                     )
                     .value_parser(clap::value_parser!(i64).range(1..=i64::from(u32::MAX))),
                 )
+                .arg(flag(
+                    "companion",
+                    "companion",
+                    "score the task-and-cache fixtures under companion/: RESULTS holds what `task validate`, `task \
+                     preflight` and `cache validate` reported with --json",
+                ))
                 .arg(json()),
         )
 }

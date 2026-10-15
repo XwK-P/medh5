@@ -180,7 +180,7 @@ fn submitted_codes(entry: &Value) -> (BTreeSet<String>, BTreeSet<String>) {
 }
 
 /// The case a submitted result is about, keyed by file name.
-fn submitted_name(entry: &Value) -> String {
+pub(super) fn submitted_name(entry: &Value) -> String {
     let raw = ["file", "path", "name"]
         .iter()
         .filter_map(|k| entry.get(*k))
@@ -474,6 +474,26 @@ contract (`docs/spec/task-cache-1.md`), not the format. Resolve each source
 ```
 medh5 task validate companion/<fixture>.task.json --json
 medh5 task preflight companion/<fixture>.task.json --json
+```
+
+`companion/caches/` holds feature caches (`medh5.cache/1`) over the same
+samples: a valid cache of each level and one for each of `T401` to `T407`.
+Their entries in `companion/expected.json` have the level `cache`, and a
+`task` (relative to `companion/`) where validating them needs one. Resolve a
+cache's source `uri` against the task's directory when it names one, and
+against the cache's own directory otherwise:
+
+```
+medh5 cache validate companion/caches/<fixture>.medh5cache [--task companion/<task>] --json
+```
+
+Score what checking the fixtures reported: one JSON array of those reports,
+each naming its fixture by `file` (or `path`), with its `findings`, and its
+`ok` and `rows` where it has them. A fixture that states rows states every
+row, so a row you add fails it as one you leave out does:
+
+```
+medh5 conformance score . results.json --companion
 ```
 "#
     )

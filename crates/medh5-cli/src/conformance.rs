@@ -88,6 +88,11 @@ fn list(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 fn score_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let suite = Path::new(req_str(m, "suite"));
     let results_path = Path::new(req_str(m, "results"));
+    let companion = flag(m, "companion");
+    if companion && (get_str(m, "format_version").is_some() || get_i64(m, "codes_revision").is_some()) {
+        return Ok(ctx
+            .usage("--companion scores the task-and-cache fixtures, which no format version or code revision bounds"));
+    }
     let mut options = ScoreOptions::default();
     if let Some(version) = get_str(m, "format_version") {
         options = options.format_version(version);
@@ -106,6 +111,11 @@ fn score_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             Value::Object(map) => map.keys().map(|k| Value::String(k.clone())).collect(),
             other => vec![other],
         };
+        if companion {
+            let results = medh5::conformance::companion::score(suite, &entries)?;
+            let listed = results.len();
+            return Ok((stale, results, listed));
+        }
         let results = score_with(suite, &entries, &options)?;
         let listed = load_manifest(suite)?.get("cases").and_then(Value::as_array).map_or(0, Vec::len);
         Ok((stale, results, listed))
