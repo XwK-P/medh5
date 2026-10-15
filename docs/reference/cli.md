@@ -626,6 +626,11 @@ is written.
 
 ```
 medh5 clinical augment PATH RECORDS.json [--out OUT] [--json]
+medh5 clinical augment PATH (--from-meds DIR --meds-subject N | --from-fhir FILE --fhir-subject REF)
+                       [--clock-id ID --clock {utc,shifted_utc,relative}] [--origin ISO]
+                       [--timezone TZ] [--code-system PREFIX=URI]... [--kind PREFIX=KIND]...
+                       [--day-precision PREFIX]... [--document-code CODE]... [--with-text]
+                       [--both-values {refuse,numeric,text}] [--report FILE] [--out OUT] [--json]
 ```
 
 Add a record bundle to a sample, in place or into `--out`: images and
@@ -633,6 +638,18 @@ annotations are copied as stored (their digests do not change), the sample
 becomes 1.1 with a new `content_id`, and what the records leave unknown is
 reported. A `clinical` group the profile did not write is refused, never
 reinterpreted.
+
+`--from-meds` and `--from-fhir` import one subject's MEDS rows or FHIR R4
+resources in place of `RECORDS.json`, through the Python package (MEDS needs
+`pip install "medh5[meds]"`); see
+[Import from MEDS or FHIR](../guides/clinical-import.md). The records go on
+the clock `--clock-id` and `--clock` name, else on the sample's own.
+`--timezone` reads times without an offset, and a relative clock needs
+`--origin`. `--code-system`, `--kind`, `--day-precision`, `--document-code`
+and `--both-values` read MEDS codes and rows; `--with-text` imports free text.
+The conversion report prints after the augmentation, `--report` keeps it as
+JSON, and the command exits 1 when it holds a warning, as `medh5 convert`
+does.
 
 ### `medh5 clinical strip`
 

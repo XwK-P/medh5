@@ -592,6 +592,7 @@ class TestRepositoryGates:
         ):
             assert f"name: ci-dist-{target}\n" in jobs[name], name
         assert "-rs" in jobs["test-monai"]
+        assert "tests/integrations/test_meds.py -v -rs" in jobs["test-meds"]
 
     def test_an_older_hdf5_reads_what_the_engine_writes(self):
         """The specification promises files HDF5 1.10 reads, and none was ever
@@ -731,7 +732,7 @@ class TestRepositoryGates:
             floors.update(found)
         assert set(floors) == {
             "numpy", "torch", "monai", "nibabel", "pydicom", "highdicom", "h5py",
-            "hdf5plugin",
+            "hdf5plugin", "pyarrow",
         }  # fmt: skip
         job = _jobs(CI.read_text(encoding="utf-8"))["test-min-deps"]
         for name, floor in floors.items():
@@ -742,7 +743,10 @@ class TestRepositoryGates:
             assert f'"{name}=={series}.*"' in job, name
         oldest = re.search(r'^requires-python = ">=(3\.\d+)"$', text, re.M)
         assert oldest and f'python-version: "{oldest[1]}"' in job
-        assert 'python -c "import torch, monai, nibabel, pydicom, highdicom"' in job
+        assert (
+            'python -c "import torch, monai, nibabel, pydicom, highdicom, pyarrow"'
+            in job
+        )
 
     def test_the_commit_hooks_run_in_ci_at_the_gates_versions(self):
         """CI never ran the commit hooks, so a commit made without them
@@ -899,7 +903,7 @@ class TestDistribution:
             if targets:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
-        assert downloading == 12
+        assert downloading == 13
 
     def test_the_intel_mac_skips_pull_requests_and_nothing_else(self):
         """The Intel Mac build was the slowest job of every run (14 to 23

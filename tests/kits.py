@@ -18,7 +18,11 @@ defined once, here, under a name for what it builds:
 * :class:`SplitCohort` --- a cohort manifest of one-file groups in strata of
   60 %, 30 % and 10 % and three rare ones, with no files behind it;
 * :class:`EveryCheckCode` --- a cohort manifest raising every code ``dataset
-  check`` reports, with one file behind it.
+  check`` reports, with one file behind it;
+* :class:`Meds` --- a MEDS 0.3 dataset of two subjects, and an imaging sample
+  to import one into;
+* :class:`Fhir` --- a FHIR R4 Bundle of one patient's observations and
+  reports, and an imaging sample to import them into.
 """
 
 from __future__ import annotations
@@ -515,3 +519,263 @@ class EveryCheckCode:
                 ),
             ]
         )
+
+
+class Meds:
+    """A MEDS 0.3 dataset (``data/*.parquet``, ``metadata/dataset.json``) of
+    subjects 1001 and 1002, and an imaging-only sample to import one into.
+
+    Subject 1001 has a birth, a static fact, a creatinine (``LOINC/2160-0``),
+    a local laboratory value, a diagnosis known to the day and a discharge
+    note; MEDS times carry no zone.  Needs ``pyarrow``.
+    """
+
+    SUBJECT = 1001
+    NAME = "demo-ehr"
+
+    @staticmethod
+    def rows() -> list[dict[str, Any]]:
+        import datetime
+
+        def at(*parts: int) -> datetime.datetime:
+            return datetime.datetime(*parts)  # type: ignore[arg-type]
+
+        def row(
+            subject: int, time: Any, code: str, num: Any = None, text: Any = None
+        ) -> dict[str, Any]:
+            return {
+                "subject_id": subject,
+                "time": time,
+                "code": code,
+                "numeric_value": num,
+                "text_value": text,
+            }
+
+        return [
+            row(1001, at(1960, 5, 1), "MEDS_BIRTH"),
+            row(1001, None, "GENDER//F"),
+            row(1001, at(2020, 3, 1, 8, 15), "LOINC/2160-0", 1.1),
+            row(1001, at(2020, 3, 2, 9, 0), "LAB//50912", 0.9),
+            row(1001, at(2020, 3, 1), "DX//I10"),
+            row(
+                1001, at(2020, 3, 5, 12, 0), "NOTE//discharge", text="Discharged home."
+            ),
+            row(1002, at(2021, 1, 1, 10, 0), "LOINC/2160-0", 0.8),
+        ]
+
+    @staticmethod
+    def write(
+        root: Path,
+        rows: Sequence[dict[str, Any]] | None = None,
+        *,
+        shards: int = 1,
+        name: str | None = NAME,
+        rename: dict[str, str] | None = None,
+        extra: dict[str, tuple[Any, list[Any]]] | None = None,
+    ) -> Path:
+        """Write the dataset at *root*: *rows* (the kit's by default) over
+        *shards* files, columns renamed by *rename*, and *extra* columns
+        ``{name: (pyarrow type, values)}``.  Returns *root*."""
+        import json
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        rows = list(Meds.rows() if rows is None else rows)
+        rename = rename or {}
+        types = {
+            "subject_id": pa.int64(),
+            "time": pa.timestamp("us"),
+            "code": pa.string(),
+            "numeric_value": pa.float32(),
+            "text_value": pa.large_string(),
+        }
+        (root / "data").mkdir(parents=True, exist_ok=True)
+        (root / "metadata").mkdir(exist_ok=True)
+        if name is not None:
+            (root / "metadata" / "dataset.json").write_text(
+                json.dumps({"dataset_name": name, "meds_version": "0.3.3"}),
+                encoding="utf-8",
+            )
+        extra = extra or {}
+        for k in range(shards):
+            part = list(range(k, len(rows), shards))
+            arrays = {
+                rename.get(c, c): pa.array([rows[i][c] for i in part], t)
+                for c, t in types.items()
+            }
+            for column, (kind, values) in extra.items():
+                arrays[column] = pa.array([values[i] for i in part], kind)
+            pq.write_table(pa.table(arrays), root / "data" / f"{k}.parquet")
+        return root
+
+    @staticmethod
+    def sample(path: Path) -> Path:
+        """An imaging-only sample (1.0) of subject ``P-01``."""
+        with History.writer_for(path):
+            pass
+        return path
+
+
+class Fhir:
+    """A FHIR R4 Bundle for ``Patient/p1`` (and one resource of another
+    patient), and an imaging-only sample to import it into.
+
+    A creatinine in two versions (``preliminary``, then ``corrected``), a
+    potassium ``< 5`` known to the day, an HbA1c not performed over an open
+    period, a blood pressure panel of two components, a smoking status coded
+    on a schedule, a registered order, an observation coded only in text, and
+    a CT report with its text and its imaging study.
+    """
+
+    SUBJECT = "Patient/p1"
+    LOINC = "http://loinc.org"
+    STUDY = "ImagingStudy/ct0"
+    TEXT = "Baseline CT: a 14 mm nodule ≈ 1.4 cm."
+
+    @staticmethod
+    def resources() -> list[dict[str, Any]]:
+        import base64
+
+        loinc = Fhir.LOINC
+
+        def code(c: str, system: str = loinc) -> dict[str, Any]:
+            return {"coding": [{"system": system, "code": c}]}
+
+        def obs(rid: str, status: str = "final", **fields: Any) -> dict[str, Any]:
+            return {
+                "resourceType": "Observation",
+                "id": rid,
+                "status": status,
+                "subject": {"reference": Fhir.SUBJECT},
+                **fields,
+            }
+
+        def mg(value: float) -> dict[str, Any]:
+            return {
+                "value": value,
+                "unit": "mg/dL",
+                "system": "http://unitsofmeasure.org",
+                "code": "mg/dL",
+            }
+
+        return [
+            {"resourceType": "Patient", "id": "p1"},
+            obs(
+                "creat",
+                "preliminary",
+                meta={"versionId": "1"},
+                code=code("2160-0"),
+                effectiveDateTime="2020-03-01T08:15:00-05:00",
+                issued="2020-03-01T09:15:00-05:00",
+                valueQuantity=mg(1.1),
+                encounter={"reference": "Encounter/e1"},
+            ),
+            obs(
+                "creat",
+                "corrected",
+                meta={"versionId": "2"},
+                code=code("2160-0"),
+                effectiveDateTime="2020-03-01T08:15:00-05:00",
+                issued="2020-03-02T09:15:00-05:00",
+                valueQuantity=mg(1.2),
+                encounter={"reference": "Encounter/e1"},
+            ),
+            obs(
+                "k",
+                code=code("2823-3"),
+                effectiveDateTime="2020-03-01",
+                valueQuantity={"value": 5, "comparator": "<", "unit": "mmol/L"},
+            ),
+            obs(
+                "a1c",
+                code=code("4548-4"),
+                effectivePeriod={"start": "2020-02"},
+                dataAbsentReason={
+                    "coding": [
+                        {
+                            "system": "http://terminology.hl7.org/CodeSystem/"
+                            "data-absent-reason",
+                            "code": "not-performed",
+                        }
+                    ]
+                },
+            ),
+            obs(
+                "bp",
+                code=code("85354-9"),
+                effectiveInstant="2020-03-01T13:00:00Z",
+                issued="2020-03-01T13:05:00Z",
+                interpretation=[
+                    code("N", "http://hl7.org/fhir/v3/ObservationInterpretation")
+                ],
+                component=[
+                    {
+                        "code": code("8480-6"),
+                        "valueQuantity": {
+                            "value": 120,
+                            "unit": "mmHg",
+                            "system": "http://unitsofmeasure.org",
+                            "code": "mm[Hg]",
+                        },
+                        "referenceRange": [{"high": {"value": 140}}],
+                    },
+                    {
+                        "code": code("8462-4"),
+                        "valueQuantity": {"value": 80, "unit": "mmHg"},
+                    },
+                ],
+            ),
+            obs(
+                "smoke",
+                code=code("72166-2"),
+                effectiveTiming={"repeat": {"frequency": 1}},
+                valueCodeableConcept=code("8517006", "http://snomed.info/sct"),
+            ),
+            obs("ordered", "registered", code=code("2160-0")),
+            obs("free", code={"text": "creatinine"}, valueString="normal"),
+            {
+                **obs("other", code=code("2160-0"), valueQuantity=mg(0.9)),
+                "subject": {"reference": "Patient/p2"},
+            },
+            {
+                "resourceType": "DiagnosticReport",
+                "id": "ct-report",
+                "status": "final",
+                "subject": {"reference": Fhir.SUBJECT},
+                "code": code("24627-2"),
+                "effectiveDateTime": "2020-03-01T10:00:00-05:00",
+                "issued": "2020-03-01T15:00:00-05:00",
+                "presentedForm": [
+                    {
+                        "contentType": "text/plain; charset=utf-8",
+                        "data": base64.b64encode(Fhir.TEXT.encode()).decode(),
+                    }
+                ],
+                "imagingStudy": [{"reference": Fhir.STUDY}],
+                "result": [{"reference": "Observation/creat"}],
+            },
+        ]
+
+    @staticmethod
+    def bundle(resources: Sequence[dict[str, Any]] | None = None) -> dict[str, Any]:
+        return {
+            "resourceType": "Bundle",
+            "type": "collection",
+            "entry": [
+                {"resource": r}
+                for r in (Fhir.resources() if resources is None else resources)
+            ],
+        }
+
+    @staticmethod
+    def write(path: Path, resources: Sequence[dict[str, Any]] | None = None) -> Path:
+        import json
+
+        path.write_text(json.dumps(Fhir.bundle(resources)), encoding="utf-8")
+        return path
+
+    @staticmethod
+    def sample(path: Path) -> Path:
+        """An imaging-only sample (1.0), images ``CT_tp0`` and ``CT_tp1``."""
+        return Meds.sample(path)

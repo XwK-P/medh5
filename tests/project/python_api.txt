@@ -3025,6 +3025,8 @@ medh5.io.SubjectGroup.ordered_by	field
 medh5.io.SubjectGroup.subject_id	field
 medh5.io.SubjectGroup.timepoint_ids	method	()
 medh5.io.SubjectGroup.to_json	method	()
+medh5.io.augment_from_fhir	function	(path, source, *, out=None, **options)
+medh5.io.augment_from_meds	function	(path, source, *, out=None, **options)
 medh5.io.build_label_set	function	(paths, *, report=None)
 medh5.io.convert_world	function	(affine, *, source, target)
 medh5.io.dicom	module
@@ -3059,6 +3061,12 @@ medh5.io.dicom_seg.read_dicom_seg	function	(path, *, report=None)
 medh5.io.dicom_seg.read_dicom_seg_frames	function	(path)
 medh5.io.dicom_seg.require_highdicom	function	()
 medh5.io.dicom_seg.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None)
+medh5.io.fhir	module
+medh5.io.fhir.COMPARATORS	constant	dict
+medh5.io.fhir.STATUSES	constant	dict
+medh5.io.fhir.UCUM	constant	str
+medh5.io.fhir.augment_from_fhir	function	(path, source, *, out=None, **options)
+medh5.io.fhir.read_fhir	function	(source, *, subject, clock, timezone=None, origin=None, texts=False, prefer_systems=(), image_studies=None)
 medh5.io.from_dicom	function	(root, out, *, group_by='subject', modalities=None, series_uids=None, codec='balanced', report=None)
 medh5.io.from_dicom_seg	function	(path, sample, *, ann_id='seg', grid=None, annotated_classes='all_given', frame_salt=None, report=None)
 medh5.io.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None)
@@ -3124,6 +3132,12 @@ medh5.io.legacy.migrate	function	(path, out, *, label_set=None, codec='balanced'
 medh5.io.legacy.migrate_paths	function	(paths, outdir, *, group_by='study', subject_key=None, label_set=None, codec='balanced')
 medh5.io.legacy.read_legacy	function	(path)
 medh5.io.legacy.write_sidecar	function	(label_set, path)
+medh5.io.meds	module
+medh5.io.meds.BIRTH	constant	str
+medh5.io.meds.BOTH_VALUES	constant	tuple
+medh5.io.meds.COLUMNS	constant	tuple
+medh5.io.meds.augment_from_meds	function	(path, source, *, out=None, **options)
+medh5.io.meds.read_meds	function	(source, *, subject_id, clock, timezone=None, origin=None, code_system=None, code_systems=None, kinds=None, status='unknown', day_precision=(), document_codes=(), exclude_codes=('MEDS_BIRTH',), texts=False, both_values='refuse', columns=None)
 medh5.io.merge_reports	function	(reports, converter='')
 medh5.io.migrate	function	(path, out, *, label_set=None, codec='balanced', report=None)
 medh5.io.migrate_paths	function	(paths, outdir, *, group_by='study', subject_key=None, label_set=None, codec='balanced')
@@ -3143,6 +3157,8 @@ medh5.io.nnunetv2.cases	function	(root, document)
 medh5.io.nnunetv2.from_nnunetv2	function	(root, out, *, case_ids=None, coord_system='LPS', codec='balanced', report=None)
 medh5.io.nnunetv2.read_dataset_json	function	(path)
 medh5.io.nnunetv2.to_nnunetv2	function	(paths, out, *, dataset_name='Dataset001_medh5', file_ending='.nii.gz', annotation='seg', classes=None, unlabeled='refuse', report=None)
+medh5.io.read_fhir	function	(source, *, subject, clock, timezone=None, origin=None, texts=False, prefer_systems=(), image_studies=None)
+medh5.io.read_meds	function	(source, *, subject_id, clock, timezone=None, origin=None, code_system=None, code_systems=None, kinds=None, status='unknown', day_precision=(), document_codes=(), exclude_codes=('MEDS_BIRTH',), texts=False, both_values='refuse', columns=None)
 medh5.io.read_nifti	function	(path, *, coord_system='LPS', transpose=True, fourth_axis='auto', assume_geometry=False)
 medh5.io.report	module
 medh5.io.report.ConversionReport	class	(source='', converter='', outputs=<factory>, notes=<factory>) bases=

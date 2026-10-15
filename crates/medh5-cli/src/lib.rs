@@ -231,7 +231,7 @@ pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host:
         "migrate" => convert::migrate(sub, &mut ctx),
         "recompress" | "bench" => perf::dispatch(name, sub, &mut ctx),
         "conformance" => conformance::dispatch(sub, &mut ctx),
-        "clinical" | "task" | "cache" => clinical::dispatch(name, sub, &mut ctx),
+        "clinical" | "task" | "cache" => clinical::dispatch(args, name, sub, &mut ctx),
         _ => Ok(EXIT_USAGE),
     };
     let code = match result {
@@ -303,6 +303,68 @@ mod tests {
         assert_eq!(unguarded.code(), Some(99));
         let guarded = planted(&mut python_running(&python, "import json; json.dumps([])")).unwrap();
         assert_eq!(guarded.code(), Some(0));
+    }
+
+    /// A host that records what it is handed, and runs it when `runs`.
+    struct Recording {
+        runs: bool,
+        handed: std::cell::RefCell<Vec<(String, Value)>>,
+    }
+
+    impl Host for Recording {
+        fn convert(
+            &self,
+            argv: &[String],
+            command: &str,
+            args: &Value,
+            _: &mut dyn Write,
+            _: &mut dyn Write,
+        ) -> Option<i32> {
+            assert_eq!(argv.first().map(String::as_str), Some("clinical"));
+            self.handed.borrow_mut().push((command.to_string(), args.clone()));
+            self.runs.then_some(EXIT_OK)
+        }
+
+        fn throughput(&self, _: &str, _: i64, _: i64, _: Option<&str>) -> Result<Value, String> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn s10_the_importers_are_handed_to_python() {
+        let argv = |rest: &[&str]| -> Vec<String> {
+            ["clinical", "augment", "s.medh5"].iter().chain(rest).map(|a| a.to_string()).collect()
+        };
+        let host = Recording { runs: true, handed: Default::default() };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let meds =
+            argv(&["--from-meds", "meds", "--meds-subject", "1001", "--kind", "LOINC=observation", "--with-text"]);
+        assert_eq!(run_with(&meds, &mut out, &mut err, &host), EXIT_OK);
+        let fhir = argv(&["--from-fhir", "b.json", "--fhir-subject", "Patient/p1", "--timezone", "UTC"]);
+        assert_eq!(run_with(&fhir, &mut out, &mut err, &host), EXIT_OK);
+        let handed = host.handed.take();
+        assert_eq!(handed.len(), 2);
+        let (command, args) = &handed[0];
+        assert_eq!(command, "clinical-augment");
+        assert_eq!(args["from_meds"], "meds");
+        assert_eq!(args["meds_subject"], 1001);
+        assert_eq!(args["kind"], serde_json::json!(["LOINC=observation"]));
+        assert_eq!(args["with_text"], true);
+        assert_eq!(args["records"], Value::Null);
+        assert_eq!(handed[1].1["fhir_subject"], "Patient/p1");
+        assert_eq!(handed[1].1["timezone"], "UTC");
+        // No Python to hand them to: what to install, and exit 1.
+        let host = Recording { runs: false, handed: Default::default() };
+        let mut err = Vec::new();
+        assert_eq!(run_with(&fhir, &mut out, &mut err, &host), EXIT_ERROR);
+        assert!(String::from_utf8(err).unwrap().contains("MEDH5_PYTHON"));
+        assert_eq!(host.handed.take().len(), 1);
+        // A logical-record bundle never leaves the engine, and takes no
+        // importer option.
+        let mut err = Vec::new();
+        let records = argv(&["records.json", "--timezone", "UTC"]);
+        assert_eq!(run_with(&records, &mut out, &mut err, &host), EXIT_USAGE);
+        assert!(host.handed.take().is_empty());
     }
 
     /// A stdout every write to which fails with `error()`.

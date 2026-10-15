@@ -111,6 +111,11 @@ dicom = [
   # 3.0.1, because highdicom requires it and the floor is installed together.
   "pydicom>=3.0.1",
 ]
+# Reading MEDS datasets (`medh5.io.meds`, `clinical augment --from-meds`): its
+# Parquet shards.  14 reads MEDS 0.3's large_string text_value.
+meds = [
+  "pyarrow>=14",
+]
 dicomseg = [
   # Reading DICOM SEG and RTSTRUCT needs only pydicom; *writing* a SEG needs
   # highdicom, the reference implementation of the Segmentation IOD.  Building
@@ -220,6 +225,8 @@ module = [
   "monai.*",
   "highdicom",
   "highdicom.*",
+  "pyarrow",
+  "pyarrow.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

@@ -573,13 +573,14 @@ jobs:
           name: ci-dist-x86_64-unknown-linux-gnu
           path: dist/
       - run: >-
-          pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg,monai]"
+          pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg,monai,meds]"
           "numpy==1.24.*" "h5py==3.13.*" "hdf5plugin==4.1.*"
           "torch==2.0.*" "monai==1.3.*" "nibabel==5.0.*" "pydicom==3.0.1" "highdicom==0.23.*"
-      - run: python -c "from importlib.metadata import version; print(*(f'{p} {version(p)}' for p in ('numpy', 'h5py', 'hdf5plugin', 'torch', 'monai', 'nibabel', 'pydicom', 'highdicom')))"
+          "pyarrow==14.0.*"
+      - run: python -c "from importlib.metadata import version; print(*(f'{p} {version(p)}' for p in ('numpy', 'h5py', 'hdf5plugin', 'torch', 'monai', 'nibabel', 'pydicom', 'highdicom', 'pyarrow')))"
       # As in `test-monai`: a failed import would skip its tests, and the job
       # would pass having tested nothing at the floor.
-      - run: python -c "import torch, monai, nibabel, pydicom, highdicom"
+      - run: python -c "import torch, monai, nibabel, pydicom, highdicom, pyarrow"
       - run: rm -rf medh5
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
@@ -608,6 +609,28 @@ jobs:
       - run: rm -rf medh5
       # Exit 5 if `-k` selects nothing, so a renamed class fails here too.
       - run: pytest tests/ -v -rs -k "Monai or monai" --no-cov
+
+  test-meds:
+    # The MEDS importer reads Parquet through pyarrow, an extra nothing else
+    # installs, and `tests/integrations/test_meds.py` skips the whole module
+    # without it.  This job installs it, so the importer is tested somewhere.
+    needs: build-linux-x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-dist-x86_64-unknown-linux-gnu
+          path: dist/
+      - run: pip install "$(ls dist/*.whl)[dev,meds]"
+      # A failed import would skip every test and leave the job green.
+      - run: python -c "import pyarrow"
+      - run: rm -rf medh5
+      - run: pytest tests/integrations/test_meds.py -v -rs --no-cov
 
   prototype:
     # Appendix C.2 publishes a table of results from the executable prototype
@@ -886,6 +909,7 @@ jobs:
       - test-macos-x86_64
       - test-min-deps
       - test-monai
+      - test-meds
       - prototype
       - conformance
       - hdf5-readers
