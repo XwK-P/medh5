@@ -363,14 +363,95 @@ fn read_failure(path: &str, level: &str, message: String) -> Report {
     report
 }
 
+/// How to validate a file: the level, the profiles to require besides those
+/// the file declares, and the revision of the code table to report under.
+///
+/// Built from [`Default`] (`semantic`, no extra profiles, the engine's own
+/// revision) and the `with`-style setters.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidateOptions {
+    /// One of [`LEVELS`].
+    pub level: String,
+    /// Profiles to hold the file to besides those it declares.
+    pub profiles: Option<Vec<String>>,
+    /// Report only codes this revision of the table (§15.2) had allocated;
+    /// `None` reports every code the engine knows.
+    pub codes_revision: Option<u32>,
+}
+
+impl Default for ValidateOptions {
+    fn default() -> Self {
+        ValidateOptions { level: "semantic".into(), profiles: None, codes_revision: None }
+    }
+}
+
+impl ValidateOptions {
+    /// Validate at `level` (one of [`LEVELS`]).
+    pub fn level(mut self, level: &str) -> Self {
+        self.level = level.into();
+        self
+    }
+
+    /// Hold the file to `profiles` besides those it declares.
+    pub fn profiles(mut self, profiles: &[String]) -> Self {
+        self.profiles = Some(profiles.to_vec());
+        self
+    }
+
+    /// Report only the codes revision `revision` of the table had allocated
+    /// (§15.1, §15.2): a `strict` verdict that later codes cannot move.
+    pub fn codes_revision(mut self, revision: u32) -> Self {
+        self.codes_revision = Some(revision);
+        self
+    }
+}
+
+/// Refuse a revision the table does not have: revision 0 would drop every
+/// code and pass any file, and one past the table's would promise codes this
+/// engine cannot report.
+fn check_revision(revision: Option<u32>) -> Result<()> {
+    match revision {
+        Some(r) if r < 1 || r > crate::codes::table_revision() => Err(Error::invalid(format!(
+            "codes revision {r} is not a revision of the code table; this engine implements revisions 1 to {} \
+             (§15.2)",
+            crate::codes::table_revision()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Drop every diagnostic whose code a later revision than `revision`
+/// allocated --- before `strict` promotes anything, since promotion is
+/// computed from what the report holds.
+fn pin_revision(report: &mut Report, revision: Option<u32>) {
+    if let Some(pinned) = revision {
+        report.diagnostics.retain(|d| crate::codes::revision(&d.code).is_none_or(|r| r <= pinned));
+    }
+}
+
 /// Validate one `.medh5` sample or `.medh5c` collection file, held to the
 /// profiles it declares and to `profiles` besides.
 ///
 /// A file that cannot be read is reported (E001), not returned as an error;
 /// an unknown level or profile is an error.
 pub fn validate_file(path: &Path, level: &str, profiles: Option<&[String]>) -> Result<Report> {
+    let mut options = ValidateOptions::default().level(level);
+    options.profiles = profiles.map(<[String]>::to_vec);
+    validate_file_with(path, &options)
+}
+
+/// Validate one `.medh5` sample or `.medh5c` collection file as `options`
+/// say.
+///
+/// A file that cannot be read is reported (E001), not returned as an error;
+/// an unknown level or profile, or a codes revision outside the table, is an
+/// error.
+pub fn validate_file_with(path: &Path, options: &ValidateOptions) -> Result<Report> {
+    let (level, profiles) = (options.level.as_str(), options.profiles.as_deref());
     check_level(level)?;
     check_required(profiles)?;
+    check_revision(options.codes_revision)?;
     let text = path.to_string_lossy().into_owned();
     let handle = match crate::h5::file::open_read(path) {
         Ok(h) => h,
@@ -385,11 +466,13 @@ pub fn validate_file(path: &Path, level: &str, profiles: Option<&[String]>) -> R
         let names = attr_names_for(&root, level);
         validate_root_with(&root, &text, level, profiles, names.as_ref(), false)
     })();
-    match result {
-        Ok(r) => Ok(r),
-        Err(e @ Error::Value(_)) if e.message().starts_with("unknown validation level") => Err(e),
-        Err(e) => Ok(read_failure(&text, level, format!("the file could not be read: {}", e.python_line()))),
-    }
+    let mut report = match result {
+        Ok(r) => r,
+        Err(e @ Error::Value(_)) if e.message().starts_with("unknown validation level") => return Err(e),
+        Err(e) => read_failure(&text, level, format!("the file could not be read: {}", e.python_line())),
+    };
+    pin_revision(&mut report, options.codes_revision);
+    Ok(report)
 }
 
 /// The clinical profile's errors in one sample root (E8xx, and the document
@@ -412,6 +495,12 @@ pub fn clinical_checked(root: &hdf5::Group, path: &str) -> Result<(Vec<Diagnosti
 /// Validate many files, one report each.
 pub fn validate_paths(paths: &[&Path], level: &str, profiles: Option<&[String]>) -> Result<Vec<Report>> {
     paths.iter().map(|p| validate_file(p, level, profiles)).collect()
+}
+
+/// Validate many files as `options` say, one report each.
+pub fn validate_paths_with(paths: &[&Path], options: &ValidateOptions) -> Result<Vec<Report>> {
+    check_revision(options.codes_revision)?;
+    paths.iter().map(|p| validate_file_with(p, options)).collect()
 }
 
 #[cfg(test)]
@@ -458,5 +547,23 @@ mod tests {
         let unread = ctx.failed("/grids/g", &Error::Io("H5Aread failed".into()));
         assert_eq!((unread.code.as_str(), unread.location.as_str()), ("E001", "/grids/g"));
         assert!(unread.message.starts_with("could not be read: "), "{}", unread.message);
+    }
+
+    /// Revision 0 would drop every code and pass any file; one past the
+    /// table's would promise codes this engine cannot report.
+    #[test]
+    fn s15_2_a_revision_outside_the_table_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("absent.medh5");
+        for revision in [0, crate::codes::table_revision() + 1] {
+            let options = ValidateOptions::default().codes_revision(revision);
+            let err = validate_file_with(&path, &options).unwrap_err();
+            assert_eq!(err.kind_name(), "MEDH5ValidationError", "{err:?}");
+            assert!(err.message().contains(&format!("codes revision {revision}")), "{err}");
+            assert!(validate_paths_with(&[path.as_path()], &options).is_err());
+        }
+        let pinned = ValidateOptions::default().codes_revision(crate::codes::table_revision());
+        let report = validate_file_with(&path, &pinned).unwrap();
+        assert_eq!(report.codes(), ["E001"]);
     }
 }

@@ -153,6 +153,15 @@ fn inspect() -> Vec<Command> {
                 .value_name("PROFILE")
                 .value_parser(PROFILES),
             )
+            .arg(
+                int(
+                    "codes_revision",
+                    "codes-revision",
+                    "report only the codes this revision of the code table allocated (§15.2), so a strict verdict \
+                     does not move when a later revision adds a warning",
+                )
+                .value_name("N"),
+            )
             .arg(flag("verbose", "verbose", "also print what each diagnostic's code means").short('v'))
             .arg(json()),
         Command::new("verify")
@@ -359,6 +368,25 @@ fn dataset() -> Command {
                 .arg(positional("root", "directory tree to scan for .medh5 files"))
                 .arg(out_required("manifest JSON to write"))
                 .arg(flag("strict", "strict", "stop at the first unreadable file"))
+                .arg(flag(
+                    "absolute",
+                    "absolute",
+                    "write every path absolute; by default a path beneath the manifest's directory is written \
+                     relative to it",
+                ))
+                .arg(json()),
+        )
+        .subcommand(
+            Command::new("upgrade")
+                .about("rewrite a manifest so its paths are relative to it (medh5.dataset/1)")
+                .arg(positional("manifest", "the manifest to upgrade"))
+                .arg(out_required("manifest JSON to write"))
+                .arg(opt(
+                    "base",
+                    "base",
+                    "the directory the manifest's relative paths are relative to (default: the working directory, \
+                     as a manifest written before 2.1 is read)",
+                ))
                 .arg(json()),
         )
         .subcommand(
@@ -386,6 +414,15 @@ fn dataset() -> Command {
                         .help(format!("e.g. train=0.8,val=0.2 (default {DEFAULT_RATIOS})")),
                 )
                 .arg(int("seed", "seed", "deterministic given the manifest, seed and parameters").default_value("0"))
+                .arg(Arg::new("algorithm").long("algorithm").value_name("ALGORITHM").value_parser(["1", "2"]).help(
+                    "1: medh5.split/1 (the default in 2.x); 2: medh5.split/2, where adding a group moves few \
+                             others (the default in 3.0)",
+                ))
+                .arg(opt(
+                    "previous",
+                    "previous",
+                    "a split JSON to continue: its groups keep their places, new groups are dealt by medh5.split/2",
+                ))
                 .arg(flag(
                     "write_claims",
                     "write-claims",

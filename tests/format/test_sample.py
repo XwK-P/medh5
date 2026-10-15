@@ -26,7 +26,14 @@ from medh5.errors import (
     MEDH5VersionError,
 )
 from medh5.validate import validate_file
-from tests.helpers import SHAPE, as_str, encode_attr, str_dtype, write_sample
+from tests.helpers import (
+    LATER_MINOR,
+    SHAPE,
+    as_str,
+    encode_attr,
+    str_dtype,
+    write_sample,
+)
 from tests.kits import Flat, Framed, Hierarchy, Organs
 
 # Windows keeps only a read-only bit, so a mode round trip cannot be asserted
@@ -1422,7 +1429,7 @@ class TestDocument:
             document["identity"]["sex"] = "X"
             document["provenance"]["activities"][0]["type"] = "synthesize"
 
-        self._rewritten(sample_path, "1.2", later)
+        self._rewritten(sample_path, LATER_MINOR, later)
         with medh5.open(sample_path) as sample:
             assert sample.identity.sex is None
             assert sample.document.provenance.activities[0].type == "other"
@@ -1443,7 +1450,7 @@ class TestDocument:
         def robot(document: dict[str, Any]) -> None:
             document["provenance"]["agents"][0]["type"] = "robot"
 
-        self._rewritten(sample_path, "1.2", robot)
+        self._rewritten(sample_path, LATER_MINOR, robot)
         with medh5.open(sample_path) as sample:
             with pytest.raises(
                 MEDH5ValidationError, match="provenance/agents/0/type"
@@ -1499,7 +1506,7 @@ class TestProjectionRead:
 
     @staticmethod
     def _edited(
-        path: Path, node: str, attribute: str, value: Any, version: str = "1.2"
+        path: Path, node: str, attribute: str, value: Any, version: str = LATER_MINOR
     ) -> Path:
         """*node*'s *attribute* set to *value*, and the root at *version*."""
         with h5py.File(path, "r+") as handle:
@@ -1671,7 +1678,9 @@ class TestProjectionRead:
         found = validate_file(path).diagnostics
         assert ("W913", "/transforms/ba") in {(d.code, d.location) for d in found}
 
-    @pytest.mark.parametrize(("version", "code"), [("1.1", "E502"), ("1.2", "W913")])
+    @pytest.mark.parametrize(
+        ("version", "code"), [("1.1", "E502"), (LATER_MINOR, "W913")]
+    )
     def test_S10_1_an_inverse_of_a_kind_not_known_is_its_own_finding(
         self, tmp_path, version, code
     ):
@@ -1689,7 +1698,7 @@ class TestProjectionRead:
         found = {(d.code, d.location) for d in report.diagnostics}
         assert (code, "/transforms/ba") in found
         assert not [d for d in report.diagnostics if d.code == "E505"], found
-        assert report.ok is (version == "1.2")
+        assert report.ok is (version == LATER_MINOR)
 
     @pytest.mark.parametrize(
         ("node", "attribute", "value", "code", "listing"),
@@ -1739,7 +1748,7 @@ class TestProjectionRead:
         code it has in a file of any version."""
         path = self._sample(tmp_path / "s.medh5")
         listing = node.split("/")[0]
-        for version in ("1.1", "1.2"):
+        for version in ("1.1", LATER_MINOR):
             with h5py.File(path, "r+") as handle:
                 for name, value in edits.items():
                     if value is None:

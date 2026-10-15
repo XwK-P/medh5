@@ -45,6 +45,18 @@ and the label set's codes have dealt with both. Check a new file at
 measurements in
 [Profiles and validation levels](../reference/profiles-and-levels.md).
 
+A `strict` gate in CI should not change its verdict because medh5 was
+upgraded. Each release can add warnings, in a numbered revision of the code
+table, so pin the revision the gate was written against and raise it when you
+choose to:
+
+```
+$ medh5 validate --level strict --codes-revision 1 case.medh5
+```
+
+A revision the table does not have (`0`, or one past the newest) is refused,
+since it would pass any file.
+
 ## Read the output
 
 ```
@@ -86,6 +98,17 @@ medh5 fix case.medh5 --rebuild-index    # rebuild stale sampling indices
 digest that no longer matches is *evidence that the bytes changed*, and
 recomputing it destroys the evidence. That is why it needs a reason it can
 record — see [`medh5 fix`](../reference/cli.md#medh5-fix).
+
+A file reporting `E702` at `/` was changed outside medh5 after its
+`content_id` was written; one reporting `E703` holds a digest, or declares a
+`digest_algo`, nothing can check. No command amends either — a scrub, a split
+claim and an added annotation each refuse it, naming the repair — because the
+commit would restamp the change with no record of it. Restore the file from a
+copy you trust, or re-attest it deliberately:
+
+```bash
+medh5 fix case.medh5 --rewrite-digests --reason "spacing corrected by hand, checked against the DICOM"
+```
 
 ## Check the cohort too
 

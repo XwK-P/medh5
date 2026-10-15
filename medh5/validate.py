@@ -218,6 +218,7 @@ def validate_file(
     *,
     level: Level = "semantic",
     profiles: Sequence[str] | None = None,
+    codes_revision: int | None = None,
 ) -> Report:
     """Validate one ``.medh5`` sample or ``.medh5c`` collection file.
 
@@ -225,9 +226,19 @@ def validate_file(
     requirement adds to what a file claims and never waives a claim.  A file
     that cannot be opened is reported (E001), not raised; an unknown *level*
     or profile raises ``ValueError``.
+
+    *codes_revision* reports only the codes that revision of the code table
+    allocated (§15.2), so a ``strict`` verdict does not move when a later
+    revision adds a warning; a revision the table does not have raises
+    ``ValueError``.
     """
     return Report.from_json(
-        _core.validate_file(os.fspath(path), level=level, profiles=profiles)
+        _core.validate_file(
+            os.fspath(path),
+            level=level,
+            profiles=profiles,
+            codes_revision=codes_revision,
+        )
     )
 
 
@@ -236,12 +247,16 @@ def validate_paths(
     *,
     level: Level = "semantic",
     profiles: Sequence[str] | None = None,
+    codes_revision: int | None = None,
 ) -> list[Report]:
     """Validate many files, one report each, as :func:`validate_file` does."""
     return [
         Report.from_json(doc)
         for doc in _core.validate_paths(
-            [os.fspath(p) for p in paths], level=level, profiles=profiles
+            [os.fspath(p) for p in paths],
+            level=level,
+            profiles=profiles,
+            codes_revision=codes_revision,
         )
     ]
 

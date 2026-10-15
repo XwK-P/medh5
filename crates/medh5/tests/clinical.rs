@@ -153,6 +153,54 @@ fn s7_3_an_amendment_cannot_change_what_a_held_version_attests() {
     assert_eq!(content_id(&path), before);
 }
 
+/// An amendment that leaves the clinical group behind still holds every
+/// version the source held: one added again must be what it was (§7.3).
+/// Left behind by `amend_into`, the group filled nothing to hold, so a
+/// version re-added with a payload it never had was written --- in place,
+/// and to another path, whose commit read the output for what was held.
+#[test]
+fn s7_3_amend_into_without_clinical_holds_a_readded_version() {
+    for elsewhere in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = worked(dir.path());
+        let out = if elsewhere { dir.path().join("out.medh5") } else { path.clone() };
+        let before = std::fs::read(&path).unwrap();
+        let mut w = medh5::sample::writer::amend_into(&path, &out, None, &["clinical"]).unwrap();
+        w.add_records(worked_records()).unwrap();
+        w.add_document(medh5::clinical::model::Document::text("late", "Written a week later.")).unwrap();
+        w.add_link(Link::new(("event", "report0_v1"), "describes", ("document", "late"))).unwrap();
+        let err = w.commit(true).unwrap_err();
+        assert_eq!(err.code(), Some("E809"), "elsewhere {elsewhere}: {err}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        if elsewhere {
+            assert!(!out.exists());
+        }
+        // Added again as it was, it is what it was.
+        let mut w = medh5::sample::writer::amend_into(&path, &out, None, &["clinical"]).unwrap();
+        w.add_records(worked_records()).unwrap();
+        w.commit(true).unwrap();
+        assert_eq!(content_id(&out), content_id(&path));
+    }
+}
+
+/// What 1.0 §13.2 covers of an attested payload is held with its bytes: a
+/// slope rescales every voxel read, and an edit to it passed as long as the
+/// pixels were unchanged.
+#[test]
+fn s7_3_an_attested_payload_s_attributes_are_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = worked(dir.path());
+    let before = std::fs::read(&path).unwrap();
+    let mut w = amend(&path, None).unwrap();
+    let image = w.root().unwrap().dataset("images/CT_tp0").unwrap();
+    image.new_attr::<f64>().create("rescale_slope").unwrap().write_scalar(&2.0).unwrap();
+    drop(image);
+    let err = w.commit(true).unwrap_err();
+    assert_eq!(err.code(), Some("E809"), "{err}");
+    assert!(err.to_string().contains("image 'CT_tp0', which event 'ct0' attests"), "{err}");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
 #[test]
 fn s3_the_clock_is_fixed_once_written() {
     let dir = tempfile::tempdir().unwrap();
@@ -251,9 +299,14 @@ fn s10_stripping_is_a_reported_loss() {
     assert!(strip(&path, &path).is_err(), "never in place");
 }
 
+/// A minor this engine does not implement: the one after the newest it does.
+fn later_minor() -> String {
+    medh5::version::next_minor(medh5::version::LATEST_VERSION).unwrap()
+}
+
 fn bump_minor(path: &Path) {
     let file = hdf5::File::open_rw(path).unwrap();
-    medh5::h5::attrs::write(&file, "medh5_version", &medh5::h5::AttrValue::Str("1.2".into())).unwrap();
+    medh5::h5::attrs::write(&file, "medh5_version", &medh5::h5::AttrValue::Str(later_minor())).unwrap();
 }
 
 #[test]

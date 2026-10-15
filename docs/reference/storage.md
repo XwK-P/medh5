@@ -198,7 +198,10 @@ file it names is the one replaced, and the link stays a link. Other hard links
 to that file keep its previous content. A link in a sticky directory anyone can
 write to, such as `/tmp`, is followed only when you or the directory's owner
 own it — the rule Linux applies to opening one — and is otherwise refused
-(`MEDH5FileError`).
+(`MEDH5FileError`). The file's mode is kept, and a read-only file stays
+read-only. A cohort manifest, a conversion report (`convert … --report`) and a
+NIfTI sidecar are written through the same replace, so a link at their path is
+kept too.
 
 `amend` is copy-on-write, and it copies through **every object of its version
 it does not interpret**, extensions included, so amending never silently drops

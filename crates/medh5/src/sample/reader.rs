@@ -865,6 +865,12 @@ impl Sample {
 
     /// Verify digests, `content_id` and index currency.
     pub fn verify(&self, partial: Option<&[String]>) -> Result<VerifyResult> {
+        if partial.is_none() {
+            if let Some(algo) = crate::sample::writer::unknown_algo(&self.root)? {
+                let shown = self.path.clone().unwrap_or_else(|| PathBuf::from(self.root.name()));
+                return Err(crate::integrity::repair::unknown_algo_refused(&shown, &algo));
+            }
+        }
         verify_root(&self.root, Some(&self.attr_name_map()?), partial, true)
     }
 
@@ -1161,7 +1167,7 @@ mod tests {
     fn s2_2_a_later_minors_grid_is_left_out_with_what_lies_on_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = crate::bench::synthetic_pair(dir.path(), &[4, 6, 5], "portable", 7).unwrap();
-        with_a_later_axis_kind(&path, "1.2");
+        with_a_later_axis_kind(&path, &crate::version::later_minor());
         let sample = open_sample(&path).unwrap();
         let left_out: Vec<String> = sample.left_out().unwrap().into_keys().collect();
         assert_eq!(left_out, ["grids/g_tp0", "images/CT_tp0", "transforms/warp"]);

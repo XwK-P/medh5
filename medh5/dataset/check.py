@@ -27,6 +27,10 @@ SEVERITIES: tuple[str, ...] = _core.CHECK_SEVERITIES
 CHECK_CODES: dict[str, str] = dict(_core.CHECK_CODES)
 """Cohort codes.  Distinct from the format's E/W table on purpose (§15.2)."""
 
+CHECK_CODE_SEVERITY: dict[str, str] = dict(_core.CHECK_CODE_SEVERITY)
+"""Each cohort code's severity.  ``C401`` is an error under ``deep=True``,
+which re-reads every ``content_id``; ``C204`` is ``dataset split``'s refusal."""
+
 
 @dataclass(slots=True)
 class Finding:
@@ -132,4 +136,11 @@ def check(
     )
 
 
-__all__ = ["CHECK_CODES", "SEVERITIES", "CohortReport", "Finding", "check"]
+__all__ = [
+    "CHECK_CODES",
+    "CHECK_CODE_SEVERITY",
+    "SEVERITIES",
+    "CohortReport",
+    "Finding",
+    "check",
+]

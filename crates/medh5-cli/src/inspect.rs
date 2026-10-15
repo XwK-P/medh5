@@ -16,7 +16,7 @@ use medh5::json::py_str;
 use medh5::labels::ClassKey;
 use medh5::sample::{open_sample, Sample};
 use medh5::storage::codecs::describe_filters;
-use medh5::validate::validate_paths;
+use medh5::validate::{validate_paths_with, ValidateOptions};
 use medh5::Error;
 
 use crate::common::*;
@@ -393,8 +393,22 @@ fn tree_json(node: &hdf5::Group, prefix: &str, roles: &Roles) -> medh5::Result<V
 fn validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let paths = get_paths(m, "paths");
     let refs: Vec<&Path> = paths.iter().map(Path::new).collect();
-    let profiles = get_strs(m, "profiles");
-    let reports = validate_paths(&refs, req_str(m, "level"), profiles.as_deref())?;
+    let mut options = ValidateOptions::default().level(req_str(m, "level"));
+    if let Some(profiles) = get_strs(m, "profiles") {
+        options = options.profiles(&profiles);
+    }
+    if let Some(n) = get_i64(m, "codes_revision") {
+        // Below 1 or past `u32` is no revision; the engine refuses the rest.
+        let revision = u32::try_from(n).map_err(|_| {
+            Error::invalid(format!(
+                "codes revision {n} is not a revision of the code table; this engine implements revisions 1 to {} \
+                 (§15.2)",
+                medh5::codes::table_revision()
+            ))
+        })?;
+        options = options.codes_revision(revision);
+    }
+    let reports = validate_paths_with(&refs, &options)?;
     if flag(m, "json") {
         ctx.emit(&Value::Array(reports.iter().map(|r| r.to_json()).collect()), true);
     } else {

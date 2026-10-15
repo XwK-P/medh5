@@ -1617,8 +1617,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     use medh5::annotations::header as h;
     m.add("VOXEL_KINDS", PyTuple::new(py, h::VOXEL_KINDS)?)?;
-    m.add("GEOMETRIC_KINDS", PyTuple::new(py, h::GEOMETRIC_KINDS)?)?;
-    m.add("ANNOTATION_KINDS", PyTuple::new(py, h::ANNOTATION_KINDS)?)?;
+    let latest = medh5::version::LATEST_VERSION;
+    m.add("GEOMETRIC_KINDS", PyTuple::new(py, h::geometric_kinds(latest).unwrap_or_default())?)?;
+    m.add("ANNOTATION_KINDS", PyTuple::new(py, h::kinds(latest).unwrap_or_default())?)?;
     m.add("RESERVED_KINDS", PyTuple::new(py, h::RESERVED_KINDS)?)?;
     m.add("TASKS", PyTuple::new(py, h::TASKS)?)?;
     m.add("SPEC_ANNOTATION_ATTRS", PyTuple::new(py, h::SPEC_ANNOTATION_ATTRS)?)?;

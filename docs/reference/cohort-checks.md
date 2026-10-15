@@ -12,7 +12,8 @@ per-file validator can see either problem, so no per-file code exists for them.
 
 The codes are tooling-level rather than normative: the specification does not
 require an implementation to emit them, and a minor version may add to them
-freely. The table is generated at build time from the `CHECK_CODES` table in
+freely. The table is generated at build time from the `CHECK_CODES` and
+`CHECK_SEVERITY` tables in
 [`crates/medh5/src/dataset/check.rs`](https://github.com/medh5-project/medh5/blob/main/crates/medh5/src/dataset/check.rs),
 the cohort check every frontend runs.
 

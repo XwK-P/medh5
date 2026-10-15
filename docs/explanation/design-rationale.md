@@ -161,6 +161,22 @@ identical to standalone samples, so packing and unpacking are pure copies and
 every rule in the specification is written once, against "the sample root"
 (§2.2).
 
+### A split that grows without moving anyone (`medh5.split/2`)
+
+`medh5.split/1` dealt each group to whichever partition was furthest below its
+share, walking the strata round-robin. That meets the ratios, but a group's
+partition then depends on every group dealt before it: one group added to a
+cohort of 115 moved a median of 19 of the others, test subjects into training
+among them, and a model retrained on the re-split has trained on part of its
+old test set. `medh5.split/2` decides the counts first (largest remainder for
+the totals, a controlled rounding for each stratum's share of them) and only
+then which groups fill them, by hash rank within the stratum. A group's place
+depends on its stratum's counts and its own rank, so one new group moves one or
+two others; `previous=` moves none, because what a split promised is that a
+test subject stays one. /1 stays the 2.x default, with a warning only where
+the two disagree, because changing a deterministic split's answer under a
+minor release is exactly the leak it exists to prevent.
+
 ### Why not an existing format
 
 | Format | Why not, on its own | What medh5 takes from it |
@@ -187,6 +203,27 @@ honestly** — coverage, provenance, geometry and integrity.
 | Default codec | **`balanced`** | Writes happen once and reads do not; `balanced` costs little to write and is defensible for a file of unknown lifetime. `training` is one `recompress` away, and moving between profiles invalidates no digest (§14.2). |
 | Converter grouping | **By subject, falling back to study — loudly** | Subject grouping is the point of the model. But de-identification often destroys cross-study identity, and guessing it from dates, filenames or accession numbers would fabricate exactly the linkage the format exists to make trustworthy (Appendix B). |
 | Is `timepoints` always required? | **Yes, at least one** | One code path: every grid can resolve its visit and no reader branches on presence. A cross-sectional sample pays one two-field object (§3.7). |
+
+### Amendments detect a lost update rather than lock it out
+
+§14.4 asks writers to hold exclusive access, and amend builds a new file and
+renames it over the old. The engine does not hold the source open or locked
+for the life of an amendment: a lock is unreliable on NFS, Lustre and GPFS
+(§14.4), and Windows cannot replace a file that is open. Instead an amendment,
+and a `repack` or `recompress` in place, records the source's identity when it
+reads it — on POSIX the file HDF5 read through, by device, inode, size and
+modification and change times; on Windows its size and last-write time — and
+the `content_id` it declares, and refuses to commit if either changed: at the
+commit's start, before it reads the source again, and as the last thing
+before the rename. `content_id` alone would miss `index/`, uncovered
+attributes and extensions.
+
+This is detection, not exclusion. The last check and the rename are two
+calls, and no portable rename compares before it replaces, so two commits
+that both pass the last check can still both rename. Closing that window needs
+the exclusive access §14.4 already asks of writers; what the check removes is
+the common case, an amendment whose source another writer replaced while it
+was being built.
 
 ## The costs accepted
 

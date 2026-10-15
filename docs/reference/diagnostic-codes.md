@@ -4,8 +4,13 @@ Every defect `medh5 validate` can report, with the code it reports it under.
 
 Codes are **stable API**. A code's meaning never changes and codes are never
 reused, so a pipeline may branch on one and a third-party validator is expected
-to emit the same code for the same defect. A minor format version may add codes;
-it may not change what an existing one means (spec §16).
+to emit the same code for the same defect. A minor format version may add codes,
+and so may an erratum to a published version, for a rule that version already
+states; neither changes what an existing code means (spec §15.2, §16). Each
+allocation is a numbered *revision* of the table, and every code names the
+format version whose rules it reports and the revision that allocated it. A
+`--level strict` gate that must not move when a later revision adds a warning
+pins one: `medh5 validate --level strict --codes-revision 1`.
 
 The table below is generated from
 [`crates/medh5/data/codes.json`](https://github.com/medh5-project/medh5/blob/main/crates/medh5/data/codes.json)
@@ -23,6 +28,8 @@ from medh5 import CODES
 CODES["E102"].summary     # "`direction` is not orthonormal to 1e-4"
 CODES["E102"].domain      # "geometry"
 CODES["E102"].severity    # "error"
+CODES["E102"].since       # "1.0", the version whose rules it reports
+CODES["E102"].revision    # 1, the revision of the table that allocated it
 ```
 
 ## Reading a code

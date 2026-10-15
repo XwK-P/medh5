@@ -27,7 +27,7 @@ use crate::geometry::grid::{
 use crate::geometry::multiscale::{check_pyramid, pyramid_factors, Pyramid};
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::data;
-use crate::h5::file::{open_read, AtomicFile};
+use crate::h5::file::{open_read, AtomicFile, Snapshot};
 use crate::h5::ops;
 use crate::ids::validate_id;
 use crate::integrity::{collect_digests, compute_content_id, failing_digests, stamp_digests};
@@ -199,7 +199,10 @@ pub struct SampleWriter {
     pub(crate) inherited_events: std::collections::HashMap<String, String>,
     /// The file an amendment started from, which a digest the commit finds
     /// changed is checked against.
-    source: Option<PathBuf>,
+    pub(crate) source: Option<PathBuf>,
+    /// What the amendment saw of its source when it read it: a commit
+    /// refuses a source that changed since (§14.4).
+    seen: Option<Snapshot>,
 }
 
 impl std::fmt::Debug for SampleWriter {
@@ -244,8 +247,32 @@ pub fn amend(path: &Path, codec: Option<&str>) -> Result<SampleWriter> {
 /// members named in `without` behind.  What is left behind is never copied,
 /// so no byte of it reaches `out` --- where copying the file and deleting
 /// the group left every deleted byte in it.  The source is only read.
+///
+/// A source whose attestation no longer holds is refused before anything is
+/// written ([`refuse_unattestable`]): a `content_id` that does not recompute
+/// (E702), a digest or a `digest_algo` this engine cannot read (E703).  A
+/// source that changes after it was read is refused at the commit (§14.4).
 pub fn amend_into(path: &Path, out: &Path, codec: Option<&str>, without: &[&str]) -> Result<SampleWriter> {
+    amend_into_with(path, out, codec, without, false)
+}
+
+/// [`amend`] for a deliberate re-attestation --- `medh5 fix
+/// --rewrite-digests --reason`, which records it: the one amendment of a
+/// source whose `content_id` no longer recomputes, or whose digests this
+/// engine cannot read, which it restamps in the default algorithm.
+pub(crate) fn amend_reattesting(path: &Path, codec: Option<&str>) -> Result<SampleWriter> {
+    amend_into_with(path, path, codec, &[], true)
+}
+
+fn amend_into_with(
+    path: &Path,
+    out: &Path,
+    codec: Option<&str>,
+    without: &[&str],
+    reattest: bool,
+) -> Result<SampleWriter> {
     let source = open_read(path)?;
+    let seen = Snapshot::of(&source, path, "amendment")?;
     let version = require_major(&source, path)?;
     let declared = attrs::get_strs(&source, "medh5_profiles")?.unwrap_or_default();
     crate::version::require_amendable(&version, &declared, &repr_str(&path.to_string_lossy()))?;
@@ -259,21 +286,116 @@ pub fn amend_into(path: &Path, out: &Path, codec: Option<&str>, without: &[&str]
     }
     let root = source.as_group()?;
     ops::refuse_references(&root, "an amendment")?;
+    if !reattest {
+        refuse_unattestable(&root, &repr_str(&path.to_string_lossy()))?;
+    }
     let chosen = match codec {
         Some(c) => c.to_string(),
         None => profile_family(&root)?.to_string(),
     };
     let mut writer = SampleWriter::new(out, None, None, &chosen, &[], Some((&root, without)))?;
     writer.source = Some(path.to_path_buf());
+    if let Some(file) = writer.file.as_mut() {
+        file.expect_unchanged(path.to_path_buf(), seen.clone());
+    }
+    writer.seen = Some(seen);
     Ok(writer)
 }
 
-/// Refuse, by reading alone, a sample whose amendment a commit would refuse
-/// (E701): a dataset whose bytes fail the digest it carries, which the commit
-/// would restamp.  A tool that amends many files checks each before it writes
+/// The repair that re-attests a file deliberately, as a refusal names it.
+const REATTEST: &str = "re-attest it deliberately with `medh5 fix --rewrite-digests --reason ...`, which records the \
+                        reason in the file's provenance";
+
+/// Refuse, before anything is written, to amend a sample whose attestation a
+/// commit would carry past a break (§14.4): one declaring a `digest_algo`
+/// outside §2.1, or holding a digest that does not parse (E703), or whose
+/// declared `content_id` does not recompute from what it stores (E702).  A
+/// commit recomputes the `content_id` from whatever is stored, so a no-op
+/// amendment of a file edited outside medh5 made it validate, with no record
+/// of the edit; and an algorithm it could not compute gave way to `sha256`.
+/// Only attributes and `/meta` are read, never bulk data.  `shown` names the
+/// file in the refusal.
+pub(crate) fn refuse_unattestable(root: &hdf5::Group, shown: &str) -> Result<()> {
+    if let Some(algo) = unknown_algo(root)? {
+        return Err(Error::coded(
+            "E703",
+            format!(
+                "refusing to amend {shown}: it declares digest_algo {}, which §2.1 does not permit (sha256, sha512 \
+                 and blake2b), so a commit could neither keep that algorithm nor check the digests made with it; \
+                 {REATTEST}, which restamps it in sha256",
+                repr_str(&algo)
+            ),
+        ));
+    }
+    let stored = collect_digests(root, &["index"])?;
+    let unreadable: Vec<String> = stored
+        .iter()
+        .filter(|(_, value)| crate::digest::parse_digest(value).is_err())
+        .map(|(path, _)| path.clone())
+        .collect();
+    if !unreadable.is_empty() {
+        return Err(unreadable_refused(shown, &unreadable));
+    }
+    // Without `/meta` there is no root to recompute: the document's own
+    // read refuses the file, as it did.
+    if ops::child_dataset(root, META_DATASET).is_none() {
+        return Ok(());
+    }
+    let declared = match attrs::read(root, "content_id")? {
+        None => return Ok(()),
+        Some(AttrValue::Str(s)) => s,
+        Some(other) => attrs::stringify_value(&other),
+    };
+    let algo = crate::integrity::digest::root_algo(root)?;
+    let computed = compute_content_id(root, &attr_name_map_of(root)?, &algo, Some(&stored))?;
+    if computed == declared {
+        return Ok(());
+    }
+    Err(Error::coded(
+        "E702",
+        format!(
+            "refusing to amend {shown}: its `content_id` {declared} does not recompute from what it stores \
+             ({computed}) --- it was changed outside medh5 --- and a commit would re-attest the change with no \
+             record of it; restore the file, or {REATTEST}"
+        ),
+    ))
+}
+
+/// E703 for amending the file `shown` names, whose datasets `paths` carry a
+/// digest that does not parse.
+fn unreadable_refused(shown: &str, paths: &[String]) -> Error {
+    let one = paths.len() == 1;
+    let listed = paths.iter().take(5).map(|p| format!("/{p}")).collect::<Vec<_>>().join(", ");
+    let more = if paths.len() > 5 { format!(" (and {} more)", paths.len() - 5) } else { String::new() };
+    Error::coded(
+        "E703",
+        format!(
+            "refusing to amend {shown}: the digest{} of {listed}{more} {} not parse, so a commit would restamp bytes \
+             nobody verified; restore {}, or {REATTEST}",
+            if one { "" } else { "s" },
+            if one { "does" } else { "do" },
+            if one { "it" } else { "them" },
+        ),
+    )
+}
+
+/// The `digest_algo` a root declares when it is outside §2.1.
+pub(crate) fn unknown_algo(root: &hdf5::Group) -> Result<Option<String>> {
+    let algo = match attrs::read(root, "digest_algo")? {
+        None => return Ok(None),
+        Some(AttrValue::Str(s)) => s,
+        Some(other) => attrs::stringify_value(&other),
+    };
+    Ok((!crate::digest::DIGEST_ALGOS.contains(&algo.as_str())).then_some(algo))
+}
+
+/// Refuse, by reading alone, a sample whose amendment would be refused: one
+/// [`refuse_unattestable`] refuses (E702, E703), or a dataset whose bytes
+/// fail the digest it carries, which the commit would restamp (E701).  A tool that amends many files checks each before it writes
 /// any, so a refusal is met before the first file changes rather than at the
 /// file it falls on.  `shown` names the file in the refusal.
 pub fn refuse_failed_digests(root: &hdf5::Group, shown: &str) -> Result<()> {
+    refuse_unattestable(root, shown)?;
     // What a commit restamps: every dataset that has a digest to compute,
     // but `meta` and the derived `index/` (§13.3), as `stamp_digests` walks.
     let mut restamped = Vec::new();
@@ -403,6 +525,7 @@ impl SampleWriter {
             clinical_ids: Default::default(),
             inherited_events: Default::default(),
             source: None,
+            seen: None,
         };
         let setup = (|| -> Result<()> {
             for name in ["grids", "images", "annotations"] {
@@ -537,6 +660,15 @@ impl SampleWriter {
         // unknown one was refused before the amend began (1.1 §2.3), and a
         // recognised `clinical` group carries its profile with it.
         let declared = attrs::get_strs(source, "medh5_profiles")?.unwrap_or_default();
+        if leaves_clinical && declared.iter().any(|p| p == crate::clinical::PROFILE) {
+            // Left behind, the versions the source held stay held: one added
+            // again in this amendment must be what it was (1.1 §7.3), as
+            // after `drop_clinical`.  Tables that do not read hold no
+            // version anything can be held to.
+            if let Ok(Some(held)) = crate::clinical::Clinical::open(source, false) {
+                self.inherited_events = held.events.iter().map(|e| (e.event_id.clone(), e.kind.clone())).collect();
+            }
+        }
         if ops::exists(source, crate::clinical::GROUP) && !leaves_clinical {
             self.clinical_source =
                 if declared.iter().any(|p| p == crate::clinical::PROFILE) && crate::clinical::recognised(source) {
@@ -1444,7 +1576,8 @@ impl SampleWriter {
     /// rejects (E005), an event version the amended file held, changed ---
     /// leaves the writer open: mend what was refused and commit again.  One
     /// that fails once it has begun writing aborts the writer, discarding the
-    /// file being built and leaving the target as it was.  Returns the
+    /// file being built and leaving the target as it was; so does one whose
+    /// source changed after the amendment read it (§14.4).  Returns the
     /// `content_id`, or `None` when the writer had already committed; an
     /// aborted writer has nothing to commit, and says so.
     pub fn commit(&mut self, digests: bool) -> Result<Option<String>> {
@@ -1457,6 +1590,15 @@ impl SampleWriter {
                 ))
             }
             State::Open => {}
+        }
+        // Before the source is read again: what it holds now may not be what
+        // this amendment inherited, and no commit of this writer could be
+        // anything but a lost update (§14.4).
+        if let (Some(source), Some(seen)) = (&self.source, &self.seen) {
+            if let Err(e) = seen.check(source) {
+                self.abort();
+                return Err(e);
+            }
         }
         // Refused here, nothing has changed: the writer stays open.
         let profiles = self.check_commit()?;
@@ -1544,12 +1686,25 @@ impl SampleWriter {
             return Ok(());
         };
         let file = open_read(source)?;
-        let failed = failing_digests(&file.as_group()?, &changed)?;
+        let root = file.as_group()?;
+        let failed = failing_digests(&root, &changed)?;
+        // A digest the source holds that does not parse is no record of
+        // anything a restamp could keep (E703), not a mismatch.
+        let unreadable = failed.iter().any(|path| {
+            ops::resolve_dataset(&root, path)
+                .and_then(|ds| attrs::get_str(&ds, "digest").ok().flatten())
+                .is_some_and(|value| crate::digest::parse_digest(&value).is_err())
+        });
+        drop(root);
         drop(file);
         if failed.is_empty() {
             return Ok(());
         }
-        Err(restamp_refused(&repr_str(&source.to_string_lossy()), &failed))
+        let shown = repr_str(&source.to_string_lossy());
+        if unreadable {
+            return Err(unreadable_refused(&shown, &failed));
+        }
+        Err(restamp_refused(&shown, &failed))
     }
 
     /// Refuse to write a file the validator would reject (§15): the
@@ -1768,12 +1923,16 @@ mod tests {
                 assert_eq!(after, address, "{algo}: a no-op amendment moved the address");
                 assert!(mismatched(&path).is_empty());
             }
-            // A third-party file carrying one digest in another algorithm.
+            // A third-party file carrying one digest in another algorithm,
+            // its `content_id` computed over it.
             {
                 let file = crate::h5::file::marked(|| hdf5::File::open_rw(&path)).unwrap();
                 let notes = file.dataset("x_site/notes").unwrap();
                 let other = crate::integrity::digest::dataset_digest(&notes, "x_site/notes", "sha256").unwrap();
                 attrs::write(&notes, "digest", &AttrValue::Str(other)).unwrap();
+                let root = file.as_group().unwrap();
+                let content_id = compute_content_id(&root, &attr_name_map_of(&root).unwrap(), algo, None).unwrap();
+                attrs::write(&root, "content_id", &AttrValue::Str(content_id)).unwrap();
             }
             amend(&path, None).unwrap().commit(false).unwrap();
             let (_, stored, after) = digests_and_address(&path);
@@ -1816,5 +1975,145 @@ mod tests {
             assert!(!bytes.windows(10).any(|w| w == b"MRN-000042"), "{alias}: the old document is in the file");
             assert!(mismatched(&path).is_empty());
         }
+    }
+
+    /// Every file in `dir`.
+    fn listed(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> =
+            std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
+    /// `edit` applied to `path` behind the library's back.
+    fn edited(path: &Path, edit: impl FnOnce(&hdf5::Group)) {
+        let file = crate::h5::file::marked(|| hdf5::File::open_rw(path)).unwrap();
+        edit(&file.as_group().unwrap());
+    }
+
+    /// An amendment refuses a file whose `content_id` no longer recomputes
+    /// (E702) before it writes anything, naming the repair, and the repair
+    /// re-attests it.  A commit recomputed the `content_id` from whatever
+    /// was stored, so a no-op amendment of a file edited outside medh5 made
+    /// it validate, with no record of the edit.
+    #[test]
+    fn s14_4_a_stale_root_is_refused_before_anything_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.medh5");
+        sample(&path);
+        edited(&path, |root| {
+            attrs::write(&root.dataset("images/CT").unwrap(), "modality", &AttrValue::Str("MR".into())).unwrap()
+        });
+        let before = std::fs::read(&path).unwrap();
+        let shown = repr_str(&path.to_string_lossy());
+        let refused = amend(&path, None).unwrap_err();
+        assert_eq!(refused.code(), Some("E702"), "{refused}");
+        assert!(refused.to_string().contains("--rewrite-digests --reason"), "{refused}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(listed(dir.path()), vec!["s.medh5".to_string()]);
+        // Read alone, as a tool amending many files checks each.
+        let read = refuse_failed_digests(&open_read(&path).unwrap().as_group().unwrap(), &shown).unwrap_err();
+        assert_eq!((read.code(), read.to_string()), (refused.code(), refused.to_string()));
+        // Written elsewhere, the source is refused alike.
+        let out = dir.path().join("out.medh5");
+        assert_eq!(amend_into(&path, &out, None, &[]).unwrap_err().code(), Some("E702"));
+        assert!(!out.exists());
+        // The repair is the one amendment that re-attests it.
+        let mut writer = amend_reattesting(&path, None).unwrap();
+        writer.commit(true).unwrap();
+        let file = open_read(&path).unwrap();
+        let root = file.as_group().unwrap();
+        assert_eq!(
+            verify_root(&root, Some(&attr_name_map_of(&root).unwrap()), None, true).unwrap().content_id_ok(),
+            Some(true)
+        );
+    }
+
+    /// An amendment refuses a file declaring a `digest_algo` outside §2.1, or
+    /// holding a digest that does not parse (E703), before it writes anything,
+    /// whatever its commit would stamp.  The unknown algorithm gave way to
+    /// `sha256`: a root declaring sha256 over digests made with another, or
+    /// a relabelled root, validating clean with no record.
+    #[test]
+    fn s2_1_an_unknown_digest_algorithm_is_not_amended() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.medh5");
+        sample(&path);
+        edited(&path, |root| attrs::write(root, "digest_algo", &AttrValue::Str("blake3".into())).unwrap());
+        let before = std::fs::read(&path).unwrap();
+        for _digests in [false, true] {
+            let refused = amend(&path, None).unwrap_err();
+            assert_eq!(refused.code(), Some("E703"), "{refused}");
+            assert!(refused.to_string().contains("'blake3'"), "{refused}");
+            assert!(refused.to_string().contains("--rewrite-digests --reason"), "{refused}");
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        // Every digest in an algorithm nobody can compute, under a known root.
+        sample(&path);
+        edited(&path, |root| {
+            for (_, ds) in ops::datasets(root).unwrap() {
+                if attrs::has(&ds, "digest") {
+                    attrs::write(&ds, "digest", &AttrValue::Str("blake3:00ff".into())).unwrap();
+                }
+            }
+        });
+        let before = std::fs::read(&path).unwrap();
+        let refused = amend(&path, None).unwrap_err();
+        assert_eq!(refused.code(), Some("E703"), "{refused}");
+        assert!(refused.to_string().contains("/images/CT"), "{refused}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(listed(dir.path()), vec!["s.medh5".to_string()]);
+    }
+
+    /// A commit refuses a source another writer replaced, or changed in
+    /// place, after this amendment read it --- at the commit's start, before
+    /// it reads the source again, and as the last thing before its rename ---
+    /// and leaves the other writer's file as it is.  Both renamed over the
+    /// file, and the first one's work was lost without an error.
+    #[test]
+    fn s14_4_a_source_replaced_before_the_rename_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.medh5");
+        sample(&path);
+        let shown = repr_str(&path.to_string_lossy());
+        let refusal = format!("{shown} changed after this amendment read it; nothing was written: amend it again");
+
+        // Another amendment committed between this one's read and its commit.
+        let mut first = amend(&path, None).unwrap();
+        let mut second = amend(&path, None).unwrap();
+        second.extra("x_test", Value::String("second".into()));
+        second.commit(true).unwrap();
+        let committed = std::fs::read(&path).unwrap();
+        first.extra("x_test", Value::String("first".into()));
+        let err = first.commit(true).unwrap_err();
+        assert!(matches!(err, Error::File(_)) && err.to_string() == refusal, "{err:?}");
+        assert!(first.is_closed());
+        assert_eq!(std::fs::read(&path).unwrap(), committed);
+        assert_eq!(listed(dir.path()), vec!["s.medh5".to_string()]);
+
+        // Replaced, or changed in place, after the commit's own checks.
+        for in_place in [false, true] {
+            let mut writer = amend(&path, None).unwrap();
+            crate::h5::file::before_rename(Some(Box::new(move |target: &Path| {
+                let other = if in_place { target.to_path_buf() } else { target.with_extension("other") };
+                if !in_place {
+                    std::fs::copy(target, &other).unwrap();
+                }
+                edited(&other, |root| attrs::write(root, "x_note", &AttrValue::Str("another writer".into())).unwrap());
+                if !in_place {
+                    std::fs::rename(&other, target).unwrap();
+                }
+            })));
+            let err = writer.commit(true).unwrap_err();
+            crate::h5::file::before_rename(None);
+            assert!(matches!(err, Error::File(_)) && err.to_string() == refusal, "{err:?}");
+            let file = open_read(&path).unwrap();
+            assert_eq!(attrs::get_str(&file, "x_note").unwrap().as_deref(), Some("another writer"));
+            drop(file);
+            assert_eq!(listed(dir.path()), vec!["s.medh5".to_string()]);
+            // The writer that refused is done; the file amends again.
+            edited(&path, |root| attrs::delete(root, "x_note").unwrap());
+        }
+        amend(&path, None).unwrap().commit(true).unwrap();
     }
 }

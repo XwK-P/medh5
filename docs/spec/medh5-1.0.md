@@ -83,7 +83,7 @@ Root attributes of a sample: on the file (`/`) of a `sample`, and on each sample
 | `medh5_kind` | `str` | **MUST** | `"sample"` or `"collection"`. |
 | `medh5_profiles` | `str[]` | **MUST** | Declared profiles (§1.3). |
 | `content_id` | `str` | SHOULD | `"<algo>:<hex>"` Merkle root (§13.2). |
-| `digest_algo` | `str` | SHOULD | `"sha256"` (default), `"sha512"` or `"blake2b"` — unkeyed BLAKE2b-512, a 64-byte digest of 128 hex characters. A validator **MUST** report any other value as E703. An amendment keeps the algorithm the file declares. |
+| `digest_algo` | `str` | SHOULD | `"sha256"` (default), `"sha512"` or `"blake2b"` — unkeyed BLAKE2b-512, a 64-byte digest of 128 hex characters. A validator **MUST** report any other value as E703. An amendment keeps the algorithm the file declares, and refuses a file that declares one outside this list (E703): it could neither keep that algorithm nor check the digests made with it. Only an explicit re-attestation, recorded as an activity (§11.1), restamps such a file, in `sha256`. |
 | `created` | `str` | SHOULD | RFC 3339 timestamp, in UTC (`Z`) as §11.1 recommends. |
 | `generator` | `str` | SHOULD | `"<name> <version>"` of the writing software. |
 
@@ -1551,6 +1551,8 @@ tens of GiB and cannot exist.
 ### 14.4 Concurrency and the write model
 
 * **One writer.** HDF5 has no multi-writer story. Writers **MUST** hold exclusive access.
+  (Informative: a writer that cannot hold exclusive access SHOULD refuse to replace a source that
+  changed after it was read.)
 * **Create** is atomic: write to a sibling temporary file, `fsync`, `os.replace`, `fsync` the
   directory. (0.x already does this; 1.0 keeps it normative.) The file replaced is the one the path
   names: when the path is a symbolic link, the replacement is written beside the file the link names
@@ -1570,6 +1572,11 @@ tens of GiB and cannot exist.
   **MUST** copy through untouched every object this specification does not define, extensions
   included (§16). A file of a higher minor version, or one declaring a profile the writer does not
   implement, is not amended at all (§16; [1.1](medh5-1.1.md) §2.3).
+* **An amendment carries attestation forward, never past a break.** A writer **MUST NOT** amend a
+  file whose declared `content_id` does not recompute from what is stored (E702), or that holds a
+  digest, or declares a `digest_algo`, it cannot read (E703): restamping would attest bytes nobody
+  verified. Re-attesting such a file is a repair, made deliberately and recorded as an activity
+  (§11.1).
 * **Readers** open `mode="r"`. Concurrent readers across processes are safe. A single open HDF5
   file (an `h5py.File`, a Rust `hdf5::File`) **MUST NOT** be shared across threads without external
   locking, nor inherited across `fork` — a handle cache **MUST** be keyed by PID and dropped in the
@@ -1606,12 +1613,26 @@ tens of GiB and cannot exist.
 | `integrity` | `digest` per object, `content_id`, index `source_digest` currency; and the value checks that need every stored value, made in the same full read of a bulk dataset: `probmap` values in [0, 1] (E411) and `normalized` sums (E404) |
 | `strict` | all of the above with warnings promoted to errors |
 
+A file that passes `strict` under one revision of the code table (§15.2) may fail under a later one;
+a validator offering `strict` lets its caller fix the revision.
+
 ### 15.2 Error codes
 
 Codes are stable API: a code's meaning never changes and a retired code is never reused. Validators
 emit `(code, severity, location, message)` where `location` is an HDF5 path or a JSON pointer into
-`/meta`. The table below is complete for 1.0; a minor version may add codes but **MUST NOT** redefine
-one.
+`/meta`. Codes are allocated in two ways. A minor version allocates the codes for what it adds (§16;
+1.1 §11.2). An erratum to a published version allocates a code for a rule that version already
+states: an error only for content its text already makes invalid; a warning for a recommendation
+(SHOULD, SHOULD NOT), or for a condition the text names without requiring anything of it. No
+allocation narrows, redefines or renumbers a code or changes its severity, and a retired code is
+never reused. A minor version that adds a kind reports its datasets' defects under the codes that
+report the same defect for the kinds before it, and names the kind in those codes' summaries: what a
+code applies to widens, what it means does not. Every allocation, by a minor version or an erratum,
+is a *revision* of the table, recorded in Appendix C.1: revision 1 is every code allocated before
+revisions were numbered, and each later allocation is the next number. `codes.json` gives each code
+the version whose rules it reports (`since`) and the revision that allocated it (`revision`). A
+validator states the revision it implements, and the conformance suite scores it against that
+revision. The table below is complete for 1.0 at revision 1.
 
 | Range | Domain | Examples |
 |---|---|---|
@@ -1630,7 +1651,8 @@ one.
 ## 16. Versioning and extension
 
 * `medh5_version` is `MAJOR.MINOR`. A **minor** bump may add objects, attributes, `kind` values,
-  activity types and error codes. It **MUST NOT** change the meaning of existing ones, remove a
+  activity types and error codes. A code for a rule a published version already states may instead
+  be allocated by an erratum (§15.2); it changes no file's version. It **MUST NOT** change the meaning of existing ones, remove a
   requirement, or alter a coordinate or direction convention.
 * Readers **MUST** reject an unknown MAJOR, **MUST** accept a higher MINOR, and **MUST** ignore
   objects, attributes and enum values they do not recognise. Accepting a higher minor is reading
@@ -1771,10 +1793,10 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 2.3 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.04 ms at 63
 classes), a metadata-only read 0.13 ms, and `open()` → first patch 1.6 ms.
 
-Seventy-seven clauses have been corrected — ten during implementation, eleven in the 1.x package
+Eighty clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, twenty-eight in the audits of 2.0 before its release, and
-twenty-three in the audit of 2.0.1 — each because
+package, one when it implemented 1.1, twenty-eight in the audits of 2.0 before its release,
+twenty-three in the audit of 2.0.1, and three in the development of 2.1 — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1857,6 +1879,9 @@ implementation could honestly promise, as written:
 | §2.1 | Found by the audit of 2.0.1; enforced from 2.0.2: the major of `medh5_version` is the text before the first `.`, compared exactly, and its minor a run of decimal digits; a minor that is not one is read as a higher minor (W913). The clause defined neither part, and the reference's support check trimmed whitespace and accepted a sign while its readers compared the major as text, so `" 1.0"` was supported, validated and amendable to one half of the engine and refused at open by the other. |
 | §4.3 | Found by the audit of 2.0.1; enforced from 2.0.2: a level's origin is held to 1e-3 of its own voxel along each axis — its offset from the derived origin, in the level's index coordinates — and its spacing to 1e-3 relative. "1e-3 relative tolerance" read as relative to the origin's magnitude, so about 500 voxels from the world's zero — a whole-body CT, a microscope stage in µm — a level missing its half-voxel shift passed the writer and the validator (**E105**). |
 | Appendix B | Found by the audit of 2.0.1; enforced from 2.0.2: the mapping reads the root `shape` 0.x wrote up to 0.5; a sample `label` without a `label_name` asserts a class of its own; a review status §11.2 does not define becomes `submitted`, a flag kept as an issue; and a study given no subject is `study:<sample_id>`, named for its file's stem. The table read the shape from `images` only, gave an unnamed label no class, and mapped no status, so the reference kept a sample label only when its name matched a mask's or a box's class, migrated a `pending` or `flagged` review as `reviewed`, and named a study without a subject for its absolute path. |
+| §15.1, §15.2, §16 | Codes are allocated in numbered *revisions* of the table, by a minor version for what it adds or by an erratum for a rule a published version already states, and an allocation changes no file's version; `codes.json` names each code's version (`since`) and revision. §15.2 and §16 said only a minor version adds codes, yet 2.0.0 allocated `E506` and `E704` by erratum, as conditions 1.0 files already have needed: an allocation that holds a code back for the next minor reports it only on files that declare that minor, and one made ad hoc silently moves a third-party validator's conformance score and a `strict` verdict. Numbered revisions let both be pinned. |
+| §14.4 | An amendment refuses a file whose declared `content_id` does not recompute from what it stores (**E702**), or that holds a digest, or declares a `digest_algo`, it cannot read (**E703**), before it writes anything; re-attesting one is a repair, recorded as an activity (§11.1). The clause asked an amend to preserve what it did not interpret, and said nothing of what it could not verify: a commit recomputes `content_id` from whatever is stored, so a no-op amendment (a scrub, a split claim, an added annotation) of a file edited outside the writer made it validate, with no record of the edit. |
+| §2.1 | The `digest_algo` row: an amendment refuses a file declaring an algorithm outside the list (**E703**), and only a recorded re-attestation restamps it, in `sha256`. "An amendment keeps the algorithm the file declares" could not hold for one it cannot compute, and the reference wrote `sha256` in its place: a root declaring `sha256` over digests made with the other, valid, with no record. |
 
 ### C.2 Prototype checks
 

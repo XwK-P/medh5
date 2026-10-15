@@ -7,7 +7,7 @@ use super::{
     dtype_name, grid_spatial, has_member, int_set, kinds_known, loc, read_f64, read_i64, str_attr, strs_attr,
     sub_dataset, Context,
 };
-use crate::annotations::header::{ANNOTATION_KINDS, RESERVED_KINDS, TASKS, VOXEL_KINDS};
+use crate::annotations::header::{is_known_kind, RESERVED_KINDS, TASKS, VOXEL_KINDS};
 use crate::annotations::layout::{self, mask_problems};
 use crate::annotations::payload::{contains_value, SLAB_BYTES};
 use crate::annotations::select::greedy_colour;
@@ -124,7 +124,7 @@ fn check_annotation(ctx: &Context, name: &str, group: &Node, sample: &Sample<'_>
         ));
         return Ok(out);
     }
-    if !ANNOTATION_KINDS.contains(&kind.as_str()) {
+    if !is_known_kind(&kind) {
         out.push(ctx.unknown("E401", location, format!("unknown annotation kind {}", repr_str(&kind))));
         return Ok(out);
     }

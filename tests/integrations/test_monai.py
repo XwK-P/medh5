@@ -16,6 +16,36 @@ from tests.helpers import SHAPE
 from tests.kits import Hierarchy
 
 
+def _frameless(path: Path, *, seed: int = 0, images: tuple[str, ...] = ("CT",)) -> Path:
+    """A sample as the NIfTI and nnU-Net importers write one: no frame of
+    reference, no value units, a labelmap with an ignore band."""
+    rng = np.random.default_rng(seed)
+    organs = np.zeros(Hierarchy.SHAPE, dtype=np.uint16)
+    organs[2:6, 2:6, 2:6] = 1
+    ignore = np.zeros(Hierarchy.SHAPE, dtype=bool)
+    ignore[-1] = True
+    with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+        w.label_set(
+            LabelSet("v", version="1.0.0", classes=[LabelClass(1, "liver", "Liver")])
+        )
+        w.add_grid("g", shape=Hierarchy.SHAPE, spacing=(2.0, 1.0, 1.0))
+        for image_id in images:
+            w.add_image(
+                image_id,
+                rng.integers(0, 100, Hierarchy.SHAPE).astype(np.int16),
+                grid="g",
+                modality="CT",
+            )
+        w.add_segmentation(
+            "organs",
+            grid="g",
+            masks={1: organs == 1},
+            encoding="labelmap",
+            ignore=ignore,
+        )
+    return path
+
+
 class TestMonaiLabelDtype:
     """`to_dict` labels are `int64`: the full id range, and the ignore id intact."""
 
@@ -328,6 +358,25 @@ class TestMonai:
                 to_dict(sample, ["CT"], ["det"])
             assert set(to_dict(sample, ["CT"])) == {"CT"}
 
+    def test_a_sample_without_frame_uid_batches(self, tmp_path):
+        """MONAI's collate refused the `None` of a missing `frame_uid`, so no
+        NIfTI or nnU-Net import could be batched (D30)."""
+        pytest.importorskip("monai")
+        from monai.data import list_data_collate
+
+        from medh5.monai import to_dict
+
+        items = []
+        for i in range(2):
+            path = _frameless(tmp_path / f"case{i}.medh5", seed=i)
+            with medh5.open(path) as sample:
+                items.append(to_dict(sample, ["CT"], ["organs"]))
+        assert items[0]["CT"].meta["medh5"]["frame_uid"] == "none"
+        batch = list_data_collate(items)
+        assert tuple(batch["CT"].shape) == (2, *Hierarchy.SHAPE)
+        assert batch["CT"].meta["medh5"]["frame_uid"] == ["none", "none"]
+        assert batch["organs"].meta["medh5"]["sample_key"] == ["none", "none"]
+
     def test_medh5_metadata_is_json_safe(self, indexed_cohort):
         from medh5.monai import meta_dict
 
@@ -345,6 +394,84 @@ class TestMonai:
 
 class TestWithoutMonai:
     """The parts of the adapter that do not need MONAI installed."""
+
+    def test_importing_medh5_monai_imports_no_monai(self, tmp_path):
+        """The reader subclasses MONAI's, so it lives in a module of its own,
+        loaded when it is asked for."""
+        import subprocess
+        import sys
+
+        script = (
+            "import sys; import medh5.monai as m; "
+            "assert 'monai' not in sys.modules, 'imported monai'; "
+            "assert 'MedH5Reader' in dir(m) and 'LoadMedH5d' in m.__all__; "
+            "print('clean')"
+        )
+        # Away from the checkout, whose `medh5/` would shadow the installed one.
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=tmp_path,
+        )
+        assert "clean" in result.stdout
+
+    def test_the_reader_names_the_extra(self, tmp_path):
+        import subprocess
+        import sys
+
+        script = (
+            "import sys\n"
+            "class Refuse:\n"
+            "    def find_spec(self, name, path=None, target=None):\n"
+            "        if name.split('.')[0] == 'monai':\n"
+            "            raise ImportError('no monai here', name=name)\n"
+            "sys.meta_path.insert(0, Refuse())\n"
+            "import medh5.monai as m\n"
+            "for build in (lambda: m.MedH5Reader('CT'), lambda: m.LoadMedH5d()):\n"
+            "    try:\n"
+            "        build()\n"
+            "    except ImportError as error:\n"
+            "        print(error)\n"
+            "try:\n"
+            "    m.NoSuchName\n"
+            "except AttributeError as error:\n"
+            "    print(error)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=tmp_path,
+        )
+        assert result.stdout.count("pip install 'medh5[monai]'") == 2
+        assert "has no attribute 'NoSuchName'" in result.stdout
+
+    def test_from_metatensor_maps_none_back(self, tmp_path):
+        """`"none"` is how MONAI's metadata spells an absent value; a writer
+        reading it back gets `None`, not a frame named "none"."""
+        from medh5.monai import from_metatensor, meta_dict
+
+        path = _frameless(tmp_path / "f.medh5")
+        with medh5.open(path) as sample:
+            meta = meta_dict(sample, "CT")
+        assert meta["medh5"]["frame_uid"] == "none"
+        assert meta["medh5"]["value_units"] == "none"
+        assert meta["medh5"]["sample_key"] == "none"
+
+        class Duck:
+            def __array__(self, dtype=None, copy=None):
+                return np.zeros(Hierarchy.SHAPE, dtype=dtype)
+
+        duck = Duck()
+        duck.meta = meta  # type: ignore[attr-defined]
+        recovered = from_metatensor(duck)[1]["medh5"]
+        assert recovered["frame_uid"] is None
+        assert recovered["value_units"] is None
+        assert recovered["sample_key"] is None
+        assert recovered["modality"] == "CT"
 
     def test_from_metatensor_recovers_the_geometry(self):
         from medh5.monai import from_metatensor
@@ -470,3 +597,211 @@ class TestWithoutMonai:
         with medh5.open(path) as s:
             assert meta_dict(s, "RGB")["original_channel_dim"] == 0
             assert meta_dict(s, "CT")["original_channel_dim"] == "no_channel"
+
+
+def _opens(item: dict) -> dict:
+    """A worker's handle-cache opens, beside the item it read (module level, so
+    a `spawn` worker can unpickle it)."""
+    import os
+
+    from medh5.torch.handles import CACHE
+
+    return {**item, "opens": CACHE.opens, "pid": os.getpid()}
+
+
+class TestMonaiReader:
+    """`MedH5Reader`: `LoadImage` opens a `.medh5` as MONAI's own readers do."""
+
+    def test_reader_affine_matches_to_metatensor(self, indexed_cohort):
+        pytest.importorskip("monai")
+        from monai.transforms import LoadImage
+
+        from medh5.monai import MedH5Reader, to_metatensor
+
+        loaded = LoadImage(reader=MedH5Reader("CT_tp0"), image_only=True)(
+            indexed_cohort[0]
+        )
+        with medh5.open(indexed_cohort[0]) as sample:
+            expected = to_metatensor(sample, "CT_tp0")
+        assert np.allclose(np.asarray(loaded.affine), np.asarray(expected.affine))
+        assert np.array_equal(np.asarray(loaded), np.asarray(expected))
+        assert loaded.meta["medh5"]["image_id"] == "CT_tp0"
+        assert loaded.meta["space"] == "LPS"
+
+    def test_label_is_int64_with_65535_ignore(self, tmp_path):
+        pytest.importorskip("monai")
+        from monai.transforms import LoadImage
+
+        from medh5.monai import MedH5Reader
+
+        path = _frameless(tmp_path / "f.medh5")
+        label = LoadImage(
+            reader=MedH5Reader(annotation="organs"), image_only=True, dtype=None
+        )(path)
+        assert str(label.dtype) == "torch.int64"
+        assert set(np.unique(np.asarray(label)).tolist()) == {0, 1, 65535}
+        assert np.all(np.asarray(label)[-1] == 65535)
+        assert label.meta["medh5"]["annotation_id"] == "organs"
+        with pytest.raises(MEDH5ValidationError, match="an image or an annotation"):
+            MedH5Reader("CT", annotation="organs")
+
+    def test_an_unnamed_image_is_refused_when_there_are_several(self, tmp_path):
+        pytest.importorskip("monai")
+        from monai.transforms import LoadImage
+
+        from medh5.monai import MedH5Reader
+
+        one = _frameless(tmp_path / "one.medh5")
+        two = _frameless(tmp_path / "two.medh5", images=("CT", "PET"))
+        assert tuple(LoadImage(reader=MedH5Reader(), image_only=True)(one).shape) == (
+            Hierarchy.SHAPE
+        )
+        with pytest.raises(MEDH5ValidationError, match="'CT', 'PET'.*image="):
+            LoadImage(reader=MedH5Reader(), image_only=True)(two)
+
+    def test_loadimaged_batches_through_list_data_collate(self, tmp_path):
+        pytest.importorskip("monai")
+        from monai.data import list_data_collate
+        from monai.transforms import Compose, EnsureChannelFirstd, LoadImaged
+
+        from medh5.monai import MedH5Reader
+
+        paths = [_frameless(tmp_path / f"c{i}.medh5", seed=i) for i in range(3)]
+        load = Compose(
+            [
+                LoadImaged("image", reader=MedH5Reader("CT")),
+                LoadImaged(
+                    "label", reader=MedH5Reader(annotation="organs"), dtype=None
+                ),
+                EnsureChannelFirstd(["image", "label"]),
+            ]
+        )
+        items = [load({"image": str(p), "label": str(p)}) for p in paths]
+        batch = list_data_collate(items)
+        assert tuple(batch["image"].shape) == (3, 1, *Hierarchy.SHAPE)
+        assert tuple(batch["label"].shape) == (3, 1, *Hierarchy.SHAPE)
+        assert batch["image"].meta["medh5"]["frame_uid"] == ["none"] * 3
+
+    def test_several_files_stack_as_channels_only_on_one_grid(self, tmp_path):
+        pytest.importorskip("monai")
+        from monai.transforms import LoadImage
+
+        from medh5.monai import MedH5Reader
+
+        a = _frameless(tmp_path / "a.medh5", seed=1)
+        b = _frameless(tmp_path / "b.medh5", seed=2)
+        stacked = LoadImage(reader=MedH5Reader("CT"), image_only=True)([a, b])
+        assert tuple(stacked.shape) == (2, *Hierarchy.SHAPE)
+        assert stacked.meta["original_channel_dim"] == 0
+        other = tmp_path / "other.medh5"
+        with medh5.create(other, sample_id="other", codec="portable") as w:
+            w.add_grid("g", shape=Hierarchy.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT", np.zeros(Hierarchy.SHAPE, np.int16), grid="g", modality="CT"
+            )
+        with pytest.raises(MEDH5ValidationError, match="not on one grid"):
+            LoadImage(reader=MedH5Reader("CT"), image_only=True)([a, other])
+
+    def test_a_collection_member_by_path_key(self, tmp_path):
+        pytest.importorskip("monai")
+        from monai.transforms import LoadImage
+
+        from medh5.collection import pack
+        from medh5.monai import MedH5Reader
+
+        a = _frameless(tmp_path / "a.medh5", seed=1)
+        b = _frameless(tmp_path / "b.medh5", seed=2)
+        shard = pack([a, b], tmp_path / "shard.medh5c")
+        reader = MedH5Reader("CT")
+        assert reader.verify_suffix(f"{shard}::b")
+        assert reader.verify_suffix(shard)
+        assert not reader.verify_suffix(tmp_path / "x.nii.gz")
+        member = LoadImage(reader=reader, image_only=True)(f"{shard}::b")
+        with medh5.open(b) as sample:
+            expected = sample.images["CT"].read(physical=True, dtype=np.float32)
+        assert np.array_equal(np.asarray(member), expected)
+        assert member.meta["medh5"]["sample_key"] == "b"
+        keyed = LoadImage(reader=MedH5Reader("CT", sample_key="a"), image_only=True)
+        assert keyed(shard).meta["medh5"]["sample_key"] == "a"
+        with pytest.raises(MEDH5ValidationError, match="is a collection"):
+            LoadImage(reader=reader, image_only=True)(shard)
+
+    def test_workers_reuse_handles(self, tmp_path):
+        """Each worker opens a file once, however many items read it."""
+        pytest.importorskip("monai")
+        from monai.data import DataLoader, Dataset
+        from monai.transforms import Compose, LoadImaged
+
+        from medh5.monai import MedH5Reader
+        from medh5.torch import CACHE, worker_init_fn
+
+        CACHE.opens = 0  # what a forked worker starts counting from
+        paths = [_frameless(tmp_path / f"c{i}.medh5", seed=i) for i in range(2)]
+        data = [{"image": str(p)} for p in paths * 6]
+        transform = Compose([LoadImaged("image", reader=MedH5Reader("CT")), _opens])
+        loader = DataLoader(
+            Dataset(data, transform),
+            batch_size=2,
+            num_workers=2,
+            worker_init_fn=worker_init_fn,
+        )
+        opens: dict[int, int] = {}
+        for batch in loader:
+            for pid, n in zip(batch["pid"], batch["opens"], strict=True):
+                opens[int(pid)] = max(opens.get(int(pid), 0), int(n))
+        assert opens and all(n <= len(paths) for n in opens.values()), opens
+
+
+class TestMonaiLoadMedH5d:
+    """`LoadMedH5d`: `to_dict` as a dictionary transform."""
+
+    def test_one_lease_per_item(self, tmp_path, monkeypatch):
+        pytest.importorskip("monai")
+        from medh5.monai import LoadMedH5d, to_dict
+        from medh5.torch.handles import HandleCache
+
+        path = _frameless(tmp_path / "f.medh5")
+        leases: list[tuple] = []
+        lease = HandleCache.lease
+
+        def counted(self, *args, **kwargs):
+            leases.append(args)
+            return lease(self, *args, **kwargs)
+
+        monkeypatch.setattr(HandleCache, "lease", counted)
+        item = LoadMedH5d(images=["CT"], annotations=["organs"])({"path": str(path)})
+        assert len(leases) == 1
+        assert set(item) == {"path", "CT", "organs"}
+        with medh5.open(path) as sample:
+            expected = to_dict(sample, ["CT"], ["organs"])
+        assert np.array_equal(
+            np.asarray(item["organs"]), np.asarray(expected["organs"])
+        )
+        with pytest.raises(MEDH5ValidationError, match="one key"):
+            LoadMedH5d(["a", "b"])
+
+    def test_spacingd_and_orientationd_accept_the_output(self, tmp_path):
+        pytest.importorskip("monai")
+        from monai.transforms import (
+            Compose,
+            EnsureChannelFirstd,
+            Orientationd,
+            Spacingd,
+        )
+
+        from medh5.monai import LoadMedH5d
+
+        path = _frameless(tmp_path / "f.medh5")
+        keys = ["CT", "organs"]
+        item = Compose(
+            [
+                LoadMedH5d(images=["CT"], annotations=["organs"]),
+                EnsureChannelFirstd(keys),
+                Orientationd(keys, axcodes="RAS"),
+                Spacingd(keys, pixdim=(2.0, 2.0, 2.0), mode=("bilinear", "nearest")),
+            ]
+        )({"path": str(path)})
+        assert item["CT"].shape[1:] == item["organs"].shape[1:]
+        assert np.allclose(
+            np.abs(np.diag(np.asarray(item["CT"].affine))[:3]), [2.0, 2.0, 2.0]
+        )

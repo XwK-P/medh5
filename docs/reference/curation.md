@@ -236,6 +236,8 @@ replaced at the path given only, and its other names keep the old version. A
 link in a directory anyone can write to, such as `/tmp`, that neither you nor
 the directory's owner owns is not followed: the amend is refused
 (`MEDH5FileError`), as the system would refuse to open the file through it.
+A file that changed after the amendment read it is not replaced either: the
+commit is refused (`MEDH5FileError`), and the other writer's version is kept.
 
 ## Collections and integrity
 

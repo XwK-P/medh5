@@ -224,19 +224,168 @@ fn may_follow(_link: &Path, _meta: &fs::Metadata) -> bool {
     true
 }
 
-/// A sibling name no other writer in any process is using.
-fn temporary_name(target: &Path) -> PathBuf {
+/// A random part for a temporary name: a name taken is passed over, so it
+/// need only make a collision unlikely.
+fn unique() -> u32 {
+    #[cfg(test)]
+    if let Some(next) = NEXT_UNIQUE.with(|queue| queue.borrow_mut().pop()) {
+        return next;
+    }
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = RandomState::new().build_hasher();
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    h.finish() as u32
+}
+
+/// How a temporary beside its target is named.
+#[derive(Debug, Clone, Copy)]
+enum Naming {
+    /// `.{name}.tmp-{pid}-{hex}`: an HDF5 file or a document.  A cohort walk
+    /// skips only `._*`, and would scan a temporary ending in `.medh5` as a
+    /// sample.
+    Hidden,
+    /// `.{pid}-{hex}-{name}`: the target's suffix kept, for a foreign writer
+    /// that picks a format by it (nibabel).
+    Suffixed,
+}
+
+/// A sibling name for `target`'s temporary, under `naming`.
+fn temporary_name_as(target: &Path, naming: Naming) -> PathBuf {
     let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let unique: u32 = {
-        use std::collections::hash_map::RandomState;
-        use std::hash::{BuildHasher, Hasher};
-        let mut h = RandomState::new().build_hasher();
-        h.write_u128(
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0),
-        );
-        h.finish() as u32
-    };
-    target.with_file_name(format!(".{name}.tmp-{}-{unique:08x}", std::process::id()))
+    let (pid, unique) = (std::process::id(), unique());
+    target.with_file_name(match naming {
+        Naming::Hidden => format!(".{name}.tmp-{pid}-{unique:08x}"),
+        Naming::Suffixed => format!(".{pid}-{unique:08x}-{name}"),
+    })
+}
+
+/// The most names a staged file tries before it gives up: each one taken is
+/// another writer's temporary, or something planted where one would go.
+const NAME_TRIES: usize = 64;
+
+/// The one way the engine replaces a file (§14.4): a temporary created
+/// exclusively beside the file a path names --- its symbolic links followed,
+/// so a link is kept and the file it names rewritten --- flushed, given that
+/// file's mode, renamed over it, and the directory flushed.  A link or a file
+/// already at a temporary's name is passed over for another name, never
+/// written through.  Dropped without a commit, the temporary goes and the
+/// target is untouched.
+#[derive(Debug)]
+struct Staged {
+    /// The path asked for, which an error names.
+    given: PathBuf,
+    /// The file the commit replaces: `given`, its links followed.
+    target: PathBuf,
+    /// The temporary; empty once committed or discarded.
+    tmp: PathBuf,
+    /// The target's mode, carried onto the replacement; `None` for a new file.
+    mode: Option<u32>,
+}
+
+impl Staged {
+    fn create(given: &Path, naming: Naming) -> Result<Staged> {
+        let target = resolve_links(given)?;
+        let mode = existing_mode(&target);
+        let named = |e: std::io::Error| crate::error::os_error(&e, given);
+        for _ in 0..NAME_TRIES {
+            let tmp = temporary_name_as(&target, naming);
+            match precreate(&tmp, mode) {
+                Ok(()) => return Ok(Staged { given: given.to_path_buf(), target, tmp, mode }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(named(e)),
+            }
+        }
+        Err(Error::File(format!(
+            "could not create a temporary file beside {}: {NAME_TRIES} names were taken",
+            repr_str(&given.to_string_lossy())
+        )))
+    }
+
+    /// Flush the closed temporary, give it the target's mode and rename it
+    /// over the target.  `before_replace` runs last, and its refusal leaves
+    /// the target as it was.  Whatever happens, the temporary is gone after.
+    fn commit(&mut self, before_replace: impl FnOnce() -> Result<()>) -> Result<()> {
+        let named = |e: std::io::Error| crate::error::os_error(&e, &self.given);
+        let result = (|| -> Result<()> {
+            // Flushed before the mode is set: a read-only file refuses the
+            // writable handle Windows flushes through.
+            fsync_path(&self.tmp).map_err(named)?;
+            if let Some(mode) = self.mode {
+                set_mode(&self.tmp, mode);
+            }
+            #[cfg(test)]
+            BEFORE_RENAME.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().as_mut() {
+                    hook(&self.target)
+                }
+            });
+            before_replace()?;
+            replace(&self.tmp, &self.target).map_err(named)?;
+            if let Some(parent) = self.target.parent() {
+                fsync_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent });
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            remove_temporary(&self.tmp);
+        }
+        // Nothing is left for a drop to clean up.
+        self.tmp = PathBuf::new();
+        result
+    }
+
+    fn discard(&mut self) {
+        if !self.tmp.as_os_str().is_empty() {
+            remove_temporary(&self.tmp);
+        }
+        self.tmp = PathBuf::new();
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        self.discard();
+    }
+}
+
+/// A file a foreign writer writes whole, then renamed over its target as the
+/// engine renames its own (§14.4): a symbolic link at the target is kept and
+/// the file it names replaced, that file's mode kept, and the data flushed.
+/// The temporary keeps the target's suffix, for a writer that picks a format
+/// by it.  Dropped without a commit, it is aborted.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct StagedFile {
+    staged: Staged,
+}
+
+impl StagedFile {
+    /// Stage a replacement of `target`: a new, empty temporary beside the
+    /// file it names, created exclusively.
+    pub fn create(target: &Path) -> Result<StagedFile> {
+        Ok(StagedFile { staged: Staged::create(target, Naming::Suffixed)? })
+    }
+
+    /// The temporary, which the foreign writer writes and closes.
+    pub fn path(&self) -> &Path {
+        &self.staged.tmp
+    }
+
+    /// The file the commit replaces: the target, its links followed.
+    pub fn target(&self) -> &Path {
+        &self.staged.target
+    }
+
+    /// Rename the written temporary over the target.
+    pub fn commit(mut self) -> Result<()> {
+        self.staged.commit(|| Ok(()))
+    }
+
+    /// Remove the temporary, leaving the target as it was.
+    pub fn abort(mut self) {
+        self.staged.discard();
+    }
 }
 
 /// The permission bits of `target`, or `None` when it does not exist.
@@ -480,14 +629,117 @@ unsafe fn release_all(fid: crate::h5sys::h5i::hid_t) -> Option<String> {
 
 /// What a test runs on the target just before a commit's rename.
 #[cfg(test)]
-type RenameHook = Box<dyn FnMut(&Path)>;
+pub(crate) type RenameHook = Box<dyn FnMut(&Path)>;
+
+/// Run `hook` on the target just before every commit's rename on this
+/// thread, or no longer with `None`.
+#[cfg(test)]
+pub(crate) fn before_rename(hook: Option<RenameHook>) {
+    BEFORE_RENAME.with(|slot| *slot.borrow_mut() = hook);
+}
 
 #[cfg(test)]
 thread_local! {
     static BEFORE_RENAME: std::cell::RefCell<Option<RenameHook>> = const { std::cell::RefCell::new(None) };
+    /// The random parts the next temporary names take, last first: what a
+    /// test plants something at.
+    static NEXT_UNIQUE: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Set by a test to have the next close report the failure HDF5 reports
     /// of a close it could not finish.
     static CLOSE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// What a writer saw of the file it read: its identity and the
+/// `content_id` it declared.  A commit that would replace the file, or that
+/// reads it again, refuses one that changed since (§14.4): two amendments,
+/// or an amendment and a `repack`, both renamed over the file, and the first
+/// one's work was lost without an error.
+///
+/// This detects a lost update; it does not exclude one.  The last check and
+/// the rename are two calls, and no portable rename compares before it
+/// replaces, so two commits that both pass the last check can still both
+/// rename.  Closing that window needs the exclusive access §14.4 asks of
+/// writers.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Snapshot {
+    /// On POSIX the identity of the file HDF5 read through (device, inode,
+    /// size, modification and change times); on Windows its size and
+    /// last-write time --- not its creation time, which Windows carries over
+    /// when a file is replaced by a rename.
+    identity: Option<Identity>,
+    content_id: Option<String>,
+    /// What read it, as the refusal names it: "amendment", "rewrite".
+    reader: &'static str,
+}
+
+/// A file's identity, as [`Snapshot`] compares it.
+#[cfg(unix)]
+type Identity = super::ops::FileIdentity;
+#[cfg(not(unix))]
+type Identity = (u64, u64);
+
+#[cfg(unix)]
+fn identity_of(meta: &fs::Metadata) -> Option<Identity> {
+    super::ops::identity(meta)
+}
+
+#[cfg(windows)]
+fn identity_of(meta: &fs::Metadata) -> Option<Identity> {
+    use std::os::windows::fs::MetadataExt;
+    Some((meta.file_size(), meta.last_write_time()))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity_of(meta: &fs::Metadata) -> Option<Identity> {
+    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some((meta.len(), modified.as_nanos() as u64))
+}
+
+/// The `content_id` the root of `file` declares, as text.
+fn declared_content_id(file: &hdf5::File) -> Result<Option<String>> {
+    Ok(match super::attrs::read(file, "content_id")? {
+        None => None,
+        Some(super::attrs::AttrValue::Str(s)) => Some(s),
+        Some(other) => Some(super::attrs::stringify_value(&other)),
+    })
+}
+
+impl Snapshot {
+    /// What `reader` sees of `file`, open read-only from `path`.
+    pub(crate) fn of(file: &hdf5::File, path: &Path, reader: &'static str) -> Result<Snapshot> {
+        #[cfg(unix)]
+        let identity = super::ops::opened_identity(file, Some(path)).or_else(|| identity_of(&fs::metadata(path).ok()?));
+        #[cfg(not(unix))]
+        let identity = fs::metadata(path).ok().and_then(|meta| identity_of(&meta));
+        Ok(Snapshot { identity, content_id: declared_content_id(file)?, reader })
+    }
+
+    /// Refuse `path` if it is no longer the file this snapshot saw (§14.4).
+    /// The file is opened, to read its `content_id`, and closed again before
+    /// this returns: Windows cannot replace a file that is open.
+    pub(crate) fn check(&self, path: &Path) -> Result<()> {
+        let changed = || {
+            Error::File(format!(
+                "{} changed after this {} read it; nothing was written: {} it again",
+                repr_str(&path.to_string_lossy()),
+                self.reader,
+                if self.reader == "amendment" { "amend" } else { "run" },
+            ))
+        };
+        let Some(identity) = fs::metadata(path).ok().and_then(|meta| identity_of(&meta)) else {
+            return Err(changed());
+        };
+        if self.identity.is_some_and(|seen| seen != identity) {
+            return Err(changed());
+        }
+        let file = open_read(path).map_err(|_| changed())?;
+        let declared = declared_content_id(&file);
+        close_everything(file, false)?;
+        if declared? != self.content_id {
+            return Err(changed());
+        }
+        Ok(())
+    }
 }
 
 /// An HDF5 file being written to a temporary sibling of its target.
@@ -496,10 +748,11 @@ thread_local! {
 /// target; dropping it without committing removes the temporary file and leaves
 /// the target untouched.
 pub struct AtomicFile {
-    target: PathBuf,
-    tmp: PathBuf,
-    mode: Option<u32>,
+    staged: Staged,
     handle: Option<hdf5::File>,
+    /// A file the commit refuses to replace the target over if it changed
+    /// since it was read: the source of an amendment or a rewrite.
+    unchanged: Option<(PathBuf, Snapshot)>,
 }
 
 impl AtomicFile {
@@ -511,17 +764,10 @@ impl AtomicFile {
                 fs::create_dir_all(parent)?;
             }
         }
-        let target = resolve_links(target)?;
-        let tmp = temporary_name(&target);
-        let mode = existing_mode(&target);
-        precreate(&tmp, mode)?;
-        match create_truncate(&tmp) {
-            Ok(handle) => Ok(AtomicFile { target, tmp, mode, handle: Some(handle) }),
-            Err(err) => {
-                let _ = fs::remove_file(&tmp);
-                Err(err)
-            }
-        }
+        let staged = Staged::create(target, Naming::Hidden)?;
+        // A failed create drops `staged`, and the temporary with it.
+        let handle = create_truncate(&staged.tmp)?;
+        Ok(AtomicFile { staged, handle: Some(handle), unchanged: None })
     }
 
     /// The file being written.
@@ -532,47 +778,36 @@ impl AtomicFile {
     /// The path that will be replaced: the file the target given named,
     /// its symbolic links followed.
     pub fn target(&self) -> &Path {
-        &self.target
+        &self.staged.target
     }
 
     /// The temporary path being written.
     pub fn temporary(&self) -> &Path {
-        &self.tmp
+        &self.staged.tmp
+    }
+
+    /// Have [`commit`](AtomicFile::commit) refuse, just before it replaces
+    /// the target, if `source` is no longer the file `seen` saw (§14.4).
+    pub(crate) fn expect_unchanged(&mut self, source: PathBuf, seen: Snapshot) {
+        self.unchanged = Some((source, seen));
     }
 
     /// Close and atomically move the file into place.
     ///
     /// Everything opened through the file is closed with it, so nothing a
-    /// caller kept can hold the written file open across the rename.
+    /// caller kept can hold the written file open across the rename.  A
+    /// source named by [`expect_unchanged`](AtomicFile::expect_unchanged)
+    /// that changed is refused as the last thing before the rename, and the
+    /// target is left as it was.
     pub fn commit(mut self) -> Result<()> {
         if let Some(handle) = self.handle.take() {
             close_everything(handle, true)?;
         }
-        let result = (|| -> Result<()> {
-            // Flushed before the mode is set: a read-only file refuses the
-            // writable handle Windows flushes through.
-            fsync_path(&self.tmp)?;
-            if let Some(mode) = self.mode {
-                set_mode(&self.tmp, mode);
-            }
-            #[cfg(test)]
-            BEFORE_RENAME.with(|hook| {
-                if let Some(hook) = hook.borrow_mut().as_mut() {
-                    hook(&self.target)
-                }
-            });
-            replace(&self.tmp, &self.target)?;
-            if let Some(parent) = self.target.parent() {
-                fsync_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent });
-            }
-            Ok(())
-        })();
-        if result.is_err() {
-            remove_temporary(&self.tmp);
-        }
-        // Nothing is left for Drop to clean up.
-        self.tmp = PathBuf::new();
-        result
+        let unchanged = self.unchanged.take();
+        self.staged.commit(|| match &unchanged {
+            Some((source, seen)) => seen.check(source),
+            None => Ok(()),
+        })
     }
 
     /// Rewrite the file being built into a fresh temporary file, `copy`
@@ -584,27 +819,24 @@ impl AtomicFile {
         if let Some(handle) = self.handle.take() {
             close_everything(handle, true)?;
         }
-        let fresh = temporary_name(&self.target);
-        precreate(&fresh, self.mode)?;
+        let mut fresh = Staged::create(&self.staged.given, Naming::Hidden)?;
+        // The target the first temporary was staged for, whatever its links
+        // lead to now.
+        fresh.target = self.staged.target.clone();
+        fresh.mode = self.staged.mode;
         let built = (|| -> Result<hdf5::File> {
-            let src = open_read(&self.tmp)?;
-            let dst = create_truncate(&fresh)?;
+            let src = open_read(&self.staged.tmp)?;
+            let dst = create_truncate(&fresh.tmp)?;
             copy(&src.as_group()?, &dst.as_group()?)?;
             close_everything(src, false)?;
             Ok(dst)
         })();
-        match built {
-            Ok(handle) => {
-                let _ = fs::remove_file(&self.tmp);
-                self.tmp = fresh;
-                self.handle = Some(handle);
-                Ok(self)
-            }
-            Err(err) => {
-                let _ = fs::remove_file(&fresh);
-                Err(err)
-            }
-        }
+        // On failure `fresh` drops, and its temporary with it.
+        let handle = built?;
+        self.staged.discard();
+        self.staged = fresh;
+        self.handle = Some(handle);
+        Ok(self)
     }
 
     /// Discard the in-progress file, leaving any existing one untouched.
@@ -616,10 +848,7 @@ impl AtomicFile {
         if let Some(handle) = self.handle.take() {
             let _ = close_everything(handle, false);
         }
-        if !self.tmp.as_os_str().is_empty() && self.tmp.exists() {
-            let _ = fs::remove_file(&self.tmp);
-        }
-        self.tmp = PathBuf::new();
+        self.staged.discard();
     }
 }
 
@@ -642,7 +871,9 @@ pub fn atomic_rewrite<T>(
 ) -> Result<T> {
     let dst_path = target.unwrap_or(source);
     let src = open_read(source)?;
-    let out = AtomicFile::create(dst_path)?;
+    let seen = Snapshot::of(&src, source, "rewrite")?;
+    let mut out = AtomicFile::create(dst_path)?;
+    out.expect_unchanged(source.to_path_buf(), seen);
     let value = build(&src, out.handle())?;
     // Everything the build opened in the source, closed with it: a source
     // still open cannot be replaced on Windows.
@@ -655,31 +886,15 @@ pub fn atomic_rewrite<T>(
 /// temporary sibling, flushed, its mode the target's, renamed into place
 /// through the target's symbolic links.  A write cut short leaves the
 /// previous file whole --- what a text file written over its input needs.
-pub(crate) fn write_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
-    let given = target;
-    let target = resolve_links(target)?;
-    let tmp = temporary_name(&target);
-    let mode = existing_mode(&target);
+/// The bytes are written as given: a text's `\n` stays `\n` on every
+/// platform.
+#[doc(hidden)]
+pub fn write_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
+    let mut staged = Staged::create(target, Naming::Hidden)?;
     // An I/O error names the file asked for, as the engine words one; the
     // temporary's name would tell the caller nothing.
-    let named = |e: std::io::Error| crate::error::os_error(&e, given);
-    precreate(&tmp, mode).map_err(named)?;
-    let result = (|| -> std::io::Result<()> {
-        fs::write(&tmp, bytes)?;
-        fsync_path(&tmp)?;
-        if let Some(mode) = mode {
-            set_mode(&tmp, mode);
-        }
-        replace(&tmp, &target)?;
-        if let Some(parent) = target.parent() {
-            fsync_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent });
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        remove_temporary(&tmp);
-    }
-    result.map_err(named)
+    fs::write(&staged.tmp, bytes).map_err(|e| crate::error::os_error(&e, target))?;
+    staged.commit(|| Ok(()))
 }
 
 #[cfg(test)]
@@ -888,7 +1103,8 @@ mod tests {
 
     #[test]
     fn s14_4_temporary_names_are_unique_within_a_process() {
-        let names: std::collections::HashSet<PathBuf> = (0..50).map(|_| temporary_name(Path::new("x.medh5"))).collect();
+        let names: std::collections::HashSet<PathBuf> =
+            (0..50).map(|_| temporary_name_as(Path::new("x.medh5"), Naming::Hidden)).collect();
         assert_eq!(names.len(), 50);
         assert!(names.iter().all(|n| n.to_string_lossy().starts_with(".x.medh5.tmp-")));
     }
@@ -1101,5 +1317,143 @@ mod tests {
         assert!(!kept.into_inner().unwrap().is_valid());
         let again = open_read(&path).unwrap();
         assert_eq!(again.dataset("d").unwrap().read_raw::<i32>().unwrap(), vec![1, 2, 3]);
+    }
+
+    /// A copy of `path` holding `value`, renamed over it: what another
+    /// writer's commit does.
+    fn replaced_by_another(path: &Path, value: i32) {
+        let other = path.with_extension("other");
+        fs::copy(path, &other).unwrap();
+        open_rw(&other).unwrap().dataset("v").unwrap().write(&[value]).unwrap();
+        fs::rename(&other, path).unwrap();
+    }
+
+    /// A rewrite in place refuses a source that another writer replaced, or
+    /// changed in place, after it was read: renamed over it, the other
+    /// writer's work was lost without an error.  The check is the last thing
+    /// before the rename, and leaves no temporary file behind.
+    #[test]
+    fn s14_4_a_repack_refuses_a_source_that_changed() {
+        for in_place in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("rw.h5");
+            write_value(&path, 1).unwrap();
+            before_rename(Some(Box::new(move |target: &Path| {
+                if in_place {
+                    open_rw(target).unwrap().dataset("v").unwrap().write(&[2]).unwrap();
+                } else {
+                    replaced_by_another(target, 2);
+                }
+            })));
+            let rewritten = atomic_rewrite(&path, None, |src, dst| {
+                let value = src.dataset("v")?.read_raw::<i32>()?;
+                dst.new_dataset::<i32>().shape([1]).create("v")?.write(&value)?;
+                Ok(())
+            });
+            before_rename(None);
+            let err = rewritten.unwrap_err();
+            assert!(matches!(err, Error::File(_)), "{err:?}");
+            let shown = repr_str(&path.to_string_lossy());
+            assert_eq!(
+                err.to_string(),
+                format!("{shown} changed after this rewrite read it; nothing was written: run it again")
+            );
+            assert_eq!(read_value(&path), 2, "in place: {in_place}");
+            assert!(no_temporaries(dir.path()));
+        }
+    }
+
+    /// An unchanged source is replaced as before.
+    #[test]
+    fn s14_4_a_rewrite_of_an_unchanged_source_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rw.h5");
+        write_value(&path, 1).unwrap();
+        atomic_rewrite(&path, None, |src, dst| {
+            let value = src.dataset("v")?.read_raw::<i32>()?;
+            dst.new_dataset::<i32>().shape([1]).create("v")?.write(&[value[0] + 1])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(read_value(&path), 2);
+    }
+
+    /// A link, or a file, already at a temporary's name is passed over for
+    /// another name, never written through; and a staged file keeps its
+    /// target's suffix, for a writer that picks a format by it.
+    #[cfg(unix)]
+    #[test]
+    fn s14_4_a_link_at_the_next_temporary_name_is_passed_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = dir.path().join("other.txt");
+        fs::write(&other, b"someone else's").unwrap();
+        let target = dir.path().join("image.nii.gz");
+        let planted = dir.path().join(format!(".{}-00000000-image.nii.gz", std::process::id()));
+        std::os::unix::fs::symlink(&other, &planted).unwrap();
+        NEXT_UNIQUE.with(|queue| *queue.borrow_mut() = vec![1, 0]);
+        let staged = StagedFile::create(&target).unwrap();
+        NEXT_UNIQUE.with(|queue| queue.borrow_mut().clear());
+        assert_eq!(staged.path(), dir.path().join(format!(".{}-00000001-image.nii.gz", std::process::id())));
+        assert!(staged.path().to_string_lossy().ends_with(".nii.gz"));
+        fs::write(staged.path(), b"the image").unwrap();
+        staged.commit().unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"the image");
+        assert_eq!(fs::read(&other).unwrap(), b"someone else's");
+    }
+
+    /// Every way the engine writes a file keeps a link at the target, and
+    /// replaces the file it names, with that file's mode; a document's bytes
+    /// are written as given.
+    #[cfg(unix)]
+    #[test]
+    fn s14_4_every_replace_keeps_the_link_and_the_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        type Write = fn(&Path) -> Result<()>;
+        let writes: [(&str, Write); 3] = [
+            ("write_atomic", |t| write_atomic(t, b"one\ntwo\n")),
+            ("staged", |t| {
+                let staged = StagedFile::create(t)?;
+                fs::write(staged.path(), b"one\ntwo\n")?;
+                staged.commit()
+            }),
+            ("hdf5", |t| write_value(t, 7)),
+        ];
+        for (name, write) in writes {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("file");
+            fs::write(&file, b"old").unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink("file", &link).unwrap();
+            write(&link).unwrap();
+            assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "{name}");
+            assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "{name}");
+            if name != "hdf5" {
+                assert_eq!(fs::read(&file).unwrap(), b"one\ntwo\n", "{name}");
+            } else {
+                assert_eq!(read_value(&file), 7);
+            }
+            let mut left: Vec<String> = fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            left.sort();
+            assert_eq!(left, ["file", "link"], "{name}");
+        }
+    }
+
+    /// A staged file dropped or aborted leaves its target as it was, and no
+    /// temporary behind.
+    #[test]
+    fn s14_4_an_aborted_staged_file_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("r.json");
+        fs::write(&target, b"before").unwrap();
+        let staged = StagedFile::create(&target).unwrap();
+        fs::write(staged.path(), b"after").unwrap();
+        staged.abort();
+        drop(StagedFile::create(&target).unwrap());
+        assert_eq!(fs::read(&target).unwrap(), b"before");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }

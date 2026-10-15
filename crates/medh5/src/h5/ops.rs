@@ -674,7 +674,7 @@ pub fn outside_references(handle: &hdf5::File) -> Result<Vec<(String, String)>> 
 
 /// The identity of a file a handle had open:
 /// `(st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns)`.
-type FileIdentity = (u64, u64, u64, i128, i128);
+pub(crate) type FileIdentity = (u64, u64, u64, i128, i128);
 
 fn checked_files() -> &'static Mutex<HashMap<FileIdentity, ()>> {
     static CHECKED: std::sync::OnceLock<Mutex<HashMap<FileIdentity, ()>>> = std::sync::OnceLock::new();
@@ -684,7 +684,7 @@ fn checked_files() -> &'static Mutex<HashMap<FileIdentity, ()>> {
 const CHECKED_LIMIT: usize = 65_536;
 
 #[cfg(unix)]
-fn identity(meta: &std::fs::Metadata) -> Option<FileIdentity> {
+pub(crate) fn identity(meta: &std::fs::Metadata) -> Option<FileIdentity> {
     use std::os::unix::fs::MetadataExt;
     Some((
         meta.dev(),
@@ -728,7 +728,7 @@ fn descriptor(handle: &hdf5::File) -> Option<std::os::raw::c_int> {
 /// serial and file index, which `std` cannot read).  No
 /// identity means no memo: the file is checked on every open rather than
 /// trusted on a guess.
-fn opened_identity(handle: &hdf5::File, path: Option<&Path>) -> Option<FileIdentity> {
+pub(crate) fn opened_identity(handle: &hdf5::File, path: Option<&Path>) -> Option<FileIdentity> {
     #[cfg(unix)]
     {
         use std::os::unix::io::FromRawFd;

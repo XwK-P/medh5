@@ -361,7 +361,7 @@ writer amending a sample **MUST** refuse — **E809**, as for a repeated event i
 version already written — a structural link from such a version, a link whose
 `asserted_by_event_id` names one, and any change to a payload one attests: an image, document,
 annotation, transform or grid its links admit with it (§9.1 step 5), compared by its datasets'
-digests, and for an instance the annotations carrying it. Attached or replaced later, the payload or
+digests and the attribute lines 1.0 §13.2 gives it, and for an instance the annotations carrying it. Attached or replaced later, the payload or
 relationship would be an input at every cutoff after the old version's availability, before it
 existed. Removing the profile (§10) removes its versions; one added again in the same amendment is
 held to what it was, on the clock it was written on (**E802** otherwise). A new version that
@@ -522,8 +522,8 @@ item in a higher minor is W913 (§2.2).
 
 ### 11.2 Diagnostic codes
 
-1.1 adds these codes to the 1.0 §15.2 table, which they extend without redefining any code. The
-complete table, generated from the engine's registry, is
+1.1 adds these codes to the 1.0 §15.2 table, which they extend without redefining any code. They
+belong to revision 1 of the table (1.0 §15.2). The complete table, generated from the engine's registry, is
 [Diagnostic codes](../reference/diagnostic-codes.md).
 
 | Range | Domain | Codes |
@@ -572,6 +572,7 @@ or reviewing that implementation before its release, showed it was needed.
 | §7.2 | Merging chains (two predecessors) and a record whose versions the links do not order into one chain are E816, beside branches, cycles and contradicted availability. | The draft required "an acyclic, unambiguous `supersedes` chain"; a record with two unrelated versions is ambiguous in exactly the way selection cannot resolve. |
 | §7.3 | A writer amending a sample refuses a structural link from an event version the sample already held (E809). | Found by the fourth audit of 2.0: "adding or replacing an owned payload needs a new event version" had no point of enforcement, and one file cannot show when a link was written. Text attached in an amendment to an inherited text-less document event was owned by a version available a day before the text existed, and selection admitted it at that cutoff. |
 | §7.3 | An amendment also refuses a link asserted by an event version the sample held, and any change to a payload such a version attests; a held version dropped with the profile and added again in the same amendment is held to what it was. | Found by the review of 2.0 before its release: refusing only the structural link left three ways to attach later information to an earlier version — a grounding asserted by the original report, a lesion mask replaced under the id a procedure attests, and the refused link added once the profile was dropped and its records added again — and selection admitted each at the old version's availability. |
+| §7.3 | An attested payload is compared by its datasets' digests and the attribute lines 1.0 §13.2 gives it. It binds writers only, and changes nothing a reader does. | Found in the development of 2.1: compared by its datasets' digests alone, an edit to an attested image's `rescale_slope`, which rescales every voxel read, passed an amendment silently, as an edit to its pixels did not. |
 | §7.3, §9.1 | An asserting version need only be *eligible* at the cutoff — known available and the current version of its record (§9.1 steps 1–2); the kinds, plan, unknown-time, window and limit filters choose inputs and do not withdraw its attestation. The link's event and document endpoints must still be admitted. | Found by the audit of 2.0.1: §7.3 said *eligible*, §9.1 step 5 *a selected event*, and the reference engine required the asserter to be admitted as an input, so a filter choosing what a row reads also withdrew evidence known at the cutoff — under the default ordering a segmentation of unknown time never attested its mask, and no crop centred on it. |
 | §7.3, §9.1 | An event endpoint that is the link's own asserting version need only be eligible; the link's other event endpoints and its document endpoints must still be admitted. | Found after 2.0.2 made an asserter need only be eligible: a version asserting a link from itself, the worked example's `seg0 describes lesions_tp0`, still had to be admitted for its assertion to count, so under `order_by = effective` a procedure of unknown time never attested its masks. |
 | §8 | A collection's outer version must be at least each member's (E011); the packer declares the newest member's, and refuses a higher-minor member. | The draft required `1.1` outside a 1.1 member but gave no code, and said nothing of a member newer than the packer. |

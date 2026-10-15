@@ -2463,9 +2463,11 @@ medh5.dataset.Assignment.partition	field
 medh5.dataset.Assignment.stratum	field
 medh5.dataset.Assignment.to_json	method	()
 medh5.dataset.CHECK_CODES	constant	dict
+medh5.dataset.CHECK_CODE_SEVERITY	constant	dict
 medh5.dataset.ClassStats	class	(class_id, voxels=0, present_in=0, examined_in=0, key=None) bases=
 medh5.dataset.ClassStats.class_id	field
 medh5.dataset.ClassStats.examined_in	field
+medh5.dataset.ClassStats.examined_prevalence	property
 medh5.dataset.ClassStats.key	field
 medh5.dataset.ClassStats.present_in	field
 medh5.dataset.ClassStats.prevalence	property
@@ -2549,9 +2551,9 @@ medh5.dataset.Manifest.format	field
 medh5.dataset.Manifest.from_json	classmethod	(doc)
 medh5.dataset.Manifest.generator	field
 medh5.dataset.Manifest.groups	method	(by='group_id')
-medh5.dataset.Manifest.load	classmethod	(path)
+medh5.dataset.Manifest.load	classmethod	(path, *, base=None)
 medh5.dataset.Manifest.root	field
-medh5.dataset.Manifest.save	method	(path)
+medh5.dataset.Manifest.save	method	(path, *, paths='keep')
 medh5.dataset.Manifest.sha256	method	()
 medh5.dataset.Manifest.stale	method	()
 medh5.dataset.Manifest.subjects	property
@@ -2568,7 +2570,8 @@ medh5.dataset.Moments.nonfinite	field
 medh5.dataset.Moments.std	property
 medh5.dataset.Moments.to_json	method	()
 medh5.dataset.Moments.update	method	(values)
-medh5.dataset.Split	class	(set_id, manifest_sha256, assignments=<factory>, group_by='group_id', stratify_by=None, seed=0, k_folds=None, ratios=<factory>) bases=
+medh5.dataset.Split	class	(set_id, manifest_sha256, assignments=<factory>, group_by='group_id', stratify_by=None, seed=0, k_folds=None, ratios=<factory>, algorithm='medh5.split/1', previous=None) bases=
+medh5.dataset.Split.algorithm	field
 medh5.dataset.Split.assignments	field
 medh5.dataset.Split.balance	method	()
 medh5.dataset.Split.counts	property
@@ -2579,8 +2582,10 @@ medh5.dataset.Split.group_by	field
 medh5.dataset.Split.k_folds	field
 medh5.dataset.Split.leaks	method	()
 medh5.dataset.Split.manifest_sha256	field
+medh5.dataset.Split.moved_from	method	(other)
 medh5.dataset.Split.partition_of	method	(entry)
 medh5.dataset.Split.paths	method	(partition)
+medh5.dataset.Split.previous	field
 medh5.dataset.Split.ratios	field
 medh5.dataset.Split.seed	field
 medh5.dataset.Split.set_id	field
@@ -2590,6 +2595,7 @@ medh5.dataset.Split.underfilled	property
 medh5.dataset.check	function	(manifest, *, set_id=None, deep=False)
 medh5.dataset.check	module
 medh5.dataset.check.CHECK_CODES	constant	dict
+medh5.dataset.check.CHECK_CODE_SEVERITY	constant	dict
 medh5.dataset.check.CohortReport	class	(manifest_sha256, samples, findings=<factory>, coverage=<factory>) bases=
 medh5.dataset.check.CohortReport.add	method	(code, severity, message, where=())
 medh5.dataset.check.CohortReport.coverage	field
@@ -2613,7 +2619,7 @@ medh5.dataset.check.check	function	(manifest, *, set_id=None, deep=False)
 medh5.dataset.compute_stats	function	(paths, *, images=None, annotations=None, workers=1, sample_stride=1, physical=True)
 medh5.dataset.entries_for	function	(path)
 medh5.dataset.find	function	(root, *, suffixes=('.medh5', '.medh5c'))
-medh5.dataset.make_splits	function	(manifest, *, set_id='default', group_by='group_id', stratify_by=None, ratios=None, k_folds=None, seed=0)
+medh5.dataset.make_splits	function	(manifest, *, set_id='default', group_by='group_id', stratify_by=None, ratios=None, k_folds=None, seed=0, algorithm=None, previous=None)
 medh5.dataset.manifest	module
 medh5.dataset.manifest.Entry	class	(path, sample_id, subject_id, group_id, content_id=None, profiles=(), sex=None, laterality=None, bodypart=None, dataset_id=None, site_id=None, scanner_id=None, acquisition_protocol=None, timepoints=(), days_from_baseline=(), images=(), modalities=(), annotations=<factory>, class_ids=(), annotated_class_ids=(), class_keys=<factory>, label_set_id=None, label_set_version=None, label_set_digest=None, quality=<factory>, splits=(), deidentified=False, key=None, size=0, mtime=0.0) bases=
 medh5.dataset.manifest.Entry.acquisition_protocol	field
@@ -2664,21 +2670,24 @@ medh5.dataset.manifest.Manifest.format	field
 medh5.dataset.manifest.Manifest.from_json	classmethod	(doc)
 medh5.dataset.manifest.Manifest.generator	field
 medh5.dataset.manifest.Manifest.groups	method	(by='group_id')
-medh5.dataset.manifest.Manifest.load	classmethod	(path)
+medh5.dataset.manifest.Manifest.load	classmethod	(path, *, base=None)
 medh5.dataset.manifest.Manifest.root	field
-medh5.dataset.manifest.Manifest.save	method	(path)
+medh5.dataset.manifest.Manifest.save	method	(path, *, paths='keep')
 medh5.dataset.manifest.Manifest.sha256	method	()
 medh5.dataset.manifest.Manifest.stale	method	()
 medh5.dataset.manifest.Manifest.subjects	property
 medh5.dataset.manifest.Manifest.to_json	method	()
+medh5.dataset.manifest.PathStyle	alias
+medh5.dataset.manifest.SCHEMA	constant	str
 medh5.dataset.manifest.SUFFIXES	constant	tuple
 medh5.dataset.manifest.counts	function	(entries, by)
 medh5.dataset.manifest.entries_for	function	(path)
 medh5.dataset.manifest.find	function	(root, *, suffixes=('.medh5', '.medh5c'))
-medh5.dataset.manifest.load	function	(path)
+medh5.dataset.manifest.load	function	(path, *, base=None)
 medh5.dataset.manifest.scan	function	(root, *, suffixes=('.medh5', '.medh5c'), on_error='warn')
 medh5.dataset.scan	function	(root, *, suffixes=('.medh5', '.medh5c'), on_error='warn')
 medh5.dataset.split	module
+medh5.dataset.split.Algorithm	alias
 medh5.dataset.split.Assignment	class	(group, partition, fold=None, stratum=None, entries=()) bases=
 medh5.dataset.split.Assignment.entries	field
 medh5.dataset.split.Assignment.fold	field
@@ -2687,7 +2696,8 @@ medh5.dataset.split.Assignment.partition	field
 medh5.dataset.split.Assignment.stratum	field
 medh5.dataset.split.Assignment.to_json	method	()
 medh5.dataset.split.DEFAULT_RATIOS	constant	dict
-medh5.dataset.split.Split	class	(set_id, manifest_sha256, assignments=<factory>, group_by='group_id', stratify_by=None, seed=0, k_folds=None, ratios=<factory>) bases=
+medh5.dataset.split.Split	class	(set_id, manifest_sha256, assignments=<factory>, group_by='group_id', stratify_by=None, seed=0, k_folds=None, ratios=<factory>, algorithm='medh5.split/1', previous=None) bases=
+medh5.dataset.split.Split.algorithm	field
 medh5.dataset.split.Split.assignments	field
 medh5.dataset.split.Split.balance	method	()
 medh5.dataset.split.Split.counts	property
@@ -2698,8 +2708,10 @@ medh5.dataset.split.Split.group_by	field
 medh5.dataset.split.Split.k_folds	field
 medh5.dataset.split.Split.leaks	method	()
 medh5.dataset.split.Split.manifest_sha256	field
+medh5.dataset.split.Split.moved_from	method	(other)
 medh5.dataset.split.Split.partition_of	method	(entry)
 medh5.dataset.split.Split.paths	method	(partition)
+medh5.dataset.split.Split.previous	field
 medh5.dataset.split.Split.ratios	field
 medh5.dataset.split.Split.seed	field
 medh5.dataset.split.Split.set_id	field
@@ -2707,12 +2719,13 @@ medh5.dataset.split.Split.stratify_by	field
 medh5.dataset.split.Split.to_json	method	()
 medh5.dataset.split.Split.underfilled	property
 medh5.dataset.split.load	function	(path)
-medh5.dataset.split.make_splits	function	(manifest, *, set_id='default', group_by='group_id', stratify_by=None, ratios=None, k_folds=None, seed=0)
+medh5.dataset.split.make_splits	function	(manifest, *, set_id='default', group_by='group_id', stratify_by=None, ratios=None, k_folds=None, seed=0, algorithm=None, previous=None)
 medh5.dataset.split.write_claims	function	(split, manifest, *, assigned_by=None, fold=None)
 medh5.dataset.stats	module
 medh5.dataset.stats.ClassStats	class	(class_id, voxels=0, present_in=0, examined_in=0, key=None) bases=
 medh5.dataset.stats.ClassStats.class_id	field
 medh5.dataset.stats.ClassStats.examined_in	field
+medh5.dataset.stats.ClassStats.examined_prevalence	property
 medh5.dataset.stats.ClassStats.key	field
 medh5.dataset.stats.ClassStats.present_in	field
 medh5.dataset.stats.ClassStats.prevalence	property
@@ -2775,10 +2788,13 @@ medh5.document.schema_text	function	()
 medh5.document.validate_against_schema	function	(doc)
 medh5.errors	module
 medh5.errors.CODES	constant	dict
-medh5.errors.Code	class	(code, severity, domain, summary) bases=
+medh5.errors.CODES_REVISION	constant	int
+medh5.errors.Code	class	(code, severity, domain, summary, since='1.0', revision=1) bases=
 medh5.errors.Code.code	field
 medh5.errors.Code.domain	field
+medh5.errors.Code.revision	field
 medh5.errors.Code.severity	field
+medh5.errors.Code.since	field
 medh5.errors.Code.summary	field
 medh5.errors.Domain	alias
 medh5.errors.MEDH5Error	class	(?) bases=Exception
@@ -3224,6 +3240,7 @@ medh5.labels.Skeleton.keypoints	field
 medh5.labels.Skeleton.to_json	method	()
 medh5.labels.available	function	()
 medh5.labels.canonical_json	function	(doc)
+medh5.labels.check	function	(paths)
 medh5.labels.check_class_id	function	(class_id)
 medh5.labels.describe	function	()
 medh5.labels.from_keys	function	(keys, *, id, version='1.0.0', start=1)
@@ -3232,6 +3249,12 @@ medh5.labels.load_file	function	(path)
 medh5.labels.register	function	(name, label_set)
 medh5.labels.unregister	function	(name)
 medh5.monai	module
+medh5.monai.LoadMedH5d	class	(keys='path', *, images=None, annotations=(), space=None, physical=True, allow_missing_keys=False) bases=
+medh5.monai.LoadMedH5d.__call__	method	(data)
+medh5.monai.MedH5Reader	class	(image=None, *, annotation=None, sample_key=None, physical=True, space=None, level=0, dtype=<value>) bases=
+medh5.monai.MedH5Reader.get_data	method	(img)
+medh5.monai.MedH5Reader.read	method	(data, **kwargs)
+medh5.monai.MedH5Reader.verify_suffix	method	(filename)
 medh5.monai.SPACES	constant	tuple
 medh5.monai.affine_for	function	(sample, image_id, *, space=None, level=0)
 medh5.monai.available	function	()
@@ -3407,6 +3430,7 @@ medh5.sample.annotation_id	function	(reference)
 medh5.sample.create	function	(path, *, sample_id=None, subject_id=None, codec='balanced', profiles=None)
 medh5.sample.open_sample	function	(path, mode='r')
 medh5.sampling	module
+medh5.sampling.BLEND_MODES	constant	tuple
 medh5.sampling.PAIR_MODES	constant	tuple
 medh5.sampling.PairReport	class	(files=0, pairs=0, skipped=<factory>) bases=
 medh5.sampling.PairReport.add_skip	method	(path)
@@ -3427,6 +3451,17 @@ medh5.sampling.Patch.slices	field
 medh5.sampling.Patch.strategy	field
 medh5.sampling.Patch.to_json	method	()
 medh5.sampling.Patch.used_index	field
+medh5.sampling.PatchAggregator	class	(spatial_shape, *, channels=None, mode='gaussian', sigma_scale=0.125, dtype=<value>, grid_id=None) bases=
+medh5.sampling.PatchAggregator.add	method	(prediction, patch)
+medh5.sampling.PatchAggregator.channels	property
+medh5.sampling.PatchAggregator.count	property
+medh5.sampling.PatchAggregator.coverage	property
+medh5.sampling.PatchAggregator.dtype	property
+medh5.sampling.PatchAggregator.grid_id	property
+medh5.sampling.PatchAggregator.mode	property
+medh5.sampling.PatchAggregator.result	method	(*, uncovered=nan)
+medh5.sampling.PatchAggregator.sigma_scale	property
+medh5.sampling.PatchAggregator.spatial_shape	property
 medh5.sampling.PatchSampler	class	(patch_size, *, strategy='balanced', foreground_prob=0.5, foreground_classes=None, class_weights='uniform') bases=
 medh5.sampling.PatchSampler.class_weights	property
 medh5.sampling.PatchSampler.draw	method	(sample, annotation=None, rng=None, *, grid=None)
@@ -3446,6 +3481,7 @@ medh5.sampling.TimepointPairSampler	class	(mode='consecutive') bases=
 medh5.sampling.TimepointPairSampler.__call__	method	(sample)
 medh5.sampling.TimepointPairSampler.mode	property
 medh5.sampling.TimepointPairSampler.pairs	method	(sample)
+medh5.sampling.blend_weights	function	(patch_size, *, mode='gaussian', sigma_scale=0.125)
 medh5.sampling.coerce_patch_size	function	(patch_size, ndim)
 medh5.sampling.grid_patches	function	(shape, patch_size, *, overlap=0, grid_id=None)
 medh5.sampling.iter_patches	function	(sample, sampler, *, annotation=None, n=1, rng=None)
@@ -3730,9 +3766,10 @@ medh5.torch	module
 medh5.torch.ALIGNMENTS	constant	tuple
 medh5.torch.AVAILABLE	constant	bool
 medh5.torch.CACHE	constant	medh5.torch.handles.HandleCache
-medh5.torch.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None) bases=
+medh5.torch.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, class_ignore=False) bases=
 medh5.torch.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.ClinicalTaskDataset.__len__	method	()
+medh5.torch.ClinicalTaskDataset.file_groups	method	()
 medh5.torch.ConceptVocabulary	class	(concepts, stats=<factory>, fitted_on=None, units=<factory>, categories=<factory>) bases=
 medh5.torch.ConceptVocabulary.__len__	method	()
 medh5.torch.ConceptVocabulary.categories	field
@@ -3752,15 +3789,21 @@ medh5.torch.ConceptVocabulary.stats	field
 medh5.torch.ConceptVocabulary.to_json	method	()
 medh5.torch.ConceptVocabulary.units	field
 medh5.torch.ConceptVocabulary.value_index	method	(token, text)
-medh5.torch.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0) bases=
+medh5.torch.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0, num_replicas=None, rank=None, drop_last=False) bases=
 medh5.torch.FileGroupedSampler.__iter__	method	()
 medh5.torch.FileGroupedSampler.__len__	method	()
 medh5.torch.FileGroupedSampler.groups	property
+medh5.torch.FileGroupedSampler.num_replicas	property
+medh5.torch.FileGroupedSampler.rank	property
 medh5.torch.FileGroupedSampler.set_epoch	method	(epoch)
 medh5.torch.GridPatchDataset	class	(paths, patch_size, *, overlap=0, **kwargs) bases=
 medh5.torch.GridPatchDataset.__getitem__	method	(index)
 medh5.torch.GridPatchDataset.__len__	method	()
 medh5.torch.GridPatchDataset.file_groups	method	()
+medh5.torch.GridStitcher	class	(dataset, *, channels=None, mode='gaussian', sigma_scale=0.125, dtype=<value>) bases=
+medh5.torch.GridStitcher.add	method	(predictions, meta)
+medh5.torch.GridStitcher.finish	method	(*, partial=False)
+medh5.torch.GridStitcher.pending	property
 medh5.torch.HandleCache	class	(maxsize=32) bases=
 medh5.torch.HandleCache.__len__	method	()
 medh5.torch.HandleCache.clear	method	()
@@ -3825,9 +3868,10 @@ medh5.torch.VolumeDataset.__getitem__	method	(index)
 medh5.torch.VolumeDataset.__len__	method	()
 medh5.torch.VolumeDataset.file_groups	method	()
 medh5.torch.clinical	module
-medh5.torch.clinical.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None) bases=
+medh5.torch.clinical.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, class_ignore=False) bases=
 medh5.torch.clinical.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.clinical.ClinicalTaskDataset.__len__	method	()
+medh5.torch.clinical.ClinicalTaskDataset.file_groups	method	()
 medh5.torch.clinical.ConceptVocabulary	class	(concepts, stats=<factory>, fitted_on=None, units=<factory>, categories=<factory>) bases=
 medh5.torch.clinical.ConceptVocabulary.__len__	method	()
 medh5.torch.clinical.ConceptVocabulary.categories	field
@@ -3899,13 +3943,20 @@ medh5.torch.handles.worker_init_fn	function	(worker_id)
 medh5.torch.open_cached	function	(path, sample_key=None)
 medh5.torch.require_torch	function	()
 medh5.torch.samplers	module
-medh5.torch.samplers.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0) bases=
+medh5.torch.samplers.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0, num_replicas=None, rank=None, drop_last=False) bases=
 medh5.torch.samplers.FileGroupedSampler.__iter__	method	()
 medh5.torch.samplers.FileGroupedSampler.__len__	method	()
 medh5.torch.samplers.FileGroupedSampler.groups	property
+medh5.torch.samplers.FileGroupedSampler.num_replicas	property
+medh5.torch.samplers.FileGroupedSampler.rank	property
 medh5.torch.samplers.FileGroupedSampler.set_epoch	method	(epoch)
 medh5.torch.set_cache_size	function	(maxsize)
 medh5.torch.stack_images	function	(batch, order)
+medh5.torch.stitch	module
+medh5.torch.stitch.GridStitcher	class	(dataset, *, channels=None, mode='gaussian', sigma_scale=0.125, dtype=<value>) bases=
+medh5.torch.stitch.GridStitcher.add	method	(predictions, meta)
+medh5.torch.stitch.GridStitcher.finish	method	(*, partial=False)
+medh5.torch.stitch.GridStitcher.pending	property
 medh5.torch.worker_init_fn	function	(worker_id)
 medh5.transforms	module
 medh5.transforms.AffineTransform	class	(handle) bases=medh5.transforms.Transform
@@ -4142,7 +4193,7 @@ medh5.validate.Report.to_json	method	()
 medh5.validate.Report.warnings	property
 medh5.validate.merge	function	(reports, path='<multiple>')
 medh5.validate.rules_for	function	(level)
-medh5.validate.validate_file	function	(path, *, level='semantic', profiles=None)
-medh5.validate.validate_paths	function	(paths, *, level='semantic', profiles=None)
+medh5.validate.validate_file	function	(path, *, level='semantic', profiles=None, codes_revision=None)
+medh5.validate.validate_paths	function	(paths, *, level='semantic', profiles=None, codes_revision=None)
 medh5.validate.validate_root	function	(sample, *, path=None, level='semantic', profiles=None, errors_only=False)
 medh5.validate_cache	function	(path, *, base=None, task=None, task_base=None, check_rows=True)

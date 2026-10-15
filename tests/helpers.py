@@ -25,6 +25,17 @@ from medh5.labels import LabelSet
 ROOT = Path(__file__).resolve().parents[1]
 """The repository root."""
 
+
+def _next_minor(version: str) -> str:
+    major, _, minor = version.partition(".")
+    return f"{major}.{int(minor or 0) + 1}"
+
+
+LATER_MINOR = _next_minor(medh5.FORMAT_VERSION)
+"""A minor this engine does not implement: the one after the newest it does
+(the engine's ``version::next_minor``).  What a test needing "a later minor"
+declares, so an engine that implements it moves the tests past it."""
+
 SEED = 20260815
 
 SHAPE = (16, 24, 24)
@@ -400,3 +411,16 @@ def encode_attr(value: Any) -> Any:
             return np.array(seq, dtype=np.float64)
         return np.asarray(seq)
     raise TypeError(f"cannot encode attribute value of type {type(value)!r}")
+
+
+def attested_as_written(path: Path) -> None:
+    """Write the `content_id` that *path* now recomputes to.
+
+    A fixture planted with h5py stands for a file some writer wrote that way,
+    whose root it attested; left stale, it is a file edited after it was
+    attested, which no amendment carries forward (§14.4, E702).
+    """
+    with medh5.open(path) as sample:
+        content_id = sample.compute_content_id()
+    with h5py.File(path, "r+") as handle:
+        handle.attrs["content_id"] = encode_attr(content_id)

@@ -6,7 +6,7 @@
 //! what lets a reader notice that a file's claim predates the current split.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
@@ -17,6 +17,52 @@ use crate::sample::Sample;
 use crate::{Error, Result};
 
 pub const SUFFIXES: [&str; 2] = [".medh5", ".medh5c"];
+
+/// What every manifest [`Manifest::save`] writes names under `schema`: paths
+/// are relative to the manifest's directory, or absolute.  A manifest with no
+/// `schema` was written before 2.1, with paths as its scan named them.
+pub const MANIFEST_SCHEMA: &str = "medh5.dataset/1";
+
+/// How [`Manifest::save_with`] writes `root` and each entry's path.
+///
+/// A path is written relative --- to the manifest's directory --- only when it
+/// lies beneath that directory; otherwise it is written absolute.  Never with
+/// `..`: a lexical `..` and the system's disagree across a symbolic link.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PathStyle {
+    /// A path the caller named absolute stays absolute; a relative one is
+    /// re-based onto the manifest's directory.
+    #[default]
+    Keep,
+    /// Every path beneath the manifest's directory relative, absolute paths
+    /// included.
+    Relative,
+    /// Every path absolute.
+    Absolute,
+}
+
+impl PathStyle {
+    /// `"keep"`, `"relative"` or `"absolute"`, as the frontends spell it.
+    pub fn parse(text: &str) -> Result<PathStyle> {
+        match text {
+            "keep" => Ok(PathStyle::Keep),
+            "relative" => Ok(PathStyle::Relative),
+            "absolute" => Ok(PathStyle::Absolute),
+            other => {
+                Err(Error::Value(format!("paths must be 'keep', 'relative' or 'absolute', not {}", repr_str(other))))
+            }
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PathStyle::Keep => "keep",
+            PathStyle::Relative => "relative",
+            PathStyle::Absolute => "absolute",
+        }
+    }
+}
 
 /// Fields worth grouping or stratifying on --- single-valued and scannable.
 pub const GROUPABLE: [&str; 10] = [
@@ -363,6 +409,7 @@ impl Manifest {
 
     pub fn to_json(&self) -> Value {
         json!({
+            "schema": MANIFEST_SCHEMA,
             "format": self.format,
             "generator": self.generator,
             "root": self.root,
@@ -394,21 +441,112 @@ impl Manifest {
     /// Write the manifest to `path`; an error names the file.
     ///
     /// Atomically: a write cut short --- a full disk, a crash --- left the
-    /// manifest a cohort's splits are drawn from truncated.
+    /// manifest a cohort's splits are drawn from truncated.  Paths are written
+    /// as [`PathStyle::Keep`] says.
     pub fn save(&self, path: &Path) -> Result<PathBuf> {
-        crate::h5::file::write_atomic(path, (pretty(&self.to_json()) + "\n").as_bytes())?;
+        self.save_with(path, PathStyle::Keep)
+    }
+
+    /// [`save`](Manifest::save), writing each path as `paths` says.
+    ///
+    /// In memory a relative path is relative to the working directory, as the
+    /// caller named it; in the file it is relative to the manifest's
+    /// directory, so the manifest opens from anywhere and moves with its
+    /// cohort.  The digest does not change: it covers no path.
+    pub fn save_with(&self, path: &Path, paths: PathStyle) -> Result<PathBuf> {
+        let dir = absolute(path.parent().unwrap_or(Path::new("")))?;
+        let mut doc = self.to_json();
+        if let Some(root) = &self.root {
+            doc["root"] = json!(rebase(root, &dir, paths)?);
+        }
+        let mut rebased: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+        if let Some(Value::Array(entries)) = doc.get_mut("entries") {
+            for (entry, item) in self.entries.iter().zip(entries.iter_mut()) {
+                let written = match rebased.get(entry.path.as_str()) {
+                    Some(written) => written.clone(),
+                    None => {
+                        let written = rebase(&entry.path, &dir, paths)?;
+                        rebased.insert(&entry.path, written.clone());
+                        written
+                    }
+                };
+                item["path"] = json!(written);
+            }
+        }
+        crate::h5::file::write_atomic(path, (pretty(&doc) + "\n").as_bytes())?;
         Ok(path.to_path_buf())
     }
 
     /// Read a manifest [`save`](Manifest::save) wrote; an error names the file.
+    ///
+    /// Each relative path is joined onto the manifest's directory as `path`
+    /// names it, so in memory it is relative to the working directory again.
+    /// A manifest written before 2.1 (no `schema`) is read against the working
+    /// directory, as it was written; [`load_with_base`](Manifest::load_with_base)
+    /// names the directory instead.
     pub fn load(path: &Path) -> Result<Manifest> {
+        Manifest::load_with_base(path, None)
+    }
+
+    /// [`load`](Manifest::load), resolving relative paths against `base`
+    /// when it is given.
+    pub fn load_with_base(path: &Path, base: Option<&Path>) -> Result<Manifest> {
+        Ok(Manifest::load_noting(path, base)?.0)
+    }
+
+    /// [`load_with_base`](Manifest::load_with_base), and whether the manifest
+    /// is legacy and read differently than 3.0 will read it: some path is
+    /// relative, no `base` was given, and the manifest is not in the working
+    /// directory.  The frontends warn on it.
+    #[doc(hidden)]
+    pub fn load_noting(path: &Path, base: Option<&Path>) -> Result<(Manifest, bool)> {
         let text = std::fs::read_to_string(path).map_err(|e| crate::error::os_error(&e, path))?;
         let doc = crate::json::loads(&text)
             .map_err(|e| Error::Value(format!("{} is not JSON: {e}", repr_str(&path.to_string_lossy()))))?;
-        Manifest::from_json(&doc)
+        let legacy = check_schema(&doc).map_err(|e| match e {
+            Error::Value(why) => Error::Value(format!("{}: {why}", repr_str(&path.to_string_lossy()))),
+            other => other,
+        })?;
+        let mut manifest = Manifest::from_json(&doc)?;
+        let dir = path.parent().unwrap_or(Path::new(""));
+        let base = match base {
+            Some(base) => Some(base),
+            None if legacy => None,
+            None => Some(dir),
+        };
+        let mut differs = false;
+        match base {
+            Some(base) => {
+                if let Some(root) = &manifest.root {
+                    manifest.root = Some(resolve(root, base));
+                }
+                for entry in &mut manifest.entries {
+                    entry.path = resolve(&entry.path, base);
+                }
+            }
+            None => {
+                let relative = manifest
+                    .root
+                    .iter()
+                    .chain(manifest.entries.iter().map(|e| &e.path))
+                    .any(|p| Path::new(p).is_relative());
+                if relative {
+                    let here = std::env::current_dir().ok();
+                    let there = if dir.as_os_str().is_empty() { here.clone() } else { Some(dir.to_path_buf()) };
+                    differs = match (here, there) {
+                        (Some(here), Some(there)) => identity(&here).is_none() || identity(&here) != identity(&there),
+                        _ => true,
+                    };
+                }
+            }
+        }
+        Ok((manifest, differs))
     }
 
+    /// A manifest from its JSON, its paths as the document holds them; an
+    /// unknown `schema` is refused.
     pub fn from_json(doc: &Value) -> Result<Manifest> {
+        check_schema(doc)?;
         let entries = match doc.get("entries") {
             Some(Value::Array(items)) => items.iter().map(Entry::from_json).collect::<Result<_>>()?,
             _ => Vec::new(),
@@ -460,6 +598,69 @@ pub fn st_mtime(meta: &std::fs::Metadata) -> f64 {
             None => 0.0,
         }
     }
+}
+
+/// Whether a manifest document is legacy --- written before 2.1, with no
+/// `schema` --- or names [`MANIFEST_SCHEMA`]; any other schema is refused.
+pub fn check_schema(doc: &Value) -> Result<bool> {
+    match doc.get("schema") {
+        None | Some(Value::Null) => Ok(true),
+        Some(Value::String(s)) if s == MANIFEST_SCHEMA => Ok(false),
+        Some(other) => Err(Error::Value(format!(
+            "the manifest's schema is {}, which this medh5 does not read (it reads {})",
+            repr(other),
+            repr_str(MANIFEST_SCHEMA)
+        ))),
+    }
+}
+
+/// `path` without its `.` components; `.` when nothing is left.
+fn lexical(path: &Path) -> PathBuf {
+    let out: PathBuf = path.components().filter(|c| !matches!(c, Component::CurDir)).collect();
+    if out.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        out
+    }
+}
+
+/// `path` made absolute against the working directory, lexically: nothing
+/// is resolved, `..` included.
+fn absolute(path: &Path) -> Result<PathBuf> {
+    let path = if path.as_os_str().is_empty() { Path::new(".") } else { path };
+    Ok(lexical(&std::path::absolute(path).map_err(|e| crate::error::os_error(&e, path))?))
+}
+
+/// A stored path, read against `base`: joined onto it when relative.
+fn resolve(stored: &str, base: &Path) -> String {
+    let path = Path::new(stored);
+    if path.is_absolute() || base.as_os_str().is_empty() {
+        return stored.to_string();
+    }
+    lexical(&base.join(path)).to_string_lossy().into_owned()
+}
+
+/// A path as a manifest in `dir` (absolute) writes it, as `style` says.
+fn rebase(path: &str, dir: &Path, style: PathStyle) -> Result<String> {
+    let named = Path::new(path);
+    let full = absolute(named)?;
+    let keep_absolute = style == PathStyle::Keep && named.is_absolute();
+    if style != PathStyle::Absolute && !keep_absolute {
+        if let Ok(rest) = full.strip_prefix(dir) {
+            let mut parts = Vec::new();
+            for part in rest.components() {
+                match part {
+                    Component::Normal(name) => parts.push(name.to_string_lossy().into_owned()),
+                    // Beneath only lexically: `dir/x/../..` is not.
+                    _ => return Ok(full.to_string_lossy().into_owned()),
+                }
+            }
+            // Forward slashes, which every platform reads, so the manifest
+            // moves between them with its cohort.
+            return Ok(if parts.is_empty() { ".".into() } else { parts.join("/") });
+        }
+    }
+    Ok(full.to_string_lossy().into_owned())
 }
 
 /// Every sample and collection under `root`, in a stable order.
@@ -696,6 +897,93 @@ pub fn counts(entries: &[Entry], by: &str) -> Result<std::collections::BTreeMap<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cohort(paths: &[&Path]) -> Manifest {
+        let entries = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| Entry {
+                path: p.to_string_lossy().into_owned(),
+                sample_id: format!("s{i}"),
+                subject_id: format!("s{i}"),
+                group_id: format!("s{i}"),
+                ..Default::default()
+            })
+            .collect();
+        Manifest { entries, ..Default::default() }
+    }
+
+    fn stored(path: &Path) -> Value {
+        crate::json::loads(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn s12_3_paths_beneath_the_manifest_are_written_relative_with_forward_slashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let inside = dir.path().join("out").join("site-a").join("a.medh5");
+        let outside = dir.path().join("elsewhere").join("b.medh5");
+        let mut manifest = cohort(&[&inside, &outside]);
+        manifest.root = Some(dir.path().join("out").to_string_lossy().into_owned());
+        let target = dir.path().join("out").join("m.json");
+        std::fs::create_dir_all(dir.path().join("out")).unwrap();
+        manifest.save_with(&target, PathStyle::Relative).unwrap();
+        let doc = stored(&target);
+        assert_eq!(doc["schema"], MANIFEST_SCHEMA);
+        assert_eq!(doc["root"], ".");
+        assert_eq!(doc["entries"][0]["path"], "site-a/a.medh5");
+        assert_eq!(doc["entries"][1]["path"], outside.to_string_lossy().as_ref());
+        // Kept absolute unless asked; every path absolute on request.
+        manifest.save(&target).unwrap();
+        assert_eq!(stored(&target)["entries"][0]["path"], inside.to_string_lossy().as_ref());
+        manifest.save_with(&target, PathStyle::Absolute).unwrap();
+        assert_eq!(stored(&target)["root"], dir.path().join("out").to_string_lossy().as_ref());
+        // Read back, a relative path is joined onto the manifest's directory.
+        manifest.save_with(&target, PathStyle::Relative).unwrap();
+        let back = Manifest::load(&target).unwrap();
+        assert_eq!(back.entries[0].path, inside.to_string_lossy());
+        assert_eq!(back.root.as_deref(), Some(dir.path().join("out").to_string_lossy().as_ref()));
+        assert_eq!(back.sha256(), manifest.sha256());
+    }
+
+    #[test]
+    fn s12_3_a_path_beneath_only_lexically_is_written_absolute() {
+        let dir = tempfile::tempdir().unwrap();
+        let sneaky = dir.path().join("out").join("x").join("..").join("..").join("b.medh5");
+        let target = dir.path().join("out").join("m.json");
+        std::fs::create_dir_all(dir.path().join("out")).unwrap();
+        cohort(&[&sneaky]).save_with(&target, PathStyle::Relative).unwrap();
+        let written = stored(&target)["entries"][0]["path"].as_str().unwrap().to_string();
+        assert!(Path::new(&written).is_absolute(), "{written}");
+    }
+
+    #[test]
+    fn s12_3_a_legacy_manifest_is_read_as_written_unless_given_a_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("m.json");
+        let mut doc = cohort(&[Path::new("studies/a.medh5")]).to_json();
+        doc.as_object_mut().unwrap().remove("schema");
+        std::fs::write(&target, pretty(&doc)).unwrap();
+        let (legacy, differs) = Manifest::load_noting(&target, None).unwrap();
+        assert_eq!(legacy.entries[0].path, "studies/a.medh5");
+        assert!(differs, "the temporary directory is not the working directory");
+        let based = Manifest::load_with_base(&target, Some(dir.path())).unwrap();
+        assert_eq!(based.entries[0].path, dir.path().join("studies").join("a.medh5").to_string_lossy());
+        // Upgraded, the same manifest reads against its own directory.
+        doc["schema"] = json!(MANIFEST_SCHEMA);
+        std::fs::write(&target, pretty(&doc)).unwrap();
+        let (current, differs) = Manifest::load_noting(&target, None).unwrap();
+        assert!(!differs);
+        assert_eq!(current.entries[0].path, based.entries[0].path);
+    }
+
+    #[test]
+    fn s12_3_an_unknown_schema_is_refused() {
+        let mut doc = cohort(&[]).to_json();
+        doc["schema"] = json!("medh5.dataset/2");
+        let err = Manifest::from_json(&doc).unwrap_err().to_string();
+        assert!(err.contains("medh5.dataset/2"), "{err}");
+        assert!(PathStyle::parse("loose").is_err());
+    }
 
     /// A symlinked directory was passed over, and `CASE.MEDH5` with it, while
     /// `._case.medh5` --- a Mac's AppleDouble file --- was taken for a sample.

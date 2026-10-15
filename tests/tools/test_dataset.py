@@ -20,14 +20,14 @@ import pytest
 import medh5
 from medh5 import _core
 from medh5.cli import main
-from medh5.dataset.check import check
-from medh5.dataset.manifest import Manifest, entries_for, find, scan
-from medh5.dataset.split import make_splits, write_claims
+from medh5.dataset.check import CHECK_CODE_SEVERITY, CHECK_CODES, check
+from medh5.dataset.manifest import Entry, Manifest, entries_for, find, scan
+from medh5.dataset.split import Split, make_splits, write_claims
 from medh5.dataset.stats import DatasetStats, Moments, compute_stats, stats_for
 from medh5.errors import MEDH5Error, MEDH5ValidationError
 from medh5.labels import LabelClass, LabelSet
 from tests.helpers import SHAPE, block, write_sample
-from tests.kits import Flat, Hierarchy, Organs
+from tests.kits import EveryCheckCode, Flat, Hierarchy, Organs, SplitCohort
 
 
 @pytest.fixture
@@ -69,6 +69,12 @@ def manifest(cohort: Path) -> Manifest:
 def _subject(path: Path) -> str:
     with medh5.open(path) as sample:
         return sample.identity.subject_id
+
+
+def split1(manifest: Manifest, **options: Any) -> Split:
+    """`make_splits` by `medh5.split/1`, which these tests were written
+    against: left out, the algorithm warns where /2 would deal otherwise."""
+    return make_splits(manifest, algorithm="medh5.split/1", **options)
 
 
 class TestManifest:
@@ -162,7 +168,7 @@ class TestManifest:
         split it had just made.
         """
         before = manifest.sha256()
-        write_claims(make_splits(manifest), manifest)
+        write_claims(split1(manifest), manifest)
         after, _ = scan(cohort)
         assert after.sha256() == before
         assert not [f for f in check(after).findings if f.code == "C201"]
@@ -258,6 +264,43 @@ class TestManifest:
         assert entry.field("cohort.site_id") == entry.field("site_id")
         assert entry.field("identity.subject_id") == entry.subject_id
 
+    _BASE: dict[str, Any] = {
+        "path": "a.medh5",
+        "sample_id": "a",
+        "subject_id": "a",
+        "group_id": "a",
+    }
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"deidentified": "false"},
+            {"size": "12"},
+            {"size": -1},
+            {"mtime": "1.5"},
+            {"quality": {"q": 3}},
+            {"content_id": 5},
+            {"profiles": None},
+            {"profiles": "abc"},
+            {"splits": [1]},
+            {"class_keys": {"liver": "liver"}},
+            {"path": None},
+            {"sex": 3},
+        ],
+        ids=repr,
+    )
+    def test_an_entry_from_json_reads_as_the_engine_reads_it(self, change):
+        """`Entry.from_json` coerced a document its own way: `"false"` was a
+        de-identified member, and `save` wrote what it coerced."""
+        doc = {**self._BASE, **change}
+        try:
+            expected = _core.dataset_entry_json(doc)
+        except Exception as refused:
+            with pytest.raises(type(refused)):
+                Entry.from_json(doc)
+        else:
+            assert Entry.from_json(doc).to_json() == expected
+
     def test_manifest_fields_are_fields(self, tmp_path: Path):
         from medh5.dataset.manifest import scan
 
@@ -271,9 +314,168 @@ class TestManifest:
             entry.field("to_json")
 
 
+class TestManifestPaths:
+    """`medh5.dataset/1`: paths are relative to the manifest, or absolute."""
+
+    @staticmethod
+    def _indexed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """`medh5 dataset index cohort -o out/m.json`, run from `tmp_path`."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "out").mkdir()
+        built, failures = scan("cohort")
+        assert not failures
+        assert built.entries[0].path.startswith("cohort")
+        return built.save("cohort/m.json")
+
+    def test_S12_3_a_saved_manifest_opens_from_any_directory(
+        self, cohort, tmp_path, monkeypatch
+    ):
+        """Loaded from another directory, every file read as stale, C402
+        reported files that exist, and the statistics opened nothing."""
+        target = self._indexed(tmp_path, monkeypatch)
+        stored = json.loads(target.read_text())
+        assert stored["schema"] == "medh5.dataset/1"
+        assert stored["root"] == "."
+        assert stored["entries"][0]["path"] == "case-0.medh5"
+        monkeypatch.chdir(tmp_path / "out")
+        loaded = Manifest.load(Path("..") / target)
+        assert loaded.stale() == ()
+        assert Path(loaded.entries[0].path).exists()
+        report = check(loaded)
+        assert "C402" not in {f.code for f in report.findings}, report.format()
+
+    def test_S12_3_a_manifest_moved_with_its_cohort_still_opens(
+        self, cohort, tmp_path, monkeypatch
+    ):
+        target = self._indexed(tmp_path, monkeypatch)
+        moved = tmp_path / "mount" / "cohort"
+        moved.parent.mkdir()
+        os.rename(cohort, moved)
+        loaded = Manifest.load(moved / target.name)
+        assert [Path(e.path).parent for e in loaded] == [moved] * len(loaded)
+        assert all(Path(e.path).exists() for e in loaded)
+
+    def test_S12_3_an_entry_outside_the_manifest_directory_is_written_absolute(
+        self, cohort, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "out").mkdir()
+        built, _ = scan("cohort")
+        target = built.save("out/m.json")
+        stored = json.loads(target.read_text())
+        for entry in stored["entries"]:
+            assert Path(entry["path"]).is_absolute(), entry["path"]
+            assert ".." not in Path(entry["path"]).parts
+        assert stored["root"] == str(cohort)
+        assert Manifest.load(target).stale() == ()
+
+    def test_S12_3_absolute_paths_on_request(self, cohort, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        built, _ = scan(cohort)  # named absolute
+        kept = json.loads(built.save("cohort/m.json").read_text())
+        assert kept["entries"][0]["path"] == str(cohort / "case-0.medh5")
+        relative = json.loads(built.save("cohort/m.json", paths="relative").read_text())
+        assert relative["entries"][0]["path"] == "case-0.medh5"
+        everything = json.loads(
+            scan("cohort")[0].save("cohort/m.json", paths="absolute").read_text()
+        )
+        assert everything["entries"][0]["path"] == str(cohort / "case-0.medh5")
+        with pytest.raises(ValueError, match="paths must be"):
+            built.save("cohort/m.json", paths="loose")  # type: ignore[arg-type]
+        assert main(["dataset", "index", "cohort", "-o", "a.json", "--absolute"]) == 0
+        stored = json.loads((tmp_path / "a.json").read_text())
+        assert stored["entries"][0]["path"] == str(cohort / "case-0.medh5")
+
+    @staticmethod
+    def _legacy(manifest: Manifest, path: Path, root: Path) -> Path:
+        """A manifest as 2.0 wrote it: no schema, paths as the scan named
+        them, relative to the directory it ran in."""
+        doc = manifest.to_json()
+        del doc["schema"]
+        for entry in doc["entries"]:
+            entry["path"] = os.path.relpath(entry["path"], root)
+        path.write_text(json.dumps(doc))
+        return path
+
+    def test_S12_3_a_legacy_manifest_reads_against_the_working_directory_and_warns(
+        self, manifest, cohort, tmp_path, monkeypatch
+    ):
+        target = self._legacy(manifest, tmp_path / "out.json", tmp_path)
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+        with pytest.warns(FutureWarning, match=r"^medh5 3\.0 reads the paths of"):
+            legacy = Manifest.load(target)
+        # Kept as stored: 2.0 wrote the separator of the system it ran on.
+        assert legacy.entries[0].path == os.path.join("cohort", "case-0.medh5")
+        based = Manifest.load(target, base=tmp_path)
+        assert based.stale() == ()
+        # A manifest in the working directory reads alike both ways: no warning.
+        monkeypatch.chdir(tmp_path)
+        assert Manifest.load("out.json").stale() == ()
+        assert medh5.dataset.manifest.load("out.json").stale() == ()
+
+    def test_S12_3_the_command_line_warns_on_a_legacy_manifest(
+        self, manifest, tmp_path, monkeypatch, capsys
+    ):
+        target = self._legacy(manifest, tmp_path / "out.json", tmp_path)
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+        main(["dataset", "check", str(target)])
+        err = capsys.readouterr().err
+        assert "warning: medh5 3.0 reads the paths of" in err
+        assert "medh5 dataset upgrade" in err
+
+    def test_S12_3_an_unknown_schema_is_refused(self, manifest, tmp_path):
+        doc = manifest.to_json()
+        doc["schema"] = "medh5.dataset/9"
+        (tmp_path / "m.json").write_text(json.dumps(doc))
+        with pytest.raises(ValueError, match="medh5.dataset/9"):
+            Manifest.load(tmp_path / "m.json")
+        with pytest.raises(ValueError, match="medh5.dataset/9"):
+            Manifest.from_json(doc)
+
+    def test_S12_3_rebasing_changes_no_sha256(self, manifest, tmp_path):
+        digests = {
+            json.loads(manifest.save(tmp_path / "m.json", paths=style).read_text())[
+                "sha256"
+            ]
+            for style in ("keep", "relative", "absolute")
+        }
+        assert digests == {manifest.sha256()}
+
+    def test_dataset_upgrade_rewrites_a_legacy_manifest(
+        self, manifest, cohort, tmp_path, monkeypatch, capsys
+    ):
+        target = self._legacy(manifest, tmp_path / "out.json", tmp_path)
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+        out = cohort / "m.json"
+        argv = ["dataset", "upgrade", str(target), "-o", str(out)]
+        assert main([*argv, "--base", str(tmp_path), "--json"]) == 0
+        reported = json.loads(capsys.readouterr().out)
+        assert reported["schema"] == "medh5.dataset/1"
+        assert reported["sha256"] == manifest.sha256()
+        stored = json.loads(out.read_text())
+        assert stored["entries"][0]["path"] == "case-0.medh5"
+        assert Manifest.load(out).stale() == ()
+
+    def test_dataset_upgrade_refuses_an_entry_it_cannot_find(
+        self, manifest, tmp_path, monkeypatch, capsys
+    ):
+        target = self._legacy(manifest, tmp_path / "out.json", tmp_path)
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+        out = tmp_path / "upgraded.json"
+        assert main(["dataset", "upgrade", str(target), "-o", str(out)]) == 1
+        err = capsys.readouterr().err
+        assert "do not exist under the working directory" in err
+        assert "nothing was written" in err
+        assert not out.exists()
+
+
 class TestSplits:
     def test_groups_never_straddle_partitions(self, manifest):
-        split = make_splits(manifest, seed=7)
+        split = split1(manifest, seed=7)
         assert not split.leaks()
         placed: dict[str, str] = {}
         for assignment in split.assignments:
@@ -282,7 +484,7 @@ class TestSplits:
             )
 
     def test_S12_3_a_subject_with_two_files_stays_together(self, manifest):
-        split = make_splits(manifest, seed=3)
+        split = split1(manifest, seed=3)
         by_subject: dict[str, set[str]] = {}
         for assignment in split.assignments:
             for path in assignment.entries:
@@ -307,28 +509,28 @@ class TestSplits:
             entries=[e for e in entries if e is not twin] + [moved]
         )
         with pytest.raises(MEDH5ValidationError, match="C204") as caught:
-            make_splits(split_manifest, seed=3)
+            split1(split_manifest, seed=3)
         assert subject in str(caught.value)
 
     def test_the_same_inputs_give_the_same_split(self, manifest):
-        first = make_splits(manifest, seed=11)
-        second = make_splits(manifest, seed=11)
+        first = split1(manifest, seed=11)
+        second = split1(manifest, seed=11)
         assert first.to_json()["assignments"] == second.to_json()["assignments"]
 
     def test_a_different_seed_gives_a_different_split(self, manifest):
-        a = make_splits(manifest, seed=1).to_json()["assignments"]
-        b = make_splits(manifest, seed=2).to_json()["assignments"]
+        a = split1(manifest, seed=1).to_json()["assignments"]
+        b = split1(manifest, seed=2).to_json()["assignments"]
         assert a != b
 
     def test_dealing_by_deficit_beats_slicing_by_index(self, manifest):
         """Slicing 4 groups at 70/15/15 by index gives train all of them."""
-        split = make_splits(manifest, seed=5)
+        split = split1(manifest, seed=5)
         assert split.counts["train"] < 6
         assert len(split.counts) > 1
 
     def test_a_partition_that_gets_nothing_says_so(self, manifest):
         """4 indivisible groups cannot fill 0.7/0.15/0.15; that must not be silent."""
-        split = make_splits(manifest, seed=5)
+        split = split1(manifest, seed=5)
         assert split.underfilled == ("test",)
         assert set(split.counts) == {"train", "val"}
 
@@ -342,12 +544,12 @@ class TestSplits:
             with medh5.amend(cohort / f"more-{extra}.medh5") as writer:
                 writer.identity(subject_id=f"subj-{extra}x")
         built, _ = scan(cohort)
-        split = make_splits(built, seed=5)
+        split = split1(built, seed=5)
         assert not split.underfilled
         assert set(split.counts) == {"train", "val", "test"}
 
     def test_stratification_spreads_a_field(self, manifest):
-        split = make_splits(manifest, stratify_by="site_id", seed=4)
+        split = split1(manifest, stratify_by="site_id", seed=4)
         sites = {
             partition: set(counts) for partition, counts in split.balance().items()
         }
@@ -360,8 +562,8 @@ class TestSplits:
         each stratum's own 0.7/0.15/0.15 rounds that way twice.  The tally has
         to be global for the ratios to mean anything.
         """
-        plain = make_splits(manifest, seed=0)
-        stratified = make_splits(manifest, stratify_by="site_id", seed=0)
+        plain = split1(manifest, seed=0)
+        stratified = split1(manifest, stratify_by="site_id", seed=0)
         assert set(stratified.counts) == set(plain.counts)
         assert stratified.underfilled == plain.underfilled
         assert stratified.counts["train"] < sum(stratified.counts.values())
@@ -375,7 +577,7 @@ class TestSplits:
                 writer.identity(subject_id=f"subj-{extra}x")
                 writer.cohort(site_id="site-A" if extra % 2 else "site-B")
         built, _ = scan(cohort)
-        split = make_splits(built, stratify_by="site_id", seed=0)
+        split = split1(built, stratify_by="site_id", seed=0)
         balance = split.balance()
         assert len(balance["train"]) > 1, balance
 
@@ -385,12 +587,12 @@ class TestSplits:
         with medh5.amend(paths[1]) as writer:
             writer.cohort(site_id="site-Z")
         built, _ = scan(cohort)
-        split = make_splits(built, stratify_by="site_id", seed=0)
+        split = split1(built, stratify_by="site_id", seed=0)
         strata = {a.group: a.stratum for a in split.assignments}
         assert strata["subj-A"] in ("site-A", "site-Z")
 
     def test_k_folds_deals_every_group(self, manifest):
-        split = make_splits(manifest, k_folds=2, seed=0)
+        split = split1(manifest, k_folds=2, seed=0)
         folds = {a.fold for a in split.assignments}
         assert folds == {0, 1}
         assert all(a.partition == "holdout" for a in split.assignments)
@@ -400,20 +602,20 @@ class TestSplits:
         """A 5-fold CV that quietly runs 4 ways is not noticed until later ---
         and listing a billion empty folds took the memory the process had."""
         with pytest.raises(MEDH5ValidationError, match="at most 4-fold"):
-            make_splits(manifest, k_folds=k, seed=0)
-        assert len(make_splits(manifest, k_folds=4, seed=0).assignments) == 4
+            split1(manifest, k_folds=k, seed=0)
+        assert len(split1(manifest, k_folds=4, seed=0).assignments) == 4
 
     def test_enough_groups_fills_every_fold(self, manifest):
-        assert make_splits(manifest, k_folds=2, seed=0).empty_folds == ()
+        assert split1(manifest, k_folds=2, seed=0).empty_folds == ()
 
     def test_a_ratio_split_has_no_folds_to_report(self, manifest):
-        assert make_splits(manifest, seed=0).empty_folds == ()
+        assert split1(manifest, seed=0).empty_folds == ()
 
     def test_ratios_do_not_apply_to_folds(self, manifest):
         """With k_folds the ratios went unused and unchecked into the split."""
         with pytest.raises(MEDH5ValidationError, match="ratios and k_folds"):
-            make_splits(manifest, k_folds=2, ratios={"train": -1.0, "bogus": 0.5})
-        assert make_splits(manifest, k_folds=2).ratios == {}
+            split1(manifest, k_folds=2, ratios={"train": -1.0, "bogus": 0.5})
+        assert split1(manifest, k_folds=2).ratios == {}
 
     def test_a_group_in_two_folds_is_a_leak(self, manifest):
         """Every k-fold assignment is `holdout`, so a group or an entry in two
@@ -431,22 +633,22 @@ class TestSplits:
             k_folds=2,
         )
         assert split.leaks() == ("a.medh5", "g1")
-        assert make_splits(manifest, k_folds=2, seed=0).leaks() == ()
+        assert split1(manifest, k_folds=2, seed=0).leaks() == ()
 
     def test_k_folds_below_two_is_refused(self, manifest):
         with pytest.raises(MEDH5ValidationError, match="at least 2"):
-            make_splits(manifest, k_folds=1)
+            split1(manifest, k_folds=1)
 
     def test_an_empty_manifest_is_refused(self):
         with pytest.raises(MEDH5ValidationError, match="empty"):
-            make_splits(Manifest())
+            split1(Manifest())
 
     def test_an_unknown_partition_is_refused(self, manifest):
         with pytest.raises(MEDH5ValidationError, match="unknown partition"):
-            make_splits(manifest, ratios={"trian": 1.0})
+            split1(manifest, ratios={"trian": 1.0})
 
     def test_ratios_are_normalised(self, manifest):
-        split = make_splits(manifest, ratios={"train": 8, "val": 2}, seed=0)
+        split = split1(manifest, ratios={"train": 8, "val": 2}, seed=0)
         assert set(split.counts) <= {"train", "val"}
         assert sum(split.counts.values()) == 6
 
@@ -462,10 +664,10 @@ class TestSplits:
         """NaN and infinity panicked the engine (a ``BaseException`` no
         ``except Exception`` catches); a negative share was written down."""
         with pytest.raises(MEDH5ValidationError, match="finite number"):
-            make_splits(manifest, ratios=ratios)
+            split1(manifest, ratios=ratios)
 
     def test_finite_shares_whose_sum_overflows_still_split(self, manifest):
-        split = make_splits(manifest, ratios={"train": 1e308, "test": 1e308}, seed=0)
+        split = split1(manifest, ratios={"train": 1e308, "test": 1e308}, seed=0)
         assert set(split.counts) == {"train", "test"}
         assert sum(split.counts.values()) == 6
 
@@ -483,11 +685,11 @@ class TestSplits:
         assert "finite number" in capsys.readouterr().err
 
     def test_the_split_records_the_manifest_it_came_from(self, manifest):
-        split = make_splits(manifest)
+        split = split1(manifest)
         assert split.manifest_sha256 == manifest.sha256()
 
     def test_S12_3_claims_carry_the_manifest_digest(self, manifest):
-        split = make_splits(manifest, seed=0)
+        split = split1(manifest, seed=0)
         written = write_claims(split, manifest, assigned_by="test")
         assert len(written) == 6
         with medh5.open(written[0]) as sample:
@@ -496,20 +698,20 @@ class TestSplits:
             assert claim.partition in ("train", "val", "test")
 
     def test_re_splitting_replaces_the_claim_it_does_not_stack(self, manifest):
-        write_claims(make_splits(manifest, seed=1), manifest)
-        write_claims(make_splits(manifest, seed=2), manifest)
+        write_claims(split1(manifest, seed=1), manifest)
+        write_claims(split1(manifest, seed=2), manifest)
         with medh5.open(manifest[0].path) as sample:
             claims = [c for c in sample.document.splits if c.set_id == "default"]
             assert len(claims) == 1
 
     def test_a_second_set_lives_alongside_the_first(self, manifest):
-        write_claims(make_splits(manifest, set_id="cv5"), manifest)
-        write_claims(make_splits(manifest, set_id="site-holdout"), manifest)
+        write_claims(split1(manifest, set_id="cv5"), manifest)
+        write_claims(split1(manifest, set_id="site-holdout"), manifest)
         with medh5.open(manifest[0].path) as sample:
             assert {c.set_id for c in sample.document.splits} == {"cv5", "site-holdout"}
 
     def test_a_k_fold_claim_needs_a_validation_fold(self, manifest):
-        split = make_splits(manifest, k_folds=2)
+        split = split1(manifest, k_folds=2)
         with pytest.raises(MEDH5ValidationError, match="--fold"):
             write_claims(split, manifest)
         written = write_claims(split, manifest, fold=0)
@@ -525,7 +727,7 @@ class TestSplits:
         medh5.pack(sorted(cohort.glob("*.medh5")), shard)
         built, _ = scan(shard)
         with pytest.raises(MEDH5ValidationError, match="unpack"):
-            write_claims(make_splits(built), built)
+            write_claims(split1(built), built)
 
     def test_S12_3_members_of_one_collection_are_named_one_by_one(
         self, cohort, tmp_path
@@ -536,7 +738,7 @@ class TestSplits:
         shard = tmp_path / "shard.medh5c"
         medh5.pack(sorted(cohort.glob("*.medh5")), shard)
         built, _ = scan(shard)
-        split = make_splits(built, ratios={"train": 0.5, "test": 0.5}, seed=0)
+        split = split1(built, ratios={"train": 0.5, "test": 0.5}, seed=0)
         placed = {name: split.paths(name) for name in ("train", "test")}
         assert all(placed.values()), placed
         named = [entry for entries in placed.values() for entry in entries]
@@ -551,7 +753,7 @@ class TestSplits:
     ):
         """A split made before the cohort grew stamped its old digest --- stale
         on arrival (C201) --- and passed over the new sample in silence."""
-        split = make_splits(manifest, seed=0)
+        split = split1(manifest, seed=0)
         write_sample(cohort / "new.medh5", label_set=label_set, sample_id="new")
         wider, _ = scan(cohort)
         with pytest.raises(MEDH5ValidationError, match="new.medh5"):
@@ -565,7 +767,7 @@ class TestSplits:
     ):
         """Each call rebuilt the whole split in the engine: the documented
         per-entry loop took 34 s at 3,000 subjects."""
-        split = make_splits(manifest, k_folds=2, seed=0)
+        split = split1(manifest, k_folds=2, seed=0)
         for entry in manifest:
             doc, fields = split._doc(), entry._fields()
             assert split.partition_of(entry) == (
@@ -585,7 +787,7 @@ class TestSplits:
         or by slice, left the lookup answering for the one it replaced."""
         from medh5.dataset.split import Assignment
 
-        split = make_splits(manifest, seed=0)
+        split = split1(manifest, seed=0)
         entry = manifest[0]
         at = next(
             i for i, a in enumerate(split.assignments) if a.group == entry.group_id
@@ -627,7 +829,7 @@ class TestSplits:
     ):
         """Fold 7 of a 2-fold split matched no assignment, so every file was
         written as `train` and the split had no validation partition."""
-        split = make_splits(manifest, k_folds=2, seed=0)
+        split = split1(manifest, k_folds=2, seed=0)
         with pytest.raises(MEDH5ValidationError, match="not a fold of this 2-fold"):
             write_claims(split, manifest, fold=fold)
         assert all(self._claims(entry.path) == [] for entry in manifest)
@@ -646,7 +848,7 @@ class TestSplits:
         built, failures = scan(cohort)
         assert not failures
         with pytest.raises(medh5.errors.MEDH5VersionError, match="1.9"):
-            write_claims(make_splits(built, seed=0), built)
+            write_claims(split1(built, seed=0), built)
         assert all(self._claims(entry.path) == [] for entry in built)
 
     def test_S12_3_a_file_the_validator_rejects_stops_the_write(self, cohort):
@@ -665,7 +867,7 @@ class TestSplits:
         built, failures = scan(cohort)
         assert not failures
         with pytest.raises(MEDH5Error, match="fails validation") as exc:
-            write_claims(make_splits(built, seed=0), built)
+            write_claims(split1(built, seed=0), built)
         assert exc.value.code == "E605"
         assert all(self._claims(entry.path) == [] for entry in built)
 
@@ -685,7 +887,7 @@ class TestSplits:
         with pytest.raises(
             MEDH5Error, match=r"does not match its digest \(images/CT_tp0\)"
         ) as exc:
-            write_claims(make_splits(built, seed=0), built)
+            write_claims(split1(built, seed=0), built)
         assert exc.value.code == "E701"
         assert all(self._claims(entry.path) == [] for entry in built)
 
@@ -712,8 +914,8 @@ class TestSplits:
         from medh5.dataset.split import Split
 
         with pytest.raises(MEDH5ValidationError, match="has none"):
-            write_claims(make_splits(manifest, seed=0), manifest, fold=0)
-        legacy = make_splits(manifest, k_folds=2, seed=0).to_json()
+            write_claims(split1(manifest, seed=0), manifest, fold=0)
+        legacy = split1(manifest, k_folds=2, seed=0).to_json()
         legacy["k_folds"] = 5
         with pytest.raises(MEDH5ValidationError, match="holds no group"):
             write_claims(Split.from_json(legacy), manifest, fold=3)
@@ -730,10 +932,187 @@ class TestSplits:
         assert not failures
         assert [e.key is not None for e in built][-1], "the member must come last"
         with pytest.raises(MEDH5ValidationError, match="unpack"):
-            write_claims(make_splits(built, seed=0), built)
+            write_claims(split1(built, seed=0), built)
         plain = [entry.path for entry in built if entry.key is None]
         assert len(plain) == 4
         assert all(self._claims(path) == [] for path in plain)
+
+
+class TestSplit2:
+    """`medh5.split/2` and `previous=` (D22)."""
+
+    @staticmethod
+    def split2(manifest: Manifest, **options: Any) -> Split:
+        options.setdefault("ratios", SplitCohort.RATIOS)
+        return make_splits(
+            manifest, stratify_by="site_id", algorithm="medh5.split/2", **options
+        )
+
+    def test_S12_3_split2_gives_a_rare_stratum_a_test_group(self):
+        """/1 dealt strata of 3, 5 and 7 groups at 70/15/15 no test group."""
+        balance = self.split2(SplitCohort.manifest()).balance()
+        for k in SplitCohort.RARE:
+            assert balance["test"].get(f"rare-{k}", 0) >= 1, balance
+
+    def test_S12_3_split2_meets_the_global_totals(self):
+        manifest = SplitCohort.manifest()
+        n = len(manifest)
+        split = self.split2(manifest)
+        assert split.algorithm == "medh5.split/2"
+        assert split.to_json()["algorithm"] == "medh5.split/2"
+        for partition, share in SplitCohort.RATIOS.items():
+            assert abs(split.counts[partition] - n * share) < 1, split.counts
+        for site, count in manifest.groups("site_id").items():
+            for partition, share in SplitCohort.RATIOS.items():
+                got = split.balance()[partition].get(site, 0)
+                assert abs(got - len(count) * share) < 1, (site, partition, got)
+
+    def test_S12_3_split2_one_new_group_moves_few(self):
+        """One group added to the largest stratum of 115, over seeds 0 to 19:
+        `medh5.split/1` moves a median of 19 others (up to 28), `medh5.split/2`
+        a median of 1 (at most 2)."""
+        moved: dict[str, list[int]] = {"medh5.split/1": [], "medh5.split/2": []}
+        before, after = SplitCohort.manifest(), SplitCohort.manifest(extra=1)
+        for seed in range(20):
+            for algorithm, counts in moved.items():
+                options = {
+                    "stratify_by": "site_id",
+                    "ratios": SplitCohort.RATIOS,
+                    "seed": seed,
+                    "algorithm": algorithm,
+                }
+                old = make_splits(before, **options)
+                new = make_splits(after, **options)
+                counts.append(len(new.moved_from(old)))
+        median = {k: sorted(v)[10] for k, v in moved.items()}
+        assert median["medh5.split/2"] <= 2, moved
+        assert median["medh5.split/1"] >= 10, moved
+
+    def test_S12_3_previous_moves_no_group(self):
+        old = split1(
+            SplitCohort.manifest(), stratify_by="site_id", ratios=SplitCohort.RATIOS
+        )
+        grown = self.split2(SplitCohort.manifest(extra=200), previous=old)
+        assert grown.moved_from(old) == {}
+        assert grown.previous is not None
+        assert grown.previous["kept"] == len(old.assignments)
+        assert len(grown.previous["added"]) == 200
+        assert grown.previous["manifest_sha256"] == old.manifest_sha256
+        assert abs(grown.counts["train"] / 315 - 0.7) < 0.02, grown.counts
+
+    def test_S12_3_previous_reads_a_split_file(self, tmp_path):
+        old = self.split2(SplitCohort.manifest())
+        (tmp_path / "split.json").write_text(json.dumps(old.to_json()))
+        grown = self.split2(
+            SplitCohort.manifest(extra=3), previous=tmp_path / "split.json"
+        )
+        assert grown.moved_from(old) == {}
+        assert medh5.dataset.split.load(tmp_path / "split.json").algorithm == (
+            "medh5.split/2"
+        )
+
+    def test_S12_3_previous_keeps_a_kept_subjects_new_file_in_its_partition(self):
+        manifest = SplitCohort.manifest()
+        old = self.split2(manifest)
+        (moved_subject,) = [a for a in old.assignments if a.group == "s007"]
+        follow_up = replace(manifest.entries[7], path="s007-tp1.medh5")
+        grown = self.split2(
+            Manifest(entries=[*manifest.entries, follow_up]), previous=old
+        )
+        assert grown.partition_of(follow_up) == moved_subject.partition
+        assert "s007-tp1.medh5" in grown.paths(moved_subject.partition)
+        assert grown.previous is not None and grown.previous["added"] == []
+
+    def test_S12_3_previous_refuses_other_parameters(self):
+        manifest = SplitCohort.manifest()
+        old = self.split2(manifest)
+        for change in (
+            {"seed": 1},
+            {"ratios": {"train": 0.8, "test": 0.2}},
+            {"set_id": "other"},
+        ):
+            with pytest.raises(MEDH5ValidationError, match="use a new set_id"):
+                self.split2(manifest, previous=old, **change)
+        with pytest.raises(MEDH5ValidationError, match="cannot continue"):
+            make_splits(
+                manifest,
+                stratify_by="site_id",
+                ratios=SplitCohort.RATIOS,
+                algorithm="medh5.split/1",
+                previous=old,
+            )
+
+    def test_S12_3_previous_lists_dropped_groups(self):
+        manifest = SplitCohort.manifest()
+        old = self.split2(manifest)
+        smaller = manifest.filter(lambda e: e.subject_id not in ("s001", "s050"))
+        shrunk = self.split2(smaller, previous=old)
+        assert shrunk.previous is not None
+        assert shrunk.previous["dropped"] == ["s001", "s050"]
+        assert shrunk.moved_from(old) == {}
+
+    def test_S12_3_omitting_algorithm_warns_where_split2_differs(
+        self, tmp_path, capsys
+    ):
+        manifest = SplitCohort.manifest()
+        options = {"stratify_by": "site_id", "ratios": SplitCohort.RATIOS}
+        with pytest.warns(FutureWarning, match=r"^medh5 3\.0 splits with") as caught:
+            split = make_splits(manifest, **options)
+        assert split == split1(manifest, **options)
+        moved = len(split.moved_from(self.split2(manifest)))
+        assert f"places {moved} of these groups" in str(caught[0].message)
+        # A cohort both algorithms deal alike: no warning.
+        import warnings
+
+        alike = Manifest(entries=manifest.entries[:1])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            make_splits(alike)
+        # The command line prints the same sentence.
+        manifest.save(tmp_path / "m.json")
+        argv = ["dataset", "split", str(tmp_path / "m.json"), "--stratify-by"]
+        main([*argv, "site_id"])
+        err = capsys.readouterr().err
+        assert "warning: medh5 3.0 splits with medh5.split/2 by default" in err
+        assert f"places {moved} of these groups differently" in err
+        assert "--algorithm 1" in err
+        main([*argv, "site_id", "--algorithm", "1"])
+        assert "warning" not in capsys.readouterr().err
+
+    def test_S12_3_the_command_line_continues_a_split(self, tmp_path, capsys):
+        SplitCohort.manifest().save(tmp_path / "m.json")
+        SplitCohort.manifest(extra=10).save(tmp_path / "grown.json")
+        common = ["--stratify-by", "site_id", "--algorithm", "2"]
+        argv = ["dataset", "split", str(tmp_path / "m.json"), *common]
+        assert main([*argv, "-o", str(tmp_path / "split.json")]) == 0
+        capsys.readouterr()
+        grown = ["dataset", "split", str(tmp_path / "grown.json")]
+        assert (
+            main(
+                [
+                    *grown,
+                    "--stratify-by",
+                    "site_id",
+                    "--json",
+                    "--previous",
+                    str(tmp_path / "split.json"),
+                ]
+            )
+            == 0
+        )
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["algorithm"] == "medh5.split/2"
+        assert doc["previous"]["kept"] == 115 and len(doc["previous"]["added"]) == 10
+        old = medh5.dataset.split.load(tmp_path / "split.json")
+        assert Split.from_json(doc).moved_from(old) == {}
+
+    def test_S12_3_a_2_0_split_reads_as_split1(self, manifest):
+        doc = split1(manifest).to_json()
+        assert doc["algorithm"] == "medh5.split/1" and doc["previous"] is None
+        del doc["algorithm"], doc["previous"]
+        legacy = Split.from_json(doc)
+        assert legacy.algorithm == "medh5.split/1"
+        assert legacy.to_json()["algorithm"] == "medh5.split/1"
 
 
 class TestStats:
@@ -826,6 +1205,105 @@ class TestStats:
         assert (spleen.present_in, spleen.examined_in) == (0, 1)
         assert spleen.prevalence == 0.0
         assert spleen.voxels == 3 * 4**3
+
+    @staticmethod
+    def _drawn_not_examined(tmp_path: Path, label_set: LabelSet) -> DatasetStats:
+        """Spleen drawn with 27 voxels in a sample that looked only for liver."""
+        path = write_sample(
+            tmp_path / "drawn.medh5",
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2), 4), 2: block(SHAPE, (2, 14, 2), 3)},
+            annotated=["liver"],
+        )
+        return compute_stats([path])
+
+    def test_S11_3_prevalence_of_a_class_nobody_examined_is_undefined(
+        self, tmp_path, label_set
+    ):
+        """It was 0.0, which reads as "looked for and never found"."""
+        spleen = self._drawn_not_examined(tmp_path, label_set).classes[2]
+        assert (spleen.voxels, spleen.examined_in) == (27, 0)
+        assert spleen.examined_prevalence is None
+        assert spleen.to_json()["prevalence"] is None
+        with pytest.warns(FutureWarning, match=r"^medh5 3\.0 returns None"):
+            assert spleen.prevalence == 0.0
+
+    def test_S11_3_examined_prevalence_counts_only_examining_samples(
+        self, tmp_path, label_set
+    ):
+        found = write_sample(
+            tmp_path / "found.medh5",
+            label_set=label_set,
+            masks={2: block(SHAPE, (2, 2, 2), 4)},
+            annotated=["spleen"],
+        )
+        absent = write_sample(
+            tmp_path / "absent.medh5",
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2), 4)},
+            annotated=["liver", "spleen"],
+        )
+        unlooked = write_sample(
+            tmp_path / "unlooked.medh5",
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2), 4)},
+            annotated=["liver"],
+        )
+        spleen = compute_stats([found, absent, unlooked]).classes[2]
+        assert (spleen.present_in, spleen.examined_in) == (1, 2)
+        assert spleen.examined_prevalence == 0.5
+
+    def test_S11_3_prevalence_warns_only_when_undefined(self, tmp_path, label_set):
+        import warnings
+
+        liver = self._drawn_not_examined(tmp_path, label_set).classes[1]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert liver.prevalence == liver.examined_prevalence == 1.0
+
+    def test_S11_3_stats_round_trip_keeps_null_prevalence(self, tmp_path, label_set):
+        stats = self._drawn_not_examined(tmp_path, label_set)
+        doc = stats.to_json()
+        (spleen,) = [c for c in doc["classes"] if c["class_id"] == 2]
+        assert spleen["prevalence"] is None
+        assert DatasetStats.from_json(doc).to_json() == doc
+
+    def test_class_stats_json_is_the_engines(self, tmp_path, label_set):
+        """`ClassStats.to_json` re-implemented the engine's; it delegates."""
+        stats = self._drawn_not_examined(tmp_path, label_set)
+        engine = {c["class_id"]: c for c in stats.to_json()["classes"]}
+        for class_id, found in stats.classes.items():
+            assert found.to_json() == engine[class_id]
+        rebuilt = DatasetStats.from_json(stats.to_json()).classes
+        assert {k: v.to_json() for k, v in rebuilt.items()} == engine
+
+    def test_the_command_line_prints_no_prevalence_for_an_unexamined_class(
+        self, tmp_path, label_set, capsys
+    ):
+        (tmp_path / "c").mkdir()
+        write_sample(
+            tmp_path / "c" / "drawn.medh5",
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2), 4), 2: block(SHAPE, (2, 14, 2), 3)},
+            annotated=["liver"],
+        )
+        assert (
+            main(
+                [
+                    "dataset",
+                    "index",
+                    str(tmp_path / "c"),
+                    "-o",
+                    str(tmp_path / "m.json"),
+                ]
+            )
+            == 0
+        )
+        capsys.readouterr()
+        assert main(["dataset", "stats", str(tmp_path / "m.json")]) == 0
+        rows = [line.split() for line in capsys.readouterr().out.splitlines()]
+        (spleen,) = [r for r in rows if r[:2] == ["2", "spleen"]]
+        assert spleen[-2:] == ["0/0", "-"]
 
     def test_a_collection_member_is_measured_by_its_locator(
         self, cohort, tmp_path, capsys
@@ -1024,6 +1502,22 @@ class TestCohortCheck:
         assert report.ok
         assert not report.errors
 
+    def test_check_code_severity_matches_the_findings(self, tmp_path):
+        """Every finding carries its code's severity, but C401 under ``deep``,
+        which is an error; C204 is the splitter's refusal, never a finding."""
+        built = EveryCheckCode.manifest(tmp_path)
+        shallow = check(built)
+        assert {f.code for f in shallow.findings} == set(CHECK_CODES) - {"C204"}
+        for finding in shallow.findings:
+            assert finding.severity == CHECK_CODE_SEVERITY[finding.code], finding
+        deep = {f.code: f.severity for f in check(built, deep=True).findings}
+        assert deep.pop("C401") == "error"
+        assert deep == {
+            code: CHECK_CODE_SEVERITY[code]
+            for code in set(CHECK_CODES) - {"C204", "C401"}
+        }
+        assert set(CHECK_CODE_SEVERITY) == set(CHECK_CODES)
+
     def test_C102_a_class_id_meaning_two_things_is_an_error(self, cohort, tmp_path):
         other = LabelSet(
             "other-v1",
@@ -1093,13 +1587,59 @@ class TestCohortCheck:
         legacy = Manifest(entries=[replace(e, class_keys={}) for e in built])
         assert "C102" in {f.code for f in check(legacy).errors}
 
+    def test_D25_labels_check_groups_as_C101_does(self, tmp_path, label_set, capsys):
+        """Two empty label sets with different ids are two vocabularies, a file
+        without one is none, and two equal label sets are one --- the same from
+        ``medh5 labels check``, ``medh5.labels.check`` and C101/C103."""
+        root = tmp_path / "d25"
+        root.mkdir()
+        empty = [LabelSet(name, version="1.0.0", classes=[]) for name in ("e1", "e2")]
+        paths = [
+            write_sample(root / "e1.medh5", label_set=empty[0], masks={}),
+            write_sample(root / "e2.medh5", label_set=empty[1], masks={}),
+            write_sample(root / "none.medh5", masks={}),
+            write_sample(root / "s1.medh5", label_set=label_set, masks={}),
+            write_sample(root / "s2.medh5", label_set=label_set, masks={}),
+        ]
+        names = [str(p) for p in paths]
+
+        def grouping(vocabularies: dict[str, list[str]]) -> set[frozenset[str]]:
+            return {
+                frozenset(Path(f).stem for f in files)
+                for files in vocabularies.values()
+            }
+
+        expected = {
+            frozenset({"e1"}),
+            frozenset({"e2"}),
+            frozenset({"none"}),
+            frozenset({"s1", "s2"}),
+        }
+        found = medh5.labels.check(names)
+        assert grouping(found["vocabularies"]) == expected
+        assert not found["ok"] and not found["unreadable"]
+        assert found["vocabularies"]["<none>"] == [str(paths[2])]
+        assert [f["path"] for f in found["files"]] == names
+
+        assert main(["labels", "check", "--json", *names]) == 1
+        printed = json.loads(capsys.readouterr().out)
+        assert printed["vocabularies"] == found["vocabularies"]
+        assert printed["files"] == found["files"]
+
+        built, _ = scan(root)
+        report = check(built)
+        c101 = next(f for f in report.findings if f.code == "C101")
+        c103 = next(f for f in report.findings if f.code == "C103")
+        assert c101.message.startswith("3 distinct label sets")
+        assert {Path(w).stem for w in c103.where} == {"none"}
+
     def test_C103_a_sample_without_a_label_set_is_flagged(self, cohort):
         write_sample(cohort / "bare.medh5", sample_id="bare")
         built, _ = scan(cohort)
         assert "C103" in {f.code for f in check(built).findings}
 
     def test_C201_a_claim_from_another_manifest_is_an_error(self, manifest, cohort):
-        write_claims(make_splits(manifest), manifest)
+        write_claims(split1(manifest), manifest)
         write_sample(cohort / "new.medh5", sample_id="new")
         wider, _ = scan(cohort)
         report = check(wider)
@@ -1137,7 +1677,7 @@ class TestCohortCheck:
 
     def test_C202_a_subject_in_two_partitions_is_caught(self, manifest, cohort):
         """The leak splitting is designed to prevent, checked independently."""
-        split = make_splits(manifest)
+        split = split1(manifest)
         write_claims(split, manifest)
         paths = sorted(cohort.glob("*.medh5"))
         a, b = [p for p in paths if _subject(p) == "subj-A"]
@@ -1155,7 +1695,7 @@ class TestCohortCheck:
         assert "C202" in {f.code for f in report.errors}
 
     def test_C203_partial_claims_are_a_warning(self, manifest, cohort):
-        split = make_splits(manifest)
+        split = split1(manifest)
         subset = manifest.filter(lambda e: e.site_id == "site-A")
         write_claims(split, subset)
         built, _ = scan(cohort)

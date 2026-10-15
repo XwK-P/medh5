@@ -29,7 +29,7 @@ from medh5.collection import open_collection, pack, unpack
 from medh5.errors import MEDH5ValidationError, MEDH5VersionError
 from medh5.storage import recompress
 from medh5.validate import validate_file
-from tests.helpers import write_sample
+from tests.helpers import LATER_MINOR, write_sample
 from tests.kits import History
 
 
@@ -75,8 +75,8 @@ class TestVersions:
         future = tmp_path / "future.medh5"
         shutil.copyfile(history, future)
         with h5py.File(future, "r+") as f:
-            f.attrs["medh5_version"] = "1.2"
-            f["clinical/events"].attrs["defined_by"] = "MEDH5 1.2"
+            f.attrs["medh5_version"] = LATER_MINOR
+            f["clinical/events"].attrs["defined_by"] = f"MEDH5 {LATER_MINOR}"
         with medh5.open(future) as s:
             assert s.support == "projection"
             assert s.clinical is not None and s.clinical.projection
@@ -84,7 +84,7 @@ class TestVersions:
         report = validate_file(future, level="integrity")
         assert codes(future, "integrity") == ["W913"], report.codes
         where = {d.location for d in report.diagnostics if d.code == "W913"}
-        # The version, the attribute 1.2 defined, and the root this engine
+        # The version, the attribute the later minor defined, and the root this engine
         # cannot recompute (a later minor may cover more): reported, not E702.
         assert {"/", "/clinical/events@defined_by"} <= where, where
         assert report.ok
@@ -107,7 +107,7 @@ class TestVersions:
         future = tmp_path / "future.medh5"
         shutil.copyfile(history, future)
         with h5py.File(future, "r+") as f:
-            f.attrs["medh5_version"] = "1.2"
+            f.attrs["medh5_version"] = LATER_MINOR
         argv = ["--cutoff-hours", "24", "--policy", policy, "--json"]
         with medh5.open(history) as s:
             assert s.clinical.select(24 * HOUR, policy).status != "uncertifiable"
@@ -128,7 +128,7 @@ class TestVersions:
     ):
         """A member a UTF-8 column does not define is a later minor's under a
         projection (W913), as an unknown column is; it was E804 at any version."""
-        for version, expected in (("1.1", "E804"), ("1.2", "W913")):
+        for version, expected in (("1.1", "E804"), (LATER_MINOR, "W913")):
             path = tmp_path / f"v{version}.medh5"
             shutil.copyfile(history, path)
             with h5py.File(path, "r+") as f:
@@ -827,6 +827,30 @@ class TestHeldVersions:
             )
         assert caught.value.code == "E809"
         assert "transform 'tp1_to_tp0'" in str(caught.value)
+
+    @pytest.mark.parametrize("attr", ["rescale_slope", "modality"])
+    def test_S7_3_an_attested_image_s_attributes_are_immutable(
+        self, tmp_path: Path, attr: str
+    ):
+        """What 1.0 §13.2 covers of an attested image is held with its pixels:
+        a slope rescales every voxel read, and an edit to it passed while the
+        pixels were unchanged."""
+        path = tmp_path / "ct.medh5"
+        History.write(path)
+        before = path.read_bytes()
+        value = {"rescale_slope": 2.0, "modality": "MR"}[attr]
+        with pytest.raises(MEDH5ValidationError) as caught, medh5.amend(path) as w:
+            w.handle["images/CT_tp0"].attrs[attr] = value
+        assert caught.value.code == "E809"
+        assert "image 'CT_tp0', which event 'ct0' attests" in str(caught.value)
+        assert path.read_bytes() == before
+        # An image no version attests is the amendment's to change.
+        with medh5.amend(path) as w:
+            pet = np.ones(History.SHAPE, dtype=np.float32)
+            w.add_image("PT_tp0", pet, grid="ct_tp0", modality="PT")
+        with medh5.amend(path) as w:
+            w.handle["images/PT_tp0"].attrs[attr] = value
+        assert not validate_file(path, level="integrity").errors
 
     def _note(self, path: Path) -> ClinicalRecords:
         History.write(path, events=[self.NOTE])

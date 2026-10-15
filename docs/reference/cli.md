@@ -71,13 +71,16 @@ An annotated object listing — `h5ls` with each object's role in the spec.
 ### `medh5 validate`
 
 ```
-medh5 validate PATH... [--level L] [--profile P] [-v] [--json]
+medh5 validate PATH... [--level L] [--profile P] [--codes-revision N] [-v] [--json]
 ```
 
 Check against the specification. `--level` is `structural`, `semantic`
 (default), `integrity` or `strict`; each includes the ones before it.
 `--profile` adds to the profiles the file declares, so you can hold a file to
 `det` even if it does not claim it. Diagnostics carry stable codes (spec §15.2).
+`--codes-revision` reports only the codes that revision of the code table
+allocated, so a `strict` gate keeps its verdict when a later revision adds a
+warning; a revision the table does not have is refused.
 Every diagnostic is printed; `-v` adds, under each, what its code means.
 
 ```
@@ -134,6 +137,16 @@ requires `--reason`, which is recorded in the file's provenance along with the
 fact that the tool did not verify the content it just re-attested. `--by` names
 who made the change, in the same record. Only the restamp records them, so
 `--reason` or `--by` without `--rewrite-digests` is a usage error.
+
+It is also the one amendment of a file whose attestation broke. Every other
+command that amends a file (`fix` without it, `scrub --apply`, a split claim,
+`clinical augment` and `strip`, `seg`) refuses one whose `content_id` no longer
+recomputes (`E702`) or that holds a digest, or declares a `digest_algo`, it
+cannot read (`E703`), and names this repair. A file declaring an algorithm
+§2.1 does not permit is restamped in `sha256`, and the activity's parameters
+record the change (`"digest_algo": {"from": "blake3", "to": "sha256"}`).
+Without `--rewrite-digests`, such a file is diagnosed as `E703`, naming the
+repair.
 
 ## Longitudinal
 
@@ -221,7 +234,11 @@ Inspect a file's label set, check a cohort's label sets against each other, and
 list the bundled vocabularies. With `--json`, `check` gives every file an entry
 under `files` — its vocabulary key, or why it could not be read — beside the
 files grouped by vocabulary (`vocabularies`) and the failures by path
-(`unreadable`).
+(`unreadable`). Files share a vocabulary when their label sets have one digest,
+the rule `dataset check` applies for `C101`: an empty label set is a vocabulary
+of its own (`id@version#` and 16 hex digits, as any other), and `<none>` holds
+only the files that declare no label set. `medh5.labels.check(paths)` returns
+the same document.
 
 ## Curation
 
@@ -330,13 +347,32 @@ Extract — every member, or only the keys named — or list what is inside.
 ### `medh5 dataset index`
 
 ```
-medh5 dataset index ROOT -o manifest.json [--strict] [--json]
+medh5 dataset index ROOT -o manifest.json [--strict] [--absolute] [--json]
 ```
 
 Metadata-only scan of a directory tree. Reports what would not open instead of
 aborting; `--strict` makes the first failure fatal. Follows symlinked
 directories (each once), matches suffixes in any case, and skips AppleDouble
 `._*` files.
+
+The manifest's paths are [relative to the manifest](cohort-manifest.md) where
+they lie beneath its directory, and absolute otherwise, so it opens from any
+directory and moves with its cohort; `--absolute` writes every path absolute.
+
+### `medh5 dataset upgrade`
+
+```
+medh5 dataset upgrade manifest.json -o upgraded.json [--base DIR] [--json]
+```
+
+Rewrites a manifest written before 2.1, whose paths are relative to the
+directory its scan ran in, as a [`medh5.dataset/1`](cohort-manifest.md)
+manifest: every path beneath the manifest's directory is written relative to
+it, and the rest absolute. `--base` names the
+directory the old paths are relative to (by default the working directory, as
+2.0 read them). Refuses, writing nothing, when any entry's file does not exist
+under that directory. The cohort commands read such a manifest as 2.0 did, and
+warn where 3.0 will read it otherwise.
 
 ### `medh5 dataset split`
 
@@ -351,6 +387,8 @@ medh5 dataset split manifest.json [options]
 --ratios train=0.7,val=0.15,test=0.15
 --k-folds N          k-fold instead of ratios
 --seed N             deterministic given the manifest, seed and parameters (default 0)
+--algorithm 1|2      medh5.split/1 (the 2.x default) or medh5.split/2 (the 3.0 default)
+--previous SPLIT     continue a split JSON: its groups keep their places
 -o, --out split.json
 --write-claims       stamp each sample with its partition and the manifest digest
 --fold N             with --k-folds --write-claims: which fold is validation
@@ -363,6 +401,16 @@ sides. If the ratios cannot be met by an indivisible set of groups, the command
 says which partition got nothing rather than leaving you to notice later.
 `--fold` and `--assigned-by` describe the claims `--write-claims` stamps, so
 either without it is a usage error.
+
+`--algorithm` names how groups are dealt
+([the two algorithms](../guides/cohorts.md#the-algorithm-and-continuing-a-split));
+left out, the split is `medh5.split/1`, with a `warning:` on stderr where
+`medh5.split/2` would place some group differently. `--previous` continues
+a split: every group it placed keeps its partition or fold, and new groups are
+dealt by `medh5.split/2`; its parameters must be the previous split's, and
+`--algorithm 1` is refused with it. The split JSON records `algorithm` and,
+for a continued split, `previous` (the old manifest's digest, how many groups
+were kept, and those added and dropped).
 
 ### `medh5 dataset stats`
 

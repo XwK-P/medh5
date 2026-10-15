@@ -10,8 +10,11 @@ use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
 
 use medh5::dataset::check::check;
-use medh5::dataset::manifest::{scan, Manifest};
-use medh5::dataset::split::{locator, make_splits, write_claims, Split, SplitOptions};
+use medh5::dataset::manifest::{scan, Manifest, PathStyle, MANIFEST_SCHEMA};
+use medh5::dataset::split::{
+    default_algorithm_warning, locator, make_splits_asked, write_claims, Split, SplitAlgorithm, SplitOptions,
+    SplitRecord, SplitRequest,
+};
 use medh5::dataset::stats::{compute_stats, StatsOptions};
 use medh5::error::os_error;
 use medh5::json::{py_float, repr_str};
@@ -22,10 +25,11 @@ use crate::common::*;
 pub fn dispatch(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let result = match m.subcommand() {
         Some(("index", sub)) => index(sub, ctx),
+        Some(("upgrade", sub)) => upgrade(sub, ctx),
         Some(("split", sub)) => split(sub, ctx),
         Some(("stats", sub)) => stats(sub, ctx),
         Some(("check", sub)) => check_cmd(sub, ctx),
-        _ => return Ok(ctx.usage("usage: medh5 dataset {index|split|stats|check} ... (see --help)")),
+        _ => return Ok(ctx.usage("usage: medh5 dataset {index|upgrade|split|stats|check} ... (see --help)")),
     };
     match result {
         Err(e) if e.is_medh5() || matches!(e, Error::Io(_) | Error::Value(_)) => Ok(ctx.fail(e.python_str())),
@@ -41,7 +45,8 @@ fn index(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         std::fs::read_dir(root).map_err(|e| os_error(&e, root))?;
     }
     let (manifest, failures) = scan(Path::new(root), flag(m, "strict"))?;
-    let target = manifest.save(Path::new(req_str(m, "out")))?;
+    let style = if flag(m, "absolute") { PathStyle::Absolute } else { PathStyle::Keep };
+    let target = manifest.save_with(Path::new(req_str(m, "out")), style)?;
     let digest = manifest.sha256();
     if flag(m, "json") {
         let payload = json!({
@@ -65,6 +70,73 @@ fn index(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         }
     }
     Ok(if manifest.is_empty() { EXIT_ERROR } else { EXIT_OK })
+}
+
+/// A manifest, warning on stderr where it is legacy and 3.0 will read its
+/// paths against another directory.
+fn load_manifest(path: &str, ctx: &mut Ctx) -> medh5::Result<Manifest> {
+    let (manifest, differs) = Manifest::load_noting(Path::new(path), None)?;
+    if differs {
+        ctx.eprint(format!("warning: {}", legacy_warning(path)));
+    }
+    Ok(manifest)
+}
+
+/// What a legacy manifest read against the working directory is told.
+fn legacy_warning(path: &str) -> String {
+    format!(
+        "medh5 3.0 reads the paths of {} against its own directory, not the working directory: run `medh5 dataset \
+         upgrade` to rewrite it",
+        repr_str(path)
+    )
+}
+
+fn upgrade(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let source = req_str(m, "manifest");
+    let base = get_str(m, "base").map(Path::new);
+    let manifest = Manifest::load_with_base(Path::new(source), base)?;
+    // Upgraded against the wrong base, every path would be rewritten to
+    // point at nothing, with nothing to say so.
+    let mut missing: Vec<&str> = Vec::new();
+    for entry in &manifest.entries {
+        if !missing.contains(&entry.path.as_str()) && std::fs::metadata(&entry.path).is_err() {
+            missing.push(&entry.path);
+        }
+    }
+    if !missing.is_empty() {
+        let shown: Vec<String> = missing.iter().take(3).map(|p| repr_str(p)).collect();
+        let more = if missing.len() > 3 { format!(" and {} more", missing.len() - 3) } else { String::new() };
+        let under = match base {
+            Some(base) => repr_str(&base.to_string_lossy()),
+            None => "the working directory".into(),
+        };
+        return Ok(ctx.fail(format!(
+            "{} file(s) of {} do not exist under {under}: {}{more}; nothing was written: pass --base with the \
+             directory its paths are relative to",
+            missing.len(),
+            repr_str(source),
+            shown.join(", ")
+        )));
+    }
+    // Relative wherever it can be: what the upgrade is for, whether the old
+    // path or `--base` was named absolute.
+    let target = manifest.save_with(Path::new(req_str(m, "out")), PathStyle::Relative)?;
+    if flag(m, "json") {
+        let payload = json!({
+            "manifest": target.to_string_lossy(),
+            "schema": MANIFEST_SCHEMA,
+            "samples": manifest.len(),
+            "sha256": manifest.sha256(),
+        });
+        ctx.emit(&payload, true);
+    } else {
+        ctx.print(format!(
+            "{}: {} sample(s), paths relative to the manifest ({MANIFEST_SCHEMA})",
+            target.display(),
+            manifest.len()
+        ));
+    }
+    Ok(EXIT_OK)
 }
 
 fn fmt_ratios(ratios: &IndexMap<String, f64>) -> String {
@@ -100,7 +172,7 @@ fn balance_cell(split: &Split, partition: &str) -> String {
 }
 
 fn split(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
-    let manifest = Manifest::load(Path::new(req_str(m, "manifest")))?;
+    let manifest = load_manifest(req_str(m, "manifest"), ctx)?;
     let ratios = match get_str(m, "ratios") {
         Some(text) if !text.is_empty() => Some(parse_ratios(text)?),
         _ => None,
@@ -113,17 +185,24 @@ fn split(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         k_folds: get_i64(m, "k_folds"),
         seed: get_i64(m, "seed").unwrap_or(0),
     };
-    let split = make_splits(&manifest, &options)?;
+    let previous = get_str(m, "previous").map(|p| SplitRecord::load(Path::new(p))).transpose()?;
+    let algorithm = get_str(m, "algorithm").map(SplitAlgorithm::parse).transpose()?;
+    let request = SplitRequest::from(options).with_previous(previous);
+    let (record, moved) = make_splits_asked(&manifest, &request, algorithm)?;
+    if let Some(moved) = moved.filter(|n| *n > 0) {
+        ctx.eprint(format!("warning: {}", default_algorithm_warning(moved, "pass --algorithm 1")));
+    }
+    let split = &record.split;
     let written = if flag(m, "write_claims") {
-        write_claims(&split, &manifest, get_str(m, "assigned_by"), get_i64(m, "fold"))?
+        write_claims(split, &manifest, get_str(m, "assigned_by"), get_i64(m, "fold"))?
     } else {
         Vec::new()
     };
     if let Some(out) = get_str(m, "out") {
-        std::fs::write(out, medh5::json::pretty(&split.to_json()) + "\n").map_err(|e| os_error(&e, out))?;
+        std::fs::write(out, medh5::json::pretty(&record.to_json()) + "\n").map_err(|e| os_error(&e, out))?;
     }
     if flag(m, "json") {
-        let mut payload = match split.to_json() {
+        let mut payload = match record.to_json() {
             Value::Object(m) => m,
             _ => Map::new(),
         };
@@ -133,16 +212,26 @@ fn split(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         let rows: Vec<Vec<String>> = split
             .counts()
             .iter()
-            .map(|(partition, n)| vec![partition.clone(), n.to_string(), balance_cell(&split, partition)])
+            .map(|(partition, n)| vec![partition.clone(), n.to_string(), balance_cell(split, partition)])
             .collect();
         let stratify = get_str(m, "stratify_by").unwrap_or("-");
         ctx.print(table(&rows, &["partition", "samples", stratify]));
         ctx.print(format!(
-            "{} group(s) by {}, manifest {}",
+            "{} group(s) by {}, manifest {}, {}",
             split.assignments.len(),
             req_str(m, "group_by"),
-            &split.manifest_sha256[..12.min(split.manifest_sha256.len())]
+            &split.manifest_sha256[..12.min(split.manifest_sha256.len())],
+            record.algorithm.as_str()
         ));
+        if let Some(lineage) = &record.lineage {
+            ctx.print(format!(
+                "continued a split of manifest {}: {} group(s) kept, {} added, {} dropped",
+                &lineage.manifest_sha256[..12.min(lineage.manifest_sha256.len())],
+                lineage.kept,
+                lineage.added.len(),
+                lineage.dropped.len()
+            ));
+        }
         if !written.is_empty() {
             ctx.print(format!("wrote split claims into {} file(s)", written.len()));
         }
@@ -164,7 +253,7 @@ fn split(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 }
 
 fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
-    let manifest = Manifest::load(Path::new(req_str(m, "manifest")))?;
+    let manifest = load_manifest(req_str(m, "manifest"), ctx)?;
     let mut entries: Vec<&medh5::dataset::Entry> = manifest.entries.iter().collect();
     if let Some(partition) = get_str(m, "partition") {
         let set_id = req_str(m, "set_id");
@@ -243,7 +332,8 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                         s.key.clone().unwrap_or_else(|| "-".into()),
                         thousands(i128::from(s.voxels)),
                         format!("{}/{}", s.present_in, s.examined_in),
-                        percent(s.prevalence(), 0, false),
+                        // A class nobody examined has no prevalence to print.
+                        s.examined_prevalence().map(|p| percent(p, 0, false)).unwrap_or_else(|| "-".into()),
                     ]
                 })
                 .collect();
@@ -260,7 +350,7 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 }
 
 fn check_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
-    let manifest = Manifest::load(Path::new(req_str(m, "manifest")))?;
+    let manifest = load_manifest(req_str(m, "manifest"), ctx)?;
     let report = check(&manifest, get_str(m, "set_id"), flag(m, "deep"));
     if flag(m, "json") {
         ctx.emit(&report.to_json(), true);

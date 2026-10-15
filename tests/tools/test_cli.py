@@ -20,6 +20,7 @@ from medh5.annotations.voxel import InstanceInput
 from medh5.cli import EXIT_ERROR, EXIT_OK, EXIT_USAGE, main
 from medh5.labels import LabelClass, LabelSet
 from tests.helpers import (
+    LATER_MINOR,
     block,
     encode_attr,
     write_legacy_sample,
@@ -494,7 +495,7 @@ class TestInfo:
         with h5py.File(path, "r+") as handle:
             kinds = ["depth", "spatial", "spatial"]
             handle["grids/g"].attrs["axis_kinds"] = encode_attr(kinds)
-            handle.attrs["medh5_version"] = encode_attr("1.2")
+            handle.attrs["medh5_version"] = encode_attr(LATER_MINOR)
         code, out = run(capsys, "info", str(path))
         assert code == EXIT_OK
         assert "MR" in out.out
@@ -1132,6 +1133,32 @@ class TestFixAndScrub:
         code, out = run(capsys, "fix", str(sample_path))
         assert code == EXIT_OK
         assert "nothing to fix" in out.out
+
+    def test_S2_1_fix_names_the_repair_for_an_unknown_algorithm(
+        self, capsys, sample_path
+    ):
+        """A file declaring a `digest_algo` §2.1 does not permit cannot be
+        diagnosed; the refusal names the one repair, which restamps it in
+        sha256 and records the change."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle.attrs["digest_algo"] = "blake3"
+        before = sample_path.read_bytes()
+        code, out = run(capsys, "fix", str(sample_path))
+        assert code == EXIT_ERROR
+        assert "E703" in out.err and "'blake3'" in out.err
+        assert "medh5 fix --rewrite-digests --reason" in out.err
+        assert sample_path.read_bytes() == before
+        code, out = run(
+            capsys,
+            "fix",
+            str(sample_path),
+            "--rewrite-digests",
+            "--reason",
+            "imported from a blake3 tool",
+        )
+        assert code == EXIT_OK, out.err
+        assert "'blake3'" in out.out and "sha256" in out.out
+        assert run(capsys, "validate", str(sample_path), "--level", "integrity")[0] == 0
 
     def test_fix_refuses_to_restamp_without_a_reason(self, capsys, sample_path):
         before = sample_path.read_bytes()
@@ -2488,9 +2515,15 @@ class TestConvertPathsNeverAlias:
         assert "the report was not written" in printed.err
         assert sample.read_bytes() == b"the sample"
 
-    def test_a_report_replaces_a_link_rather_than_writing_through_it(
+    def test_S14_4_a_report_keeps_a_link_and_replaces_its_target(
         self, capsys, monkeypatch, tmp_path
     ):
+        """Until 2.1 a report replaced a link at its path, where every
+        amendment followed it (§14.4); the report now goes through the
+        engine's replace, so the link stays and the file it names is
+        replaced.  A link planted at the temporary's name is passed over,
+        which `s14_4_a_link_at_the_next_temporary_name_is_passed_over`
+        holds: the name is the engine's."""
         from medh5 import cli
         from medh5.io.report import ConversionReport
 
@@ -2508,54 +2541,11 @@ class TestConvertPathsNeverAlias:
         )
         argv = ["from-nnunet", str(tmp_path / "x"), str(tmp_path / "y")]
         assert run(capsys, "convert", *argv, "--report", str(link))[0] == EXIT_OK
-        assert not link.is_symlink()
+        assert link.is_symlink() and link.resolve() == other.resolve()
         assert (
-            json.loads(link.read_text(encoding="utf-8"))["converter"] == "from-nnunet"
+            json.loads(other.read_text(encoding="utf-8"))["converter"] == "from-nnunet"
         )
-        assert other.read_text(encoding="utf-8") == "someone else's"
-
-    def test_a_link_at_the_temporary_name_is_not_written_through(
-        self, capsys, monkeypatch, tmp_path
-    ):
-        """The temporary beside a report was ``.<pid>-<name>``: a link planted
-        there, by anyone who could write the directory, was followed, and the
-        file it named overwritten with the report.  The temporary is created
-        exclusively under a random name, and a name already taken is passed
-        over."""
-        import secrets
-
-        from medh5 import cli
-        from medh5.io.report import ConversionReport
-
-        other = tmp_path / "other.txt"
-        other.write_text("someone else's", encoding="utf-8")
-        planted = [
-            tmp_path / f".{os.getpid()}-r.json",
-            tmp_path / f".{os.getpid()}-00000000-r.json",
-        ]
-        try:
-            for link in planted:
-                link.symlink_to(other)
-        except OSError as exc:  # pragma: no cover - no links on this file system
-            pytest.skip(str(exc))
-        tokens = iter(["00000000", "11111111"])
-        monkeypatch.setattr(secrets, "token_hex", lambda _: next(tokens))
-        monkeypatch.setitem(
-            cli._HANDLERS,
-            "from-nnunet",
-            lambda a: cli._finish(ConversionReport(converter="from-nnunet"), a),
-        )
-        report = tmp_path / "r.json"
-        argv = ["from-nnunet", str(tmp_path / "x"), str(tmp_path / "y")]
-        assert run(capsys, "convert", *argv, "--report", str(report))[0] == EXIT_OK
-        assert (
-            json.loads(report.read_text(encoding="utf-8"))["converter"] == "from-nnunet"
-        )
-        assert other.read_text(encoding="utf-8") == "someone else's"
-        assert all(link.is_symlink() for link in planted)
-        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
-            ["other.txt", "r.json", *(link.name for link in planted)]
-        )
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["other.txt", "r.json"]
 
     def test_a_report_naming_the_output_of_a_real_import_is_refused(
         self, capsys, tmp_path

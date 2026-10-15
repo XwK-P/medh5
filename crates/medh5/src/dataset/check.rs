@@ -37,6 +37,37 @@ pub const CHECK_CODES: [(&str, &str); 12] = [
     ("C501", "the cohort mixes de-identified and non-de-identified samples"),
 ];
 
+/// Each cohort code's severity, in the order of [`CHECK_CODES`].
+///
+/// A code's base severity: `C401` is a warning, and an error under
+/// `dataset check --deep`, which re-reads every `content_id` and so knows the
+/// file changed rather than suspecting it. `C204` is a refusal: `dataset
+/// split` raises it rather than reporting it.
+pub const CHECK_SEVERITY: &[(&str, &str)] = &[
+    ("C101", "warning"),
+    ("C102", "error"),
+    ("C103", "warning"),
+    ("C201", "error"),
+    ("C202", "error"),
+    ("C203", "warning"),
+    ("C204", "error"),
+    ("C301", "warning"),
+    ("C302", "info"),
+    ("C401", "warning"),
+    ("C402", "error"),
+    ("C501", "warning"),
+];
+
+/// The base severity of a cohort code, or `None` for a code that is not one.
+pub fn code_severity(code: &str) -> Option<&'static str> {
+    CHECK_SEVERITY.iter().find(|(c, _)| *c == code).map(|(_, s)| *s)
+}
+
+/// The base severity of a code this module reports.
+fn severity(code: &str) -> &'static str {
+    code_severity(code).expect("a cohort code")
+}
+
 /// The summary of a cohort code, or `""`.
 pub fn code_summary(code: &str) -> &'static str {
     CHECK_CODES.iter().find(|(c, _)| *c == code).map(|(_, s)| *s).unwrap_or("")
@@ -227,7 +258,7 @@ fn vocabulary(manifest: &Manifest, report: &mut CohortReport) {
     if !missing.is_empty() {
         report.add(
             "C103",
-            "warning",
+            severity("C103"),
             format!(
                 "{} sample(s) declare no label set, so their class ids mean whatever the reader assumes",
                 missing.len()
@@ -244,7 +275,7 @@ fn vocabulary(manifest: &Manifest, report: &mut CohortReport) {
         let first: Vec<String> = by_digest.values().map(|es| locator(es[0])).collect();
         report.add(
             "C101",
-            "warning",
+            severity("C101"),
             format!(
                 "{} distinct label sets in one cohort ({})",
                 by_digest.len(),
@@ -316,7 +347,7 @@ fn meanings(by_digest: &IndexMap<&str, Vec<&Entry>>, first: Vec<String>, report:
     };
     report.add(
         "C102",
-        "error",
+        severity("C102"),
         format!(
             "class id(s) {} mean different things in different label sets ({}{more}); training on the union \
              labels one class with another's examples{unrecorded}",
@@ -377,7 +408,7 @@ fn splits(manifest: &Manifest, report: &mut CohortReport, set_id: Option<&str>) 
     if !stale.is_empty() {
         report.add(
             "C201",
-            "error",
+            severity("C201"),
             format!(
                 "{} sample(s) claim a split computed against a different manifest --- re-split, or the partitions are \
                  not the ones in use",
@@ -389,7 +420,7 @@ fn splits(manifest: &Manifest, report: &mut CohortReport, set_id: Option<&str>) 
     if !unclaimed.is_empty() && unclaimed.len() != manifest.len() {
         report.add(
             "C203",
-            "warning",
+            severity("C203"),
             format!("{} of {} sample(s) carry no split claim", unclaimed.len(), manifest.len()),
             unclaimed,
         );
@@ -411,7 +442,7 @@ fn splits(manifest: &Manifest, report: &mut CohortReport, set_id: Option<&str>) 
             .collect();
         report.add(
             "C202",
-            "error",
+            severity("C202"),
             format!(
                 "{} grouping key(s), or keys sharing a subject, appear in more than one partition, or fold, of the \
                  same split --- this leaks anatomy between train and test. Subjects involved: {}",
@@ -444,7 +475,7 @@ fn coverage(manifest: &Manifest, report: &mut CohortReport) {
     if !partial.is_empty() {
         report.add(
             "C301",
-            "warning",
+            severity("C301"),
             format!(
                 "class(es) {} are examined in only part of the cohort; the unexamined samples are not negative \
                  examples of them (§11.3)",
@@ -457,7 +488,7 @@ fn coverage(manifest: &Manifest, report: &mut CohortReport) {
     if !unexamined.is_empty() {
         report.add(
             "C302",
-            "info",
+            severity("C302"),
             format!(
                 "class(es) {} are named but examined in no sample, so no sample is a negative example of them \
                  (§11.3); `medh5 dataset stats` counts where they occur",
@@ -479,7 +510,12 @@ fn freshness(manifest: &Manifest, report: &mut CohortReport, deep: bool) {
         .map(str::to_string)
         .collect();
     if !missing.is_empty() {
-        report.add("C402", "error", format!("{} manifest file(s) no longer exist", missing.len()), missing.clone());
+        report.add(
+            "C402",
+            severity("C402"),
+            format!("{} manifest file(s) no longer exist", missing.len()),
+            missing.clone(),
+        );
     }
     let gone: HashSet<&str> = missing.iter().map(String::as_str).collect();
     let mut changed: Vec<String> = manifest.stale().into_iter().filter(|p| !gone.contains(p.as_str())).collect();
@@ -491,7 +527,7 @@ fn freshness(manifest: &Manifest, report: &mut CohortReport, deep: bool) {
     if !changed.is_empty() {
         report.add(
             "C401",
-            if deep { "error" } else { "warning" },
+            if deep { "error" } else { severity("C401") },
             format!(
                 "{} file(s) changed after the manifest was written; re-scan before trusting a split made from it",
                 changed.len()
@@ -528,7 +564,7 @@ fn deidentification(manifest: &Manifest, report: &mut CohortReport) {
     if !identified.is_empty() && identified.len() != manifest.len() {
         report.add(
             "C501",
-            "warning",
+            severity("C501"),
             format!(
                 "{} of {} sample(s) carry no de-identification record; absence is not evidence of it",
                 identified.len(),
@@ -536,5 +572,102 @@ fn deidentification(manifest: &Manifest, report: &mut CohortReport) {
             ),
             identified,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dataset::split::{make_splits_with, SplitRequest};
+
+    fn claim(partition: &str, digest: &str) -> Map<String, Value> {
+        json!({"set_id": "s", "partition": partition, "manifest_sha256": digest}).as_object().unwrap().clone()
+    }
+
+    /// A cohort that raises every code `check` reports: two label sets that
+    /// disagree on class 1 and a sample with none, a stale claim, one subject
+    /// in two partitions and a sample with no claim, class 1 examined in one
+    /// of three samples and class 2 in none, a missing file and a changed
+    /// one, and one sample without a de-identification record.
+    fn every_code(dir: &Path) -> Manifest {
+        let changed = dir.join("changed.medh5");
+        std::fs::write(&changed, b"not the bytes scanned").unwrap();
+        let gone = Entry {
+            path: dir.join("gone.medh5").to_string_lossy().into_owned(),
+            sample_id: "a".into(),
+            subject_id: "p1".into(),
+            group_id: "p1".into(),
+            class_ids: vec![1],
+            annotated_class_ids: vec![1],
+            class_keys: BTreeMap::from([(1, "liver".to_string())]),
+            label_set_id: Some("one".into()),
+            label_set_digest: Some("d1".into()),
+            splits: vec![claim("train", "another manifest")],
+            deidentified: true,
+            ..Default::default()
+        };
+        let changed = Entry {
+            path: changed.to_string_lossy().into_owned(),
+            sample_id: "b".into(),
+            subject_id: "p1".into(),
+            group_id: "p1".into(),
+            class_ids: vec![1, 2],
+            class_keys: BTreeMap::from([(1, "kidney".to_string()), (2, "spleen".to_string())]),
+            label_set_id: Some("two".into()),
+            label_set_digest: Some("d2".into()),
+            splits: vec![claim("test", "another manifest")],
+            ..Default::default()
+        };
+        let bare = Entry {
+            path: dir.join("bare.medh5").to_string_lossy().into_owned(),
+            sample_id: "c".into(),
+            subject_id: "p2".into(),
+            group_id: "p2".into(),
+            deidentified: true,
+            ..Default::default()
+        };
+        Manifest { entries: vec![gone, changed, bare], ..Default::default() }
+    }
+
+    #[test]
+    fn every_code_has_one_severity_from_the_vocabulary() {
+        let codes: Vec<&str> = CHECK_CODES.iter().map(|(c, _)| *c).collect();
+        let severities: Vec<&str> = CHECK_SEVERITY.iter().map(|(c, _)| *c).collect();
+        assert_eq!(codes, severities);
+        for (code, severity) in CHECK_SEVERITY {
+            assert!(SEVERITIES.contains(severity), "{code}: {severity}");
+            assert_eq!(code_severity(code), Some(*severity));
+        }
+        assert_eq!(code_severity("C999"), None);
+    }
+
+    #[test]
+    fn every_finding_carries_its_codes_severity() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = check(&every_code(dir.path()), None, false);
+        let found: BTreeSet<&str> = report.findings.iter().map(|f| f.code.as_str()).collect();
+        let reported: BTreeSet<&str> = CHECK_CODES.iter().map(|(c, _)| *c).filter(|c| *c != "C204").collect();
+        assert_eq!(found, reported, "{}", report.format());
+        for finding in &report.findings {
+            assert_eq!(Some(finding.severity.as_str()), code_severity(&finding.code), "{finding}");
+        }
+        // C204 is the splitter's refusal, not a finding.
+        let mut cohort = every_code(dir.path());
+        cohort.entries[1].group_id = "p1-again".into();
+        let request = SplitRequest { group_by: "group_id".into(), ..Default::default() };
+        let refused = make_splits_with(&cohort, &request).unwrap_err();
+        assert_eq!(refused.code(), Some("C204"));
+        assert_eq!(code_severity("C204"), Some("error"));
+    }
+
+    #[test]
+    fn c401_is_an_error_only_with_deep() {
+        let dir = tempfile::tempdir().unwrap();
+        let cohort = every_code(dir.path());
+        let c401 = |deep: bool| {
+            check(&cohort, None, deep).findings.into_iter().find(|f| f.code == "C401").expect("C401").severity
+        };
+        assert_eq!(c401(false), "warning");
+        assert_eq!(c401(true), "error");
     }
 }

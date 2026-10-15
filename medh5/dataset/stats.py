@@ -51,7 +51,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from medh5 import _core
+from medh5 import _core, _deprecation
 
 
 @dataclass(slots=True)
@@ -122,19 +122,36 @@ class ClassStats:
     key: str | None = None
 
     @property
+    def examined_prevalence(self) -> float | None:
+        """Fraction of *examining* samples in which the class was found;
+        ``None`` when no sample examined it, which says nothing about how
+        often it occurs (§11.3)."""
+        return self.present_in / self.examined_in if self.examined_in else None
+
+    @property
     def prevalence(self) -> float:
-        """Fraction of *examining* samples in which the class was found."""
-        return self.present_in / self.examined_in if self.examined_in else 0.0
+        """:attr:`examined_prevalence`, with 0.0 for a class no sample examined.
+
+        That 0.0 reads as "looked for everywhere, found nowhere" for a class
+        nobody looked for, so it raises a ``FutureWarning`` there: medh5 3.0
+        returns ``None``.
+        """
+        found = self.examined_prevalence
+        if found is None:
+            _deprecation.warn(
+                "medh5 3.0 returns None for the prevalence of a class no sample "
+                "examined: use examined_prevalence",
+                category=FutureWarning,
+                stacklevel=3,
+            )
+            return 0.0
+        return found
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "class_id": self.class_id,
-            "key": self.key,
-            "voxels": self.voxels,
-            "present_in": self.present_in,
-            "examined_in": self.examined_in,
-            "prevalence": self.prevalence,
-        }
+        """The engine's JSON: ``prevalence`` is ``null`` where no sample examined
+        the class."""
+        found: dict[str, Any] = _core.dataset_class_stats_json(self)
+        return found
 
 
 @dataclass(slots=True)

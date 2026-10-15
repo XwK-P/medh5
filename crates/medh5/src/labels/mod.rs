@@ -13,7 +13,9 @@
 pub mod registry;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::Path;
 
+use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
 
 use crate::digest::hash_hex;
@@ -821,9 +823,129 @@ pub fn from_keys(keys: &[String], id: &str, version: &str, start: i64) -> Result
     LabelSet::new(id, classes, version, Vec::new(), Vec::new(), "inline", None, None)
 }
 
+/// What decides that two files share class ids: the label set's digest;
+/// `None` when the file declares none.
+///
+/// An empty label set is a declared vocabulary, as `dataset check`'s C101
+/// reads it: two with different ids are two vocabularies.
+pub fn vocabulary_of(label_set: Option<&LabelSet>) -> Option<String> {
+    label_set.map(LabelSet::sha256)
+}
+
+/// How `labels check` prints a vocabulary: `id@version#` and 16 hex digits
+/// of the digest.
+pub fn vocabulary_key(label_set: &LabelSet) -> String {
+    let digest = label_set.sha256();
+    format!("{}@{}#{}", label_set.id, label_set.version, &digest[..16.min(digest.len())])
+}
+
+/// What `labels check` prints for a file that declares no label set.
+pub const NO_VOCABULARY: &str = "<none>";
+
+/// Which files share a vocabulary: [`check_vocabularies`].
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct VocabularyCheck {
+    /// The files of each vocabulary ([`vocabulary_of`]), in the order first
+    /// seen; `None` holds the files that declare no label set.
+    pub groups: IndexMap<Option<String>, Vec<String>>,
+    /// How each vocabulary prints ([`vocabulary_key`], or [`NO_VOCABULARY`]).
+    pub keys: IndexMap<Option<String>, String>,
+    /// The files that could not be read, and why.
+    pub unreadable: IndexMap<String, Error>,
+    /// Every path, in the order given.
+    pub paths: Vec<String>,
+}
+
+impl VocabularyCheck {
+    /// Record one file: its label set, or why it could not be read.
+    pub fn add(&mut self, path: impl Into<String>, label_set: Result<Option<&LabelSet>>) {
+        let path = path.into();
+        self.paths.push(path.clone());
+        match label_set {
+            Err(error) => {
+                self.unreadable.insert(path, error);
+            }
+            Ok(label_set) => {
+                let vocabulary = vocabulary_of(label_set);
+                self.keys
+                    .entry(vocabulary.clone())
+                    .or_insert_with(|| label_set.map(vocabulary_key).unwrap_or_else(|| NO_VOCABULARY.into()));
+                self.groups.entry(vocabulary).or_default().push(path);
+            }
+        }
+    }
+
+    /// Every file read, and all of them one vocabulary.
+    pub fn ok(&self) -> bool {
+        self.groups.len() <= 1 && self.unreadable.is_empty()
+    }
+
+    /// The printed key of `path`'s vocabulary, or `None` for a file that
+    /// could not be read.
+    pub fn key_of(&self, path: &str) -> Option<&str> {
+        self.groups.iter().find(|(_, files)| files.iter().any(|f| f == path)).map(|(v, _)| self.keys[v].as_str())
+    }
+
+    /// What `medh5 labels check --json` writes: `ok`, the files of each
+    /// vocabulary by its printed key, the unreadable files and why, and an
+    /// entry for every file.
+    pub fn to_json(&self) -> Value {
+        let vocabularies: Map<String, Value> =
+            self.groups.iter().map(|(v, files)| (self.keys[v].clone(), json!(files))).collect();
+        let unreadable: Map<String, Value> =
+            self.unreadable.iter().map(|(path, error)| (path.clone(), json!(error.to_string()))).collect();
+        let files: Vec<Value> = self
+            .paths
+            .iter()
+            .map(|path| match self.unreadable.get(path) {
+                Some(error) => json!({"path": path, "ok": false, "error": error.to_string()}),
+                None => json!({"path": path, "ok": true, "vocabulary": self.key_of(path)}),
+            })
+            .collect();
+        json!({"ok": self.ok(), "vocabularies": vocabularies, "unreadable": unreadable, "files": files})
+    }
+}
+
+/// Group sample files by the vocabulary their class ids are in (D25): by
+/// [`vocabulary_of`], the rule `dataset check`'s C101 and C103 apply.
+pub fn check_vocabularies<P: AsRef<Path>>(paths: &[P]) -> VocabularyCheck {
+    let mut out = VocabularyCheck::default();
+    for path in paths {
+        let path = path.as_ref();
+        let sample = crate::sample::open_sample(path);
+        let label_set = sample.as_ref().map_err(Clone::clone).and_then(|s| s.label_set());
+        out.add(path.to_string_lossy(), label_set);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D25: an empty label set is a vocabulary, told apart by its id; a file
+    /// without one is none.
+    #[test]
+    fn d25_empty_label_sets_with_other_ids_are_two_vocabularies() {
+        let empty =
+            |id: &str| LabelSet::new(id, Vec::new(), "1", Vec::new(), Vec::new(), "inline", None, None).unwrap();
+        let (a, b) = (empty("a"), empty("b"));
+        assert_ne!(vocabulary_of(Some(&a)), vocabulary_of(Some(&b)));
+        assert_eq!(vocabulary_of(Some(&a)), vocabulary_of(Some(&empty("a"))));
+        assert_eq!(vocabulary_of(None), None);
+        assert!(vocabulary_key(&a).starts_with("a@1#"));
+        let mut check = VocabularyCheck::default();
+        check.add("x", Ok(Some(&a)));
+        check.add("y", Ok(Some(&b)));
+        check.add("z", Ok(None));
+        check.add("w", Err(Error::invalid("unreadable")));
+        assert_eq!(check.groups.len(), 3);
+        assert!(!check.ok());
+        let doc = check.to_json();
+        assert_eq!(doc["vocabularies"]["<none>"], json!(["z"]));
+        assert_eq!(doc["files"][3], json!({"path": "w", "ok": false, "error": "unreadable"}));
+    }
 
     fn sample() -> LabelSet {
         let mut lesion = LabelClass::new(3, "lesion", "Lesion").unwrap();

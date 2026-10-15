@@ -149,7 +149,7 @@ CODES_SOURCE = "crates/medh5/data/codes.json"
 CHECK_SOURCE = "crates/medh5/src/dataset/check.rs"
 
 
-def _load_codes(root: Path) -> list[dict[str, str]]:
+def _load_codes(root: Path) -> list[dict[str, Any]]:
     """The §15.2 diagnostic code table, in table order.
 
     The engine embeds this file (`include_str!`), so what the page renders is
@@ -160,42 +160,67 @@ def _load_codes(root: Path) -> list[dict[str, str]]:
         raise FileNotFoundError(f"the diagnostic code table is not at {path}")
     codes = json.loads(path.read_text(encoding="utf-8"))["codes"]
     for row in codes:
-        missing = {"code", "severity", "domain", "summary"} - set(row)
+        missing = {"code", "severity", "domain", "summary", "since", "revision"} - set(
+            row
+        )
         if missing:  # pragma: no cover - defensive
             raise ValueError(f"{path}: {row.get('code', row)} lacks {sorted(missing)}")
     return list(codes)
 
 
-# One `("C101", "summary"),` row of the Rust table.  The summaries are plain
-# string literals; an escape in one would need decoding, so it is refused.
-_CHECK_TABLE = re.compile(
-    r"pub const CHECK_CODES: \[\(&str, &str\); \d+\] = \[(?P<rows>.*?)\n\];", re.S
-)
-_CHECK_ROW = re.compile(r'\(\s*"(?P<code>C\d{3})",\s*"(?P<summary>[^"\\]*)",?\s*\),?')
+# One `("C101", "value"),` row of a Rust table.  The values are plain string
+# literals; an escape in one would need decoding, so it is refused.
+_CHECK_TABLES = {
+    "CHECK_CODES": re.compile(
+        r"pub const CHECK_CODES: \[\(&str, &str\); \d+\] = \[(?P<rows>.*?)\n\];", re.S
+    ),
+    "CHECK_SEVERITY": re.compile(
+        r"pub const CHECK_SEVERITY: &\[\(&str, &str\)\] = &\[(?P<rows>.*?)\n\];",
+        re.S,
+    ),
+}
+_CHECK_ROW = re.compile(r'\(\s*"(?P<code>C\d{3})",\s*"(?P<value>[^"\\]*)",?\s*\),?')
 
 
-def _cohort_codes(root: Path) -> dict[str, str]:
-    """``CHECK_CODES`` from the engine's cohort check, read from its source.
+def _check_table(root: Path, name: str) -> dict[str, str]:
+    """One `(code, value)` table of the engine's cohort check, read from its source.
 
-    The table is a Rust array of `(code, summary)` string pairs, so it is
-    parsed rather than compiled --- and the parse refuses anything else, so a
-    reshaped table fails the build instead of rendering an incomplete page.
+    The tables are Rust arrays of string pairs, so they are parsed rather than
+    compiled --- and the parse refuses anything else, so a reshaped table fails
+    the build instead of rendering an incomplete page.
     """
     path = root / CHECK_SOURCE
     if not path.is_file():
         raise FileNotFoundError(f"the cohort check table is not at {path}")
-    table = _CHECK_TABLE.search(path.read_text(encoding="utf-8"))
+    table = _CHECK_TABLES[name].search(path.read_text(encoding="utf-8"))
     if table is None:
         raise ValueError(
-            f"CHECK_CODES is no longer a `[(&str, &str); N]` table in {path}; the "
+            f"{name} is no longer a table of `(&str, &str)` pairs in {path}; the "
             "cohort check reference page cannot be generated from it"
         )
     rows = table.group("rows")
-    codes = {m["code"]: m["summary"] for m in _CHECK_ROW.finditer(rows)}
+    codes = {m["code"]: m["value"] for m in _CHECK_ROW.finditer(rows)}
     leftover = _CHECK_ROW.sub("", rows).strip()
     if leftover or not codes:
-        raise ValueError(f"unparsed CHECK_CODES rows in {path}: {leftover[:200]!r}")
+        raise ValueError(f"unparsed {name} rows in {path}: {leftover[:200]!r}")
     return codes
+
+
+def _cohort_codes(root: Path) -> dict[str, str]:
+    """``CHECK_CODES`` from the engine's cohort check: each code's summary."""
+    return _check_table(root, "CHECK_CODES")
+
+
+def _cohort_severities(root: Path) -> dict[str, str]:
+    """``CHECK_SEVERITY`` from the engine's cohort check: each code's severity."""
+    severities = _check_table(root, "CHECK_SEVERITY")
+    codes = _cohort_codes(root)
+    if severities.keys() != codes.keys():
+        raise ValueError(
+            "CHECK_SEVERITY and CHECK_CODES name different codes: "
+            f"{sorted(severities.keys() ^ codes.keys())}"
+        )
+    return severities
 
 
 # --------------------------------------------------------------------------
@@ -252,9 +277,12 @@ def _codes_markdown(root: Path) -> str:
     """The §15.2 diagnostic code table, grouped by domain."""
     codes = _load_codes(root)
     warnings = sum(c["severity"] == "warning" for c in codes)
+    revision = json.loads((root / CODES_SOURCE).read_text(encoding="utf-8"))["revision"]
     out: list[str] = [
         f"{len(codes)} codes: **{len(codes) - warnings} errors** and "
-        f"**{warnings} warnings**. Every one has a conformance case.",
+        f"**{warnings} warnings**, at revision {revision} of the table. "
+        "Every one has a conformance case. *Since* is the format version whose "
+        "rules a code reports; *rev.* the revision of the table that allocated it.",
         "",
     ]
     seen = 0
@@ -266,12 +294,12 @@ def _codes_markdown(root: Path) -> str:
         out += [
             f"### {title}",
             "",
-            "| Code | Severity | Meaning |",
-            "|---|---|---|",
+            "| Code | Severity | Since / rev. | Meaning |",
+            "|---|---|---|---|",
         ]
         out += [
             f"| `{c['code']}`{{ #{c['code'].lower()} }} | {c['severity']} "
-            f"| {_cell(c['summary'])} |"
+            f"| {c['since']} / {c['revision']} | {_cell(c['summary'])} |"
             for c in rows
         ]
         out.append("")
@@ -286,10 +314,19 @@ def _codes_markdown(root: Path) -> str:
 def _cohort_codes_markdown(root: Path) -> str:
     """The C1xx--C5xx cohort check table."""
     codes = _cohort_codes(root)
-    out = ["| Code | Meaning |", "|---|---|"]
+    severities = _cohort_severities(root)
+    out = ["| Code | Severity | Meaning |", "|---|---|---|"]
     out += [
-        f"| `{code}`{{ #{code.lower()} }} | {_cell(summary)} |"
+        f"| `{code}`{{ #{code.lower()} }} | {severities[code]} | {_cell(summary)} |"
         for code, summary in sorted(codes.items())
+    ]
+    out += [
+        "",
+        "The severity is each code's own. `C401` is the one that changes: "
+        "`dataset check --deep` re-reads every file's `content_id`, so it knows a "
+        "file changed rather than suspecting it from its size and modification "
+        "time, and reports `C401` as an error. `C204` is never reported: "
+        "`dataset split` refuses with it.",
     ]
     return "\n".join(out)
 
