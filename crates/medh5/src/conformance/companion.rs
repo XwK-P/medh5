@@ -28,7 +28,7 @@ use crate::array::NdArray;
 use crate::clinical::model::HOUR;
 use crate::companion::cache::{event_entry_id, CacheEntry, CacheHeader, CacheWriter};
 use crate::companion::task::TaskManifest;
-use crate::companion::{preflight, validate_cache, Admitted, SourceRef};
+use crate::companion::{preflight, validate_cache_in, Admitted, CacheCheck, SourceAccess, SourceRef};
 use crate::h5::attrs::{self, AttrValue};
 use crate::pyval::py_path;
 use crate::{Error, Result};
@@ -716,16 +716,24 @@ pub fn run_fixtures(corpus: &Path) -> Result<Vec<FixtureResult>> {
 fn check(file: &Path, base: &Path, fixture: &Value) -> Result<Value> {
     let level = fixture["level"].as_str().unwrap_or("validate");
     if level == "cache" {
-        let (task, admitted) = match fixture["task"].as_str() {
+        // As `cache validate --task` runs: the task's sources and the
+        // entries' own resolve against the task's directory, without one
+        // against the cache's.
+        let access = SourceAccess::new(Some(base));
+        let task = match fixture["task"].as_str() {
             Some(task) => {
                 let manifest = TaskManifest::load(&base.join(task))?;
-                let admitted = Admitted::preflight(&manifest, Some(base), false)?;
-                (Some(manifest), Some(admitted))
+                let admitted = Admitted::preflight_in(&manifest, &access, false)?;
+                Some((manifest, admitted))
             }
-            None => (None, None),
+            None => None,
         };
-        let base = task.as_ref().map(|_| base);
-        return Ok(validate_cache(file, base, task.as_ref(), admitted.as_ref())?.to_json());
+        let entries = SourceAccess::new(if task.is_some() { Some(base) } else { file.parent() });
+        let mut check = CacheCheck::new(entries);
+        if let Some((manifest, admitted)) = &task {
+            check = check.with_task(manifest, &access).with_admitted(admitted);
+        }
+        return Ok(validate_cache_in(file, &check)?.to_json());
     }
     let manifest = match TaskManifest::load(file) {
         Ok(m) => m,
