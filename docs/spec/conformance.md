@@ -109,44 +109,11 @@ $ medh5 conformance score suite/ reports.json --companion
 
 ## Running it against your implementation
 
-Validate every case **at the level its manifest entry declares**, and hand back
-one JSON array:
-
-```json
-[
-  {"file": "core-minimal.medh5", "errors": [], "warnings": []},
-  {"file": "E102-non-orthonormal.medh5", "errors": ["E102"], "warnings": []}
-]
-```
-
-```
-$ medh5 conformance score suite/ results.json
-172/172 cases pass
-```
-
-The scorer also takes the shape `medh5 validate --json` reports a file in: a
-`diagnostics` list, each entry with its `code` and `severity`, in place of
-`errors` and `warnings` (and `path` in place of `file`). So the reference
-implementation is scored through exactly the same door as everybody else:
-
-<!-- illustrative -->
-```python
-import json, subprocess
-
-manifest = json.load(open("suite/expected.json"))
-results = []
-for case in manifest["cases"]:
-    out = subprocess.run(
-        ["medh5", "validate", f"suite/{case['file']}", "--level", case["level"], "--json"],
-        capture_output=True, text=True,
-    ).stdout
-    report = json.loads(out)[0]
-    results.append({"file": case["file"], "diagnostics": report["diagnostics"]})
-json.dump(results, open("results.json", "w"))
-```
-
-There is a test asserting this path works, because a private door is how a
-suite stops being a contract.
+<a id="three-things-to-know-before-you-start"></a><a id="from-python"></a>
+[Run the conformance suite](../guides/conformance.md) publishes a suite, validates every case at
+its level, scores the results, and bounds the score for an earlier implementation, from Python
+and from the command line. It also covers the three things that trip implementers up: the level,
+collections, and the checksums.
 
 ## How scoring works
 
@@ -186,40 +153,6 @@ A case addressed to a later version, or expecting a code a later revision
 allocated, is not scored, and the summary counts it under `skipped`. A code of
 a later revision that you report anyway is ignored rather than held against
 you. Without a bound, every case is scored.
-
-## Three things to know before you start
-
-**Validate at the declared `level`, not deeper.** `structural` < `semantic` <
-`integrity`. Shallower misses the defect the case exists to test. Deeper is not
-safe either: most invalid cases were made by editing a valid file, so their
-stored digests cover the pre-edit bytes and an integrity pass adds a
-`content_id` mismatch the case never claimed. Those cases are marked
-`"mutated": true`.
-
-*(That correction came from running it. The README first said deeper was safe;
-it is not, and 119 of the cases prove it.)*
-
-**A `.medh5c` case is a collection** (§2.2) — it contains samples rather than
-being one. `"file_suffix"` says which.
-
-**Verify the bytes first.** `SHA256SUMS` covers every published file, and
-`medh5 conformance score` fails the score when one has drifted, whatever the
-cases say, naming it (under `changed` with `--json`). A score over files that
-are not the published files is not a score.
-
-## From Python
-
-```python
-from medh5.conformance import (
-    CASES, publish, score, summarize, load_manifest, check_checksums, run_corpus,
-)
-
-publish("suite/")
-check_checksums("suite/")           # names of files whose bytes changed
-
-results = score("suite/", submitted)
-summarize(results)                  # {"cases": 172, "passed": 172, "ok": True, ...}
-```
 
 ## Profiles
 

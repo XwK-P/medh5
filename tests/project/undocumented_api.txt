@@ -169,11 +169,7 @@ medh5.conformance.SCHEMA
 medh5.conformance.SEED
 medh5.conformance.build_corpus
 medh5.conformance.case_by_name
-medh5.conformance.check_checksums
-medh5.conformance.load_manifest
-medh5.conformance.publish
 medh5.conformance.run_corpus
-medh5.conformance.summarize
 medh5.curation.ACTIVITY_FIELDS
 medh5.curation.ACTIVITY_TYPES
 medh5.curation.AGENT_FIELDS
@@ -267,7 +263,6 @@ medh5.geometry.KNOWN_UNITS
 medh5.geometry.LABEL_SAFE_METHODS
 medh5.geometry.MAX_SPATIAL
 medh5.geometry.MIN_SPATIAL
-medh5.geometry.ORTHONORMAL_TOL
 medh5.geometry.Pyramid
 medh5.geometry.SPEC_GRID_ATTRS
 medh5.geometry.TIME_UNITS
@@ -351,13 +346,10 @@ medh5.io.merge_reports
 medh5.io.nifti.COORD_SYSTEMS
 medh5.io.nifti.RAS_TO_LPS
 medh5.io.nifti.convert_world
-medh5.io.nifti.read_nifti
 medh5.io.nifti.require_nibabel
 medh5.io.nnunetv2.BACKGROUND
 medh5.io.nnunetv2.REQUIRED_KEYS
-medh5.io.nnunetv2.cases
 medh5.io.nnunetv2.read_dataset_json
-medh5.io.read_nifti
 medh5.io.report.ConversionReport
 medh5.io.report.Note
 medh5.io.report.SEVERITIES
@@ -376,7 +368,6 @@ medh5.labels.Skeleton
 medh5.labels.canonical_json
 medh5.labels.check_class_id
 medh5.labels.from_keys
-medh5.labels.load_file
 medh5.labels.unregister
 medh5.monai.SPACES
 medh5.monai.require_monai
@@ -461,15 +452,11 @@ medh5.torch.open_cached
 medh5.torch.require_torch
 medh5.torch.stack_images
 medh5.transforms.BSplineTransform
-medh5.transforms.ChainTransform
-medh5.transforms.CompositeTransform
 medh5.transforms.DEFAULT_ORDER
 medh5.transforms.DisplacementTransform
 medh5.transforms.EXTRAPOLATIONS
 medh5.transforms.FLOAT16_SAFE_VOXELS
 medh5.transforms.INTERPOLATIONS
-medh5.transforms.IdentityTransform
-medh5.transforms.InverseTransform
 medh5.transforms.LAST_ROW_TOL
 medh5.transforms.SPEC_TRANSFORM_ATTRS
 medh5.transforms.SUPPORTED_ORDERS
@@ -484,7 +471,6 @@ medh5.transforms.encode_bspline
 medh5.transforms.encode_composite
 medh5.transforms.encode_displacement
 medh5.transforms.encode_identity
-medh5.transforms.folding_fraction
 medh5.transforms.frame_graph
 medh5.transforms.inside_extent
 medh5.transforms.linear_part

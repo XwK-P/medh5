@@ -149,6 +149,7 @@ nav:
       - Build and split a cohort: guides/cohorts.md
       - Pack small samples into collections: guides/collections.md
       - Check a file before training on it: guides/validate.md
+      - Run the conformance suite: guides/conformance.md
       - De-identify and publish: guides/deidentify.md
       - Tune performance: guides/performance.md
 

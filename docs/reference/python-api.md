@@ -412,7 +412,8 @@ not zero — so threshold it first, or pass a `bool` array.
 Every `commit()` runs the validator's structural and semantic error rules over
 the finished file and refuses to write one it would reject, so a file this
 writer produces passes `medh5 validate` at the default level. Grid `units` must
-be one of `mm`, `um`, `m`, `px` (§3.2).
+be one of `mm`, `um`, `m`, `px` (§3.2); `medh5.geometry.MM_PER_UNIT` gives the
+millimetres in one of each length unit (`px` has none).
 
 ### Transforms
 

@@ -359,6 +359,10 @@ field for either.
 | `segmentation_type` | `"binary"`, `"fractional"` | `"binary"` |
 | `fractional_type` | `"PROBABILITY"`, `"OCCUPANCY"` | `"PROBABILITY"` |
 
+The values are `medh5.io.dicom_seg.SEGMENTATION_TYPES` and
+`medh5.io.dicom_seg.FRACTIONAL_TYPES`; `medh5.io.dicom_seg.MAX_FRACTIONAL_VALUE`
+is the 255 a fractional value is stored out of.
+
 **Each segment carries its class's concepts.** The property type is the
 class's first code whose system has a designator; the property category
 `properties["dicom_category"]`, else the concept its `category` stands for
@@ -626,6 +630,11 @@ to_itk_transform("case.medh5", "back.mat", transform_id="tp0_to_tp1")
 read_itk_transform("back.mat").matrix     # LPS mm, x_moving = T(x_fixed)
 ```
 
+`read_itk_transform` returns a `medh5.io.ItkTransform` (its `name`, `matrix`
+and, for a composite, `components`), and
+`medh5.io.write_itk_transform(path, transform)` writes one, with no sample
+involved.
+
 ITK's convention is the format's (§10.2): a registration of a *moving* image
 to a *fixed* one maps fixed points to moving points. **The caller names the
 two grids**, in ITK's words, because a transform file names no image; the
@@ -704,6 +713,12 @@ DiagnosticReports. No zone, origin, unit, code or availability is invented,
 so the report holds no guess; free text and birth instants are imported only
 when asked. The mapping tables and refusals are in
 [Import from MEDS or FHIR](../guides/clinical-import.md).
+
+`medh5.io.meds.COLUMNS` names the MEDS columns the importer reads,
+`medh5.io.meds.BOTH_VALUES` the choices for a row holding both values, and
+`medh5.io.meds.BIRTH` the birth code left out unless asked;
+`medh5.io.fhir.STATUSES` maps a FHIR status to an event's, and
+`medh5.io.fhir.UCUM` is the system a quantity's unit code is read from.
 
 ### COCO
 

@@ -44,6 +44,7 @@ minutes.
 | **[Build and split a cohort](cohorts.md)** | Manifests, leakage-free splits, streaming statistics, cross-file checks. |
 | **[Pack small samples into collections](collections.md)** | Many samples in one `.medh5c`: packing, members, splits over members, verifying them. |
 | **[Check a file before training on it](validate.md)** | `validate` versus `verify`, choosing a level, reading a code. |
+| **[Run the conformance suite](conformance.md)** | Publish the suite, validate every case at its level, score it, and bound the score for an earlier implementation. |
 
 ## Getting data out
 

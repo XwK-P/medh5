@@ -275,7 +275,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `Clock` | class | The subject clock every clinical time is measured on (1.1 §3). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `clock_day` | function | The clock day holding `t_us`: its midnight to the last microsecond before the next, counted from the clock's zero (the engine's `Bounds::day_containing`). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `CLOCK_REFERENCES` | constant (`tuple`) |  |  |
-| `COMPARATORS` | constant (`tuple`) |  | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
+| `COMPARATORS` | constant (`tuple`) | `Quantity.comparator` -&gt; `value_comparator` (`ad` has none). | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
 | `DAY` | constant (`int`) |  | [Train on clinical tasks › Describe the task](../guides/clinical-training.md#describe-the-task) |
 | `day_bounds` | function | Every instant of a calendar `day` on a `utc` clock, inclusive. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `days` | function | `value` days, in clock microseconds, rounded half to even, as the engine rounds a visit's `days_from_baseline`. | [Clinical history beside the images › Write a history](../guides/clinical.md#write-a-history) |
@@ -303,7 +303,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `Selection` | class | What a cutoff admits (1.1 §9). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `SELECTION_POLICIES` | constant (`tuple`) |  |  |
 | `SelectionPolicy` | class | How inputs are chosen at a cutoff (task-and-cache contract §3.4). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
-| `STATUSES` | constant (`tuple`) |  |  |
+| `STATUSES` | constant (`tuple`) | FHIR R4 Observation and DiagnosticReport status -&gt; event status (`registered` is left out). |  |
 | `strip` | function | Write the imaging projection of `path` to `out`: a different sample, and a reported loss. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `TEMPORAL_TYPES` | constant (`tuple`) |  |  |
 | `utc_us` | function | An aware `datetime` on a `utc` clock: microseconds since 1970-01-01T00:00:00Z. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
@@ -313,7 +313,7 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `Collection` | class | A read-only mapping of `sample_key -> Sample` over one shard. | [Python API › Opening](python-api.md#opening) |
-| `default_key` | function | The sample key a file gets when none is supplied: its stem. |  |
+| `default_key` | function | The sample key a file gets when none is supplied: its name up to its first dot (medh5 3.0 takes the stem, the name less its last suffix). |  |
 | `extract` | function | Extract one member of a collection into a standalone sample file. | [Pack small samples into collections › Pack and unpack](../guides/collections.md#pack-and-unpack) |
 | `is_collection` | function | Whether a root declares itself a collection. |  |
 | `open_any` | function | Open a file whatever its kind, resolving *key* inside a collection. | [Python API › Opening](python-api.md#opening) |
@@ -332,15 +332,16 @@ compiled extension the modules re-export from, not an API of its own.
 | `case_by_name` | function | The conformance case called *name*; a `KeyError` names an unknown one. |  |
 | `CaseResult` | class | What running one case produced. |  |
 | `CASES` | constant (`tuple`) |  |  |
-| `check_checksums` | function | Files whose checksum does not match `SHA256SUMS` (empty when intact). |  |
+| `check_checksums` | function | Files whose checksum does not match `SHA256SUMS` (empty when intact). | [Run the conformance suite › Score it](../guides/conformance.md#score-it) |
 | `CHECKSUMS` | constant (`str`) |  |  |
-| `load_manifest` | function | The suite's `expected.json`. |  |
-| `publish` | function | Write the whole suite into *outdir* — the cases, `expected.json`, the code table, the JSON Schemas (the sample document, the clinical profile, the task and cache contract), the task-and-cache fixtures under `companion/` when the clinical cases they read are among the cases, a checksum file and instructions, everything a third-party implementation needs; returns *outdir*. |  |
+| `load_manifest` | function | The suite's `expected.json`. | [Run the conformance suite › Publish a suite](../guides/conformance.md#publish-a-suite) |
+| `publish` | function | Write the whole suite into *outdir* — the cases, `expected.json`, the code table, the JSON Schemas (the sample document, the clinical profile, the task and cache contract), the task-and-cache fixtures under `companion/` when the clinical cases they read are among the cases, a checksum file and instructions, everything a third-party implementation needs; returns *outdir*. | [Run the conformance suite › Publish a suite](../guides/conformance.md#publish-a-suite) |
 | `run_corpus` | function | Build the corpus into *outdir* and check this validator against it. |  |
 | `SCHEMA` | constant (`str`) | What every manifest `Manifest.save` writes names under `schema`. |  |
 | `score` | function | Score a foreign validator's results against the published expectations. | [Annotation kinds › Classification](annotations.md#classification) |
+| `score_companion` | function | Score another implementation of the task-and-cache contract against the fixtures under `companion/` of a published suite. | [Run the conformance suite › Score a task-and-cache implementation](../guides/conformance.md#score-a-task-and-cache-implementation) |
 | `SEED` | constant (`int`) |  |  |
-| `summarize` | function | The `--json` summary of a run or a score. |  |
+| `summarize` | function | The `--json` summary of a run or a score. | [Run the conformance suite › Score it](../guides/conformance.md#score-it) |
 
 ## `medh5.curation` { #medh5-curation }
 
@@ -414,7 +415,7 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
-| `apply` | function | Act on the actionable findings and write the §11.4 attestation. | [Storage › Atomic writes](storage.md#atomic-writes) |
+| `apply` | function | Act on the actionable findings and write the §11.4 attestation. | [Converters › DICOM](converters.md#dicom) |
 | `DATE_KEYS` | constant (`frozenset`) |  |  |
 | `Finding` | class | One place an identifier may live. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `IDENTIFYING_KEYS` | constant (`frozenset`) | Attributes to remove, from the DICOM PS3.15 E.1 basic profile. |  |
@@ -570,7 +571,8 @@ compiled extension the modules re-export from, not an API of its own.
 | `LABEL_SAFE_METHODS` | constant (`tuple`) |  |  |
 | `MAX_SPATIAL` | constant (`int`) |  |  |
 | `MIN_SPATIAL` | constant (`int`) |  |  |
-| `ORTHONORMAL_TOL` | constant (`float`) |  |  |
+| `MM_PER_UNIT` | constant (`dict`) |  | [Python API › Annotations](python-api.md#annotations_1) |
+| `ORTHONORMAL_TOL` | constant (`float`) |  | [Converters › NIfTI](converters.md#nifti) |
 | `Pyramid` | class | The multiscale declaration of an image group: its levels, factors, method and grids (§4.3). |  |
 | `pyramid_factors` | function | Recover the `(L, S)` downsample factors of pyramid levels from their spacings relative to `base`. |  |
 | `read_grid` | function | One grid group read back (`sample.root["grids/ct"]`). |  |
@@ -626,28 +628,37 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
+| `augment_from_fhir` | function | `read_fhir` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+| `augment_from_meds` | function | `read_meds` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `build_label_set` | function | Mint one label set covering a whole cohort's mask names and box labels. | [Converters › 0.x files](converters.md#0x-files) |
 | `ConversionReport` | class | Every note from one conversion, plus what it produced. |  |
 | `convert_world` | function | Re-express a 3-D index→world affine between RAS and LPS. |  |
 | `from_dicom` | function | Convert a DICOM tree into one sample per subject (or per study). | [Converters › DICOM](converters.md#dicom) |
 | `from_dicom_seg` | function | Add a DICOM SEG's segments to an existing sample (§7). | [Converters › DICOM SEG](converters.md#dicom-seg) |
+| `from_itk_transform` | function | Add the ITK transform at *path* to *sample*, from the frame of grid *fixed* to that of grid *moving* — ITK's fixed and moving images. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `from_nifti` | function | Write one sample from a set of co-registered NIfTI volumes. | [Converters › Conversion reports](converters.md#conversion-reports) |
 | `from_nnunetv2` | function | Convert an nnU-Net v2 dataset into one `.medh5` per case. | [Converters › nnU-Net v2](converters.md#nnu-net-v2) |
 | `from_rtstruct` | function | Import an RTSTRUCT's ROIs as contours, and optionally rasterise them. | [Converters › RTSTRUCT](converters.md#rtstruct) |
 | `group_by_subject` | function | Group occasions into subjects (`mode="subject"`) or leave them apart. |  |
 | `import_seg_nifti` | function | Add NIfTI masks to an existing sample, checking they sit on its grid. | [Converters › NIfTI](converters.md#nifti) |
+| `ItkTransform` | class | One ITK transform as a homogeneous matrix in LPS millimetres, mapping fixed points to moving ones (`x_moving = T(x_fixed)`). | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `merge_reports` | function | One report over a whole cohort. |  |
 | `migrate` | function | Migrate one 0.x file into one 1.0 sample (Appendix B). | [Converters › 0.x files](converters.md#0x-files) |
 | `migrate_paths` | function | Migrate a cohort, minting one label set for all of it. | [Converters › 0.x files](converters.md#0x-files) |
 | `Note` | class | One thing a conversion did that the source did not fully determine. |  |
-| `read_nifti` | function | One NIfTI file as `(array, geometry)` in MEDH5 conventions. |  |
+| `read_fhir` | function | The Observations and DiagnosticReports of *subject* (a reference, such as `Patient/123`) in *source*, as clinical records on *clock*, and what the conversion decided. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+| `read_itk_transform` | function | Read an ITK transform file: text (`.tfm`, `.txt`) or ANTs' MATLAB v4 `.mat`, holding one of the linear types or a composite of them. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `read_meds` | function | The rows of MEDS subject *subject_id* in *source*, as clinical records on *clock*, and what the conversion decided. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+| `read_nifti` | function | One NIfTI file as `(array, geometry)` in MEDH5 conventions. | [Converters › NIfTI](converters.md#nifti) |
 | `scan_dicom` | function | Walk a directory tree and collect its image series. | [Converters › DICOM](converters.md#dicom) |
 | `Series` | class | One DICOM series, resolved into a volume and its geometry. |  |
 | `SubjectGroup` | class | Occasions belonging to one subject, in timepoint order. |  |
 | `to_dicom_seg` | function | Export one voxel annotation as a DICOM SEG against its source slices. | [Converters › DICOM SEG](converters.md#dicom-seg) |
+| `to_itk_transform` | function | Write transform *transform_id* of *sample* as ITK reads it: its linear part to *out* (`.tfm`, `.txt` or `.mat`), and a displacement field applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors* convention, required. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `to_nifti` | function | Export one image, or one class of one annotation, as a NIfTI file. | [Converters › NIfTI](converters.md#nifti) |
 | `to_nnunetv2` | function | Export samples as an nnU-Net v2 dataset. | [Converters › nnU-Net v2](converters.md#nnu-net-v2) |
 | `to_rtstruct` | function | Export a `contours` annotation as an RT Structure Set. | [Converters › RTSTRUCT](converters.md#rtstruct) |
+| `write_itk_transform` | function | Write *transform* as ITK reads it, picking the format by suffix: `.tfm` or `.txt` text, or `.mat` as ANTs writes it. | [Converters › ITK transforms](converters.md#itk-transforms) |
 
 ## `medh5.io.dicom` { #medh5-io-dicom }
 
@@ -668,14 +679,27 @@ compiled extension the modules re-export from, not an API of its own.
 |---|---|---|---|
 | `BINARY` | constant (`str`) |  | [Converters › DICOM SEG](converters.md#dicom-seg) |
 | `FRACTIONAL` | constant (`str`) |  | [Converters › DICOM SEG](converters.md#dicom-seg) |
+| `FRACTIONAL_TYPES` | constant (`tuple`) | What `to_dicom_seg`'s *fractional_type* takes (DICOM's `SegmentationFractionalType`). | [Converters › DICOM SEG](converters.md#dicom-seg) |
 | `frames_agree` | function | Whether a SEG's frame of reference is a grid's; `None` when either states none, so there is nothing to compare. | [Converters › DICOM SEG](converters.md#dicom-seg) |
 | `from_dicom_seg` | function | Add a DICOM SEG's segments to an existing sample (§7). | [Converters › DICOM SEG](converters.md#dicom-seg) |
+| `MAX_FRACTIONAL_VALUE` | constant (`int`) | The stored value of a probability of 1 in a FRACTIONAL SEG this package writes: values are quantised to 1/255, so within 1/510 of what was given. | [Converters › DICOM SEG](converters.md#dicom-seg) |
 | `place_frames` | function | Put each frame on the slice of *grid* that its position names (§3.3). |  |
 | `read_dicom_seg` | function | A SEG file as `{segment number: volume}` plus its geometry and segments. | [Converters › DICOM SEG](converters.md#dicom-seg) |
 | `read_dicom_seg_frames` | function | Every frame of a SEG, each with the segment and the position it carries. | [Converters › DICOM SEG](converters.md#dicom-seg) |
 | `require_highdicom` | function | Import highdicom, or raise an `ImportError` naming the extra to install. |  |
+| `SEGMENTATION_TYPES` | constant (`tuple`) | What `to_dicom_seg`'s *segmentation_type* takes. | [Converters › DICOM SEG](converters.md#dicom-seg) |
 | `SLICE_TOLERANCE` | constant (`float`) | How far off a slice centre a frame may sit and still be that slice. |  |
 | `to_dicom_seg` | function | Export one voxel annotation as a DICOM SEG against its source slices. | [Converters › DICOM SEG](converters.md#dicom-seg) |
+
+## `medh5.io.fhir` { #medh5-io-fhir }
+
+| Name | Kind | Summary | Documented in |
+|---|---|---|---|
+| `augment_from_fhir` | function | `read_fhir` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+| `COMPARATORS` | constant (`dict`) | `Quantity.comparator` -&gt; `value_comparator` (`ad` has none). | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
+| `read_fhir` | function | The Observations and DiagnosticReports of *subject* (a reference, such as `Patient/123`) in *source*, as clinical records on *clock*, and what the conversion decided. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+| `STATUSES` | constant (`dict`) | FHIR R4 Observation and DiagnosticReport status -&gt; event status (`registered` is left out). | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+| `UCUM` | constant (`str`) |  | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 
 ## `medh5.io.grouping` { #medh5-io-grouping }
 
@@ -689,6 +713,16 @@ compiled extension the modules re-export from, not an API of its own.
 | `Occasion` | class | One study/visit of one subject, before it becomes a timepoint. |  |
 | `output_name` | function | A unique filename stem for one group; it is added to *used*. |  |
 | `SubjectGroup` | class | Occasions belonging to one subject, in timepoint order. |  |
+
+## `medh5.io.itk` { #medh5-io-itk }
+
+| Name | Kind | Summary | Documented in |
+|---|---|---|---|
+| `from_itk_transform` | function | Add the ITK transform at *path* to *sample*, from the frame of grid *fixed* to that of grid *moving* — ITK's fixed and moving images. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `ItkTransform` | class | One ITK transform as a homogeneous matrix in LPS millimetres, mapping fixed points to moving ones (`x_moving = T(x_fixed)`). | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `read_itk_transform` | function | Read an ITK transform file: text (`.tfm`, `.txt`) or ANTs' MATLAB v4 `.mat`, holding one of the linear types or a composite of them. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `to_itk_transform` | function | Write transform *transform_id* of *sample* as ITK reads it: its linear part to *out* (`.tfm`, `.txt` or `.mat`), and a displacement field applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors* convention, required. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `write_itk_transform` | function | Write *transform* as ITK reads it, picking the format by suffix: `.tfm` or `.txt` text, or `.mat` as ANTs writes it. | [Converters › ITK transforms](converters.md#itk-transforms) |
 
 ## `medh5.io.legacy` { #medh5-io-legacy }
 
@@ -709,6 +743,16 @@ compiled extension the modules re-export from, not an API of its own.
 | `SUFFIX` | constant (`str`) | Conventional extension for a collection file (spec §2.1). |  |
 | `write_sidecar` | function | Write the minted label set for review before a cohort-wide migration. |  |
 
+## `medh5.io.meds` { #medh5-io-meds }
+
+| Name | Kind | Summary | Documented in |
+|---|---|---|---|
+| `augment_from_meds` | function | `read_meds` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+| `BIRTH` | constant (`str`) | The MEDS code of a subject's birth. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+| `BOTH_VALUES` | constant (`tuple`) |  | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+| `COLUMNS` | constant (`tuple`) | The columns `columns=` may rename: MEDS's own five, and the two MEDS lacks, which are read only when declared. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+| `read_meds` | function | The rows of MEDS subject *subject_id* in *source*, as clinical records on *clock*, and what the conversion decided. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+
 ## `medh5.io.nifti` { #medh5-io-nifti }
 
 | Name | Kind | Summary | Documented in |
@@ -718,7 +762,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `from_nifti` | function | Write one sample from a set of co-registered NIfTI volumes. | [Converters › Conversion reports](converters.md#conversion-reports) |
 | `import_seg_nifti` | function | Add NIfTI masks to an existing sample, checking they sit on its grid. | [Converters › NIfTI](converters.md#nifti) |
 | `RAS_TO_LPS` | constant (`ndarray`) | World-axis sign flip. |  |
-| `read_nifti` | function | One NIfTI file as `(array, geometry)` in MEDH5 conventions. |  |
+| `read_nifti` | function | One NIfTI file as `(array, geometry)` in MEDH5 conventions. | [Converters › NIfTI](converters.md#nifti) |
 | `require_nibabel` | function | Import nibabel, or raise an `ImportError` naming the extra to install. |  |
 | `to_nifti` | function | Export one image, or one class of one annotation, as a NIfTI file. | [Converters › NIfTI](converters.md#nifti) |
 
@@ -727,7 +771,7 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `BACKGROUND` | constant (`int`) |  |  |
-| `cases` | function | Case identifiers present in `imagesTr`. |  |
+| `cases` | function | Case identifiers present in `imagesTr` — and, with *include_test*, in `imagesTs`. | [Run the conformance suite › Publish a suite](../guides/conformance.md#publish-a-suite) |
 | `from_nnunetv2` | function | Convert an nnU-Net v2 dataset into one `.medh5` per case. | [Converters › nnU-Net v2](converters.md#nnu-net-v2) |
 | `read_dataset_json` | function | Load and check an nnU-Net v2 `dataset.json`. |  |
 | `REQUIRED_KEYS` | constant (`tuple`) |  |  |
@@ -769,7 +813,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `LabelClass` | class | One semantic class (§5.2). | [Annotation kinds › Closure](annotations.md#closure) |
 | `LabelSet` | class | A controlled vocabulary (§5.1). | [Annotation kinds › Label sets](annotations.md#label-sets) |
 | `load` | function | A bundled or registered vocabulary by name; E305 for an unknown one. | [Annotation kinds › Label sets](annotations.md#label-sets) |
-| `load_file` | function | A vocabulary from a JSON file on disk. |  |
+| `load_file` | function | A vocabulary from a JSON file on disk. | [Converters › NIfTI](converters.md#nifti) |
 | `MAX_CLASS_ID` | constant (`int`) |  |  |
 | `OntologyCode` | class | A binding of a class to a code of an external vocabulary, such as SNOMED-CT or RadLex (§5.2). |  |
 | `register` | function | Make a vocabulary loadable by name for the rest of the process. | [Curation records › Provenance](curation.md#provenance) |
@@ -1007,12 +1051,12 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
-| `AffineTransform` | class | A homogeneous `(S+1, S+1)` matrix in world coordinates. | [Registration between visits › Write one](../guides/registration.md#write-one) |
+| `AffineTransform` | class | A homogeneous `(S+1, S+1)` matrix in world coordinates. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `basis` | function | The B-spline basis weights at `t`: `(order + 1, *t.shape)`. |  |
 | `BSplineTransform` | class | A free-form deformation evaluated with a uniform B-spline basis. |  |
-| `ChainTransform` | class | Several transforms applied in order — a resolved path. |  |
+| `ChainTransform` | class | Several transforms applied in order — a resolved path. | [Registration between visits › Write one](../guides/registration.md#write-one) |
 | `check_transform_id` | function | Return `transform_id` if it is a valid object id, else raise E003. |  |
-| `CompositeTransform` | class | Components applied in order; each one's `to_frame` is the next's `from_frame`. |  |
+| `CompositeTransform` | class | Components applied in order; each one's `to_frame` is the next's `from_frame`. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `cubic_sample` | function | Interpolate `(C, *spatial)` data with cubic splines at `(N, S)` continuous indices: `(N, C)`. |  |
 | `DEFAULT_ORDER` | constant (`int`) |  |  |
 | `DisplacementTransform` | class | `T(x) = x + u(x)` with `u` sampled on `field_grid`. |  |
@@ -1023,13 +1067,13 @@ compiled extension the modules re-export from, not an API of its own.
 | `encode_identity` | function | Return the payload of an identity transform, which stores nothing but its endpoints. |  |
 | `EXTRAPOLATIONS` | constant (`tuple`) |  |  |
 | `FLOAT16_SAFE_VOXELS` | constant (`float`) |  |  |
-| `folding_fraction` | function | Return the fraction of Jacobian determinants that are `<= 0`: where the transform folds. |  |
+| `folding_fraction` | function | Return the fraction of Jacobian determinants that are `<= 0`: where the transform folds. | [Python API › Transforms](python-api.md#transforms) |
 | `frame_graph` | function | Frame -&gt; frames one hop away, as `resolve_between` would walk them: a reverse edge exists only where the inverse can be evaluated, and a transform and the stored inverse its `inverse_id` names are one edge each way (§10.1). |  |
 | `frames_of_timepoint` | function | The frames of every grid of one timepoint, in grid order. | [Registration between visits › When there is no path](../guides/registration.md#when-there-is-no-path) |
-| `IdentityTransform` | class | Two frames that coincide, said explicitly. |  |
+| `IdentityTransform` | class | Two frames that coincide, said explicitly. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `inside_extent` | function | Return a boolean array saying which points lie within a lattice's voxel extent, edges included. |  |
 | `INTERPOLATIONS` | constant (`tuple`) |  |  |
-| `InverseTransform` | class | The inverse of another transform, evaluated (not stored). |  |
+| `InverseTransform` | class | The inverse of another transform, evaluated (not stored). | [Registration between visits › Write one](../guides/registration.md#write-one) |
 | `jacobian_determinant` | function | Return `det(I + du/dx)` per voxel of a displacement field on `grid`; values `<= 0` mark folding. | [Python API › Transforms](python-api.md#transforms) |
 | `LAST_ROW_TOL` | constant (`float`) |  |  |
 | `linear_part` | function | Return a grid's `direction @ diag(spacing)`: the `(S, S)` map from index to world displacement. |  |
