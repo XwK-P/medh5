@@ -42,6 +42,48 @@ for weeks. Such a finding is reported, in the weekly run and in the release
 run's summary, and dispositioned here, but it does not hold a medh5 release:
 the release would not change what that extra installs.
 
+## Opening a file you did not write
+
+A `.medh5` file is HDF5, and HDF5 is a rich format: a file can name filters,
+nest groups, link to other names and state sizes that its bytes do not hold.
+What `medh5.open`, `medh5 validate` and the readers built on them guarantee for
+a file from someone else:
+
+- **No code is loaded from the file's say-so.** A dataset names its filters by
+  number, and HDF5 would load a filter it has not registered from the shared
+  libraries in its plugin search path. medh5 turns HDF5's plugins off: Blosc2
+  and Zstandard are compiled in, and a dataset whose filter is neither those nor
+  one of HDF5's own fails to read, with HDF5's "filter plugins disabled". Only
+  `HDF5_PLUGIN_PATH` (load from those directories) or `MEDH5_ALLOW_PLUGINS`
+  (set, and not `0`: load from HDF5's standard directory) turns them back on,
+  each read once per process ([Install](docs/install.md)).
+- **Bounded depth.** Opening walks the file a group at a time, and a file nested
+  more than 64 groups deep is refused (`E001`), not followed.
+- **Bounded decompression.** A chunk decompresses to at most twice the size of
+  its dataset's chunk plus 64 KiB; a Zstandard frame or Blosc2 header that
+  states more is refused before anything is allocated, and a Blosc2 header that
+  does not parse is refused. A feature cache's entry whose stored dtype or shape
+  differs from the cache's declaration is `T402`, with nothing read.
+- **A refusal, not a crash.** A malformed file is reported: an error from
+  `open`, or diagnostic codes from `validate`. The structural fixtures of
+  `damaged.py --structural` (deep nesting, an unregistered filter, chunks that
+  overstate their size) are checked against every release binary.
+- **A rewrite does not follow a link it should not.** `amend`, `scrub --apply`,
+  `recompress` and `fix` replace the file a symbolic link names and keep the
+  link, but refuse a link in a sticky, world-writable directory that another
+  user owns.
+
+Not guaranteed: that a file within these bounds is cheap. The bounds hold per
+chunk and per group, not per file. A file can honestly state a large dataset,
+many chunks or many objects, and reading or validating it at `--level strict`
+costs time and memory in proportion to what it states. Open files from a source
+you do not trust with the limits you would give any other untrusted input
+(a container, `ulimit`, a timeout). What `medh5 scrub` cannot read is reported
+as `unreadable` or `not_checked`, never passed as clean
+([De-identify](docs/guides/deidentify.md)).
+
+A task manifest chooses which files are opened; see the next section.
+
 ## Running a task manifest you did not write
 
 A task manifest names its sources by path, so whoever wrote it chooses what
