@@ -57,6 +57,7 @@ __all__ = [
     "CLINICAL_SCHEMA",
     "CLOCK_REFERENCES",
     "CLOSURES",
+    "CODE_DOMAINS",
     "COLLECTION_SUFFIX",
     "COMPANION_CODES",
     "COMPARATORS",
@@ -65,6 +66,7 @@ __all__ = [
     "CONFORMANCE_SCHEMA",
     "CONFORMANCE_SEED",
     "CONTOUR_ROLES",
+    "COORD_SYSTEMS",
     "CacheWriterHandle",
     "ClinicalHandle",
     "Cohort",
@@ -298,6 +300,7 @@ __all__ = [
     "clinical_select",
     "clinical_strip",
     "codec_profiles",
+    "codes_for_domain",
     "codes_table",
     "collect_digests",
     "compute_content_id",
@@ -568,6 +571,7 @@ CLINICAL_PROFILE: str
 CLINICAL_SCHEMA: str
 CLOCK_REFERENCES: tuple[str, ...]
 CLOSURES: tuple[str, ...]
+CODE_DOMAINS: tuple[str, ...]
 COLLECTION_SUFFIX: str
 COMPANION_CODES: dict[str, str]
 COMPARATORS: tuple[str, ...]
@@ -576,6 +580,7 @@ CONFORMANCE_CHECKSUMS: str
 CONFORMANCE_SCHEMA: str
 CONFORMANCE_SEED: int
 CONTOUR_ROLES: tuple[str, ...]
+COORD_SYSTEMS: tuple[str, ...]
 DATE_REGEX: str
 DEFAULT_ALGO: str
 DEFAULT_L3_BYTES: int
@@ -988,6 +993,10 @@ def codec_profiles() -> list[Any]:
     """The codec profiles, as plain data (`medh5.storage` builds its
     `CodecProfile` values from this).
     """
+    ...
+
+def codes_for_domain(domain: str) -> list[str]:
+    """The codes of one domain, in table order."""
     ...
 
 def codes_table() -> str:

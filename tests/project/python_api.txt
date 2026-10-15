@@ -2816,6 +2816,7 @@ medh5.errors.code	function	(name)
 medh5.errors.codes_for	function	(domain)
 medh5.geometry	module
 medh5.geometry.AXIS_KINDS	constant	tuple
+medh5.geometry.COORD_SYSTEMS	constant	tuple
 medh5.geometry.DOWNSAMPLE_METHODS	constant	tuple
 medh5.geometry.GEOMETRY_RTOL	constant	float
 medh5.geometry.Grid	class	(grid_id, shape, axis_names, axis_kinds, spacing, origin, direction, coord_system='LPS', units='mm', timepoint=None, frame_uid=None, time_values=None, time_units=None, chunk_hint=None, patch_hint=None, extra=None) bases=

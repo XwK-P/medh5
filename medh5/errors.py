@@ -201,7 +201,9 @@ def code(name: str) -> Code:
 
 def codes_for(domain: Domain) -> tuple[Code, ...]:
     """Every code in one domain, in table order."""
-    return tuple(c for c in _TABLE if c.domain == domain)
+    from medh5._core import codes_for_domain
+
+    return tuple(CODES[name] for name in codes_for_domain(domain))
 
 
 __all__ = [

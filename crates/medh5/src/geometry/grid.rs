@@ -18,6 +18,10 @@ use crate::{Error, Result};
 
 /// `axis_kinds` values (§3.1).
 pub const AXIS_KINDS: [&str; 4] = ["spatial", "channel", "time", "other"];
+/// The anatomical `coord_system`s whose axes the converters map to and from
+/// patient space (§3.1).  A grid may declare another (`RAI`, `custom`, …),
+/// which a converter refuses rather than guess an orientation.
+pub const COORD_SYSTEMS: [&str; 2] = ["LPS", "RAS"];
 /// `units` values (§3.2).
 pub const KNOWN_UNITS: [&str; 4] = ["mm", "um", "m", "px"];
 /// `time_units` values (§3.2).

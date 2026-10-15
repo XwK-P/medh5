@@ -41,6 +41,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.errors import MEDH5ValidationError
+from medh5.geometry import COORD_SYSTEMS
 from medh5.io._common import sanitize_key
 from medh5.io.report import ConversionReport
 
@@ -1136,7 +1137,7 @@ def _to_patient(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
     the inverse of the SEG importer's mapping."""
     from medh5.io.nifti import MM_PER_UNIT
 
-    if grid.coord_system not in ("LPS", "RAS"):
+    if grid.coord_system not in COORD_SYSTEMS:
         raise MEDH5ValidationError(
             f"grid {grid.grid_id!r} is in {grid.coord_system!r}; RTSTRUCT contours "
             "are patient coordinates (LPS), which only an LPS or RAS grid relates to",

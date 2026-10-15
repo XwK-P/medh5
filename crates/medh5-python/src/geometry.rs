@@ -727,6 +727,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ORTHONORMAL_TOL", affine::ORTHONORMAL_TOL)?;
     m.add("AXIS_KINDS", PyTuple::new(py, engine_grid::AXIS_KINDS)?)?;
     m.add("KNOWN_UNITS", PyTuple::new(py, engine_grid::KNOWN_UNITS)?)?;
+    m.add("COORD_SYSTEMS", PyTuple::new(py, engine_grid::COORD_SYSTEMS)?)?;
     m.add("TIME_UNITS", PyTuple::new(py, engine_grid::TIME_UNITS)?)?;
     m.add("SPEC_GRID_ATTRS", PyTuple::new(py, engine_grid::SPEC_GRID_ATTRS)?)?;
     m.add("DOWNSAMPLE_METHODS", PyTuple::new(py, multiscale::DOWNSAMPLE_METHODS)?)?;

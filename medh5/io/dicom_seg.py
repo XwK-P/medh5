@@ -33,7 +33,9 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5._optional import require
+from medh5.annotations.voxel import TRANSCODABLE
 from medh5.errors import MEDH5ValidationError
+from medh5.geometry import COORD_SYSTEMS
 from medh5.io._common import sanitize_key
 from medh5.io.report import ConversionReport
 
@@ -294,7 +296,7 @@ def _from_patient(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
     DICOM patient position (LPS, mm) into *grid*'s world coordinates."""
     from medh5.io.nifti import MM_PER_UNIT
 
-    if grid.coord_system not in ("LPS", "RAS"):
+    if grid.coord_system not in COORD_SYSTEMS:
         raise MEDH5ValidationError(
             f"grid {grid.grid_id!r} is in {grid.coord_system!r}; a DICOM SEG is "
             "placed by patient position (LPS), which only an LPS or RAS grid "
@@ -1175,8 +1177,9 @@ def _examined(
     return ids
 
 
-#: The kinds a SEG export writes: those with classes, one segment each.
-_SEGMENT_KINDS = ("labelmap", "layers", "bitmask", "instances", "probmap")
+#: The kinds a SEG export writes: those with classes, one segment each ---
+#: the kinds the engine transcodes between.
+_SEGMENT_KINDS: tuple[str, ...] = TRANSCODABLE
 
 
 def _require_segments(annotation: Any, ann_id: str) -> None:

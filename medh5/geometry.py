@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from medh5._core import (
     AXIS_KINDS,
+    COORD_SYSTEMS,
     DOWNSAMPLE_METHODS,
     GEOMETRY_RTOL,
     KNOWN_UNITS,
@@ -58,6 +59,7 @@ MIN_SPATIAL, MAX_SPATIAL = 2, 3
 
 __all__ = [
     "AXIS_KINDS",
+    "COORD_SYSTEMS",
     "DOWNSAMPLE_METHODS",
     "GEOMETRY_RTOL",
     "KNOWN_UNITS",

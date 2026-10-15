@@ -1,4 +1,6 @@
-"""What each layer may do.  Only the engine replaces a file (D23, 1.0 §14.4).
+"""What each layer may do.
+
+Only the engine replaces a file (D23, 1.0 §14.4).
 
 At 2.0.2 one kind of write followed three rules: the engine followed a
 symbolic link and kept it, Python's ``write_text`` replaced the link, and the
@@ -6,16 +8,28 @@ native command line's ``std::fs::write`` wrote through it in place.  Every file
 medh5 writes now goes through the engine's replace routine; these scan the
 sources so that no new write site goes around it.  The native command line
 has its own guard, `crates/medh5-cli/tests/layers.rs`.
+
+The Python package is a layer over the engine, not a second copy of it.  A
+vocabulary spelt twice drifts: the engine gains a value and the Python copy
+does not, so one frontend accepts what another refuses.  A module-level tuple
+of strings that holds an engine vocabulary must therefore *be* the engine's
+object, bound from ``_core``, not a literal with the same values today.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib
+import pkgutil
 import textwrap
+import typing
 from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
+
 import medh5
+from medh5 import _core
 
 # The package under test, wherever it is installed: CI tests the built wheel,
 # with no `medh5/` beside the tests.
@@ -192,3 +206,89 @@ def test_the_guard_refuses_what_2_0_2_did() -> None:
         'open(..., "w")',
         "nib.save outside `with _core.stage_file(...)`",
     ]
+
+
+# Tuples the engine also binds that another workstream moves onto `_core`.
+# Each entry names a module attribute; the list must be empty at release.
+VOCABULARY_ALLOWED: frozenset[str] = frozenset(
+    {
+        # W21-11 PR 5 binds the task and cache vocabularies.
+        "medh5.task.LABELS",
+        "medh5.task.STATUSES",
+    }
+)
+
+
+def _modules() -> list[str]:
+    names = ["medh5"]
+    for info in pkgutil.walk_packages(medh5.__path__, "medh5."):
+        names.append(info.name)
+    return names
+
+
+def _string_tuple(value: object) -> bool:
+    return (
+        isinstance(value, tuple)
+        and len(value) > 0
+        and all(isinstance(v, str) for v in value)
+    )
+
+
+def test_vocabularies_are_the_engines():
+    engine = {
+        name: value
+        for name, value in vars(_core).items()
+        if not name.startswith("_") and _string_tuple(value)
+    }
+    copies = []
+    for module_name in _modules():
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:  # an optional dependency this job lacks
+            continue
+        for attr, value in vars(module).items():
+            if (
+                not _string_tuple(value)
+                or f"{module_name}.{attr}" in VOCABULARY_ALLOWED
+            ):
+                continue
+            for name, theirs in engine.items():
+                if value == theirs and value is not theirs:
+                    copies.append(f"{module_name}.{attr} copies _core.{name}")
+    assert not copies, "\n".join(sorted(set(copies)))
+
+
+def test_the_allow_list_names_only_copies_that_still_exist():
+    for entry in VOCABULARY_ALLOWED:
+        module_name, attr = entry.rsplit(".", 1)
+        module = importlib.import_module(module_name)
+        assert _string_tuple(getattr(module, attr)), entry
+
+
+def test_S15_2_the_code_domains_are_the_engines():
+    from medh5.errors import CODES, Domain, codes_for
+
+    assert typing.get_args(Domain) == _core.CODE_DOMAINS
+    for domain in _core.CODE_DOMAINS:
+        assert codes_for(domain) == tuple(
+            c for c in CODES.values() if c.domain == domain
+        )
+    assert codes_for("nowhere") == ()  # type: ignore[arg-type]
+
+
+def test_S3_1_the_coordinate_systems_are_the_engines():
+    """The systems a converter maps are the engine's, and the specification's
+    ``coord_system`` row names each of them."""
+    from medh5.geometry import COORD_SYSTEMS
+    from tests.helpers import ROOT
+
+    assert COORD_SYSTEMS is _core.COORD_SYSTEMS
+    row = next(
+        line
+        for line in (ROOT / "docs/spec/medh5-1.0.md").read_text("utf-8").splitlines()
+        if line.startswith("| `coord_system` |")
+    )
+    for system in COORD_SYSTEMS:
+        assert f'"{system}"' in row
+    nifti = pytest.importorskip("medh5.io.nifti")
+    assert nifti.COORD_SYSTEMS is COORD_SYSTEMS
