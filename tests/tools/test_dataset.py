@@ -21,7 +21,7 @@ import medh5
 from medh5 import _core
 from medh5.cli import main
 from medh5.dataset.check import check
-from medh5.dataset.manifest import Manifest, entries_for, find, scan
+from medh5.dataset.manifest import Entry, Manifest, entries_for, find, scan
 from medh5.dataset.split import make_splits, write_claims
 from medh5.dataset.stats import DatasetStats, Moments, compute_stats, stats_for
 from medh5.errors import MEDH5Error, MEDH5ValidationError
@@ -258,6 +258,43 @@ class TestManifest:
         assert entry.field("cohort.site_id") == entry.field("site_id")
         assert entry.field("identity.subject_id") == entry.subject_id
 
+    _BASE: dict[str, Any] = {
+        "path": "a.medh5",
+        "sample_id": "a",
+        "subject_id": "a",
+        "group_id": "a",
+    }
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"deidentified": "false"},
+            {"size": "12"},
+            {"size": -1},
+            {"mtime": "1.5"},
+            {"quality": {"q": 3}},
+            {"content_id": 5},
+            {"profiles": None},
+            {"profiles": "abc"},
+            {"splits": [1]},
+            {"class_keys": {"liver": "liver"}},
+            {"path": None},
+            {"sex": 3},
+        ],
+        ids=repr,
+    )
+    def test_an_entry_from_json_reads_as_the_engine_reads_it(self, change):
+        """`Entry.from_json` coerced a document its own way: `"false"` was a
+        de-identified member, and `save` wrote what it coerced."""
+        doc = {**self._BASE, **change}
+        try:
+            expected = _core.dataset_entry_json(doc)
+        except Exception as refused:
+            with pytest.raises(type(refused)):
+                Entry.from_json(doc)
+        else:
+            assert Entry.from_json(doc).to_json() == expected
+
     def test_manifest_fields_are_fields(self, tmp_path: Path):
         from medh5.dataset.manifest import scan
 
@@ -269,6 +306,165 @@ class TestManifest:
         assert entry.field("subject_id") == "a"
         with pytest.raises(MEDH5ValidationError, match="not a manifest field"):
             entry.field("to_json")
+
+
+class TestManifestPaths:
+    """`medh5.dataset/1`: paths are relative to the manifest, or absolute."""
+
+    @staticmethod
+    def _indexed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """`medh5 dataset index cohort -o out/m.json`, run from `tmp_path`."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "out").mkdir()
+        built, failures = scan("cohort")
+        assert not failures
+        assert built.entries[0].path.startswith("cohort")
+        return built.save("cohort/m.json")
+
+    def test_S12_3_a_saved_manifest_opens_from_any_directory(
+        self, cohort, tmp_path, monkeypatch
+    ):
+        """Loaded from another directory, every file read as stale, C402
+        reported files that exist, and the statistics opened nothing."""
+        target = self._indexed(tmp_path, monkeypatch)
+        stored = json.loads(target.read_text())
+        assert stored["schema"] == "medh5.dataset/1"
+        assert stored["root"] == "."
+        assert stored["entries"][0]["path"] == "case-0.medh5"
+        monkeypatch.chdir(tmp_path / "out")
+        loaded = Manifest.load(Path("..") / target)
+        assert loaded.stale() == ()
+        assert Path(loaded.entries[0].path).exists()
+        report = check(loaded)
+        assert "C402" not in {f.code for f in report.findings}, report.format()
+
+    def test_S12_3_a_manifest_moved_with_its_cohort_still_opens(
+        self, cohort, tmp_path, monkeypatch
+    ):
+        target = self._indexed(tmp_path, monkeypatch)
+        moved = tmp_path / "mount" / "cohort"
+        moved.parent.mkdir()
+        os.rename(cohort, moved)
+        loaded = Manifest.load(moved / target.name)
+        assert [Path(e.path).parent for e in loaded] == [moved] * len(loaded)
+        assert all(Path(e.path).exists() for e in loaded)
+
+    def test_S12_3_an_entry_outside_the_manifest_directory_is_written_absolute(
+        self, cohort, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "out").mkdir()
+        built, _ = scan("cohort")
+        target = built.save("out/m.json")
+        stored = json.loads(target.read_text())
+        for entry in stored["entries"]:
+            assert Path(entry["path"]).is_absolute(), entry["path"]
+            assert ".." not in Path(entry["path"]).parts
+        assert stored["root"] == str(cohort)
+        assert Manifest.load(target).stale() == ()
+
+    def test_S12_3_absolute_paths_on_request(self, cohort, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        built, _ = scan(cohort)  # named absolute
+        kept = json.loads(built.save("cohort/m.json").read_text())
+        assert kept["entries"][0]["path"] == str(cohort / "case-0.medh5")
+        relative = json.loads(built.save("cohort/m.json", paths="relative").read_text())
+        assert relative["entries"][0]["path"] == "case-0.medh5"
+        everything = json.loads(
+            scan("cohort")[0].save("cohort/m.json", paths="absolute").read_text()
+        )
+        assert everything["entries"][0]["path"] == str(cohort / "case-0.medh5")
+        with pytest.raises(ValueError, match="paths must be"):
+            built.save("cohort/m.json", paths="loose")  # type: ignore[arg-type]
+        assert main(["dataset", "index", "cohort", "-o", "a.json", "--absolute"]) == 0
+        stored = json.loads((tmp_path / "a.json").read_text())
+        assert stored["entries"][0]["path"] == str(cohort / "case-0.medh5")
+
+    @staticmethod
+    def _legacy(manifest: Manifest, path: Path, root: Path) -> Path:
+        """A manifest as 2.0 wrote it: no schema, paths as the scan named
+        them, relative to the directory it ran in."""
+        doc = manifest.to_json()
+        del doc["schema"]
+        for entry in doc["entries"]:
+            entry["path"] = os.path.relpath(entry["path"], root)
+        path.write_text(json.dumps(doc))
+        return path
+
+    def test_S12_3_a_legacy_manifest_reads_against_the_working_directory_and_warns(
+        self, manifest, cohort, tmp_path, monkeypatch
+    ):
+        target = self._legacy(manifest, tmp_path / "out.json", tmp_path)
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+        with pytest.warns(FutureWarning, match=r"^medh5 3\.0 reads the paths of"):
+            legacy = Manifest.load(target)
+        # Kept as stored: 2.0 wrote the separator of the system it ran on.
+        assert legacy.entries[0].path == os.path.join("cohort", "case-0.medh5")
+        based = Manifest.load(target, base=tmp_path)
+        assert based.stale() == ()
+        # A manifest in the working directory reads alike both ways: no warning.
+        monkeypatch.chdir(tmp_path)
+        assert Manifest.load("out.json").stale() == ()
+        assert medh5.dataset.manifest.load("out.json").stale() == ()
+
+    def test_S12_3_the_command_line_warns_on_a_legacy_manifest(
+        self, manifest, tmp_path, monkeypatch, capsys
+    ):
+        target = self._legacy(manifest, tmp_path / "out.json", tmp_path)
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+        main(["dataset", "check", str(target)])
+        err = capsys.readouterr().err
+        assert "warning: medh5 3.0 reads the paths of" in err
+        assert "medh5 dataset upgrade" in err
+
+    def test_S12_3_an_unknown_schema_is_refused(self, manifest, tmp_path):
+        doc = manifest.to_json()
+        doc["schema"] = "medh5.dataset/9"
+        (tmp_path / "m.json").write_text(json.dumps(doc))
+        with pytest.raises(ValueError, match="medh5.dataset/9"):
+            Manifest.load(tmp_path / "m.json")
+        with pytest.raises(ValueError, match="medh5.dataset/9"):
+            Manifest.from_json(doc)
+
+    def test_S12_3_rebasing_changes_no_sha256(self, manifest, tmp_path):
+        digests = {
+            json.loads(manifest.save(tmp_path / "m.json", paths=style).read_text())[
+                "sha256"
+            ]
+            for style in ("keep", "relative", "absolute")
+        }
+        assert digests == {manifest.sha256()}
+
+    def test_dataset_upgrade_rewrites_a_legacy_manifest(
+        self, manifest, cohort, tmp_path, monkeypatch, capsys
+    ):
+        target = self._legacy(manifest, tmp_path / "out.json", tmp_path)
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+        out = cohort / "m.json"
+        argv = ["dataset", "upgrade", str(target), "-o", str(out)]
+        assert main([*argv, "--base", str(tmp_path), "--json"]) == 0
+        reported = json.loads(capsys.readouterr().out)
+        assert reported["schema"] == "medh5.dataset/1"
+        assert reported["sha256"] == manifest.sha256()
+        stored = json.loads(out.read_text())
+        assert stored["entries"][0]["path"] == "case-0.medh5"
+        assert Manifest.load(out).stale() == ()
+
+    def test_dataset_upgrade_refuses_an_entry_it_cannot_find(
+        self, manifest, tmp_path, monkeypatch, capsys
+    ):
+        target = self._legacy(manifest, tmp_path / "out.json", tmp_path)
+        (tmp_path / "elsewhere").mkdir()
+        monkeypatch.chdir(tmp_path / "elsewhere")
+        out = tmp_path / "upgraded.json"
+        assert main(["dataset", "upgrade", str(target), "-o", str(out)]) == 1
+        err = capsys.readouterr().err
+        assert "do not exist under the working directory" in err
+        assert "nothing was written" in err
+        assert not out.exists()
 
 
 class TestSplits:

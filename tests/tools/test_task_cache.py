@@ -377,7 +377,8 @@ class TestIntegers:
         doc = manifest.to_json()
         assert doc["entries"][0]["class_ids"] == [3]
         doc["entries"][0]["class_ids"] = [value]
-        with pytest.raises(ValueError, match="not an integer"):
+        # One reader: the engine's words, "not an integer" or "not a number".
+        with pytest.raises(ValueError, match="which is not"):
             Manifest.from_json(doc)
         saved = tmp_path / "manifest.json"
         saved.write_text(json.dumps(doc), encoding="utf-8")

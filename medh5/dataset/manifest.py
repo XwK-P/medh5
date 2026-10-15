@@ -19,12 +19,18 @@ import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
-from medh5 import _core
+from medh5 import _core, _deprecation
 from medh5._core import __format_version__, __version__
 
 SUFFIXES: tuple[str, ...] = _core.MANIFEST_SUFFIXES
+
+SCHEMA: str = _core.MANIFEST_SCHEMA
+"""What every manifest :meth:`Manifest.save` writes names under ``schema``."""
+
+PathStyle: TypeAlias = Literal["keep", "relative", "absolute"]
+"""How :meth:`Manifest.save` writes paths."""
 
 
 @dataclass(slots=True)
@@ -91,13 +97,19 @@ class Entry:
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Entry:
+        """An entry from its JSON, read as the engine reads a manifest's."""
+        return cls._from_fields(_core.dataset_entry_json(doc))
+
+    @classmethod
+    def _from_fields(cls, doc: Mapping[str, Any]) -> Entry:
+        """An entry from the JSON the engine writes, which is already checked."""
         return cls(
-            path=str(doc["path"]),
-            sample_id=str(doc["sample_id"]),
-            subject_id=str(doc["subject_id"]),
-            group_id=str(doc["group_id"]),
+            path=doc["path"],
+            sample_id=doc["sample_id"],
+            subject_id=doc["subject_id"],
+            group_id=doc["group_id"],
             content_id=doc.get("content_id"),
-            profiles=tuple(doc.get("profiles", ())),
+            profiles=tuple(doc["profiles"]),
             sex=doc.get("sex"),
             laterality=doc.get("laterality"),
             bodypart=doc.get("bodypart"),
@@ -105,25 +117,23 @@ class Entry:
             site_id=doc.get("site_id"),
             scanner_id=doc.get("scanner_id"),
             acquisition_protocol=doc.get("acquisition_protocol"),
-            timepoints=tuple(doc.get("timepoints", ())),
-            days_from_baseline=tuple(doc.get("days_from_baseline", ())),
-            images=tuple(doc.get("images", ())),
-            modalities=tuple(doc.get("modalities", ())),
-            annotations=dict(doc.get("annotations", {})),
-            class_ids=_integers(doc, "class_ids"),
-            annotated_class_ids=_integers(doc, "annotated_class_ids"),
-            class_keys={
-                int(k): str(v) for k, v in (doc.get("class_keys") or {}).items()
-            },
+            timepoints=tuple(doc["timepoints"]),
+            days_from_baseline=tuple(doc["days_from_baseline"]),
+            images=tuple(doc["images"]),
+            modalities=tuple(doc["modalities"]),
+            annotations=dict(doc["annotations"]),
+            class_ids=tuple(doc["class_ids"]),
+            annotated_class_ids=tuple(doc["annotated_class_ids"]),
+            class_keys={int(k): v for k, v in doc["class_keys"].items()},
             label_set_id=doc.get("label_set_id"),
             label_set_version=doc.get("label_set_version"),
             label_set_digest=doc.get("label_set_digest"),
-            quality=dict(doc.get("quality", {})),
-            splits=tuple(dict(s) for s in doc.get("splits", ())),
-            deidentified=bool(doc.get("deidentified", False)),
+            quality=dict(doc["quality"]),
+            splits=tuple(doc["splits"]),
+            deidentified=doc["deidentified"],
             key=doc.get("key"),
-            size=int(doc.get("size", 0)),
-            mtime=float(doc.get("mtime", 0.0)),
+            size=doc["size"],
+            mtime=doc["mtime"],
         )
 
     def field(self, dotted: str) -> Any:
@@ -140,20 +150,6 @@ class Entry:
 
 GROUPABLE: tuple[str, ...] = _core.GROUPABLE
 """Fields worth grouping or stratifying on --- all single-valued and scannable."""
-
-
-def _integers(doc: Mapping[str, Any], name: str) -> tuple[int, ...]:
-    """A list of class ids, each an integer or refused --- as the engine
-    refuses it: `int(3.5)` is 3, and `3.0` read as no class at all."""
-    out = []
-    for value in doc.get(name, ()):
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(
-                f"manifest entry {doc.get('path')!r}: `{name}` holds {value!r}, "
-                "which is not an integer"
-            )
-        out.append(value)
-    return tuple(out)
 
 
 @dataclass(slots=True)
@@ -238,15 +234,45 @@ class Manifest:
         """
         return str(_core.dataset_manifest_sha256(self._doc()))
 
-    def save(self, path: str | os.PathLike[str]) -> Path:
-        return Path(_core.dataset_manifest_save(self._doc(), os.fspath(path)))
+    def save(self, path: str | os.PathLike[str], *, paths: PathStyle = "keep") -> Path:
+        """Write the manifest (``medh5.dataset/1``) to *path*, atomically.
+
+        In memory a relative path is relative to the working directory; in
+        the file it is relative to the manifest's directory when it lies
+        beneath it, and absolute otherwise, so the manifest opens from any
+        directory and moves with its cohort.  ``paths="keep"`` (the default)
+        leaves a path given absolute absolute, ``"relative"`` writes it
+        relative too where it lies beneath, and ``"absolute"`` writes every
+        path absolute.  The digest covers no path, so none of this changes it.
+        """
+        return Path(
+            _core.dataset_manifest_save(self._doc(), os.fspath(path), paths=paths)
+        )
 
     @classmethod
-    def load(cls, path: str | os.PathLike[str]) -> Manifest:
-        return cls.from_json(_core.dataset_manifest_load(os.fspath(path)))
+    def load(
+        cls,
+        path: str | os.PathLike[str],
+        *,
+        base: str | os.PathLike[str] | None = None,
+    ) -> Manifest:
+        """Read a manifest written by :meth:`save` or ``medh5 dataset index``.
+
+        Each relative path is read against the manifest's directory and comes
+        back relative to the working directory.  A manifest written before 2.1
+        (no ``schema``) is read against the working directory, as it was
+        written, with a ``FutureWarning`` where 3.0 would read it otherwise;
+        *base* names the directory its relative paths are relative to.
+        """
+        return _load(path, base, stacklevel=4)
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Manifest:
+        """A manifest from its JSON, with its paths as the document holds them.
+
+        An unknown ``schema`` is refused.
+        """
+        _core.dataset_manifest_legacy(doc)
         return cls(
             entries=[Entry.from_json(e) for e in doc.get("entries", ())],
             root=doc.get("root"),
@@ -307,12 +333,36 @@ def scan(
 def entries_for(path: str | os.PathLike[str]) -> list[Entry]:
     """The manifest entries in one file: one per sample, so a collection fans
     out into one entry per member (each with its ``key``)."""
-    return [Entry.from_json(doc) for doc in _core.dataset_entries_for(os.fspath(path))]
+    return [
+        Entry._from_fields(doc) for doc in _core.dataset_entries_for(os.fspath(path))
+    ]
 
 
-def load(path: str | os.PathLike[str]) -> Manifest:
-    """Read a manifest written by ``Manifest.save`` or ``medh5 dataset index``."""
-    return Manifest.load(path)
+def load(
+    path: str | os.PathLike[str], *, base: str | os.PathLike[str] | None = None
+) -> Manifest:
+    """Read a manifest written by ``Manifest.save`` or ``medh5 dataset index``;
+    see :meth:`Manifest.load`."""
+    return _load(path, base, stacklevel=4)
+
+
+def _load(
+    path: str | os.PathLike[str],
+    base: str | os.PathLike[str] | None,
+    *,
+    stacklevel: int,
+) -> Manifest:
+    doc, differs = _core.dataset_manifest_load(
+        os.fspath(path), base=None if base is None else os.fspath(base)
+    )
+    if differs:
+        _deprecation.warn(
+            f"medh5 3.0 reads the paths of {os.fspath(path)!r} against its own "
+            "directory: pass base=… or run `medh5 dataset upgrade`",
+            category=FutureWarning,
+            stacklevel=stacklevel,
+        )
+    return Manifest.from_json(doc)
 
 
 def counts(entries: Iterable[Entry], by: str) -> dict[str, int]:
@@ -323,7 +373,9 @@ def counts(entries: Iterable[Entry], by: str) -> dict[str, int]:
 
 __all__ = [
     "GROUPABLE",
+    "SCHEMA",
     "SUFFIXES",
+    "PathStyle",
     "Entry",
     "Manifest",
     "counts",

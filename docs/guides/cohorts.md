@@ -39,6 +39,16 @@ A scan that dies on one broken file has told you nothing about the other 411,
 so failures come back alongside the manifest rather than as an exception. A
 collection fans out into one entry per member.
 
+The manifest's paths are relative to the manifest wherever they lie beneath its
+directory, and absolute otherwise, so it opens from any directory and moves
+with its cohort: index into the cohort's own directory
+(`medh5 dataset index studies/ -o studies/cohort.json`) and copy the directory
+to a cluster mount, and every path still resolves. `Manifest.save(path,
+paths="absolute")` (or `--absolute`) writes every path absolute instead.
+[The cohort manifest](../reference/cohort-manifest.md) is the format, and says
+how a manifest written before 2.1 is read and upgraded
+(`medh5 dataset upgrade`).
+
 Each entry carries what splitting, stratifying and filtering need:
 
 ```python
