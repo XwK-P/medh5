@@ -879,8 +879,9 @@ class TestRepositoryGates:
         """Nothing fuzzed the readers: 2.0.2's denial-of-service bugs were
         found by hand.  The fuzz targets run twice a week on a nightly named
         by its date (one that moves would change the instrumentation under
-        the corpus), each job bounded, and a run uploads the input that broke
-        it only when one did."""
+        the corpus), each job bounded.  A run uploads nothing: a public
+        repository's artifacts are public, and the input that broke a run
+        works as an exploit until its fix ships."""
         text = FUZZ.read_text(encoding="utf-8")
         assert re.search(r"^  FUZZ_TOOLCHAIN: nightly-\d{4}-\d{2}-\d{2}$", text, re.M)
         assert re.search(r'^    - cron: "[^"]+"$', text, re.M)
@@ -888,8 +889,7 @@ class TestRepositoryGates:
         assert re.search(r"^    timeout-minutes: (\d+)$", job, re.M)[1] == "60"  # type: ignore[index]
         assert "cargo install cargo-fuzz --version 0.13.2 --locked" in job
         assert 'cargo +"$FUZZ_TOOLCHAIN" fuzz run "$TARGET"' in job
-        upload = job.split("uses: actions/upload-artifact@", 1)[1]
-        assert "        if: failure()\n" in upload and "retention-days: 7" in upload
+        assert "upload-artifact" not in job
         if (ROOT / "PKG-INFO").is_file():
             return  # the sdist carries no fuzz targets
         # Every target runs, in a workspace of its own: the root's lock and

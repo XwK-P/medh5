@@ -4,9 +4,11 @@ name: Fuzz
 # strictest validation), `clinical_columns` (a documents table's offsets and
 # bytes, read deferred and scanned), and the Zstandard and Blosc2 filters
 # decoding chunks they did not write.  A report or a refusal is fine; a crash,
-# a sanitizer's report, a timeout or running out of memory fails the run, and
-# the input that did it is uploaded.  A finding becomes a minimised regression
-# test in the crate it hit, never a committed input.
+# a sanitizer's report, a timeout or running out of memory fails the run.  The
+# input that did it is not uploaded: a public repository's artifacts are
+# public, and a crashing input works as an exploit until its fix ships, so
+# reproduce a failure by running its target locally.  A finding becomes a
+# minimised regression test in the crate it hit, never a committed input.
 on:
   schedule:
     - cron: "23 3 * * 2,5"
@@ -85,9 +87,3 @@ jobs:
           if [ "$(date -u +%u)" = 2 ]; then
             cargo +"$FUZZ_TOOLCHAIN" fuzz cmin "$TARGET"
           fi
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: failure()
-        with:
-          name: fuzz-artifacts-${{ matrix.target }}
-          path: fuzz/artifacts/${{ matrix.target }}
-          retention-days: 7
