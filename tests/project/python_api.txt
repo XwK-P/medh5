@@ -2863,6 +2863,7 @@ medh5.geometry.KNOWN_UNITS	constant	tuple
 medh5.geometry.LABEL_SAFE_METHODS	constant	tuple
 medh5.geometry.MAX_SPATIAL	constant	int
 medh5.geometry.MIN_SPATIAL	constant	int
+medh5.geometry.MM_PER_UNIT	constant	dict
 medh5.geometry.ORTHONORMAL_TOL	constant	float
 medh5.geometry.Pyramid	class	(levels, downsample_factors, downsample_method, grid_levels) bases=
 medh5.geometry.Pyramid.attrs	method	()
@@ -3046,14 +3047,17 @@ medh5.io.dicom.Series.sex	field
 medh5.io.dicom.Series.study_date	field
 medh5.io.dicom.Series.study_uid	field
 medh5.io.dicom.Series.to_json	method	()
-medh5.io.dicom.from_dicom	function	(root, out, *, group_by='subject', modalities=None, series_uids=None, codec='balanced', report=None)
-medh5.io.dicom.read_series	function	(series, *, report=None)
+medh5.io.dicom.from_dicom	function	(root, out, *, group_by='subject', modalities=None, series_uids=None, codec='balanced', report=None, per_slice_rescale='refuse')
+medh5.io.dicom.read_series	function	(series, *, report=None, per_slice_rescale='refuse')
 medh5.io.dicom.require_pydicom	function	()
 medh5.io.dicom.scan_dicom	function	(root, *, report=None)
 medh5.io.dicom.select_series	function	(series, *, thinnest=True)
 medh5.io.dicom_seg	module
 medh5.io.dicom_seg.BINARY	constant	str
 medh5.io.dicom_seg.FRACTIONAL	constant	str
+medh5.io.dicom_seg.FRACTIONAL_TYPES	constant	tuple
+medh5.io.dicom_seg.MAX_FRACTIONAL_VALUE	constant	int
+medh5.io.dicom_seg.SEGMENTATION_TYPES	constant	tuple
 medh5.io.dicom_seg.SLICE_TOLERANCE	constant	float
 medh5.io.dicom_seg.frames_agree	function	(seg_frame, grid_frame, salt=None)
 medh5.io.dicom_seg.from_dicom_seg	function	(path, sample, *, ann_id='seg', grid=None, annotated_classes='all_given', frame_salt=None, report=None)
@@ -3061,12 +3065,12 @@ medh5.io.dicom_seg.place_frames	function	(frames, geometry, grid, *, frame_salt=
 medh5.io.dicom_seg.read_dicom_seg	function	(path, *, report=None)
 medh5.io.dicom_seg.read_dicom_seg_frames	function	(path)
 medh5.io.dicom_seg.require_highdicom	function	()
-medh5.io.dicom_seg.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None)
-medh5.io.from_dicom	function	(root, out, *, group_by='subject', modalities=None, series_uids=None, codec='balanced', report=None)
+medh5.io.dicom_seg.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None, segmentation_type='binary', fractional_type='PROBABILITY')
+medh5.io.from_dicom	function	(root, out, *, group_by='subject', modalities=None, series_uids=None, codec='balanced', report=None, per_slice_rescale='refuse')
 medh5.io.from_dicom_seg	function	(path, sample, *, ann_id='seg', grid=None, annotated_classes='all_given', frame_salt=None, report=None)
-medh5.io.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None)
-medh5.io.from_nnunetv2	function	(root, out, *, case_ids=None, coord_system='LPS', codec='balanced', report=None)
-medh5.io.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None)
+medh5.io.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None, plane_as_volume=False, label_set=None)
+medh5.io.from_nnunetv2	function	(root, out, *, case_ids=None, coord_system='LPS', codec='balanced', report=None, include_test=False)
+medh5.io.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None, roi_classes=None, points_id=None, open_curves='omit')
 medh5.io.group_by_subject	function	(occasions, *, mode='subject', report=None)
 medh5.io.grouping	module
 medh5.io.grouping.FALLBACK_PREFIX	constant	str
@@ -3091,7 +3095,7 @@ medh5.io.grouping.contradictions	function	(occasions)
 medh5.io.grouping.group_by_subject	function	(occasions, *, mode='subject', report=None)
 medh5.io.grouping.note_instance_ids	function	(group, log)
 medh5.io.grouping.output_name	function	(group, used, *, safe=None)
-medh5.io.import_seg_nifti	function	(path, masks, *, ann_id='seg', grid=None, coord_system=None, transpose=True, annotated_classes='all_given', assume_aligned=False, assume_geometry=False, report=None)
+medh5.io.import_seg_nifti	function	(path, masks, *, ann_id='seg', grid=None, coord_system=None, transpose=True, annotated_classes='all_given', assume_aligned=False, assume_geometry=False, report=None, plane_as_volume=False)
 medh5.io.legacy	module
 medh5.io.legacy.BOX_SHIFT	constant	float
 medh5.io.legacy.LegacyMeta	class	(spatial=<factory>, shape=None, image_names=<factory>, seg_names=<factory>, label=None, label_name=None, patch_size=None, extra=<factory>, schema_version='1') bases=
@@ -3134,19 +3138,19 @@ medh5.io.nifti	module
 medh5.io.nifti.COORD_SYSTEMS	constant	tuple
 medh5.io.nifti.RAS_TO_LPS	constant	<external>
 medh5.io.nifti.convert_world	function	(affine, *, source, target)
-medh5.io.nifti.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None)
-medh5.io.nifti.import_seg_nifti	function	(path, masks, *, ann_id='seg', grid=None, coord_system=None, transpose=True, annotated_classes='all_given', assume_aligned=False, assume_geometry=False, report=None)
-medh5.io.nifti.read_nifti	function	(path, *, coord_system='LPS', transpose=True, fourth_axis='auto', assume_geometry=False)
+medh5.io.nifti.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None, plane_as_volume=False, label_set=None)
+medh5.io.nifti.import_seg_nifti	function	(path, masks, *, ann_id='seg', grid=None, coord_system=None, transpose=True, annotated_classes='all_given', assume_aligned=False, assume_geometry=False, report=None, plane_as_volume=False)
+medh5.io.nifti.read_nifti	function	(path, *, coord_system='LPS', transpose=True, fourth_axis='auto', assume_geometry=False, plane_as_volume=False)
 medh5.io.nifti.require_nibabel	function	()
 medh5.io.nifti.to_nifti	function	(path, image_id, out, *, physical=True, annotation=None, class_key=None, report=None)
 medh5.io.nnunetv2	module
 medh5.io.nnunetv2.BACKGROUND	constant	int
 medh5.io.nnunetv2.REQUIRED_KEYS	constant	tuple
-medh5.io.nnunetv2.cases	function	(root, document)
-medh5.io.nnunetv2.from_nnunetv2	function	(root, out, *, case_ids=None, coord_system='LPS', codec='balanced', report=None)
+medh5.io.nnunetv2.cases	function	(root, document, *, include_test=False)
+medh5.io.nnunetv2.from_nnunetv2	function	(root, out, *, case_ids=None, coord_system='LPS', codec='balanced', report=None, include_test=False)
 medh5.io.nnunetv2.read_dataset_json	function	(path)
-medh5.io.nnunetv2.to_nnunetv2	function	(paths, out, *, dataset_name='Dataset001_medh5', file_ending='.nii.gz', annotation='seg', classes=None, unlabeled='refuse', report=None)
-medh5.io.read_nifti	function	(path, *, coord_system='LPS', transpose=True, fourth_axis='auto', assume_geometry=False)
+medh5.io.nnunetv2.to_nnunetv2	function	(paths, out, *, dataset_name='Dataset001_medh5', file_ending='.nii.gz', annotation='seg', classes=None, unlabeled='refuse', report=None, split=None, replace=False)
+medh5.io.read_nifti	function	(path, *, coord_system='LPS', transpose=True, fourth_axis='auto', assume_geometry=False, plane_as_volume=False)
 medh5.io.report	module
 medh5.io.report.ConversionReport	class	(source='', converter='', outputs=<factory>, notes=<factory>) bases=
 medh5.io.report.ConversionReport.add	method	(kind, message, severity='info', detail=None)
@@ -3173,14 +3177,14 @@ medh5.io.report.SEVERITIES	constant	tuple
 medh5.io.report.merge_reports	function	(reports, converter='')
 medh5.io.rtstruct	module
 medh5.io.rtstruct.MIN_POLYGON_VERTICES	constant	int
-medh5.io.rtstruct.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None)
+medh5.io.rtstruct.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None, roi_classes=None, points_id=None, open_curves='omit')
 medh5.io.rtstruct.read_rtstruct	function	(path)
-medh5.io.rtstruct.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None)
+medh5.io.rtstruct.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None, points=None)
 medh5.io.scan_dicom	function	(root, *, report=None)
-medh5.io.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None)
+medh5.io.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None, segmentation_type='binary', fractional_type='PROBABILITY')
 medh5.io.to_nifti	function	(path, image_id, out, *, physical=True, annotation=None, class_key=None, report=None)
-medh5.io.to_nnunetv2	function	(paths, out, *, dataset_name='Dataset001_medh5', file_ending='.nii.gz', annotation='seg', classes=None, unlabeled='refuse', report=None)
-medh5.io.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None)
+medh5.io.to_nnunetv2	function	(paths, out, *, dataset_name='Dataset001_medh5', file_ending='.nii.gz', annotation='seg', classes=None, unlabeled='refuse', report=None, split=None, replace=False)
+medh5.io.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None, points=None)
 medh5.labels	module
 medh5.labels.BACKGROUND_ID	constant	int
 medh5.labels.CLOSURES	constant	tuple

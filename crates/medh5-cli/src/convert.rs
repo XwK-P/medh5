@@ -168,7 +168,7 @@ pub fn migrate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             req_str(m, "group_by"),
             get_str(m, "subject_key"),
             reviewed.as_ref(),
-            "balanced",
+            req_str(m, "codec"),
         )?;
         Ok(Some(report))
     })();

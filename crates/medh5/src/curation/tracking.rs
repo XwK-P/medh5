@@ -15,7 +15,7 @@ use serde_json::{json, Map, Value};
 
 use crate::annotations::{Annotation, Instance};
 use crate::geometry::affine::{box_to_slices, voxel_volume};
-use crate::geometry::grid::Grid;
+use crate::geometry::grid::{mm_per_unit, Grid};
 use crate::json::{format_g, num, repr_str};
 use crate::labels::ClassKey;
 use crate::sample::Sample;
@@ -211,16 +211,6 @@ impl Track {
     pub fn repr(&self) -> String {
         let class = self.class_key.clone().unwrap_or_else(|| self.class_id().to_string());
         format!("Track({}, class={class}, seen at {})", self.instance_id, crate::json::repr_list(&self.timepoints()))
-    }
-}
-
-/// Millimetres per unit of a calibrated length (§3.2).
-fn mm_per_unit(units: &str) -> Option<f64> {
-    match units {
-        "mm" => Some(1.0),
-        "m" => Some(1000.0),
-        "um" => Some(1e-3),
-        _ => None,
     }
 }
 

@@ -245,6 +245,19 @@ class TestMisshapenArguments:
         np.testing.assert_array_equal(found.max(axis=0), corners[1])
 
 
+def test_mm_per_unit_is_the_engines():
+    """One table of millimetres per unit (§3.2), the engine's: the converters
+    and the MONAI metadata read it, where ``medh5.io.nifti`` kept its own."""
+    import medh5.io.nifti
+    from medh5 import _core
+    from medh5.geometry import KNOWN_UNITS, MM_PER_UNIT
+
+    assert MM_PER_UNIT is _core.MM_PER_UNIT
+    assert medh5.io.nifti.MM_PER_UNIT is MM_PER_UNIT
+    assert MM_PER_UNIT == {"mm": 1.0, "um": 1e-3, "m": 1000.0}
+    assert set(MM_PER_UNIT) == set(KNOWN_UNITS) - {"px"}
+
+
 class TestGrid:
     def test_S3_1_spatial_axes_must_be_trailing(self):
         with pytest.raises(MEDH5ValidationError) as exc:

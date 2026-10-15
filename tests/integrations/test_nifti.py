@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -176,6 +175,56 @@ class TestNiftiGeometryIsNeverInvented:
         )
         report = from_nifti({"IMG": src}, tmp_path / "out.medh5", sample_id="s")
         assert any("sform and qform" in n.message for n in report.guesses)
+
+    # A qform-only file's geometry, to the bit: what NIfTI-1's quaternion
+    # formula gives in float64 for the header below, on every platform.
+    QFORM_SPACING = (
+        "0x1.3ffffffffffffp+1",
+        "0x1.cccccbfffffffp-1",
+        "0x1.999999fffffffp-1",
+    )
+    QFORM_DIRECTION = (
+        ("0x1.e6702aa72c5b5p-3", "-0x1.ee26214f97e4fp-1", "-0x1.c28f4fae14779p-4"),
+        ("-0x1.0a4daa5157daap-1", "-0x1.c6a7eb43957fdp-3", "0x1.a6439f0b30acfp-1"),
+        ("-0x1.a40b77b50b0f0p-1", "-0x1.1c024b85c9f5bp-3", "-0x1.1c04145a54b6ep-1"),
+    )
+
+    def test_S3_a_qform_import_is_the_same_on_every_platform(self, tmp_path):
+        """nibabel builds the qform in `np.longdouble`, 80-bit on x86-64 and
+        64-bit elsewhere, so the grid a qform-only file imported to --- and
+        the sample's `content_id` --- differed in the last bit between
+        platforms.  The importer computes it in float64 itself."""
+        image = nib.Nifti1Image(np.zeros((4, 5, 6), np.int16), None)
+        header = image.header
+        header["quatern_b"], header["quatern_c"], header["quatern_d"] = (
+            0.13,
+            0.27,
+            -0.61,
+        )
+        header["pixdim"][:4] = [-1.0, 0.8, 0.9, 2.5]
+        header["qoffset_x"], header["qoffset_y"], header["qoffset_z"] = (
+            -10.5,
+            20.25,
+            5.125,
+        )
+        header["qform_code"], header["sform_code"] = 1, 0
+        src = tmp_path / "qform.nii"
+        nib.save(image, str(src))
+        out = tmp_path / "out.medh5"
+        from_nifti({"IMG": src}, out, sample_id="s")
+        with medh5.open(out) as sample:
+            (grid,) = sample.grids.values()
+            spacing = tuple(float(v).hex() for v in grid.spacing)
+            direction = tuple(
+                tuple(float(v).hex() for v in row) for row in np.asarray(grid.direction)
+            )
+            affine = np.asarray(grid.affine)
+        assert spacing == self.QFORM_SPACING
+        assert direction == self.QFORM_DIRECTION
+        # The same geometry nibabel reads, but for the last bit.
+        ras = convert_world(affine, source="LPS", target="RAS")
+        stated = nib.load(str(src)).affine
+        np.testing.assert_allclose(ras[:3, :3], stated[:3, :3][:, ::-1], atol=1e-12)
 
     def test_a_well_formed_file_reports_no_geometry_guess(self, tmp_path):
         src = self._write(
@@ -721,6 +770,178 @@ class TestNifti:
         from_nifti({"XR": source}, tmp_path / "v50.medh5")
         back = to_nifti(tmp_path / "v50.medh5", "XR", tmp_path / "back.nii.gz")
         assert np.allclose(nib.load(str(back)).affine, affine)
+
+
+class TestPlaneAsVolume:
+    """``plane_as_volume``: a 2-D NIfTI imported as the one-slice 3-D grid
+    §3.6 says a plane elsewhere is, keeping where it lies."""
+
+    @staticmethod
+    def _save(path: Path, data: Any, affine: Any) -> Path:
+        nib.save(nib.Nifti1Image(data, affine), str(path))
+        return path
+
+    @staticmethod
+    def _save_sform(path: Path, data: Any, affine: Any) -> Path:
+        """*affine* as the sform alone: nibabel derives a qform from the
+        affine it is given, and cannot from a singular one."""
+        image = nib.Nifti1Image(data, None)
+        image.header.set_sform(affine, code=1)
+        nib.save(image, str(path))
+        return path
+
+    @staticmethod
+    def _digests(path: Path) -> dict[str, Any]:
+        """What the import wrote, by digest: the image and annotation
+        datasets, and the grid as it is declared."""
+        from medh5.integrity import collect_digests
+
+        with medh5.open(path) as sample:
+            grid = sample.grids["ref"]
+            return {
+                "datasets": {
+                    name: digest
+                    for name, digest in collect_digests(sample.root).items()
+                    if name.startswith(("images/", "annotations/"))
+                },
+                "grid": (
+                    grid.shape,
+                    tuple(grid.spacing),
+                    tuple(grid.origin),
+                    np.asarray(grid.direction).tolist(),
+                    grid.axis_names,
+                ),
+            }
+
+    def test_S3_6_plane_as_volume_keeps_its_z(self, tmp_path):
+        rng = np.random.default_rng(3)
+        pixels = rng.integers(0, 900, (32, 40)).astype(np.int16)
+        mask = np.zeros((32, 40), np.uint8)
+        mask[4:20, 6:30] = 1
+        affine = np.array(PLANE, copy=True)
+        affine[2, 3] = 12.5
+        image = self._save(tmp_path / "xr.nii.gz", pixels, affine)
+        drawn = self._save(tmp_path / "lung.nii.gz", mask, affine)
+        out = tmp_path / "plane.medh5"
+        report = from_nifti(
+            {"XR": image}, out, masks={"lung": drawn}, plane_as_volume=True
+        )
+        with medh5.open(out) as sample:
+            grid = sample.grids["ref"]
+            assert grid.shape == (1, 40, 32)
+            assert grid.origin[2] == 12.5
+            (activity,) = sample.document.provenance.activities_by_type("import")
+            assert activity.params["plane_as_volume"] is True
+        notes = report.of_kind("plane_as_volume")
+        assert [n.severity for n in notes] == ["decision", "decision"]
+        assert notes[0].detail["z"] == 12.5
+        assert notes[0].detail["normal"] == [0.0, 0.0, 1.0]
+        assert validate_file(out).ok
+        # The result is the plane re-saved as (x, y, 1), imported as it is.
+        image3 = self._save(tmp_path / "xr3.nii.gz", pixels[..., None], affine)
+        drawn3 = self._save(tmp_path / "lung3.nii.gz", mask[..., None], affine)
+        resaved = tmp_path / "resaved.medh5"
+        from_nifti({"XR": image3}, resaved, masks={"lung": drawn3})
+        ours, theirs = self._digests(out), self._digests(resaved)
+        assert ours["datasets"] and ours == theirs
+
+    @pytest.mark.parametrize(
+        "column", [[0.0, 0.0, 0.0], [0.5, 0.0, 1.0]], ids=["zero", "oblique"]
+    )
+    def test_S3_6_plane_as_volume_refuses_a_degenerate_third_column(
+        self, tmp_path, column
+    ):
+        """No normal or thickness is invented for a plane whose affine does
+        not give one."""
+        affine = np.array(PLANE, copy=True)
+        affine[:3, 2] = column
+        source = self._save_sform(
+            tmp_path / "bad.nii.gz", np.zeros((32, 40), np.int16), affine
+        )
+        out = tmp_path / "bad.medh5"
+        with pytest.raises(MEDH5ValidationError, match="third column") as caught:
+            from_nifti({"XR": source}, out, plane_as_volume=True)
+        assert "bad.nii.gz" in str(caught.value)
+        assert not out.exists()
+
+    @pytest.mark.parametrize("tilted", [False, True], ids=["off_z0", "tilted"])
+    def test_S3_6_off_plane_refusal_names_the_flag(self, tmp_path, tilted, capsys):
+        from medh5.cli import EXIT_ERROR, EXIT_OK, main
+
+        affine = np.array(PLANE, copy=True)
+        if tilted:
+            affine[:3, :3] = [[0.8, 0.0, 0.0], [0.0, 0.54, -0.8], [0.0, 0.72, 0.6]]
+        else:
+            affine[2, 3] = 50.0
+        source = self._save(tmp_path / "p.nii.gz", np.zeros((32, 40), np.int16), affine)
+        out = tmp_path / "p.medh5"
+        with pytest.raises(MEDH5ValidationError) as caught:
+            from_nifti({"XR": source}, out)
+        assert "plane_as_volume=True" in str(caught.value)
+        assert "--plane-as-volume" in str(caught.value)
+        argv = ["convert", "from-nifti", str(out), "--image", f"XR={source}"]
+        assert main(argv) == EXIT_ERROR
+        assert "--plane-as-volume" in capsys.readouterr().err
+        assert main([*argv, "--plane-as-volume"]) == EXIT_OK
+        with medh5.open(out) as sample:
+            assert sample.grids["ref"].shape == (1, 40, 32)
+
+    def test_S3_6_plane_as_volume_changes_no_volume_import(self, volumes, tmp_path):
+        masks = {"liver": volumes["liver"]}
+        ids = {"sample_id": "s", "subject_id": "p"}
+        plain = from_nifti(
+            {"CT": volumes["ct"]}, tmp_path / "a.medh5", masks=masks, **ids
+        )
+        flagged = from_nifti(
+            {"CT": volumes["ct"]}, tmp_path / "b.medh5", masks=masks,
+            plane_as_volume=True, **ids,
+        )  # fmt: skip
+        assert not flagged.of_kind("plane_as_volume")
+        assert [str(n) for n in plain.notes] == [str(n) for n in flagged.notes]
+        with (
+            medh5.open(tmp_path / "a.medh5") as a,
+            medh5.open(tmp_path / "b.medh5") as b,
+        ):
+            assert a.content_id == b.content_id
+            (activity,) = b.document.provenance.activities_by_type("import")
+            assert "plane_as_volume" not in activity.params
+
+    def test_S3_6_plane_at_z0_is_a_volume_too(self, tmp_path):
+        """Planes at z = 0 are reshaped as well, so a cohort comes out of one
+        kind of grid whatever their headers' offsets."""
+        source = self._save(tmp_path / "z0.nii.gz", np.zeros((32, 40), np.int16), PLANE)
+        from_nifti({"XR": source}, tmp_path / "z0.medh5", plane_as_volume=True)
+        with medh5.open(tmp_path / "z0.medh5") as sample:
+            assert sample.grids["ref"].shape == (1, 40, 32)
+            assert sample.grids["ref"].origin[2] == 0.0
+
+    def test_S3_6_plane_mask_matches_a_one_slice_grid(self, tmp_path):
+        affine = np.array(PLANE, copy=True)
+        affine[2, 3] = -7.0
+        image = self._save(
+            tmp_path / "xr.nii.gz", np.zeros((32, 40, 1), np.int16), affine
+        )
+        sample = tmp_path / "s.medh5"
+        from_nifti({"XR": image}, sample)
+        mask = np.zeros((32, 40), np.uint8)
+        mask[3:9, 5:11] = 1
+        drawn = self._save(tmp_path / "m.nii.gz", mask, affine)
+        with pytest.raises(MEDH5ValidationError, match="--plane-as-volume"):
+            import_seg_nifti(sample, {"lesion": drawn})
+        report = import_seg_nifti(sample, {"lesion": drawn}, plane_as_volume=True)
+        (note,) = report.of_kind("plane_as_volume")
+        assert note.detail["z"] == -7.0
+        with medh5.open(sample) as opened:
+            seg = opened.annotations["seg"]
+            assert seg.grid_id == "ref"
+            (lesion,) = seg.dense(["lesion"])
+            assert np.array_equal(lesion, mask.T[None].astype(bool))
+            (activity,) = [
+                a
+                for a in opened.document.provenance.activities_by_type("import")
+                if a.params.get("plane_as_volume")
+            ]
+            assert activity.params["plane_as_volume"] is True
 
 
 class TestDimensionality:
@@ -1289,16 +1510,18 @@ class TestExportsOwnTheirVolumeStatements:
         """The old timing is withdrawn before the image is replaced: an export
         that fails between them leaves the old image with its timing
         unmeasured, not the new one with the old image's."""
+        from medh5.io import nifti
+
         out = tmp_path / "dce.nii.gz"
         to_nifti(self._series(tmp_path / "a.medh5", [0.0, 1.0, 3.0]), "DCE", out)
-        replace = os.replace
+        withdraw = nifti._withdraw_volume_statements
 
-        def interrupted(source: Any, target: Any) -> None:
-            if Path(target) == out:
-                raise OSError("interrupted")
-            replace(source, target)
+        def interrupted(*args: Any) -> Any:
+            """Withdrawn, and the export stops before its image is renamed."""
+            withdraw(*args)
+            raise OSError("interrupted")
 
-        monkeypatch.setattr(os, "replace", interrupted)
+        monkeypatch.setattr(nifti, "_withdraw_volume_statements", interrupted)
         with pytest.raises(OSError, match="interrupted"):
             to_nifti(self._series(tmp_path / "b.medh5", [0.0, 5.0, 6.0]), "DCE", out)
         monkeypatch.undo()
@@ -1431,6 +1654,38 @@ class TestExportsOwnTheirVolumeStatements:
         fields = json.loads(sidecar.read_text(encoding="utf-8"))
         assert fields == {"Manufacturer": "x", "EchoTime": [0.005, 0.01]}
         assert not (tmp_path / "dwi.bval").exists()
+
+
+class TestExportsAreWrittenWhole:
+    """A NIfTI export replaces its file through the engine's replace
+    (§14.4): nibabel writes a staged temporary, renamed over the file only
+    once it is whole."""
+
+    def test_S14_4_an_interrupted_save_leaves_the_previous_file(
+        self, tmp_path, monkeypatch
+    ):
+        import nibabel
+
+        from medh5.io.nifti import write_nifti
+
+        out = tmp_path / "ct.nii.gz"
+        write_nifti(np.zeros((4, 3, 2), np.int16), np.eye(4), out)
+        before = out.read_bytes()
+        written: list[Path] = []
+
+        def crashed(image: Any, filename: Any, *args: Any, **kwargs: Any) -> None:
+            """nibabel stopped half way through the file."""
+            written.append(Path(filename))
+            Path(filename).write_bytes(before[: len(before) // 2])
+            raise OSError("interrupted")
+
+        monkeypatch.setattr(nibabel, "save", crashed)
+        with pytest.raises(OSError, match="interrupted"):
+            write_nifti(np.ones((4, 3, 2), np.int16), np.eye(4), out)
+        monkeypatch.undo()
+        assert written and written[0] != out, "nibabel wrote a temporary"
+        assert out.read_bytes() == before
+        assert [p.name for p in tmp_path.iterdir()] == ["ct.nii.gz"]
 
 
 class TestNiftiInputs:

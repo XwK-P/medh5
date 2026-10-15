@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -1066,7 +1067,7 @@ class TestReexport:
     @staticmethod
     def _files(root: Path) -> dict[str, bytes]:
         return {
-            str(p.relative_to(root)): p.read_bytes()
+            p.relative_to(root).as_posix(): p.read_bytes()
             for p in sorted(root.rglob("*"))
             if p.is_file()
         }
@@ -1113,7 +1114,7 @@ class TestReexport:
             assert self._files(root) == before, "nothing was written"
             return
         assert change == "identical"
-        written = {str(Path(o).relative_to(root)) for o in report.outputs}
+        written = {Path(o).relative_to(root).as_posix() for o in report.outputs}
         nifti = {n for n in self._files(root) if n.endswith((".nii", ".nii.gz"))}
         assert nifti == written - {"dataset.json"}
         assert (root / "imagesTr" / "README.txt").read_text(encoding="utf-8") == "mine"
@@ -1289,3 +1290,435 @@ class TestStashedLabels:
             Ann(), volume, {"c1": 1}, ignored, {"c1": 1}, frozenset({1, 2})
         )
         assert lost == ["class 2 (1 voxel(s) no label names)"]
+
+
+class TestTestCases:
+    """``from_nnunetv2`` read ``imagesTr`` only, so a dataset exported with
+    ``unlabeled="test"`` came back without its test cases, and without a
+    note; and an export sent a case to ``imagesTs`` only for lacking the
+    annotation, never for being a test case."""
+
+    @staticmethod
+    def _case(
+        path: Path,
+        name: str,
+        *,
+        labeled: bool = True,
+        claims: dict[str, str] | None = None,
+    ) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with medh5.create(path, sample_id=name, codec="portable") as w:
+            w.add_grid("g", shape=Organs.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(Organs.SHAPE, np.int16), grid="g", modality="CT")
+            if labeled:
+                mask = np.zeros(Organs.SHAPE, bool)
+                mask[1:3, 1:3, 1:3] = True
+                w.add_segmentation("seg", grid="g", masks={1: mask})
+            for set_id, partition in (claims or {}).items():
+                w.split(set_id=set_id, partition=partition)
+        return path
+
+    @staticmethod
+    def _dataset(root: Path, *, both: bool = False) -> Path:
+        """``imagesTr`` holding CASE_001, ``imagesTs`` CASE_002 (labeled, in
+        ``labelsTs``) and CASE_003 (unlabeled); with *both*, CASE_001 in
+        ``imagesTs`` too."""
+        for folder in ("imagesTr", "labelsTr", "imagesTs", "labelsTs"):
+            (root / folder).mkdir(parents=True)
+        shape = (6, 5, 4)
+        labels = np.zeros(shape, np.uint8)
+        labels[1:4, 1:3, 1:3] = 1
+        image = np.arange(np.prod(shape), dtype=np.int16).reshape(shape)
+
+        def save(array: np.ndarray, path: Path) -> None:
+            nib.save(nib.Nifti1Image(array, np.eye(4)), str(path))
+
+        save(image, root / "imagesTr" / "CASE_001_0000.nii.gz")
+        save(labels, root / "labelsTr" / "CASE_001.nii.gz")
+        save(image + 1, root / "imagesTs" / "CASE_002_0000.nii.gz")
+        save(labels, root / "labelsTs" / "CASE_002.nii.gz")
+        save(image + 2, root / "imagesTs" / "CASE_003_0000.nii.gz")
+        if both:
+            save(image, root / "imagesTs" / "CASE_001_0000.nii.gz")
+        (root / "dataset.json").write_text(
+            json.dumps(
+                {
+                    "channel_names": {"0": "CT"},
+                    "labels": {"background": 0, "liver": 1},
+                    "numTraining": 1,
+                    "file_ending": ".nii.gz",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return root
+
+    def test_from_nnunet_include_test_round_trips_unlabeled_cases(
+        self, tmp_path: Path, capsys
+    ):
+        from medh5.cli import EXIT_ERROR, EXIT_OK, main
+        from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
+
+        labeled = self._case(tmp_path / "s/a.medh5", "a")
+        bare = self._case(tmp_path / "s/b.medh5", "b", labeled=False)
+        to_nnunetv2(
+            [labeled, bare], tmp_path / "nn", dataset_name="D1", unlabeled="test"
+        )
+        root = tmp_path / "nn" / "D1"
+
+        # Without the flag nothing changes, but the test case left out is
+        # counted, naming the option that imports it.
+        report = from_nnunetv2(root, tmp_path / "train")
+        assert sorted(p.name for p in (tmp_path / "train").iterdir()) == ["a.medh5"]
+        (left,) = report.of_kind("test_cases")
+        assert left.severity == "warning" and left.detail["cases"] == 1
+        assert "include_test" in left.message
+        with medh5.open(tmp_path / "train" / "a.medh5") as sample:
+            assert sample.document.splits == ()
+
+        report = from_nnunetv2(root, tmp_path / "all", include_test=True)
+        assert report.ok, report.format(verbose=True)
+        with medh5.open(tmp_path / "all" / "b.medh5") as sample:
+            assert "seg" not in sample.annotations
+            assert np.array_equal(
+                sample.images["CT"].read(), np.zeros(Organs.SHAPE, np.int16)
+            )
+        back = sorted((tmp_path / "all").glob("*.medh5"))
+        to_nnunetv2(back, tmp_path / "again", dataset_name="D1", unlabeled="test")
+        assert TestReexport._files(tmp_path / "again" / "D1").keys() == (
+            TestReexport._files(root).keys()
+        )
+        assert nnunet_checks(tmp_path / "again" / "D1")["numTraining"] == 1
+
+        argv = ["convert", "from-nnunet", str(root)]
+        assert main([*argv, str(tmp_path / "cli1")]) == EXIT_ERROR
+        assert "--include-test" in capsys.readouterr().out
+        assert main([*argv, str(tmp_path / "cli2"), "--include-test"]) == EXIT_OK
+        assert (tmp_path / "cli2" / "b.medh5").exists()
+
+    def test_from_nnunet_include_test_writes_split_claims(self, tmp_path: Path):
+        import hashlib
+
+        from medh5.io.nnunetv2 import from_nnunetv2
+
+        root = self._dataset(tmp_path / "Dataset007_Liver")
+        digest = hashlib.sha256((root / "dataset.json").read_bytes()).hexdigest()
+        report = from_nnunetv2(root, tmp_path / "out", include_test=True)
+        partitions = {"CASE_001": "train", "CASE_002": "test", "CASE_003": "test"}
+        for case, partition in partitions.items():
+            with medh5.open(tmp_path / "out" / f"{case}.medh5") as sample:
+                (claim,) = sample.document.splits
+                assert claim.to_json() == {
+                    "set_id": "nnunetv2:Dataset007_Liver",
+                    "partition": partition,
+                    "assigned_by": "nnU-Net v2 dataset layout",
+                    "manifest_sha256": digest,
+                }
+                # A test case's labels are read from labelsTs, where present.
+                assert ("seg" in sample.annotations) == (case != "CASE_003")
+        with medh5.open(tmp_path / "out" / "CASE_002.medh5") as sample:
+            assert int(sample.annotations["seg"].dense([1])[0].sum()) == 12
+        assert report.of_kind("splits")
+
+        # A case in both partitions is no case of either.
+        both = self._dataset(tmp_path / "Dataset008_Both", both=True)
+        with pytest.raises(MEDH5ValidationError, match="CASE_001"):
+            from_nnunetv2(both, tmp_path / "both", include_test=True)
+        assert not list(tmp_path.glob("both/*.medh5"))
+
+    def test_S12_3_split_routes_test_cases_to_imagesTs(self, tmp_path: Path, capsys):
+        from medh5.cli import EXIT_OK, main
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        cases = [
+            self._case(tmp_path / "s/a.medh5", "a", claims={"cv": "train"}),
+            self._case(tmp_path / "s/b.medh5", "b", claims={"cv": "val"}),
+            self._case(tmp_path / "s/c.medh5", "c", claims={"cv": "test"}),
+            self._case(
+                tmp_path / "s/d.medh5", "d", labeled=False, claims={"cv": "test"}
+            ),
+        ]
+        report = to_nnunetv2(cases, tmp_path / "nn", dataset_name="D1", split="cv")
+        root = tmp_path / "nn" / "D1"
+        files = set(TestReexport._files(root))
+        assert {
+            "imagesTr/a_0000.nii.gz",
+            "imagesTr/b_0000.nii.gz",
+            "imagesTs/c_0000.nii.gz",
+            "labelsTs/c.nii.gz",
+            "imagesTs/d_0000.nii.gz",
+        } <= files
+        assert not {"imagesTr/c_0000.nii.gz", "labelsTr/c.nii.gz"} & files
+        assert nnunet_checks(root)["numTraining"] == 2
+        assert report.of_kind("split")
+
+        # A case the set does not place is refused, naming the set: a
+        # mistyped set id would otherwise train on every test case.
+        unplaced = self._case(tmp_path / "s/e.medh5", "e", claims={"other": "test"})
+        with pytest.raises(MEDH5ValidationError, match="'cv'") as caught:
+            to_nnunetv2([*cases, unplaced], tmp_path / "nn2", split="cv")
+        assert "e.medh5" in str(caught.value)
+        assert not (tmp_path / "nn2").exists()
+        # A holdout case is neither trained nor tested on.
+        held = self._case(tmp_path / "s/f.medh5", "f", claims={"cv": "holdout"})
+        with pytest.raises(MEDH5ValidationError, match="holdout"):
+            to_nnunetv2([*cases, held], tmp_path / "nn3", split="cv")
+        assert not (tmp_path / "nn3").exists()
+        # A case the set trains on keeps its partition without labels too:
+        # unlabeled="test" moved it to imagesTs, against its claim.
+        bare = self._case(
+            tmp_path / "s/g.medh5", "g", labeled=False, claims={"cv": "train"}
+        )
+        for unlabeled in ("refuse", "test"):
+            with pytest.raises(MEDH5ValidationError, match="'cv'") as caught:
+                to_nnunetv2(
+                    [*cases, bare], tmp_path / "nn4", split="cv", unlabeled=unlabeled
+                )
+            assert "g.medh5" in str(caught.value)
+        assert not (tmp_path / "nn4").exists()
+
+        # The stray check covers labelsTs.
+        (root / "labelsTs" / "zz.nii.gz").write_bytes(b"stray")
+        with pytest.raises(MEDH5ValidationError, match="labelsTs/zz.nii.gz"):
+            to_nnunetv2(cases, tmp_path / "nn", dataset_name="D1", split="cv")
+
+        argv = ["convert", "to-nnunet", str(tmp_path / "cli"), *map(str, cases)]
+        assert main([*argv, "--split", "cv"]) == EXIT_OK
+        capsys.readouterr()
+        written = tmp_path / "cli" / "Dataset001_medh5" / "labelsTs" / "c.nii.gz"
+        assert written.exists()
+
+
+def _disk_full_while(monkeypatch, owner: object, name: str) -> None:
+    """Make *owner*'s *name* run on a disk with room for 8 bytes a file: the
+    write fails part way through, as on a full disk (POSIX only)."""
+    import resource
+    import signal
+
+    real = getattr(owner, name)
+
+    def limited(*args, **kwargs):
+        limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+        handler = signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (8, limit[1]))
+        try:
+            return real(*args, **kwargs)
+        finally:
+            resource.setrlimit(resource.RLIMIT_FSIZE, limit)
+            signal.signal(signal.SIGXFSZ, handler)
+
+    monkeypatch.setattr(owner, name, limited)
+
+
+def _dataset_json_disk_full(monkeypatch) -> None:
+    """The writes of `dataset.json`, whichever writes it, fail part way."""
+    _disk_full_while(monkeypatch, medh5._core, "write_atomic")
+    _disk_full_while(monkeypatch, Path, "write_text")
+
+
+def _temporaries(top: Path) -> list[str]:
+    return sorted(str(p) for p in top.rglob("*") if p.name.startswith("."))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a file size limit")
+def test_S14_4_an_interrupted_dataset_json_leaves_the_previous_one(
+    tmp_path: Path, monkeypatch
+):
+    """`dataset.json` was written in place: a re-export that failed while
+    writing it truncated the dataset's description, and nnU-Net read none."""
+    from medh5.io.nnunetv2 import to_nnunetv2
+
+    a = TestReexport._case(tmp_path / "s/a.medh5", "a")
+    out = tmp_path / "nn"
+    to_nnunetv2([a], out, dataset_name="D1")
+    document = out / "D1" / "dataset.json"
+    before = document.read_bytes()
+    _dataset_json_disk_full(monkeypatch)
+    with pytest.raises(OSError):
+        to_nnunetv2([a], out, dataset_name="D1")
+    monkeypatch.undo()
+    assert document.read_bytes() == before
+    assert _temporaries(out) == []
+
+
+def test_S14_4_a_link_out_of_the_dataset_at_any_case_file_is_refused(
+    tmp_path: Path,
+):
+    """A file is written through a link at its name (§14.4), so a link at
+    any channel's file naming one outside the dataset is refused, not
+    written through; the first channel's and the labels' alone were
+    checked."""
+    import os
+
+    from medh5.io.nnunetv2 import to_nnunetv2
+
+    a = TestReexport._case(tmp_path / "s/a.medh5", "a", ("CT", "MR"))
+    out = tmp_path / "nn"
+    to_nnunetv2([a], out, dataset_name="D1")
+    elsewhere = tmp_path / "elsewhere.nii.gz"
+    elsewhere.write_bytes(b"not the dataset's")
+    second = out / "D1" / "imagesTr" / "a_0001.nii.gz"
+    second.unlink()
+    try:
+        os.symlink(elsewhere, second)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover
+        pytest.skip(f"symbolic links cannot be made here: {exc}")
+    with pytest.raises(MEDH5ValidationError, match="outside the dataset"):
+        to_nnunetv2([a], out, dataset_name="D1")
+    assert elsewhere.read_bytes() == b"not the dataset's"
+
+
+class TestReplace:
+    """An export into an existing dataset that would not write every NIfTI
+    file there is refused, so the only way to change a dataset was to delete
+    it first; ``replace=True`` rewrites it in place, file by file."""
+
+    @staticmethod
+    def _hidden(out: Path) -> list[str]:
+        return sorted(p.name for p in out.iterdir() if p.name.startswith("."))
+
+    @staticmethod
+    def _tree(top: Path) -> dict[str, bytes]:
+        return {
+            str(p.relative_to(top)): p.read_bytes()
+            for p in sorted(top.rglob("*"))
+            if p.is_file() and not p.is_symlink()
+        }
+
+    def test_replace_rewrites_a_dataset_in_place_and_leaves_other_files(
+        self, tmp_path: Path, capsys
+    ):
+        from medh5.cli import EXIT_OK, main
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        a, b = (TestReexport._case(tmp_path / f"s/{n}.medh5", n) for n in "ab")
+        out = tmp_path / "nn"
+        to_nnunetv2([a, b], out, dataset_name="D1")
+        root = out / "D1"
+        (root / "imagesTr" / "README.txt").write_text("mine", encoding="utf-8")
+        (root / "splits_final.json").write_text("[]", encoding="utf-8")
+        (root / "notes").mkdir()
+        (root / "notes" / "plan.md").write_text("plan", encoding="utf-8")
+        (root / "notes" / "scan.nii.gz").write_bytes(b"not the export's")
+        others = ("imagesTr/README.txt", "splits_final.json", "notes/plan.md")
+        inodes = {name: (root / name).stat().st_ino for name in others}
+
+        report = to_nnunetv2([a], out, dataset_name="D1", replace=True)
+        files = TestReexport._files(root)
+        assert {n for n in files if n.endswith(".nii.gz")} == {
+            "imagesTr/a_0000.nii.gz",
+            "labelsTr/a.nii.gz",
+            "notes/scan.nii.gz",
+        }
+        assert files["imagesTr/README.txt"] == b"mine"
+        assert files["splits_final.json"] == b"[]"
+        assert files["notes/plan.md"] == b"plan"
+        # Left where they are, never copied.
+        assert {name: (root / name).stat().st_ino for name in others} == inodes
+        assert nnunet_checks(root)["numTraining"] == 1
+        (note,) = report.of_kind("replace")
+        assert "in place" in note.message
+        assert note.detail["removed"] == ["imagesTr/b_0000.nii.gz", "labelsTr/b.nii.gz"]
+        assert note.detail["carried_over"] == [
+            "imagesTr/README.txt",
+            "notes/plan.md",
+            "notes/scan.nii.gz",
+            "splits_final.json",
+        ]
+        assert all(Path(o).is_relative_to(root) for o in report.outputs)
+        assert _temporaries(out) == [], "no temporary is left"
+
+        argv = ["convert", "to-nnunet", str(out), str(a), str(b)]
+        assert main([*argv, "--dataset-name", "D1", "--replace"]) == EXIT_OK
+        capsys.readouterr()
+        assert (root / "imagesTr" / "b_0000.nii.gz").exists()
+        assert (root / "notes" / "plan.md").exists()
+
+    @pytest.mark.parametrize("target", ["missing", "no_dataset_json", "file", "link"])
+    def test_replace_refuses_a_directory_without_dataset_json(
+        self, tmp_path: Path, target: str
+    ):
+        import os
+
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        a = TestReexport._case(tmp_path / "s/a.medh5", "a")
+        out = tmp_path / "nn"
+        out.mkdir()
+        root = out / "D1"
+        if target == "no_dataset_json":
+            (root / "imagesTr").mkdir(parents=True)
+            (root / "imagesTr" / "x_0000.nii.gz").write_bytes(b"x")
+        elif target == "file":
+            root.write_bytes(b"x")
+        elif target == "link":
+            to_nnunetv2([a], tmp_path / "real", dataset_name="D1")
+            try:
+                os.symlink(tmp_path / "real" / "D1", root, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                pytest.skip(f"symbolic links cannot be made here: {exc}")
+        before = self._tree(tmp_path)
+        with pytest.raises(MEDH5ValidationError, match="replace") as caught:
+            to_nnunetv2([a], out, dataset_name="D1", replace=True)
+        assert caught.value.code is None
+        expected = {
+            "missing": "does not exist",
+            "no_dataset_json": "dataset.json",
+            "file": "not a directory",
+            "link": "link",
+        }[target]
+        assert expected in str(caught.value)
+        assert self._tree(tmp_path) == before, "nothing was written"
+        assert self._hidden(out) == []
+
+    def test_S14_4_an_interrupted_replace_leaves_each_file_whole(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Stopped on its first file, a replace leaves the old dataset as it
+        was; no temporary is left either way."""
+        import nibabel
+
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        a, b = (TestReexport._case(tmp_path / f"s/{n}.medh5", n) for n in "ab")
+        out = tmp_path / "nn"
+        to_nnunetv2([a, b], out, dataset_name="D1")
+        (out / "D1" / "splits_final.json").write_text("[]", encoding="utf-8")
+        before = TestReexport._files(out / "D1")
+
+        def crashed(image, filename, *args, **kwargs):
+            Path(filename).write_bytes(b"half")
+            raise OSError("interrupted")
+
+        monkeypatch.setattr(nibabel, "save", crashed)
+        with pytest.raises(OSError, match="interrupted"):
+            to_nnunetv2([a], out, dataset_name="D1", replace=True)
+        monkeypatch.undo()
+        assert TestReexport._files(out / "D1") == before
+        assert _temporaries(out) == []
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="a file size limit")
+    def test_S14_4_dataset_json_is_written_last(self, tmp_path: Path, monkeypatch):
+        """A replace that fails on `dataset.json` has written the new images,
+        keeps the old description whole, and has removed nothing: the files
+        it no longer writes go only after it.  Run again, it completes."""
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        a, b = (TestReexport._case(tmp_path / f"s/{n}.medh5", n) for n in "ab")
+        out = tmp_path / "nn"
+        to_nnunetv2([a, b], out, dataset_name="D1")
+        root = out / "D1"
+        document = (root / "dataset.json").read_bytes()
+        _dataset_json_disk_full(monkeypatch)
+        with pytest.raises(OSError):
+            to_nnunetv2([a], out, dataset_name="D1", replace=True)
+        monkeypatch.undo()
+        assert (root / "dataset.json").read_bytes() == document
+        assert (root / "imagesTr" / "b_0000.nii.gz").exists(), "nothing removed"
+        assert _temporaries(out) == []
+
+        report = to_nnunetv2([a], out, dataset_name="D1", replace=True)
+        assert nnunet_checks(root)["numTraining"] == 1
+        assert not (root / "imagesTr" / "b_0000.nii.gz").exists()
+        (note,) = report.of_kind("replace")
+        assert note.detail["removed"] == ["imagesTr/b_0000.nii.gz", "labelsTr/b.nii.gz"]
