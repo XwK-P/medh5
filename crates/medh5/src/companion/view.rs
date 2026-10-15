@@ -29,9 +29,9 @@ use std::sync::Arc;
 use ndarray::Axis;
 use serde_json::{json, Value};
 
-use super::source::SourceRef;
+use super::source::{SourceAccess, SourceRef};
 use super::task::{Row, Slot, Subject, TaskManifest};
-use super::{fingerprint, Finding};
+use super::{fingerprint, Finding, Note};
 use crate::annotations::Annotation;
 use crate::clinical::model::{Bounds, Event, Link};
 use crate::clinical::select::{names, Prepared, Selection};
@@ -40,6 +40,29 @@ use crate::geometry::Grid;
 use crate::json::{pretty_at, repr_str};
 use crate::sample::Sample;
 use crate::{Error, Result};
+
+/// What a row's `status` can be, in the order the preflight columns code
+/// them: every word preflight writes there is one of these.
+pub const ROW_STATUSES: &[&str] = &[ELIGIBLE, UNCERTIFIABLE, EXCLUDED, ERROR];
+/// What a row's target `status` can be, in the order the columns code them.
+pub const TARGET_STATUSES: &[&str] = &[POSITIVE, NEGATIVE, CENSORED, PREVALENT, NONE];
+/// How a slot's region was centred: what a slot may request
+/// ([`ROI`](super::task::ROI)), and the centre a slot asking for an
+/// eligible instance falls back to when the row has none.
+pub const ROI_FILLS: &[&str] = &[CENTER, ELIGIBLE_INSTANCES, CENTER_FALLBACK];
+
+const ELIGIBLE: &str = "eligible";
+const UNCERTIFIABLE: &str = "uncertifiable";
+const EXCLUDED: &str = "excluded";
+const ERROR: &str = "error";
+const POSITIVE: &str = "positive";
+const NEGATIVE: &str = "negative";
+const CENSORED: &str = "censored";
+const PREVALENT: &str = "prevalent";
+const NONE: &str = "none";
+const CENTER: &str = super::task::ROI[0];
+const ELIGIBLE_INSTANCES: &str = super::task::ROI[1];
+const CENTER_FALLBACK: &str = "center_fallback";
 
 /// The digest of one event version's logical record: what duplicates across
 /// fragments must agree on.
@@ -104,13 +127,24 @@ pub struct History {
 
 /// Open, check and reconcile one subject's sources.
 pub fn load_subject(subject: &Subject, base: Option<&Path>, deep: bool) -> Result<History> {
+    load_subject_in(subject, &SourceAccess::new(base), deep)
+}
+
+/// [`load_subject`], opening sources where `access` lets them be opened.
+pub fn load_subject_in(subject: &Subject, access: &SourceAccess, deep: bool) -> Result<History> {
     let mut history = History::default();
     history.merged.subject_id = subject.subject_id.clone();
     history.merged.partition = subject.partition.clone();
     let at = |src: &SourceRef| if src.source_id.is_empty() { src.locator() } else { src.source_id.clone() };
     for source in &subject.sources {
-        let sample = match source.open(base) {
+        let sample = match source.open_in(access) {
             Ok(s) => s,
+            // Refused where the runner confined it: the message names the
+            // URI and nothing about the path.
+            Err(e) if e.code() == Some("T301") => {
+                history.findings.push(Finding::new("T301", at(source), e.message()));
+                continue;
+            }
             Err(e) => {
                 history.findings.push(Finding::new(
                     "T301",
@@ -459,9 +493,14 @@ fn merge(history: &mut History, subject: &Subject) -> Result<Vec<Finding>> {
 /// The reconciliation records a subject's fragments need (what a manifest
 /// writer stores in `subjects[].reconciled`).
 pub fn reconcile(subject: &Subject, base: Option<&Path>) -> Result<Vec<super::task::Reconciled>> {
+    reconcile_in(subject, &SourceAccess::new(base))
+}
+
+/// [`reconcile`], opening sources where `access` lets them be opened.
+pub fn reconcile_in(subject: &Subject, access: &SourceAccess) -> Result<Vec<super::task::Reconciled>> {
     let mut samples = Vec::new();
     for source in &subject.sources {
-        let sample = source.open(base)?;
+        let sample = source.open_in(access)?;
         // Nothing is reconciled from a source off its pin (task-cache-1
         // Appendix A): its events are not the ones the task names.
         if let Some(finding) = source.check(&sample, false)?.into_iter().next() {
@@ -569,7 +608,7 @@ pub struct TargetLabel {
 
 impl TargetLabel {
     fn none() -> TargetLabel {
-        TargetLabel { status: "none".into(), value: None, event_id: None, reason: None }
+        TargetLabel { status: NONE.into(), value: None, event_id: None, reason: None }
     }
 
     pub fn observed(&self) -> bool {
@@ -609,7 +648,7 @@ pub struct RowView {
 
 impl RowView {
     pub fn eligible(&self) -> bool {
-        self.status == "eligible"
+        self.status == ELIGIBLE
     }
 
     /// `subject` is the row's history, which its selection indexes.
@@ -758,7 +797,7 @@ impl<'a> Rows<'a> {
                 .collect(),
         };
         let by_id: HashMap<&str, usize> = events.iter().enumerate().map(|(i, e)| (e.event_id.as_str(), i)).collect();
-        let instances = manifest.slots.iter().any(|s| s.roi == "eligible_instances");
+        let instances = manifest.slots.iter().any(|s| s.roi == ELIGIBLE_INSTANCES);
         let (mut candidates, mut unread) = (Vec::new(), Vec::new());
         for (fragment, l) in links {
             if l.relation != "describes" || l.source_type != "event" || l.target_type != "image" {
@@ -839,11 +878,11 @@ impl<'a> Rows<'a> {
                 fill.annotations.push(ann_id.clone());
             }
         }
-        if slot.roi == "eligible_instances" {
+        if slot.roi == ELIGIBLE_INSTANCES {
             // The first eligible instance-bearing annotation, by id.
             match best.instances.iter().find(|(id, _)| eligible.contains(id.as_str())) {
                 Some((_, center)) => fill.center = Some(center.clone()),
-                None => fill.roi = "center_fallback".into(),
+                None => fill.roi = CENTER_FALLBACK.into(),
             }
         }
         fill
@@ -871,7 +910,7 @@ impl<'a> Rows<'a> {
         if t.exclude_prevalent {
             if let Some(e) = positives.iter().find(|e| e.effective_start.is_some_and(|s| s.hi <= cutoff)) {
                 return TargetLabel {
-                    status: "prevalent".into(),
+                    status: PREVALENT.into(),
                     value: None,
                     event_id: Some(e.event_id.clone()),
                     reason: Some("the outcome had occurred by the cutoff".into()),
@@ -884,7 +923,7 @@ impl<'a> Rows<'a> {
         definite.sort_by_key(|e| (e.effective_start.map(|s| (s.lo, s.hi)), e.event_id.clone()));
         if let Some(first) = definite.first() {
             return TargetLabel {
-                status: "positive".into(),
+                status: POSITIVE.into(),
                 value: Some(1.0),
                 event_id: Some(first.event_id.clone()),
                 reason: None,
@@ -895,7 +934,7 @@ impl<'a> Rows<'a> {
         });
         if uncertain {
             return TargetLabel {
-                status: "censored".into(),
+                status: CENSORED.into(),
                 value: None,
                 event_id: None,
                 reason: Some("a positive outcome's time straddles the target window".into()),
@@ -903,7 +942,7 @@ impl<'a> Rows<'a> {
         }
         if planned.iter().any(|e| e.effective_start.is_none_or(|s| s.hi > lo_edge && s.lo <= hi_edge)) {
             return TargetLabel {
-                status: "censored".into(),
+                status: CENSORED.into(),
                 value: None,
                 event_id: None,
                 reason: Some("a positive outcome in the target window is only planned".into()),
@@ -921,14 +960,14 @@ impl<'a> Rows<'a> {
         negatives.sort_by_key(|e| (e.effective_start.map(|s| (s.lo, s.hi)), e.event_id.clone()));
         if let Some(last) = negatives.last() {
             return TargetLabel {
-                status: "negative".into(),
+                status: NEGATIVE.into(),
                 value: Some(0.0),
                 event_id: Some(last.event_id.clone()),
                 reason: None,
             };
         }
         TargetLabel {
-            status: "censored".into(),
+            status: CENSORED.into(),
             value: None,
             event_id: None,
             reason: Some("no observation inside the window, or none late enough to be a negative".into()),
@@ -938,8 +977,8 @@ impl<'a> Rows<'a> {
     /// The view of one row.
     fn view(&self, row: &Row, mut view: RowView) -> Result<RowView> {
         let selection = self.prepared.select(row.cutoff_us, &self.manifest.policy)?;
-        if selection.status == "uncertifiable" {
-            view.status = "uncertifiable".into();
+        if selection.status == UNCERTIFIABLE {
+            view.status = UNCERTIFIABLE.into();
             view.reasons.extend(selection.uncertain_records.iter().map(|r| format!("uncertain_revision:{r}")));
         }
         let mut order = vec![None; self.history.merged.events.len()];
@@ -948,23 +987,21 @@ impl<'a> Rows<'a> {
         }
         for slot in &self.manifest.slots {
             let fill = self.fill(slot, &selection, &order);
-            if slot.required && !fill.available() && view.status == "eligible" {
-                view.status = "excluded".into();
+            if slot.required && !fill.available() && view.status == ELIGIBLE {
+                view.status = EXCLUDED.into();
                 view.reasons.push(format!("missing_required_slot:{}", slot.name));
             }
             view.slots.push(fill);
         }
         view.target = self.label(row.cutoff_us);
-        if view.status == "eligible" {
+        if view.status == ELIGIBLE {
             let exclude = match view.target.status.as_str() {
-                "prevalent" => Some("prevalent_target"),
-                "censored" if self.manifest.target.as_ref().is_some_and(|t| t.censoring == "exclude") => {
-                    Some("censored")
-                }
+                PREVALENT => Some("prevalent_target"),
+                CENSORED if self.manifest.target.as_ref().is_some_and(|t| t.censoring == "exclude") => Some("censored"),
                 _ => None,
             };
             if let Some(reason) = exclude {
-                view.status = "excluded".into();
+                view.status = EXCLUDED.into();
                 view.reasons.push(reason.into());
             }
         }
@@ -1042,9 +1079,14 @@ impl Preflight {
 /// help: every HDF5 call holds the library's one lock, and the work is
 /// mostly HDF5's.)
 pub fn preflight(manifest: &TaskManifest, base: Option<&Path>, deep: bool) -> Result<Preflight> {
+    preflight_in(manifest, &SourceAccess::new(base), deep)
+}
+
+/// [`preflight`], opening sources where `access` lets them be opened.
+pub fn preflight_in(manifest: &TaskManifest, access: &SourceAccess, deep: bool) -> Result<Preflight> {
     let mut subjects = Vec::new();
     let mut views: Vec<Option<RowView>> = vec![None; manifest.rows.len()];
-    let done = preflight_each(manifest, base, deep, &mut |history, rows| {
+    let done = preflight_each_in(manifest, access, deep, &mut |history, rows| {
         for (r, view) in rows {
             views[r] = Some(view);
         }
@@ -1083,6 +1125,16 @@ pub fn preflight_each(
     deep: bool,
     sink: &mut dyn FnMut(SubjectHistory, Vec<(usize, RowView)>) -> Result<()>,
 ) -> Result<PreflightDone> {
+    preflight_each_in(manifest, &SourceAccess::new(base), deep, sink)
+}
+
+/// [`preflight_each`], opening sources where `access` lets them be opened.
+pub fn preflight_each_in(
+    manifest: &TaskManifest,
+    access: &SourceAccess,
+    deep: bool,
+    sink: &mut dyn FnMut(SubjectHistory, Vec<(usize, RowView)>) -> Result<()>,
+) -> Result<PreflightDone> {
     let mut findings = manifest.validate();
     let task_fingerprint = manifest.task_fingerprint();
     let mut rows_of: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -1093,7 +1145,8 @@ pub fn preflight_each(
     if findings.is_empty() {
         for (index, subject) in manifest.subjects.iter().enumerate() {
             let wanted = rows_of.get(subject.subject_id.as_str()).map(Vec::as_slice).unwrap_or(&[]);
-            let (history, found, rows) = subject_part(manifest, &task_fingerprint, subject, index, wanted, base, deep)?;
+            let (history, found, rows) =
+                subject_part(manifest, &task_fingerprint, subject, index, wanted, access, deep)?;
             findings.extend(found);
             for (r, _) in &rows {
                 claimed[*r] = true;
@@ -1108,7 +1161,7 @@ pub fn preflight_each(
         .map(|(row, claimed)| {
             (!claimed).then(|| {
                 let mut view = blank(manifest, &task_fingerprint, row, manifest.subject(&row.subject_id), None);
-                view.status = "error".into();
+                view.status = ERROR.into();
                 view.reasons = vec!["manifest_invalid: the task manifest has findings; see them first".into()];
                 view
             })
@@ -1123,13 +1176,46 @@ pub fn preflight_each(
 /// rows need: their views, which index the histories, and the names of the
 /// versions they admit.  Returns whether the task is fit to train on.
 pub fn write_preflight(manifest: &TaskManifest, base: Option<&Path>, deep: bool, out: &mut dyn Write) -> Result<bool> {
+    write_preflight_in(manifest, &SourceAccess::new(base), deep, out)
+}
+
+/// [`write_preflight`], opening sources where `access` lets them be opened.
+pub fn write_preflight_in(
+    manifest: &TaskManifest,
+    access: &SourceAccess,
+    deep: bool,
+    out: &mut dyn Write,
+) -> Result<bool> {
+    write_preflight_with(manifest, access, deep, None, out)
+}
+
+/// [`write_preflight_in`] with the manifest's notes after its findings
+/// (`"notes"`, from [`notes_of`](super::task::notes_of)): they do not change
+/// whether the task is fit to train on.
+pub fn write_preflight_noted(
+    manifest: &TaskManifest,
+    access: &SourceAccess,
+    deep: bool,
+    notes: &[Note],
+    out: &mut dyn Write,
+) -> Result<bool> {
+    write_preflight_with(manifest, access, deep, Some(notes), out)
+}
+
+fn write_preflight_with(
+    manifest: &TaskManifest,
+    access: &SourceAccess,
+    deep: bool,
+    notes: Option<&[Note]>,
+    out: &mut dyn Write,
+) -> Result<bool> {
     let fingerprints = [manifest.task_fingerprint(), manifest.manifest_fingerprint()];
     write!(out, "{{\n  \"task_fingerprint\": {}", pretty_at(&json!(fingerprints[0]), 1))?;
     write!(out, ",\n  \"manifest_fingerprint\": {},\n  \"subjects\": ", pretty_at(&json!(fingerprints[1]), 1))?;
     let mut items = Items::default();
     let mut names: Vec<Names> = Vec::new();
     let mut views: Vec<Option<RowView>> = vec![None; manifest.rows.len()];
-    let done = preflight_each(manifest, base, deep, &mut |history, rows| {
+    let done = preflight_each_in(manifest, access, deep, &mut |history, rows| {
         items.next(out, &history.to_json())?;
         names.push(Names::of(&history.events));
         for (r, view) in rows {
@@ -1151,7 +1237,12 @@ pub fn write_preflight(manifest: &TaskManifest, base: Option<&Path>, deep: bool,
     let ok = done.findings.is_empty();
     let findings: Vec<Value> = done.findings.iter().map(Finding::to_json).collect();
     write!(out, ",\n  \"ok\": {ok},\n  \"counts\": {}", pretty_at(&json!(counts), 1))?;
-    write!(out, ",\n  \"findings\": {}\n}}", pretty_at(&json!(findings), 1))?;
+    write!(out, ",\n  \"findings\": {}", pretty_at(&json!(findings), 1))?;
+    if let Some(notes) = notes {
+        let notes: Vec<Value> = notes.iter().map(Note::to_json).collect();
+        write!(out, ",\n  \"notes\": {}", pretty_at(&json!(notes), 1))?;
+    }
+    out.write_all(b"\n}")?;
     Ok(ok)
 }
 
@@ -1238,10 +1329,16 @@ impl Admitted {
 
     /// Preflight `manifest` a subject at a time, keeping only this.
     pub fn preflight(manifest: &TaskManifest, base: Option<&Path>, deep: bool) -> Result<Admitted> {
+        Admitted::preflight_in(manifest, &SourceAccess::new(base), deep)
+    }
+
+    /// [`Admitted::preflight`], opening sources where `access` lets them be
+    /// opened.
+    pub fn preflight_in(manifest: &TaskManifest, access: &SourceAccess, deep: bool) -> Result<Admitted> {
         let mut names = Vec::new();
         let mut pins = Vec::new();
         let mut found: Vec<Option<Admits>> = vec![None; manifest.rows.len()];
-        let done = preflight_each(manifest, base, deep, &mut |history, rows| {
+        let done = preflight_each_in(manifest, access, deep, &mut |history, rows| {
             names.push(Names::of(&history.events));
             pins.push(pins_of(&history));
             for (r, view) in rows {
@@ -1258,7 +1355,7 @@ impl Admitted {
 
     fn admits(view: &RowView) -> Admits {
         let positions = view.selection.as_ref().map_or_else(Vec::new, |s| s.events.iter().map(|e| e.index).collect());
-        (view.cutoff_us, view.subject, positions, view.fingerprint.clone(), view.status == "error")
+        (view.cutoff_us, view.subject, positions, view.fingerprint.clone(), view.status == ERROR)
     }
 
     fn insert(&mut self, row_id: &str, admits: Admits) {
@@ -1320,7 +1417,7 @@ fn blank(
         partition: subject.and_then(|s| s.partition.clone()),
         cutoff_us: row.cutoff_us,
         fingerprint: manifest.row_fingerprint_with(task_fingerprint, subject, row),
-        status: "eligible".into(),
+        status: ELIGIBLE.into(),
         reasons: Vec::new(),
         subject: index,
         selection: None,
@@ -1338,10 +1435,10 @@ fn subject_part(
     subject: &Subject,
     index: usize,
     wanted: &[usize],
-    base: Option<&Path>,
+    access: &SourceAccess,
     deep: bool,
 ) -> Result<SubjectPart> {
-    let history = load_subject(subject, base, deep)?;
+    let history = load_subject_in(subject, access, deep)?;
     let view = |r: usize| blank(manifest, task_fingerprint, &manifest.rows[r], Some(subject), Some(index));
     let mut rows = Vec::with_capacity(wanted.len());
     let mut findings = history.findings.clone();
@@ -1349,14 +1446,14 @@ fn subject_part(
         let reasons: Vec<String> = history.findings.iter().map(Finding::line).collect();
         for &r in wanted {
             let mut v = view(r);
-            v.status = "error".into();
+            v.status = ERROR.into();
             v.reasons = reasons.clone();
             rows.push((r, v));
         }
     } else if !history.fragments.iter().any(|f| f.clinical.is_some()) {
         for &r in wanted {
             let mut v = view(r);
-            v.status = "excluded".into();
+            v.status = EXCLUDED.into();
             v.reasons.push(
                 "no_clinical_source: no fragment declares the clinical profile, so nothing is attributable".into(),
             );
@@ -1376,7 +1473,7 @@ fn subject_part(
                 let reasons: Vec<String> = unread.iter().map(Finding::line).collect();
                 for &r in wanted {
                     let mut v = view(r);
-                    v.status = "error".into();
+                    v.status = ERROR.into();
                     v.reasons = reasons.clone();
                     rows.push((r, v));
                 }
@@ -1394,7 +1491,7 @@ fn subject_part(
                 );
                 for &r in wanted {
                     let mut v = view(r);
-                    v.status = "error".into();
+                    v.status = ERROR.into();
                     v.reasons = vec![finding.line()];
                     rows.push((r, v));
                 }

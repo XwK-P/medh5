@@ -59,6 +59,28 @@ assert task.validate() == []
 assert task.task_fingerprint != task.manifest_fingerprint
 ```
 
+A cohort already indexed and split gives the subjects, sources and partitions in one call:
+`TaskManifest.from_cohort` takes the cohort manifest and its split (or the `set_id` of the claims
+its samples carry), pins every entry to what its file holds now, and places each subject where the
+split put it. A k-fold split needs `fold=`, which becomes `val`. On the command line it is
+`medh5 task new OUT --cohort C.json --split S.json`, with `--definition` for the policy, slots and
+target, and `--rows` for a CSV of rows.
+
+```python
+from medh5.dataset import make_splits, scan
+from medh5.task import Slot, TaskManifest
+
+cohort, _ = scan("cohort")
+split = make_splits(cohort, set_id="fold-0", group_by="subject_id",
+                    algorithm="medh5.split/2")
+drawn = TaskManifest.from_cohort(
+    cohort, split, task_id="progression-180d", version="1",
+    identity_namespace="example-site", base="cohort",
+    slots=[Slot("ct", "CT", required=True, patch=(8, 16, 16))],
+)
+assert drawn.split[0] == "fold-0" and drawn.rows == ()
+```
+
 `policy` is what every row may read (1.1 §9, [task-cache-1](../spec/task-cache-1.md) §3.4): here
 the year before each cutoff, with plans admitted and marked as plans. Without one, a row reads the
 whole history known at its cutoff, plans left out.
@@ -106,7 +128,10 @@ medh5 task preflight cohort/progression.task.json
 | `error` | Its sources are wrong: a changed pin (T302), a fragment of another subject (T303), clocks that disagree (T304), unreconciled duplicates (T305) |
 
 A changed source fails its pin; nothing is re-pinned behind your back. Pin again on purpose when the
-change is meant.
+change is meant: `task.repin()`, or `medh5 task repin MANIFEST`, pins each source to the whole version
+it names now, refuses one that is corrupt, another subject or on another clock, and lists the rows
+whose fingerprints change (their patient-level cache entries go stale). `--dry-run` shows what
+would change.
 
 ## Train on it
 

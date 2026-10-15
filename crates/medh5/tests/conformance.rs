@@ -200,3 +200,39 @@ fn no_shipped_code_creates_a_timed_group() {
     walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut found);
     assert!(found.is_empty(), "create through medh5::h5::ops::new_group: {found:#?}");
 }
+
+/// Every word preflight writes over the companion fixtures is in its table:
+/// the binding codes them by position, and a word outside it is refused.
+#[test]
+fn every_word_preflight_writes_is_in_its_table() {
+    use medh5::clinical::select::SELECTION_STATUSES;
+    use medh5::companion::view::{preflight, ROI_FILLS, ROW_STATUSES, TARGET_STATUSES};
+    use medh5::companion::TaskManifest;
+    use medh5::conformance::companion::{write_fixtures, SOURCES};
+    let dir = tempfile::tempdir().unwrap();
+    let names: Vec<String> = SOURCES.iter().map(|f| f.trim_end_matches(".medh5").to_string()).collect();
+    build_corpus(dir.path(), Some(&names)).unwrap();
+    write_fixtures(dir.path()).unwrap();
+    let companion = dir.path().join("companion");
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(&companion).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().is_some_and(|n| n == "expected.json") {
+            continue;
+        }
+        let Ok(manifest) = TaskManifest::load(&path) else { continue };
+        let report = preflight(&manifest, Some(&companion), false).unwrap();
+        for row in &report.rows {
+            assert!(ROW_STATUSES.contains(&row.status.as_str()), "row status {}", row.status);
+            assert!(TARGET_STATUSES.contains(&row.target.status.as_str()), "target {}", row.target.status);
+            for fill in &row.slots {
+                assert!(ROI_FILLS.contains(&fill.roi.as_str()), "roi {}", fill.roi);
+            }
+            if let Some(selection) = &row.selection {
+                assert!(SELECTION_STATUSES.contains(&selection.status.as_str()), "selection {}", selection.status);
+            }
+            seen.insert(row.status.clone());
+        }
+    }
+    assert!(seen.len() >= 2, "the fixtures exercise more than one status: {seen:?}");
+}

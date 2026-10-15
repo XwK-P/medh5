@@ -33,8 +33,10 @@ what a model may see at a cutoff from Rust, Python and the command line.
 
 from __future__ import annotations
 
+import datetime
 import operator
 import os
+import zoneinfo
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from typing import Any
@@ -63,18 +65,65 @@ RELATIONS: tuple[str, ...] = _core.RELATIONS
 CLOCK_REFERENCES: tuple[str, ...] = _core.CLOCK_REFERENCES
 LESION_VALUES: tuple[str, ...] = _core.LESION_VALUES
 SELECTION_POLICIES: tuple[str, ...] = _core.SELECTION_POLICIES
-ASSESSMENT_SYSTEM = "org.medh5.assessment"
-LESION_PRESENCE = "lesion_presence"
+ASSESSMENT_SYSTEM: str = _core.ASSESSMENT_SYSTEM
+LESION_PRESENCE: str = _core.LESION_PRESENCE
+
+_UTC = datetime.timezone.utc
+_EPOCH = datetime.datetime(1970, 1, 1, tzinfo=_UTC)
 
 
 def hours(value: float) -> int:
-    """``value`` hours, in clock microseconds."""
+    """``value`` hours, in clock microseconds, rounded half to even --- as the
+    engine rounds ``medh5 clinical select --cutoff-hours`` and every time
+    given in hours, so a cutoff is one instant from every frontend."""
     return int(round(value * HOUR))
 
 
 def days(value: float) -> int:
-    """``value`` days, in clock microseconds."""
+    """``value`` days, in clock microseconds, rounded half to even, as the
+    engine rounds a visit's ``days_from_baseline``."""
     return int(round(value * DAY))
+
+
+def utc_us(moment: datetime.datetime) -> int:
+    """An aware ``datetime`` on a ``utc`` clock: microseconds since
+    1970-01-01T00:00:00Z.  A naive one is refused --- its zone is unknown,
+    so it names no instant."""
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise ValueError(
+            f"{moment!r} has no time zone, so it names no instant: give "
+            "tzinfo, or bound the day with day_bounds"
+        )
+    delta = moment - _EPOCH
+    return (delta.days * 86_400 + delta.seconds) * SECOND + delta.microseconds
+
+
+def day_bounds(day: datetime.date, tz: str | datetime.tzinfo | None = None) -> Bounds:
+    """Every instant of a calendar ``day`` on a ``utc`` clock, inclusive.
+
+    In zone ``tz`` (an IANA name, which needs ``tzdata`` on Windows, or a
+    ``tzinfo``), from its midnight to the last microsecond before the next.
+    With ``tz=None`` the zone is unknown, so the day spans every instant it
+    may be somewhere: from its start at UTC+14 to its end at UTC-12, fifty
+    hours (1.1 §5.2).  Day-only information never implies midnight."""
+    if isinstance(day, datetime.datetime):
+        raise TypeError("day_bounds takes a date; give a datetime to utc_us")
+    if tz is None:
+        start = utc_us(datetime.datetime.combine(day, datetime.time(), _UTC))
+        return start - 14 * HOUR, start + DAY + 12 * HOUR - 1
+    zone = zoneinfo.ZoneInfo(tz) if isinstance(tz, str) else tz
+    following = day + datetime.timedelta(days=1)
+    start = utc_us(datetime.datetime.combine(day, datetime.time(), zone))
+    end = utc_us(datetime.datetime.combine(following, datetime.time(), zone))
+    return start, end - 1
+
+
+def clock_day(t_us: int) -> Bounds:
+    """The clock day holding ``t_us``: its midnight to the last microsecond
+    before the next, counted from the clock's zero (the engine's
+    ``Bounds::day_containing``).  On a ``utc`` clock, the UTC day."""
+    lo, hi = _core.clinical_day_containing(int(t_us))
+    return int(lo), int(hi)
 
 
 def _time(value: Any) -> Any:
@@ -134,6 +183,18 @@ class Clock:
     def relative(cls, clock_id: str, origin_description: str) -> Clock:
         """Signed microseconds from a documented, subject-specific origin."""
         return cls(clock_id, "relative", origin_description)
+
+    @classmethod
+    def utc(cls, clock_id: str) -> Clock:
+        """Microseconds since 1970-01-01T00:00:00Z (:func:`utc_us`)."""
+        return cls(clock_id, "utc")
+
+    @classmethod
+    def shifted_utc(cls, clock_id: str) -> Clock:
+        """UTC shifted by a per-subject offset, as de-identification shifts
+        it.  Valid only in a file whose ``/meta`` records that
+        de-identification: without it the descriptor is E802."""
+        return cls(clock_id, "shifted_utc")
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -383,8 +444,18 @@ class Selection:
         return [e.event_id for e in self.events]
 
     def admits(self, kind: str, object_id: str, fragment: int = 0) -> bool:
-        """Whether ``(kind, id)`` in ``fragment`` may be read as input."""
+        """Whether ``(kind, id)`` in ``fragment`` may be read as input.
+
+        A payload is admitted in the fragment that holds it.  The default, 0,
+        is a single sample's own, or a merged history's first fragment: a
+        payload of a later fragment reads as not admitted there
+        (:meth:`admits_any` looks in every fragment)."""
         return (fragment, kind, str(object_id)) in self.payloads
+
+    def admits_any(self, kind: str, object_id: str) -> bool:
+        """Whether ``(kind, id)`` may be read as input from any fragment."""
+        object_id = str(object_id)
+        return any(k == kind and i == object_id for _, k, i in self.payloads)
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Selection:
@@ -621,10 +692,13 @@ __all__ = [
     "SelectionPolicy",
     "augment",
     "baseline_day_clock",
+    "clock_day",
+    "day_bounds",
     "days",
     "hours",
     "imaging_events_from_timepoints",
     "records_from",
+    "utc_us",
     "schema_text",
     "select",
     "strip",

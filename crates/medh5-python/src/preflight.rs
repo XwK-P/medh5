@@ -16,7 +16,6 @@
 //! without a copy.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use ndarray::Array2;
 use numpy::PyArray1;
@@ -25,22 +24,16 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 use serde_json::Value;
 
 use medh5::clinical::model::{Bounds, Event, Link, COMPARATORS, EVENT_KINDS, STATUSES, TEMPORAL_TYPES};
-use medh5::clinical::select::POLICIES;
+use medh5::clinical::select::{POLICIES, SELECTION_STATUSES};
+use medh5::companion::source::SourceAccess;
 use medh5::companion::task::TaskManifest;
-use medh5::companion::view::{preflight_each, RowView, SlotFill, SubjectHistory, TargetLabel};
+use medh5::companion::view::{
+    preflight_each_in, RowView, SlotFill, SubjectHistory, TargetLabel, ROI_FILLS, ROW_STATUSES, TARGET_STATUSES,
+};
 use medh5::companion::Finding;
 
 use crate::convert::json_to_py;
-use crate::errors::R;
-
-/// Row statuses, in the order their codes count.
-pub const ROW_STATUSES: [&str; 4] = ["eligible", "uncertifiable", "excluded", "error"];
-/// Selection statuses.
-pub const SELECTION_STATUSES: [&str; 3] = ["certified", "uncertifiable", "provable"];
-/// Target statuses.
-pub const TARGET_STATUSES: [&str; 5] = ["positive", "negative", "censored", "prevalent", "none"];
-/// How a slot's region was centred.
-pub const ROIS: [&str; 3] = ["center", "eligible_instances", "center_fallback"];
+use crate::errors::{engine_error, R};
 
 /// A packed UTF-8 column being built.  Its offsets are 64-bit: text has no
 /// length limit, and one subject's may pass 2 GiB.
@@ -90,13 +83,27 @@ impl Packed {
     }
 }
 
-/// A vocabulary column: each value's index in `vocabulary`, `-1` for null.
+/// An event's vocabulary column: each value's index in `vocabulary`, `-1`
+/// for null or a word outside it.  Its text crosses beside it, so a word a
+/// later minor adds still reads as itself.
 fn codes<'a>(values: impl IntoIterator<Item = Option<&'a str>>, vocabulary: &[&str]) -> Vec<i8> {
-    values.into_iter().map(|v| v.map_or(-1, |v| code(v, vocabulary))).collect()
+    values
+        .into_iter()
+        .map(|v| v.and_then(|v| vocabulary.iter().position(|w| *w == v)).map_or(-1, |i| i as i8))
+        .collect()
 }
 
-fn code(value: &str, vocabulary: &[&str]) -> i8 {
-    vocabulary.iter().position(|w| *w == value).map_or(-1, |i| i as i8)
+/// A word the preflight wrote, as its index in `vocabulary`.  These columns
+/// cross as codes alone, and a word outside the table read as `-1` indexed
+/// its last word: it is refused, naming it.
+fn code(value: &str, vocabulary: &[&str], what: &str) -> medh5::Result<i8> {
+    vocabulary.iter().position(|w| *w == value).map(|i| i as i8).ok_or_else(|| {
+        medh5::Error::Value(format!(
+            "{} is no {what} this build knows ({})",
+            medh5::json::repr_str(value),
+            vocabulary.join(", ")
+        ))
+    })
 }
 
 fn i32s(values: impl IntoIterator<Item = usize>) -> Vec<i32> {
@@ -274,11 +281,11 @@ struct SelectionColumns {
     excluded: BTreeMap<String, usize>,
 }
 
-fn row_columns(view: RowView, payload_index: &BTreeMap<(usize, String, String), i32>) -> RowColumns {
-    let selection = view.selection.map(|s| {
+fn row_columns(view: RowView, payload_index: &BTreeMap<(usize, String, String), i32>) -> medh5::Result<RowColumns> {
+    let selection = view.selection.map(|s| -> medh5::Result<SelectionColumns> {
         let mut out = SelectionColumns {
-            status: code(&s.status, &SELECTION_STATUSES),
-            policy: code(&s.policy, &POLICIES),
+            status: code(&s.status, SELECTION_STATUSES, "selection status")?,
+            policy: code(&s.policy, &POLICIES, "selection policy")?,
             links: i32s(s.links.iter().copied()),
             payloads: s.payloads.iter().map(|p| payload_index[p]).collect(),
             uncertain: s.uncertain_records,
@@ -292,21 +299,26 @@ fn row_columns(view: RowView, payload_index: &BTreeMap<(usize, String, String), 
             out.tie_group.push(e.tie_group as i32);
             out.plan.push(e.plan);
         }
-        out
+        Ok(out)
     });
-    RowColumns {
+    let selection = selection.transpose()?;
+    for fill in &view.slots {
+        code(&fill.roi, ROI_FILLS, "slot roi")?;
+    }
+    code(&view.target.status, TARGET_STATUSES, "target status")?;
+    Ok(RowColumns {
         row_id: view.row_id,
         subject_id: view.subject_id,
         partition: view.partition,
         fingerprint: view.fingerprint,
         subject: view.subject.map_or(-1, |s| s as i32),
         cutoff_us: view.cutoff_us,
-        status: code(&view.status, &ROW_STATUSES),
+        status: code(&view.status, ROW_STATUSES, "row status")?,
         reasons: view.reasons,
         selection,
         slots: view.slots,
         target: view.target,
-    }
+    })
 }
 
 /// The preflight's columns, built a subject at a time.
@@ -319,7 +331,7 @@ struct Builder {
 impl Builder {
     /// Take one subject: compact its history and its rows' views, and let
     /// the records go.
-    fn subject(&mut self, history: SubjectHistory, rows: Vec<(usize, RowView)>) {
+    fn subject(&mut self, history: SubjectHistory, rows: Vec<(usize, RowView)>) -> medh5::Result<()> {
         // The subject's payload table: every payload any of its rows admits.
         let mut payloads: BTreeMap<(usize, String, String), i32> = BTreeMap::new();
         for p in rows.iter().flat_map(|(_, v)| v.selection.iter().flat_map(|s| s.payloads.iter())) {
@@ -347,8 +359,9 @@ impl Builder {
             payloads: table,
         });
         for (r, view) in rows {
-            self.rows[r] = Some(row_columns(view, &payloads));
+            self.rows[r] = Some(row_columns(view, &payloads)?);
         }
+        Ok(())
     }
 
     fn into_py<'py>(
@@ -496,7 +509,11 @@ fn rows_to_py<'py>(py: Python<'py>, mut rows: Vec<RowColumns>, slot_names: &[Str
     out.set_item("slotted", PyArray1::from_vec(py, rows.iter().map(|r| !r.slots.is_empty()).collect()))?;
     out.set_item("slots", slots_to_py(py, slot_names, &rows)?)?;
     let target = PyDict::new(py);
-    let statuses = rows.iter().map(|r| code(&r.target.status, &TARGET_STATUSES)).collect();
+    let statuses = rows
+        .iter()
+        .map(|r| code(&r.target.status, TARGET_STATUSES, "target status"))
+        .collect::<medh5::Result<Vec<i8>>>()
+        .map_err(engine_error)?;
     target.set_item("status", PyArray1::from_vec(py, statuses))?;
     target
         .set_item("value", PyArray1::from_vec(py, rows.iter().map(|r| r.target.value.unwrap_or(f64::NAN)).collect()))?;
@@ -535,7 +552,12 @@ fn slots_to_py<'py>(py: Python<'py>, names: &[String], rows: &[RowColumns]) -> P
         let array = Array2::from_shape_vec((rows.len(), ndim), center).expect("ndim per row");
         slot.set_item("center", numpy::PyArray::from_owned_array(py, array))?;
         slot.set_item("center_ndim", PyArray1::from_vec(py, center_ndim))?;
-        slot.set_item("roi", PyArray1::from_vec(py, codes(fills.iter().map(|f| f.map(|f| f.roi.as_str())), &ROIS)))?;
+        let rois = fills
+            .iter()
+            .map(|f| f.map_or(Ok(-1), |f| code(&f.roi, ROI_FILLS, "slot roi")))
+            .collect::<medh5::Result<Vec<i8>>>()
+            .map_err(engine_error)?;
+        slot.set_item("roi", PyArray1::from_vec(py, rois))?;
         let annotations = fills.iter().map(|f| f.map_or(none, |f| f.annotations.as_slice()));
         slot.set_item("annotations", strings_csr(py, annotations)?)?;
         let labels = fills.iter().map(|f| f.map_or(none, |f| f.label_annotations.as_slice()));
@@ -550,21 +572,17 @@ fn slots_to_py<'py>(py: Python<'py>, names: &[String], rows: &[RowColumns]) -> P
 pub fn preflight_to_py<'py>(
     py: Python<'py>,
     manifest: TaskManifest,
-    base: Option<&Path>,
+    access: SourceAccess,
     deep: bool,
 ) -> R<Bound<'py, PyDict>> {
     let slot_names: Vec<String> = manifest.slots.iter().map(|s| s.name.clone()).collect();
-    let base = base.map(Path::to_path_buf);
     let (builder, done) = py.detach(move || -> medh5::Result<_> {
         let mut builder = Builder { slot_names, subjects: Vec::new(), rows: Vec::new() };
         builder.rows.resize_with(manifest.rows.len(), || None);
-        let done = preflight_each(&manifest, base.as_deref(), deep, &mut |history, rows| {
-            builder.subject(history, rows);
-            Ok(())
-        })?;
+        let done = preflight_each_in(&manifest, &access, deep, &mut |history, rows| builder.subject(history, rows))?;
         for (slot, blank) in builder.rows.iter_mut().zip(&done.unclaimed) {
             if slot.is_none() {
-                *slot = blank.clone().map(|view| row_columns(view, &BTreeMap::new()));
+                *slot = blank.clone().map(|view| row_columns(view, &BTreeMap::new())).transpose()?;
             }
         }
         Ok((builder, done))
@@ -573,14 +591,18 @@ pub fn preflight_to_py<'py>(
     Ok(builder.into_py(py, &done.findings, fingerprints)?)
 }
 
-/// The vocabularies the columns' codes index.
+/// The vocabularies the columns' codes index, and the task's own: each the
+/// engine's table, so Python spells none of them.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     for (name, values) in [
-        ("ROW_STATUSES", &ROW_STATUSES[..]),
-        ("SELECTION_STATUSES", &SELECTION_STATUSES[..]),
-        ("TARGET_STATUSES", &TARGET_STATUSES[..]),
-        ("ROIS", &ROIS[..]),
+        ("ROW_STATUSES", ROW_STATUSES),
+        ("SELECTION_STATUSES", SELECTION_STATUSES),
+        ("TARGET_STATUSES", TARGET_STATUSES),
+        ("ROIS", ROI_FILLS),
+        ("TASK_ROI", &medh5::companion::task::ROI[..]),
+        ("TASK_CENSORING", &medh5::companion::task::CENSORING[..]),
+        ("CACHE_LEVELS", &medh5::companion::cache::LEVELS[..]),
     ] {
         m.add(name, PyTuple::new(py, values.iter().copied())?)?;
     }

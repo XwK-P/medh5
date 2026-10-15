@@ -31,6 +31,7 @@ __all__ = [
     "AGREEMENT_DEFAULT_IOU",
     "AGREEMENT_OBJECT_KINDS",
     "ANNOTATION_KINDS",
+    "ASSESSMENT_SYSTEM",
     "ATTESTED_GROUPS",
     "AXIS_KINDS",
     "Activity",
@@ -48,8 +49,10 @@ __all__ = [
     "BLOSC_FILTER_ID",
     "BUILTIN_FILTER_IDS",
     "BULK_MIN_BYTES",
+    "CACHE_LEVELS",
     "CACHE_SAFETY",
     "CACHE_SCHEMA",
+    "CACHE_SUFFIX",
     "CHECK_CODES",
     "CHECK_CODE_SEVERITY",
     "CHECK_SEVERITIES",
@@ -117,6 +120,7 @@ __all__ = [
     "LATERALITY_VALUES",
     "LEGACY_BOX_SHIFT",
     "LEGACY_SCHEMA_VERSION",
+    "LESION_PRESENCE",
     "LESION_VALUES",
     "LEVELS",
     "LOCALIZED_BBOX_FRACTION",
@@ -196,6 +200,8 @@ __all__ = [
     "StagedFileHandle",
     "TARGET_STATUSES",
     "TASKS",
+    "TASK_CENSORING",
+    "TASK_ROI",
     "TASK_SCHEMA",
     "TEMPORAL_TYPES",
     "TIMEPOINT_FIELDS",
@@ -265,10 +271,13 @@ __all__ = [
     "build_affine",
     "build_index",
     "cache_create",
+    "cache_entry_json",
     "cache_event_entry_id",
     "cache_fitted_on",
     "cache_fitted_on_mismatches",
     "cache_open",
+    "cache_owned_documents",
+    "cache_report_json",
     "cache_schema_text",
     "cache_validate",
     "canonical_attrs",
@@ -290,7 +299,9 @@ __all__ = [
     "cli_lookup_message",
     "cli_main",
     "clinical_augment",
+    "clinical_day_containing",
     "clinical_records",
+    "clinical_round_micros",
     "clinical_schema_text",
     "clinical_select",
     "clinical_strip",
@@ -493,6 +504,7 @@ __all__ = [
     "select_encoding",
     "slices_to_box",
     "source_check",
+    "source_default_id",
     "source_pin",
     "source_resolve",
     "spatial_chunk_for",
@@ -503,12 +515,18 @@ __all__ = [
     "subtrees_identical",
     "target_registration_error",
     "task_fingerprints",
+    "task_from_cohort",
+    "task_load_document",
     "task_normalize",
+    "task_notes",
     "task_preflight",
     "task_reconcile",
+    "task_repin",
     "task_row_fingerprint",
     "task_row_fingerprints",
+    "task_save",
     "task_schema_text",
+    "task_sources_outside",
     "task_subjects_digest",
     "task_validate",
     "to_world_vectors",
@@ -535,6 +553,7 @@ AGENT_TYPES: tuple[str, ...]
 AGREEMENT_DEFAULT_IOU: float
 AGREEMENT_OBJECT_KINDS: tuple[str, ...]
 ANNOTATION_KINDS: tuple[str, ...]
+ASSESSMENT_SYSTEM: str
 ATTESTED_GROUPS: tuple[str, ...]
 AXIS_KINDS: tuple[str, ...]
 BACKGROUND_ID: int
@@ -545,8 +564,10 @@ BLOSC2_FILTER_ID: int
 BLOSC_FILTER_ID: int
 BUILTIN_FILTER_IDS: tuple[int, ...]
 BULK_MIN_BYTES: int
+CACHE_LEVELS: tuple[str, ...]
 CACHE_SAFETY: float
 CACHE_SCHEMA: str
+CACHE_SUFFIX: str
 CHECK_CODES: dict[str, str]
 CHECK_CODE_SEVERITY: dict[str, str]
 CHECK_SEVERITIES: tuple[str, ...]
@@ -600,6 +621,7 @@ LAST_ROW_TOL: float
 LATERALITY_VALUES: tuple[str, ...]
 LEGACY_BOX_SHIFT: float
 LEGACY_SCHEMA_VERSION: str
+LESION_PRESENCE: str
 LESION_VALUES: tuple[str, ...]
 LEVELS: tuple[str, ...]
 LOCALIZED_BBOX_FRACTION: float
@@ -662,6 +684,8 @@ STREAM_BYTES: int
 SUPPORTED_ORDERS: tuple[int, ...]
 TARGET_STATUSES: tuple[str, ...]
 TASKS: tuple[str, ...]
+TASK_CENSORING: tuple[str, ...]
+TASK_ROI: tuple[str, ...]
 TASK_SCHEMA: str
 TEMPORAL_TYPES: tuple[str, ...]
 TIMEPOINT_FIELDS: frozenset[str]
@@ -871,12 +895,29 @@ def cache_fitted_on_mismatches(doc: Any, fitted: Mapping[str, Any]) -> list[str]
 
 def cache_open(path: str | os.PathLike[str]) -> FeatureCacheHandle: ...
 def cache_schema_text() -> str: ...
+def cache_entry_json(doc: Any) -> dict[str, Any]:
+    """An entry as the engine reads it, written back."""
+    ...
+
+def cache_report_json(report: Any) -> dict[str, Any]:
+    """A `CacheReport` dataclass's engine JSON."""
+    ...
+
+def cache_owned_documents(
+    source: Any,
+    base: str | os.PathLike[str] | None = None,
+    root: str | os.PathLike[str] | None = None,
+) -> dict[str, list[str]]:
+    """Each event version of a source and the documents it owns."""
+    ...
+
 def cache_validate(
     path: str | os.PathLike[str],
     base: str | os.PathLike[str] | None = None,
     task: Any = None,
     task_base: str | os.PathLike[str] | None = None,
     check_rows: bool = True,
+    root: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """Validate a cache; with a task, also against that task (and, with
     ``check_rows``, against what its preflight admits)."""
@@ -944,6 +985,14 @@ def clinical_augment(
 ) -> dict[str, Any]: ...
 def clinical_records(records: Any) -> dict[str, Any]:
     """Check a logical-record bundle against its schema and parse it back."""
+    ...
+
+def clinical_day_containing(t: int) -> tuple[int, int]:
+    """The clock day holding `t`, as inclusive `(lo, hi)` bounds."""
+    ...
+
+def clinical_round_micros(value: float, unit_us: int) -> int:
+    """`value` units of `unit_us` microseconds, rounded half to even."""
     ...
 
 def clinical_schema_text() -> str: ...
@@ -1770,9 +1819,20 @@ def select_encoding(
 
 def slices_to_box(slices: Sequence[slice]) -> npt.NDArray[np.float32]: ...
 def source_check(
-    source: Any, base: str | os.PathLike[str] | None = None, deep: bool = False
+    source: Any,
+    base: str | os.PathLike[str] | None = None,
+    deep: bool = False,
+    root: str | os.PathLike[str] | None = None,
 ) -> list[dict[str, Any]]:
     """The findings of checking a reference against its sample now."""
+    ...
+
+def source_default_id(
+    uri: str, sample_key: str | None = None, taken: Sequence[str] = ...
+) -> str:
+    """The id a source reference gets when none is given, widened past the ids
+    in `taken` (`SourceRef::default_id_among`).
+    """
     ...
 
 def source_pin(
@@ -1784,7 +1844,11 @@ def source_pin(
     """A source reference pinned to what the sample is now."""
     ...
 
-def source_resolve(uri: str, base: str | os.PathLike[str] | None = None) -> Path:
+def source_resolve(
+    uri: str,
+    base: str | os.PathLike[str] | None = None,
+    root: str | os.PathLike[str] | None = None,
+) -> Path:
     """The file a source URI names, relative to `base` when it is relative: a
     `file:` URI decoded as the engine decodes it.
     """
@@ -1825,23 +1889,82 @@ def task_fingerprints(doc: Any) -> dict[str, str]:
     """`{"task": ..., "manifest": ...}`."""
     ...
 
+def task_load_document(path: str | os.PathLike[str]) -> Any:
+    """A manifest file's document, unparsed: T101 for anything not JSON."""
+    ...
+
+def task_notes(doc: Any) -> list[dict[str, Any]]:
+    """What the manifest document should state and does not, as written."""
+    ...
+
 def task_normalize(doc: Any) -> dict[str, Any]:
     """Parse, check the schema, and return the normalised manifest."""
     ...
 
 def task_preflight(
-    doc: Any, base: str | os.PathLike[str] | None = None, deep: bool = False
+    doc: Any,
+    base: str | os.PathLike[str] | None = None,
+    deep: bool = False,
+    root: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """The preflight of a task, as columns (`crate::preflight`)."""
     ...
 
 def task_reconcile(
-    doc: Any, base: str | os.PathLike[str] | None = None
+    doc: Any,
+    base: str | os.PathLike[str] | None = None,
+    root: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """The manifest with every subject's duplicated events recorded."""
     ...
 
+def task_from_cohort(
+    cohort: Any,
+    task_id: str,
+    version: str,
+    identity_namespace: str,
+    *,
+    split: Any | None = None,
+    set_id: str | None = None,
+    fold: int | None = None,
+    base: str | os.PathLike[str] | None = None,
+    training_partition: str | None = None,
+) -> dict[str, Any]:
+    """A task over a cohort (`TaskManifest::from_cohort`), partitioned by
+    `split` (a split's JSON) or by the claims the samples carry for `set_id`:
+    the manifest's JSON.
+    """
+    ...
+
+def task_repin(
+    doc: Any,
+    base: str | os.PathLike[str] | None = None,
+    root: str | os.PathLike[str] | None = None,
+    sources: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """The manifest with its sources repinned, and what changed."""
+    ...
+
 def task_row_fingerprint(doc: Any, row_id: str) -> str: ...
+def task_save(
+    doc: Any,
+    path: str | os.PathLike[str],
+    base: str | os.PathLike[str] | None = None,
+) -> None:
+    """Write the manifest as the engine writes it, refusing an output that is
+    one of its sources.
+    """
+    ...
+
+def task_sources_outside(
+    doc: Any, base: str | os.PathLike[str] | None = None
+) -> list[str]:
+    """The URIs of the sources that confining to `base` would refuse, in
+    manifest order; no file is examined.  Empty when `base` cannot be
+    canonicalized: its sources fail to open whatever confinement does.
+    """
+    ...
+
 def task_row_fingerprints(doc: Any) -> dict[str, str]:
     """Every row's fingerprint by row id --- the first row of an id, as
     `task_row_fingerprint` finds it --- from one parse of the manifest: a
