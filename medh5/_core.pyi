@@ -51,6 +51,7 @@ __all__ = [
     "CACHE_SAFETY",
     "CACHE_SCHEMA",
     "CHECK_CODES",
+    "CHECK_CODE_SEVERITY",
     "CHECK_SEVERITIES",
     "CLINICAL_PROFILE",
     "CLINICAL_SCHEMA",
@@ -312,6 +313,7 @@ __all__ = [
     "dataset_check",
     "dataset_check_format",
     "dataset_check_json",
+    "dataset_class_stats_json",
     "dataset_compute_stats",
     "dataset_counts",
     "dataset_default_ratios",
@@ -344,6 +346,7 @@ __all__ = [
     "dataset_split_json",
     "dataset_split_leaks",
     "dataset_split_load",
+    "dataset_split_moved_from",
     "dataset_split_partition_of",
     "dataset_split_paths",
     "dataset_split_underfilled",
@@ -419,6 +422,7 @@ __all__ = [
     "is_proper_rotation",
     "jacobian_determinant",
     "label_dtype_size",
+    "labels_check",
     "layers_from_colouring",
     "legacy_build_label_set",
     "legacy_is",
@@ -543,6 +547,7 @@ BULK_MIN_BYTES: int
 CACHE_SAFETY: float
 CACHE_SCHEMA: str
 CHECK_CODES: dict[str, str]
+CHECK_CODE_SEVERITY: dict[str, str]
 CHECK_SEVERITIES: tuple[str, ...]
 CLINICAL_PROFILE: str
 CLINICAL_SCHEMA: str
@@ -1020,6 +1025,10 @@ def dataset_check(
 ) -> Any: ...
 def dataset_check_format(report: Any) -> str: ...
 def dataset_check_json(report: Any) -> Any: ...
+def dataset_class_stats_json(s: Any) -> Any:
+    """`ClassStats.to_json`: the engine's JSON for one class."""
+    ...
+
 def dataset_compute_stats(
     paths: Sequence[str | os.PathLike[str]],
     *,
@@ -1075,7 +1084,14 @@ def dataset_make_splits(
     ratios: Any = None,
     k_folds: int | None = None,
     seed: int = 0,
-) -> Any: ...
+    algorithm: str | None = None,
+    previous: Any = None,
+) -> tuple[Any, int | None]:
+    """`(split JSON, groups medh5.split/2 places elsewhere)`: the count only when
+    `algorithm` is left out and there is no `previous` split, else `None`.
+    """
+    ...
+
 def dataset_manifest_json(doc: Any) -> Any:
     """The full manifest JSON (with its `sha256`)."""
     ...
@@ -1132,6 +1148,10 @@ def dataset_split_fold_of(doc: Any, entry: Any) -> int | None: ...
 def dataset_split_json(doc: Any) -> Any: ...
 def dataset_split_leaks(doc: Any) -> list[str]: ...
 def dataset_split_load(path: str | os.PathLike[str]) -> Any: ...
+def dataset_split_moved_from(doc: Any, other: Any) -> dict[str, tuple[str, str]]:
+    """The groups `doc` places elsewhere than `other` does: `{group: (was, now)}`."""
+    ...
+
 def dataset_split_partition_of(doc: Any, entry: Any) -> str | None: ...
 def dataset_split_paths(doc: Any, partition: str) -> list[str]: ...
 def dataset_split_underfilled(doc: Any) -> list[str]: ...
@@ -1458,6 +1478,7 @@ def is_proper_rotation(matrix: npt.ArrayLike, tol: float = ...) -> bool: ...
 def jacobian_determinant(
     field: npt.NDArray[Any], grid: Grid, *, vector_space: str = "world"
 ) -> npt.NDArray[np.float64]: ...
+def labels_check(paths: Sequence[str | os.PathLike[str]]) -> dict[str, Any]: ...
 def label_dtype_size(class_ids: Sequence[int], *, ignore: bool = False) -> int: ...
 def layers_from_colouring(
     colouring: Mapping[int, int],

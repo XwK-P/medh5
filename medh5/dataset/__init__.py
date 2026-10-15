@@ -11,13 +11,20 @@ voxel in the study.
 
 from __future__ import annotations
 
-from medh5.dataset.check import CHECK_CODES, CohortReport, Finding, check
+from medh5.dataset.check import (
+    CHECK_CODE_SEVERITY,
+    CHECK_CODES,
+    CohortReport,
+    Finding,
+    check,
+)
 from medh5.dataset.manifest import Entry, Manifest, entries_for, find, scan
 from medh5.dataset.split import Assignment, Split, make_splits, write_claims
 from medh5.dataset.stats import ClassStats, DatasetStats, Moments, compute_stats
 
 __all__ = [
     "CHECK_CODES",
+    "CHECK_CODE_SEVERITY",
     "Assignment",
     "ClassStats",
     "CohortReport",

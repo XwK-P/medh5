@@ -8,10 +8,14 @@
 
 pub mod check;
 pub mod manifest;
+mod rounding;
 pub mod split;
 pub mod stats;
 
-pub use check::{check, CohortReport, Finding, CHECK_CODES};
+pub use check::{check, code_severity, CohortReport, Finding, CHECK_CODES, CHECK_SEVERITY};
 pub use manifest::{entries_for, find, scan, Entry, Manifest, GROUPABLE};
-pub use split::{make_splits, write_claims, Assignment, Split, SplitOptions};
+pub use split::{
+    make_splits, make_splits_with, write_claims, Assignment, Lineage, Split, SplitAlgorithm, SplitOptions, SplitRecord,
+    SplitRequest,
+};
 pub use stats::{compute_stats, ClassStats, DatasetStats, Moments, StatsOptions};

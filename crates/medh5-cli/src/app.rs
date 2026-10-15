@@ -414,6 +414,15 @@ fn dataset() -> Command {
                         .help(format!("e.g. train=0.8,val=0.2 (default {DEFAULT_RATIOS})")),
                 )
                 .arg(int("seed", "seed", "deterministic given the manifest, seed and parameters").default_value("0"))
+                .arg(Arg::new("algorithm").long("algorithm").value_name("ALGORITHM").value_parser(["1", "2"]).help(
+                    "1: medh5.split/1 (the default in 2.x); 2: medh5.split/2, where adding a group moves few \
+                             others (the default in 3.0)",
+                ))
+                .arg(opt(
+                    "previous",
+                    "previous",
+                    "a split JSON to continue: its groups keep their places, new groups are dealt by medh5.split/2",
+                ))
                 .arg(flag(
                     "write_claims",
                     "write-claims",

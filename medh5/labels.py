@@ -33,6 +33,7 @@ validator's W912 says so when they are missing.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from typing import Any
 
 from medh5 import _core
@@ -95,6 +96,22 @@ def describe() -> dict[str, dict[str, Any]]:
     return dict(_core.registry_describe())
 
 
+# -- across files --------------------------------------------------------------
+
+
+def check(paths: Sequence[str | os.PathLike[str]]) -> dict[str, Any]:
+    """Whether sample files share one vocabulary, as ``medh5 labels check --json``.
+
+    Files are grouped by their label set's digest, the rule ``dataset check``
+    applies for ``C101`` and ``C103``: an empty label set is a vocabulary of its
+    own, told apart by its id.  The result holds ``ok`` (every file read, one
+    vocabulary), ``vocabularies`` (the files of each, by ``id@version#`` and 16
+    hex digits of its digest, or ``<none>``), ``unreadable`` (path to reason)
+    and ``files`` (an entry for every path, in order).
+    """
+    return dict(_core.labels_check([os.fspath(p) for p in paths]))
+
+
 __all__ = [
     "BACKGROUND_ID",
     "CLOSURES",
@@ -109,6 +126,7 @@ __all__ = [
     "Skeleton",
     "available",
     "canonical_json",
+    "check",
     "check_class_id",
     "describe",
     "from_keys",

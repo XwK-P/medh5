@@ -665,3 +665,34 @@ def test_the_torch_docstring_agrees_with_the_docs() -> None:
 
     assert "not optional" not in (torch_pkg.__doc__ or "")
     assert "recommended" in (torch_pkg.__doc__ or "")
+
+
+def test_the_cohort_check_page_shows_each_codes_severity(monkeypatch) -> None:
+    """The page's Severity column is the engine's `CHECK_SEVERITY`, row by row.
+
+    The hook imports MkDocs, which only the docs job installs, for two types
+    the tables never touch: a stand-in module lets it load here.
+    """
+    import importlib.util
+    import sys
+    import types
+
+    from medh5.dataset.check import CHECK_CODE_SEVERITY, CHECK_CODES
+
+    files = types.ModuleType("mkdocs.structure.files")
+    files.File = files.Files = object  # type: ignore[attr-defined]
+    for name in ("mkdocs", "mkdocs.structure"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "mkdocs.structure.files", files)
+    spec = importlib.util.spec_from_file_location(
+        "medh5_docs_hooks_test", ROOT / "hooks/mkdocs_hooks.py"
+    )
+    assert spec is not None and spec.loader is not None
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+
+    table = hook._cohort_codes_markdown(ROOT)
+    rows = re.findall(r"^\| `(C\d{3})`\{ #c\d{3} \} \| (\w+) \| ", table, re.M)
+    assert dict(rows) == CHECK_CODE_SEVERITY
+    assert [code for code, _ in rows] == sorted(CHECK_CODES)
+    assert "`C401`" in table.split("\n\n", 1)[1]

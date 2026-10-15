@@ -184,13 +184,21 @@ impl ClassStats {
         ClassStats { class_id, ..Default::default() }
     }
 
-    /// Fraction of *examining* samples in which the class was found.
+    /// Fraction of *examining* samples in which the class was found; `None`
+    /// when no sample examined it, which says nothing about how often it
+    /// occurs (§11.3) --- 0.0 read as "looked for everywhere, found nowhere".
+    pub fn examined_prevalence(&self) -> Option<f64> {
+        (self.examined_in > 0).then(|| self.present_in as f64 / self.examined_in as f64)
+    }
+
+    /// Fraction of *examining* samples in which the class was found, 0.0
+    /// when none examined it.
+    #[deprecated(
+        since = "2.1.0",
+        note = "0.0 for a class no sample examined; use examined_prevalence; Option<f64> in 3.0"
+    )]
     pub fn prevalence(&self) -> f64 {
-        if self.examined_in == 0 {
-            0.0
-        } else {
-            self.present_in as f64 / self.examined_in as f64
-        }
+        self.examined_prevalence().unwrap_or(0.0)
     }
 
     pub fn to_json(&self) -> Value {
@@ -200,7 +208,9 @@ impl ClassStats {
             "voxels": self.voxels,
             "present_in": self.present_in,
             "examined_in": self.examined_in,
-            "prevalence": num(self.prevalence()),
+            // `null` for a class nobody examined: a 0.0 here recorded a
+            // measurement that was never made.
+            "prevalence": self.examined_prevalence().map(num),
         })
     }
 }
@@ -658,6 +668,21 @@ pub fn compute_stats<P: AsRef<Path> + Sync>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A class drawn where no sample looked for it reported 0.0: "never
+    /// found where looked", for a class nobody looked for.
+    #[test]
+    fn s11_3_examined_prevalence_is_none_without_an_examiner() {
+        let drawn = ClassStats { voxels: 27, present_in: 0, examined_in: 0, ..ClassStats::new(2) };
+        assert_eq!(drawn.examined_prevalence(), None);
+        assert_eq!(drawn.to_json()["prevalence"], Value::Null);
+        let looked = ClassStats { present_in: 1, examined_in: 4, ..ClassStats::new(1) };
+        assert_eq!(looked.examined_prevalence(), Some(0.25));
+        assert_eq!(looked.to_json()["prevalence"], json!(0.25));
+        #[allow(deprecated)] // the 2.x answer, held until 3.0
+        let legacy = drawn.prevalence();
+        assert_eq!(legacy, 0.0);
+    }
 
     #[test]
     fn the_merge_is_exact_for_split_blocks() {

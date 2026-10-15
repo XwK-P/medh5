@@ -598,6 +598,7 @@ beside `MEDH5Error`.
 | `medh5.monai` | [MetaTensor adapter, `MedH5Reader` and `LoadMedH5d`](torch.md#monai) |
 | `medh5.io` | [Converters](converters.md) |
 | `medh5.dataset` | [Cohort manifests, splits, statistics](../guides/cohorts.md); `Manifest.save(path, *, paths="keep")` and `Manifest.load(path, *, base=None)` follow [the manifest's path rule](cohort-manifest.md) |
+| `medh5.labels` | Vocabularies: `load`, `register`, `describe`, and `check(paths)`, which groups files by vocabulary as [`medh5 labels check --json`](cli.md#medh5-labels) does |
 | `medh5.curation` | [Provenance, agreement, tracking, de-identification](curation.md) |
 | `medh5.conformance` | [The conformance suite](../spec/conformance.md) |
 | `medh5.clinical` | [The clinical profile](../guides/clinical.md) (format 1.1) |
