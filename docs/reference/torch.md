@@ -97,7 +97,9 @@ stitcher.finish()
 A prediction is shaped as its patch, after `channels` when the model returns
 channels (`GridStitcher(ds, channels=3)`); the padding a patch carries past the
 volume is cut off. Overlaps are blended with Gaussian weights, highest at a
-patch's centre, or averaged (`mode="constant"`). `stitcher.pending` maps each
+patch's centre, or averaged (`mode="constant"`): `medh5.sampling.BLEND_MODES`
+lists the two, and `medh5.sampling.blend_weights(patch_size, mode=...)` returns
+a patch's weights. `stitcher.pending` maps each
 file not yet returned to the patches it is missing, and `finish()` refuses,
 naming every such file, rather than return a volume with holes —
 `finish(partial=True)` returns what arrived, `NaN` where nothing did. One

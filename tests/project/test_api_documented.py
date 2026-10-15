@@ -86,3 +86,14 @@ def test_a_command_does_not_document_the_function_of_its_name() -> None:
     found = api_index.sections({"pack", "fix"})
     for name in ("pack", "fix"):
         assert found[name].page not in ("reference/cli.md", "reference/rust.md")
+
+
+def test_a_qualified_name_documents_that_object_alone(rows: list) -> None:
+    """`medh5.dataset.manifest.SCHEMA` on the manifest page documents the
+    manifest's constant, not every module's `SCHEMA`."""
+    by_path = {row.path: row for row in rows}
+    manifest = by_path["medh5.dataset.manifest.SCHEMA"].section
+    assert manifest is not None and manifest.page == "reference/cohort-manifest.md"
+    for other in ("medh5.task.SCHEMA", "medh5.cache.SCHEMA"):
+        section = by_path[other].section
+        assert section is None or section.page != "reference/cohort-manifest.md"

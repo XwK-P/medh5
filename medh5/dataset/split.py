@@ -231,6 +231,8 @@ class Split:
 
 
 Algorithm: TypeAlias = Literal["medh5.split/1", "medh5.split/2"]
+"""How :func:`make_splits` deals groups to partitions: ``"medh5.split/2"`` moves
+few when the cohort grows, and is medh5 3.0's default."""
 
 
 def make_splits(

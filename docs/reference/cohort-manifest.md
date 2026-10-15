@@ -42,6 +42,8 @@ directory, and `Manifest.save` re-bases it onto the directory it writes to. A
 path given absolute stays absolute unless `paths="relative"` is passed;
 `paths="absolute"` (or `medh5 dataset index --absolute`) writes every path
 absolute. No path is covered by `sha256`, so re-basing never changes it.
+`medh5.dataset.manifest.PathStyle` names the three choices, and
+`medh5.dataset.manifest.SCHEMA` is the `schema` every save writes.
 
 ## Manifests written before 2.1
 

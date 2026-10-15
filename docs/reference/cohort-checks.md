@@ -15,7 +15,9 @@ require an implementation to emit them, and a minor version may add to them
 freely. The table is generated at build time from the `CHECK_CODES` and
 `CHECK_SEVERITY` tables in
 [`crates/medh5/src/dataset/check.rs`](https://github.com/medh5-project/medh5/blob/main/crates/medh5/src/dataset/check.rs),
-the cohort check every frontend runs.
+the cohort check every frontend runs. In Python they are
+`medh5.dataset.CHECK_CODES` (each code's meaning) and
+`medh5.dataset.CHECK_CODE_SEVERITY` (each code's severity).
 
 ```bash
 medh5 dataset check cohort.json --deep

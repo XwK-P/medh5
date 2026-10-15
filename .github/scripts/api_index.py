@@ -12,9 +12,11 @@ hand-written section that documents it, where one exists.
 
 A name is documented where a page outside the specification names it in code
 --- an inline code span or a fenced block --- as a whole word, and its section
-is the one that documents it best (`sections`). A name no page names is listed in
-`tests/project/undocumented_api.txt`, which may only shrink: a pull request
-that adds a public name documents it.
+is the one that documents it best (`sections`).  Named with its module
+(`medh5.task.SCHEMA`), it documents that object alone, under every module that
+exports it, and not another module's name that is spelt the same.  A name no
+page names is listed in `tests/project/undocumented_api.txt`, which may only
+shrink: a pull request that adds a public name documents it.
 
 Standard library only, besides the package itself.
 """
@@ -279,25 +281,58 @@ def mentions(relative: str) -> Iterator[tuple[Section, str, bool]]:
             yield section, span, first_cell and index == 0
 
 
-def sections(names: set[str]) -> dict[str, Section]:
+def resolve(dotted: str) -> Any:
+    """The object a dotted path from the package names, or `_MISSING`."""
+    parts = dotted.split(".")
+    for cut in range(len(parts), 0, -1):
+        try:
+            value = importlib.import_module(".".join(parts[:cut]))
+        except ImportError:
+            continue
+        for part in parts[cut:]:
+            value = getattr(value, part, _MISSING)
+            if value is _MISSING:
+                break
+        return value
+    return _MISSING
+
+
+_MISSING = object()
+_DOTTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def sections(
+    names: set[str], qualified: bool = False
+) -> dict[str | tuple[str, int], Section]:
     """name -> the section that documents it best.
 
     The reference before the guides before anything else; then a section that
     names it as a definition (`mentions`) before one that only uses it; then
-    the section naming it most often; then the first.
+    the section naming it most often; then the first.  With *qualified*, a
+    name written after its module's path (`medh5.task.SCHEMA`) is counted for
+    that object, under the key `("object", id(value))`, not for the bare name.
     """
-    tally: dict[str, dict[Section, list[int]]] = {}
+    tally: dict[str | tuple[str, int], dict[Section, list[int]]] = {}
     order = 0
     for relative in pages():
         for section, code, definition in mentions(relative):
-            for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", code):
-                if word not in names:
-                    continue
-                called = definition or re.search(rf"\b{word}\(", code)
-                counts = tally.setdefault(word, {}).setdefault(section, [0, 0, order])
-                counts[0] += 1 if called else 0
-                counts[1] += 1
-                order += 1
+            for dotted in _DOTTED.findall(code):
+                parts = dotted.split(".")
+                for i, word in enumerate(parts):
+                    if word not in names:
+                        continue
+                    key: str | tuple[str, int] = word
+                    if qualified and i and parts[0] == PACKAGE:
+                        value = resolve(".".join(parts[: i + 1]))
+                        if value is not _MISSING:
+                            key = ("object", id(value))
+                    called = definition or re.search(rf"\b{word}\(", code)
+                    counts = tally.setdefault(key, {}).setdefault(
+                        section, [0, 0, order]
+                    )
+                    counts[0] += 1 if called else 0
+                    counts[1] += 1
+                    order += 1
     return {
         name: min(
             found,
@@ -320,7 +355,7 @@ def rows() -> list[Row]:
     docs: dict[str, dict[str, str]] = {
         m: attribute_docs(importlib.import_module(m)) for m in modules()
     }
-    found = sections({name for _, name, _ in entries})
+    found = sections({name for _, name, _ in entries}, qualified=True)
     out: list[Row] = []
     for module_name, name, value in entries:
         kind = kind_of(value)
@@ -331,7 +366,8 @@ def rows() -> list[Row]:
             doc = next((docs[m][name] for m in owners if name in docs[m]), "")
         if kind == "constant":
             kind = f"constant (`{type(value).__name__}`)"
-        out.append(Row(module_name, name, kind, summary(doc), found.get(name)))
+        section = found.get(("object", id(value))) or found.get(name)
+        out.append(Row(module_name, name, kind, summary(doc), section))
     return out
 
 

@@ -24,6 +24,16 @@ checks it — and every `commit()` refuses a document that fails it:
 medh5 validate case_0001.medh5 --level structural
 ```
 
+The schema itself, as the engine embeds it:
+
+```python
+import json
+import medh5.document
+
+schema = json.loads(medh5.document.schema_text())
+schema["$id"]
+```
+
 The tables below are generated from the schema itself at build time.
 
 <!--@schema medh5-sample-1.0-->

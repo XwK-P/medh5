@@ -22,16 +22,16 @@ compiled extension the modules re-export from, not an API of its own.
 | `amend` | function | Copy-on-write amend: build a new file from the old and replace it. | [Python API › Amending](python-api.md#amending) |
 | `Annotation` | class | What every annotation answers, whatever its kind. | [Python API › Timepoints](python-api.md#timepoints) |
 | `audit_splits` | function | Read every file's claims and cross-check them (spec §12.3). | [Curation records › Split claims](curation.md#split-claims) |
-| `CODES` | constant (`dict`) | Every diagnostic code, keyed by code string. | [Diagnostic codes](diagnostic-codes.md) |
+| `CODES` | constant (`dict`) | Every diagnostic code, keyed by code string. | [Python API › Validation](python-api.md#validation) |
 | `Cohort` | class | The `cohort` member of the sample document: dataset, site, scanner and split group (§12.2). | [Curation records › Editing a record](curation.md#editing-a-record) |
 | `Collection` | class | A read-only mapping of `sample_key -> Sample` over one shard. | [Python API › Opening](python-api.md#opening) |
 | `compare_annotations` | function | Compare two annotations, choosing the comparison their kinds support. | [Curation records › Agreement](curation.md#agreement) |
-| `create` | function | Create a new sample; use as a context manager, or call `commit()`. | [Python API › Writing](python-api.md#writing) |
+| `create` | function | Create a new sample; use as a context manager, or call `commit()`. | [Annotation kinds › Closure](annotations.md#closure) |
 | `Deidentification` | class | The `deidentification` member: how identifiers were removed from the sample (§11.4). | [Curation records › Editing a record](curation.md#editing-a-record) |
 | `FeatureCache` | class | An open cache. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `FORMAT_VERSION` | constant (`str`) |  | [medh5 › Versioning](../index.md#versioning) |
 | `Grid` | class | The lattice of a stored array: its shape, axes and index-to-world geometry (§3.2). | [Annotation kinds › Boxes](annotations.md#boxes) |
-| `grid_patches` | function | Deterministic sliding-window cover of a volume — the inference path. |  |
+| `grid_patches` | function | Deterministic sliding-window cover of a volume — the inference path. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
 | `Identity` | class | The `identity` member of the sample document: who and what the sample is about (§12.1). | [Python API › Identity and structure](python-api.md#identity-and-structure) |
 | `Image` | class | Lazy access to one image and its geometry. | [Python API › Timepoints](python-api.md#timepoints) |
 | `Instance` | class | One physical object: a box, a class, an id and optionally a cropped mask. |  |
@@ -78,7 +78,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `ANNOTATION_KINDS` | constant (`tuple`) |  |  |
 | `AnnotationHeader` | class | The fixed attribute header every annotation carries (spec §6.2). |  |
 | `AnnotationPayload` | class | Datasets and kind-specific attributes for one encoded annotation. |  |
-| `Assertion` | class | One label assertion: a class, its value, and what it is about. | [Classification and change labels › Read them back](../guides/classification.md#read-them-back) |
+| `Assertion` | class | One label assertion: a class, its value, and what it is about. | [Classification and change labels › Hierarchical labels](../guides/classification.md#hierarchical-labels) |
 | `BoxesAnnotation` | class | Axis-aligned boxes, `(N, S, 2)` `[lo, hi]` at voxel edges (§8.2). |  |
 | `ClassificationAnnotation` | class | Reader for `kind = "classification"`. |  |
 | `ContoursAnnotation` | class | Planar polygons with an offset table (§8.6) — RTSTRUCT-shaped. |  |
@@ -131,7 +131,7 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
-| `Assertion` | class | One label assertion: a class, its value, and what it is about. | [Classification and change labels › Read them back](../guides/classification.md#read-them-back) |
+| `Assertion` | class | One label assertion: a class, its value, and what it is about. | [Classification and change labels › Hierarchical labels](../guides/classification.md#hierarchical-labels) |
 | `assertion_rows` | function | `(classes, values, scope_ids, schemes, scheme_values)` from a mapping or assertion rows (§9). |  |
 | `check_scope` | function | Return `scope` if it is a classification scope, else raise E412 (§9). |  |
 | `ClassificationAnnotation` | class | Reader for `kind = "classification"`. |  |
@@ -247,7 +247,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `HashingTextEncoder` | class | Signed feature hashing of lower-cased words into `dim` floats. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `LEVELS` | constant (`tuple`) |  |  |
 | `open_cache` | function | Open a cache file, read-only. |  |
-| `SCHEMA` | constant (`str`) | The manifest's own version. |  |
+| `SCHEMA` | constant (`str`) | What every manifest `Manifest.save` writes names under `schema`. |  |
 | `schema_text` | function | The `medh5.cache/1` manifest JSON Schema. | [Cache manifest schema](cache-schema.md) |
 | `SUFFIX` | constant (`str`) | Conventional extension for a collection file (spec §2.1). |  |
 | `validate_cache` | function | Validate a cache: its checksums, every source pin, and — given a task — that it was built for this task, fitted on this task's training partition, and (`check_rows`) that each row's entry was built at its cutoff, from versions it admits, of its own subject's sources. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
@@ -273,17 +273,19 @@ compiled extension the modules re-export from, not an API of its own.
 | `Clinical` | class | One sample's clinical profile, read: `Sample.clinical`. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `ClinicalRecords` | class | A logical-record bundle: what `augment` adds and `records()` reads. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `Clock` | class | The subject clock every clinical time is measured on (1.1 §3). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
+| `clock_day` | function | The clock day holding `t_us`: its midnight to the last microsecond before the next, counted from the clock's zero (the engine's `Bounds::day_containing`). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `CLOCK_REFERENCES` | constant (`tuple`) |  |  |
 | `COMPARATORS` | constant (`tuple`) |  | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
 | `DAY` | constant (`int`) |  | [Train on clinical tasks › Describe the task](../guides/clinical-training.md#describe-the-task) |
-| `days` | function | `value` days, in clock microseconds. | [Clinical history beside the images › Write a history](../guides/clinical.md#write-a-history) |
+| `day_bounds` | function | Every instant of a calendar `day` on a `utc` clock, inclusive. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
+| `days` | function | `value` days, in clock microseconds, rounded half to even, as the engine rounds a visit's `days_from_baseline`. | [Clinical history beside the images › Write a history](../guides/clinical.md#write-a-history) |
 | `Document` | class | Canonical, de-identified source text (1.1 §6). | [Python API › Document](python-api.md#document) |
 | `DocumentInfo` | class | A document's metadata; its text is read when asked for. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `ENDPOINT_TYPES` | constant (`tuple`) |  |  |
 | `Event` | class | One immutable version of information about the subject (1.1 §5). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `EVENT_KINDS` | constant (`tuple`) |  |  |
 | `HOUR` | constant (`int`) |  | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
-| `hours` | function | `value` hours, in clock microseconds. |  |
+| `hours` | function | `value` hours, in clock microseconds, rounded half to even — as the engine rounds `medh5 clinical select --cutoff-hours` and every time given in hours, so a cutoff is one instant from every frontend. |  |
 | `imaging_events_from_timepoints` | function | `imaging` events from `days_from_baseline`, known to the day. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `LESION_PRESENCE` | constant (`str`) |  |  |
 | `LESION_VALUES` | constant (`tuple`) |  |  |
@@ -293,8 +295,8 @@ compiled extension the modules re-export from, not an API of its own.
 | `PROFILE` | constant (`str`) |  |  |
 | `records_from` | function | A bundle from lists. |  |
 | `RELATIONS` | constant (`tuple`) |  |  |
-| `SCHEMA` | constant (`str`) | The manifest's own version. |  |
-| `schema_text` | function | The clinical descriptor and logical-record JSON Schema. | [Cache manifest schema](cache-schema.md) |
+| `SCHEMA` | constant (`str`) | What every manifest `Manifest.save` writes names under `schema`. |  |
+| `schema_text` | function | The clinical descriptor and logical-record JSON Schema. | [Clinical schema](clinical-schema.md) |
 | `SECOND` | constant (`int`) |  |  |
 | `select` | function | Select at `cutoff_us` from records not read from a file. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `SelectedEvent` | class | One event version a selection admits, in input order. |  |
@@ -304,6 +306,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `STATUSES` | constant (`tuple`) |  |  |
 | `strip` | function | Write the imaging projection of `path` to `out`: a different sample, and a reported loss. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `TEMPORAL_TYPES` | constant (`tuple`) |  |  |
+| `utc_us` | function | An aware `datetime` on a `utc` clock: microseconds since 1970-01-01T00:00:00Z. | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 
 ## `medh5.collection` { #medh5-collection }
 
@@ -334,7 +337,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `load_manifest` | function | The suite's `expected.json`. |  |
 | `publish` | function | Write the whole suite into *outdir* — the cases, `expected.json`, the code table, the JSON Schemas (the sample document, the clinical profile, the task and cache contract), the task-and-cache fixtures under `companion/` when the clinical cases they read are among the cases, a checksum file and instructions, everything a third-party implementation needs; returns *outdir*. |  |
 | `run_corpus` | function | Build the corpus into *outdir* and check this validator against it. |  |
-| `SCHEMA` | constant (`str`) | The manifest's own version. |  |
+| `SCHEMA` | constant (`str`) | What every manifest `Manifest.save` writes names under `schema`. |  |
 | `score` | function | Score a foreign validator's results against the published expectations. | [Annotation kinds › Classification](annotations.md#classification) |
 | `SEED` | constant (`int`) |  |  |
 | `summarize` | function | The `--json` summary of a run or a score. |  |
@@ -446,6 +449,7 @@ compiled extension the modules re-export from, not an API of its own.
 |---|---|---|---|
 | `Assignment` | class | Where one group went. |  |
 | `check` | function | Every cohort-level check, over a manifest. | [Profiles and validation levels › Levels — how much to check](profiles-and-levels.md#levels--how-much-to-check) |
+| `CHECK_CODE_SEVERITY` | constant (`dict`) | Each cohort code's severity. | [Cohort check codes](cohort-checks.md) |
 | `CHECK_CODES` | constant (`dict`) | Cohort codes. | [Cohort check codes](cohort-checks.md) |
 | `ClassStats` | class | How often a class occurs, over the samples that examined it. |  |
 | `CohortReport` | class | What `medh5.dataset.check` found in a cohort: the manifest it read, the number of samples, every finding and each class's coverage. |  |
@@ -455,8 +459,8 @@ compiled extension the modules re-export from, not an API of its own.
 | `Entry` | class | One sample's metadata, as far as a cohort needs it. | [Partial labels and coverage › What this buys you at training time](../guides/partial-labels.md#what-this-buys-you-at-training-time) |
 | `find` | function | Every sample and collection under *root*, in a stable order. |  |
 | `Finding` | class | One cohort check's finding: its `C`-code, severity, message and the samples or paths it concerns. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
-| `make_splits` | function | Assign every group in *manifest* to a partition, or to a fold. | [Build and split a cohort › Split it](../guides/cohorts.md#split-it) |
-| `Manifest` | class | A cohort as metadata, with the digest that makes a split checkable. | [Build and split a cohort › Index the directory](../guides/cohorts.md#index-the-directory) |
+| `make_splits` | function | Assign every group in *manifest* to a partition, or to a fold. | [Train on clinical tasks › Describe the task](../guides/clinical-training.md#describe-the-task) |
+| `Manifest` | class | A cohort as metadata, with the digest that makes a split checkable. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
 | `Moments` | class | Count, mean and M2 for one image key — a Welford accumulator over the finite values folded in. |  |
 | `scan` | function | Build a manifest from a directory tree, and report what would not open. | [Build and split a cohort › Index the directory](../guides/cohorts.md#index-the-directory) |
 | `Split` | class | A complete assignment of a cohort's groups. | [Curation records › Split claims](curation.md#split-claims) |
@@ -467,6 +471,7 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `check` | function | Every cohort-level check, over a manifest. | [Profiles and validation levels › Levels — how much to check](profiles-and-levels.md#levels--how-much-to-check) |
+| `CHECK_CODE_SEVERITY` | constant (`dict`) | Each cohort code's severity. | [Cohort check codes](cohort-checks.md) |
 | `CHECK_CODES` | constant (`dict`) | Cohort codes. | [Cohort check codes](cohort-checks.md) |
 | `CohortReport` | class | What `medh5.dataset.check` found in a cohort: the manifest it read, the number of samples, every finding and each class's coverage. |  |
 | `Finding` | class | One cohort check's finding: its `C`-code, severity, message and the samples or paths it concerns. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
@@ -481,19 +486,22 @@ compiled extension the modules re-export from, not an API of its own.
 | `Entry` | class | One sample's metadata, as far as a cohort needs it. | [Partial labels and coverage › What this buys you at training time](../guides/partial-labels.md#what-this-buys-you-at-training-time) |
 | `find` | function | Every sample and collection under *root*, in a stable order. |  |
 | `GROUPABLE` | constant (`tuple`) | Fields worth grouping or stratifying on — all single-valued and scannable. |  |
-| `load` | function | Read a manifest written by `Manifest.save` or `medh5 dataset index`. | [Annotation kinds › Label sets](annotations.md#label-sets) |
-| `Manifest` | class | A cohort as metadata, with the digest that makes a split checkable. | [Build and split a cohort › Index the directory](../guides/cohorts.md#index-the-directory) |
+| `load` | function | Read a manifest written by `Manifest.save` or `medh5 dataset index`; see `Manifest.load`. | [Annotation kinds › Label sets](annotations.md#label-sets) |
+| `Manifest` | class | A cohort as metadata, with the digest that makes a split checkable. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
+| `PathStyle` | type | How `Manifest.save` writes paths. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
 | `scan` | function | Build a manifest from a directory tree, and report what would not open. | [Build and split a cohort › Index the directory](../guides/cohorts.md#index-the-directory) |
+| `SCHEMA` | constant (`str`) | What every manifest `Manifest.save` writes names under `schema`. | [The cohort manifest › Paths](cohort-manifest.md#paths) |
 | `SUFFIXES` | constant (`tuple`) |  |  |
 
 ## `medh5.dataset.split` { #medh5-dataset-split }
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
+| `Algorithm` | type | How `make_splits` deals groups to partitions: `"medh5.split/2"` moves few when the cohort grows, and is medh5 3.0's default. | [Build and split a cohort › The algorithm, and continuing a split](../guides/cohorts.md#the-algorithm-and-continuing-a-split) |
 | `Assignment` | class | Where one group went. |  |
 | `DEFAULT_RATIOS` | constant (`dict`) |  |  |
 | `load` | function | Read a split written by `medh5 dataset split -o`. | [Annotation kinds › Label sets](annotations.md#label-sets) |
-| `make_splits` | function | Assign every group in *manifest* to a partition, or to a fold. | [Build and split a cohort › Split it](../guides/cohorts.md#split-it) |
+| `make_splits` | function | Assign every group in *manifest* to a partition, or to a fold. | [Train on clinical tasks › Describe the task](../guides/clinical-training.md#describe-the-task) |
 | `Split` | class | A complete assignment of a cohort's groups. | [Curation records › Split claims](curation.md#split-claims) |
 | `write_claims` | function | Stamp each sample with its partition and the manifest digest (§12.3). | [Build and split a cohort › Split it](../guides/cohorts.md#split-it) |
 
@@ -517,7 +525,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `read_document_text` | function | The raw `/meta` text under a sample root (`sample.root`). |  |
 | `SampleDocument` | class | The whole document, typed. | [Python API › Identity and structure](python-api.md#identity-and-structure) |
 | `schema` | function | The sample-document JSON Schema, parsed. | [Cache manifest schema](cache-schema.md) |
-| `schema_text` | function | The sample-document JSON Schema (draft 2020-12), as published: the engine's embedded copy of `medh5-sample-1.0.schema.json`. | [Cache manifest schema](cache-schema.md) |
+| `schema_text` | function | The sample-document JSON Schema (draft 2020-12), as published: the engine's embedded copy of `medh5-sample-1.0.schema.json`. | [Sample document schema](schema.md) |
 | `validate_against_schema` | function | Validate a document, returning human-readable messages (empty when valid). |  |
 
 ## `medh5.errors` { #medh5-errors }
@@ -526,7 +534,7 @@ compiled extension the modules re-export from, not an API of its own.
 |---|---|---|---|
 | `Code` | class | One diagnostic code. |  |
 | `code` | function | Look up a diagnostic code, raising `KeyError` for unknown codes. | [Diagnostic codes › Reading a code](diagnostic-codes.md#reading-a-code) |
-| `CODES` | constant (`dict`) | Every diagnostic code, keyed by code string. | [Diagnostic codes](diagnostic-codes.md) |
+| `CODES` | constant (`dict`) | Every diagnostic code, keyed by code string. | [Python API › Validation](python-api.md#validation) |
 | `codes_for` | function | Every code in one domain, in table order. |  |
 | `CODES_REVISION` | constant (`int`) | The revision of the code table this engine implements (§15.2). |  |
 | `Domain` | type | The area of the specification a diagnostic code belongs to (§15.2). |  |
@@ -750,9 +758,10 @@ compiled extension the modules re-export from, not an API of its own.
 | `available` | function | Every vocabulary name `load` accepts, bundled and registered. | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
 | `BACKGROUND_ID` | constant (`int`) |  |  |
 | `canonical_json` | function | Return the canonical JSON bytes of a document: sorted keys, no whitespace, UTF-8 (§5.1). |  |
+| `check` | function | Whether sample files share one vocabulary, as `medh5 labels check --json`. | [Profiles and validation levels › Levels — how much to check](profiles-and-levels.md#levels--how-much-to-check) |
 | `check_class_id` | function | Return `class_id` if it is an assignable class id, 1 to 65534 (§5.3). |  |
 | `CLOSURES` | constant (`tuple`) |  |  |
-| `describe` | function | Name -&gt; `{id, version, classes, sha256}`. |  |
+| `describe` | function | Name -&gt; `{id, version, classes, sha256}`. | [Python API › Sub-packages](python-api.md#sub-packages) |
 | `FORMS` | constant (`tuple`) |  |  |
 | `from_keys` | function | Mint an inline `LabelSet` from bare class keys, with ids counting up from `start`. |  |
 | `IGNORE_ID` | constant (`int`) |  |  |
@@ -774,8 +783,10 @@ compiled extension the modules re-export from, not an API of its own.
 |---|---|---|---|
 | `affine_for` | function | The index→world affine of one image, as MONAI receives it: optionally re-expressed in *space*, and in millimetres (see `_monai_affine`). | [PyTorch and MONAI › MONAI](torch.md#monai) |
 | `available` | function | Whether MONAI can be imported. | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
-| `convert_affine` | function | Re-express an index→world affine in another world convention. | [PyTorch and MONAI › MONAI](torch.md#monai) |
+| `convert_affine` | function | Re-express an index→world affine in another world convention. | [PyTorch and MONAI › A reader for `LoadImage`](torch.md#a-reader-for-loadimage) |
 | `from_metatensor` | function | A `MetaTensor` back to `(array, geometry)` a writer can consume. | [PyTorch and MONAI › MONAI](torch.md#monai) |
+| `LoadMedH5d` | class | `medh5.monai.to_dict` as a MONAI dictionary transform. | [PyTorch and MONAI › A reader for `LoadImage`](torch.md#a-reader-for-loadimage) |
+| `MedH5Reader` | class | A MONAI `ImageReader` for `.medh5` samples and collection members. | [PyTorch and MONAI › A reader for `LoadImage`](torch.md#a-reader-for-loadimage) |
 | `meta_dict` | function | The metadata MONAI carries alongside a tensor. | [PyTorch and MONAI › MONAI](torch.md#monai) |
 | `require_monai` | function | Import MONAI, or explain how to install it. |  |
 | `SPACES` | constant (`tuple`) |  |  |
@@ -797,7 +808,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `amend` | function | Copy-on-write amend: build a new file from the old and replace it. | [Python API › Amending](python-api.md#amending) |
 | `annotation_id` | function | An annotation id from a reference that may be written as a path. |  |
 | `AnnotationCollection` | class | The sample's annotations, with task- and timepoint-aware views. |  |
-| `create` | function | Create a new sample; use as a context manager, or call `commit()`. | [Python API › Writing](python-api.md#writing) |
+| `create` | function | Create a new sample; use as a context manager, or call `commit()`. | [Annotation kinds › Closure](annotations.md#closure) |
 | `FORMAT_VERSION` | constant (`str`) |  | [medh5 › Versioning](../index.md#versioning) |
 | `FRAME_ATTRS` | constant (`tuple`) | Where frame-of-reference uids are named: `(group, attribute names)`. |  |
 | `ImageCollection` | class | The sample's images, with timepoint- and modality-aware views. |  |
@@ -814,12 +825,15 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
+| `BLEND_MODES` | constant (`tuple`) | How overlapping patch predictions are weighted when stitched back: `constant` averages them, `gaussian` trusts each patch most at its centre, where its model saw the most context. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
+| `blend_weights` | function | The weight of each voxel of a patch when patches are stitched back. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
 | `coerce_patch_size` | function | Broadcast a scalar patch size across *ndim* spatial axes. |  |
-| `grid_patches` | function | Deterministic sliding-window cover of a volume — the inference path. |  |
+| `grid_patches` | function | Deterministic sliding-window cover of a volume — the inference path. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
 | `iter_patches` | function | The patches of `PatchSampler.draws`, one at a time. |  |
 | `PAIR_MODES` | constant (`tuple`) |  |  |
 | `PairReport` | class | What a paired dataset kept and what it skipped. |  |
 | `Patch` | class | One draw: where to read, and how the location was chosen. |  |
+| `PatchAggregator` | class | Stitch patch predictions back into one volume. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
 | `PatchSampler` | class | Choose patch windows in a volume (spec §14.3). | [PyTorch and MONAI › PatchDataset — random patches](torch.md#patchdataset--random-patches) |
 | `Seed` | type | What seeds a draw: an integer, a sequence of integers — `(seed, epoch, index)` — a `numpy.random.Generator`, which supplies one seed and advances, or `None` for fresh entropy. |  |
 | `STRATEGIES` | constant (`tuple`) |  |  |
@@ -874,29 +888,31 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
-| `CENSORING` | constant (`tuple`) |  |  |
+| `CENSORING` | constant (`tuple`) | What a target does with a row it cannot label (contract §5). |  |
 | `CODES` | constant (`dict`) | The companion contract's finding codes (T1xx manifest, T2xx identity and splits, T3xx sources, T4xx caches) and what each means. | [Diagnostic codes](diagnostic-codes.md) |
 | `concept_token` | function | An event's concept token: `kind|code_system|code`, or `kind|` when it is uncoded. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
+| `Confine` | type | Where a runner lets a task's sources be opened from (contract §2): `True` confines them to the base relative URIs resolve against, a path to that directory, `False` opens wherever the URIs point. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `EventTable` | class | One subject's merged event versions, as columns. |  |
 | `Finding` | class | One thing wrong with a task, its sources, or a cache. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
-| `LABELS` | constant (`tuple`) |  |  |
 | `LinkTable` | class | One subject's links, every fragment's, as columns; indexing builds a `medh5.clinical.Link`, and `fragment(i)` says whose it is. |  |
+| `Note` | class | Something a manifest should state and does not. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `Packed` | class | A packed UTF-8 column: one buffer, `int64` offsets, and a validity mask (`None` when every cell is valid) — the clinical tables' own encoding (1.1 §4). |  |
 | `Preflight` | class | A task's preflight: manifest and source findings, every subject's merged history, and every row's view. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
-| `preflight` | function | Preflight a task (a manifest, or the path of one). | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
+| `preflight` | function | Preflight a task (a manifest, or the path of one); `confine` says where sources may be opened (`Confine`). | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `Reconciled` | class | An event version several fragments hold, and the digest they share. |  |
-| `ROI` | constant (`tuple`) |  | [Segmentation › Read them back](../guides/segmentation.md#read-them-back) |
-| `ROIS` | constant (`tuple`) |  |  |
+| `Repinned` | class | One source pinned to a new version. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
+| `RepinReport` | class | What `TaskManifest.repin` did, or would do. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
+| `ROI` | constant (`tuple`) | What a slot may request its region be centred on (contract §3.5). | [Segmentation › Read them back](../guides/segmentation.md#read-them-back) |
+| `ROIS` | constant (`tuple`) | How a slot's region was centred: `ROI`, and `center_fallback` when a slot asked for an eligible instance and the row has none. |  |
 | `Row` | class | One example: a subject at a cutoff. |  |
 | `ROW_STATUSES` | constant (`tuple`) |  |  |
 | `RowView` | class | Everything a task admits for one row, and nothing else. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `SCHEMA` | constant (`str`) | The manifest's own version. |  |
-| `schema_text` | function | The `medh5.task/1` JSON Schema. | [Cache manifest schema](cache-schema.md) |
+| `schema_text` | function | The `medh5.task/1` JSON Schema. | [Task manifest schema](task-schema.md) |
 | `SELECTION_STATUSES` | constant (`tuple`) |  |  |
 | `Slot` | class | A stable modality slot, filled per row by the newest *eligible* image of its modality — never by a filename (contract §3.5). | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
 | `SlotFill` | class | How one slot was filled for one row — or that it was not. |  |
 | `SourceRef` | class | One sample — a file, or a member of a `.medh5c` — at a pinned version. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
-| `STATUSES` | constant (`tuple`) |  |  |
 | `Subject` | class | One subject: its fragments, its clock and its partition. |  |
 | `SubjectHistory` | class | One subject's history, merged across its fragments: what every row of the subject indexes. |  |
 | `Target` | class | What a row is labelled with (contract §5): an event concept whose final `value_text` falls in `positive` or `negative` inside `(cutoff, cutoff + horizon_us]`, read from the full history. | [Python API › Tasks and caches](python-api.md#tasks-and-caches) |
@@ -912,12 +928,13 @@ compiled extension the modules re-export from, not an API of its own.
 | `AVAILABLE` | constant (`bool`) |  |  |
 | `CACHE` | constant (`HandleCache`) |  | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
 | `ClinicalTaskDataset` | class | One item per admitted row of a task. | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
-| `collate` | function | `DataLoader(collate_fn=...)` for the MEDH5 item shape. | [PyTorch and MONAI › Datasets](torch.md#datasets) |
+| `collate` | function | `DataLoader(collate_fn=...)` for the MEDH5 item shape. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
 | `collate_clinical` | function | `DataLoader(collate_fn=...)` for `ClinicalTaskDataset` items. | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
 | `ConceptVocabulary` | class | Concept indices, per-concept value statistics and the categories each concept's text values took, fitted on one partition of one task — and saying which. | [PyTorch and MONAI › Clinical tasks (format 1.1)](torch.md#clinical-tasks-format-11) |
 | `FileGroupedSampler` | class | Shuffle files, and yield every item of a file before the next file. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
-| `grid_patches` | function | Deterministic sliding-window cover of a volume — the inference path. |  |
+| `grid_patches` | function | Deterministic sliding-window cover of a volume — the inference path. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
 | `GridPatchDataset` | class | Deterministic sliding-window cover of every file — the inference path. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
+| `GridStitcher` | class | Reassemble a `medh5.torch.GridPatchDataset`'s predictions. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
 | `HandleCache` | class | PID-scoped, thread-safe LRU cache of open samples. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
 | `LABEL_FORMATS` | constant (`tuple`) |  |  |
 | `open_cached` | function | Open a sample — or a collection member — through the per-worker cache. |  |
@@ -949,7 +966,7 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
-| `collate` | function | `DataLoader(collate_fn=...)` for the MEDH5 item shape. | [PyTorch and MONAI › Datasets](torch.md#datasets) |
+| `collate` | function | `DataLoader(collate_fn=...)` for the MEDH5 item shape. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
 | `stack_images` | function | Channel-stack several images into one `(B, C, *patch)` tensor. |  |
 
 ## `medh5.torch.datasets` { #medh5-torch-datasets }
@@ -979,6 +996,12 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `FileGroupedSampler` | class | Shuffle files, and yield every item of a file before the next file. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
+
+## `medh5.torch.stitch` { #medh5-torch-stitch }
+
+| Name | Kind | Summary | Documented in |
+|---|---|---|---|
+| `GridStitcher` | class | Reassemble a `medh5.torch.GridPatchDataset`'s predictions. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
 
 ## `medh5.transforms` { #medh5-transforms }
 

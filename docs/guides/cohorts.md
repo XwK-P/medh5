@@ -140,6 +140,7 @@ Leaving `algorithm` out deals the cohort both ways and raises a
 `FutureWarning` (the command line prints `warning: …`) only where /2 would
 place some group differently. Pass `algorithm="medh5.split/1"` (`--algorithm
 1`) to keep a split as it is.
+`medh5.dataset.split.Algorithm` names the two.
 
 A cohort that grows needs its split to grow without moving anyone: a model
 retrained on a re-split has trained on subjects that were in the old test set.

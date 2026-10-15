@@ -290,7 +290,6 @@ medh5.geometry.read_grids
 medh5.geometry.slices_to_box
 medh5.geometry.voxel_volume
 medh5.geometry.world_to_index
-medh5.grid_patches
 medh5.image.SPEC_IMAGE_ATTRS
 medh5.image.VALUE_TYPES
 medh5.image.check_value_type
@@ -378,7 +377,6 @@ medh5.labels.Relation
 medh5.labels.Skeleton
 medh5.labels.canonical_json
 medh5.labels.check_class_id
-medh5.labels.describe
 medh5.labels.from_keys
 medh5.labels.load_file
 medh5.labels.unregister
@@ -401,7 +399,6 @@ medh5.sampling.STRATEGIES
 medh5.sampling.Seed
 medh5.sampling.TimepointPair
 medh5.sampling.coerce_patch_size
-medh5.sampling.grid_patches
 medh5.sampling.iter_patches
 medh5.sampling.window_around
 medh5.storage.BLOSC2_FILTER_ID
@@ -435,7 +432,6 @@ medh5.storage.recompress_paths
 medh5.storage.spatial_chunk_for
 medh5.task.CENSORING
 medh5.task.EventTable
-medh5.task.LABELS
 medh5.task.LinkTable
 medh5.task.Packed
 medh5.task.ROIS
@@ -444,7 +440,6 @@ medh5.task.Reconciled
 medh5.task.Row
 medh5.task.SCHEMA
 medh5.task.SELECTION_STATUSES
-medh5.task.STATUSES
 medh5.task.SlotFill
 medh5.task.Subject
 medh5.task.SubjectHistory
@@ -462,7 +457,6 @@ medh5.torch.clinical.concept_of
 medh5.torch.collate.stack_images
 medh5.torch.datasets.ALIGNMENTS
 medh5.torch.datasets.LABEL_FORMATS
-medh5.torch.grid_patches
 medh5.torch.handles.DEFAULT_MAXSIZE
 medh5.torch.handles.open_cached
 medh5.torch.open_cached
