@@ -9,7 +9,8 @@
   `encode_boxes`, `encode_obb`, `encode_keypoints`, `encode_points`, the
   writer's `add_boxes`, `add_obb`, `add_keypoints` and `add_points`, an
   annotation's `to_world` and `to_index`, and `transforms.refuse_outside`
-  release it from 4096 rows. Another thread waited 0.88 s through a
-  `dice` of two 300 × 512 × 512 masks and now waits 5 ms. `normalize_masks`
+  release it from 4096 rows. A `dice` of two 300 × 512 × 512 masks took
+  0.88 s, every millisecond of it holding the GIL; it now takes 0.06 s and
+  holds it for 1 ms. `normalize_masks`
   no longer copies a C-contiguous boolean mask: it returns the array it was
   given. Do not change an array while a call reads it.
