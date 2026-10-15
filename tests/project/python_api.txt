@@ -391,7 +391,7 @@ medh5.SampleWriter.add_pyramid	method	(image_id, levels, *, grid_levels, modalit
 medh5.SampleWriter.add_records	method	(records)
 medh5.SampleWriter.add_segmentation	method	(ann_id, *, grid, masks=None, probabilities=None, instances=None, encoding='auto', threshold=None, annotated_classes=None, closure='explicit', ignore=None, ignore_mask=None, timepoints=None, prov=None, quality=None, derived_from=None, task='segmentation', codec=None)
 medh5.SampleWriter.add_timepoint	method	(timepoint_id, **fields)
-medh5.SampleWriter.add_transform	method	(transform_id, *, kind, from_frame, to_frame, matrix=None, field=None, control_points=None, components=None, field_grid=None, cp_grid=None, vector_space='world', interpolation='linear', extrapolation='zero', order=3, units=None, from_grid=None, to_grid=None, invertible=None, inverse_id=None, metrics=None, prov=None, codec=None)
+medh5.SampleWriter.add_transform	method	(transform_id, *, kind, from_frame, to_frame, matrix=None, field=None, control_points=None, components=None, field_grid=None, cp_grid=None, vector_space='world', interpolation='linear', extrapolation='zero', order=3, units=None, from_grid=None, to_grid=None, invertible=None, inverse_id=None, metrics=None, prov=None, codec=None, field_dtype='float32')
 medh5.SampleWriter.build_index	method	(ann_ids=None, *, max_coords=<value>, occupancy=<value>, seed=0)
 medh5.SampleWriter.clinical	method	()
 medh5.SampleWriter.closed	property
@@ -3381,7 +3381,7 @@ medh5.sample.SampleWriter.add_pyramid	method	(image_id, levels, *, grid_levels, 
 medh5.sample.SampleWriter.add_records	method	(records)
 medh5.sample.SampleWriter.add_segmentation	method	(ann_id, *, grid, masks=None, probabilities=None, instances=None, encoding='auto', threshold=None, annotated_classes=None, closure='explicit', ignore=None, ignore_mask=None, timepoints=None, prov=None, quality=None, derived_from=None, task='segmentation', codec=None)
 medh5.sample.SampleWriter.add_timepoint	method	(timepoint_id, **fields)
-medh5.sample.SampleWriter.add_transform	method	(transform_id, *, kind, from_frame, to_frame, matrix=None, field=None, control_points=None, components=None, field_grid=None, cp_grid=None, vector_space='world', interpolation='linear', extrapolation='zero', order=3, units=None, from_grid=None, to_grid=None, invertible=None, inverse_id=None, metrics=None, prov=None, codec=None)
+medh5.sample.SampleWriter.add_transform	method	(transform_id, *, kind, from_frame, to_frame, matrix=None, field=None, control_points=None, components=None, field_grid=None, cp_grid=None, vector_space='world', interpolation='linear', extrapolation='zero', order=3, units=None, from_grid=None, to_grid=None, invertible=None, inverse_id=None, metrics=None, prov=None, codec=None, field_dtype='float32')
 medh5.sample.SampleWriter.build_index	method	(ann_ids=None, *, max_coords=<value>, occupancy=<value>, seed=0)
 medh5.sample.SampleWriter.clinical	method	()
 medh5.sample.SampleWriter.closed	property

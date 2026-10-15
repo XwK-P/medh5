@@ -759,6 +759,104 @@ class TestDisplacement:
             transform.sample_indices(inside)
 
 
+class TestFieldDtype:
+    """§10.4: float16 is permitted, and RECOMMENDED for displacements below
+    ~64 voxels; the writer stored every field as float32."""
+
+    SHAPE = (4, 5, 6)
+
+    def _write(self, path: Path, field: Any, **kwargs: Any) -> Path:
+        spacing = kwargs.pop("spacing", (1.0, 1.0, 1.0))
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=self.SHAPE, spacing=spacing, frame_uid="F0")
+            w.add_image("CT", np.zeros(self.SHAPE, np.int16), grid="g", modality="CT")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="F0",
+                to_frame="F1",
+                field=field,
+                field_grid="g",
+                **kwargs,
+            )
+        return path
+
+    def _stored(self, path: Path) -> np.dtype[Any]:
+        with h5py.File(path, "r") as handle:
+            return handle["transforms/warp/field"].dtype
+
+    def _field(self, magnitude: float) -> Any:
+        field = np.zeros((3, *self.SHAPE), np.float64)
+        field[0] = magnitude
+        field[1, 0, 0, 0] = 0.1
+        return field
+
+    def test_S10_4_a_float16_field_is_stored_and_read_as_written(self, tmp_path):
+        field = self._field(0.75)
+        path = self._write(tmp_path / "h.medh5", field, field_dtype="float16")
+        assert self._stored(path) == np.float16
+        assert self._stored(self._write(tmp_path / "f.medh5", field)) == np.float32
+        inside = np.array([[2.0, 2.0, 2.0]])
+        with medh5.open(path) as sample:
+            moved = sample.transforms["warp"].transform_points(inside)
+            assert np.allclose(moved, inside + [0.75, 0.0, 0.0])
+            assert sample.verify().ok
+        assert validate_file(path, level="integrity").ok
+
+    @pytest.mark.parametrize(
+        ("vector_space", "spacing", "magnitude", "stored"),
+        [
+            ("index", (1.0, 1.0, 1.0), 63.0, np.float16),
+            ("index", (1.0, 1.0, 1.0), 64.0, np.float32),
+            # 100 mm at 2 mm voxels is 50 voxels; at 0.5 mm, 200.
+            ("world", (2.0, 2.0, 4.0), 100.0, np.float16),
+            ("world", (0.5, 2.0, 2.0), 100.0, np.float32),
+        ],
+    )
+    def test_S10_4_auto_stores_float16_below_the_bound_and_float32_above(
+        self, tmp_path, vector_space, spacing, magnitude, stored
+    ):
+        path = self._write(
+            tmp_path / "a.medh5",
+            self._field(magnitude),
+            field_dtype="auto",
+            vector_space=vector_space,
+            spacing=spacing,
+        )
+        assert self._stored(path) == stored
+        nan = self._field(1.0)
+        nan[2, 1, 1, 1] = np.nan
+        path = self._write(tmp_path / "n.medh5", nan, field_dtype="auto")
+        assert self._stored(path) == np.float32
+
+    def test_S10_4_a_field_float16_cannot_hold_is_refused(self, tmp_path):
+        path = tmp_path / "big.medh5"
+        with pytest.raises(MEDH5ValidationError, match="65504"):
+            self._write(path, self._field(70000.0), field_dtype="float16")
+        assert not path.exists()
+        with pytest.raises(MEDH5ValidationError, match="field_dtype"):
+            self._write(path, self._field(1.0), field_dtype="float64")
+
+    def test_S10_4_field_dtype_is_refused_for_other_kinds(self, tmp_path):
+        for field_dtype in ("float16", "auto"):
+            with (
+                pytest.raises(MEDH5ValidationError, match="field_dtype"),
+                medh5.create(tmp_path / "t.medh5", codec="portable") as w,
+            ):
+                w.add_grid("g", shape=self.SHAPE, spacing=(1.0,) * 3, frame_uid="F0")
+                w.add_image(
+                    "CT", np.zeros(self.SHAPE, np.int16), grid="g", modality="CT"
+                )
+                w.add_transform(
+                    "t",
+                    kind="affine",
+                    from_frame="F0",
+                    to_frame="F1",
+                    matrix=np.eye(4),
+                    field_dtype=field_dtype,
+                )
+
+
 class TestBSpline:
     def test_S10_5_basis_is_a_partition_of_unity(self):
         t = np.linspace(0.0, 1.0, 25)

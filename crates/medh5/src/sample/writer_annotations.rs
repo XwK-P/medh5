@@ -34,7 +34,7 @@ use crate::storage::index::{build_index, write_index, DEFAULT_MAX_COORDS, DEFAUL
 use crate::transforms::encode::{
     encode_affine, encode_bspline, encode_composite, encode_displacement, encode_identity,
 };
-use crate::transforms::model::{check_transform_id, TransformHeader, TRANSFORM_KINDS};
+use crate::transforms::model::{check_transform_id, TransformHeader, FLOAT16_SAFE_VOXELS, TRANSFORM_KINDS};
 use crate::{Error, Result, VERSION};
 
 /// What a segmentation is built from: exactly one of these.
@@ -107,6 +107,25 @@ pub struct TransformSpec {
     pub prov: Option<String>,
     pub codec: Option<String>,
 }
+
+/// How [`SampleWriter::add_transform_with`] stores a displacement field
+/// (§10.4).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FieldDtype {
+    /// `float32`, always: the default.
+    #[default]
+    Float32,
+    /// `float16`, refused when a finite value would overflow to infinity.
+    Float16,
+    /// `float16` when the largest displacement, in voxels of the field's
+    /// grid, is below [`FLOAT16_SAFE_VOXELS`](crate::transforms::model::FLOAT16_SAFE_VOXELS);
+    /// `float32` otherwise.
+    Auto,
+}
+
+/// The largest finite `float16`.
+const FLOAT16_MAX: f64 = 65504.0;
 
 impl SampleWriter {
     // -- class resolution ---------------------------------------------------------
@@ -936,6 +955,22 @@ impl SampleWriter {
         to_frame: &str,
         spec: TransformSpec,
     ) -> Result<hdf5::Group> {
+        self.add_transform_with(transform_id, kind, from_frame, to_frame, spec, FieldDtype::Float32)
+    }
+
+    /// [`add_transform`](Self::add_transform), storing a displacement field
+    /// as `field_dtype` says (§10.4: `float16` is permitted, and RECOMMENDED
+    /// for displacements below ~64 voxels).  Any dtype but `Float32` is
+    /// refused for another kind.
+    pub fn add_transform_with(
+        &mut self,
+        transform_id: &str,
+        kind: &str,
+        from_frame: &str,
+        to_frame: &str,
+        spec: TransformSpec,
+        field_dtype: FieldDtype,
+    ) -> Result<hdf5::Group> {
         check_transform_id(transform_id)?;
         if from_frame == to_frame {
             return Err(Error::coded(
@@ -947,7 +982,7 @@ impl SampleWriter {
                 ),
             ));
         }
-        let payload = self.encode_transform(transform_id, kind, &spec, from_frame)?;
+        let payload = self.encode_transform(transform_id, kind, &spec, from_frame, field_dtype)?;
         let mut header = TransformHeader::new(kind, from_frame, to_frame)?;
         header.units = self.transform_units(transform_id, from_frame, to_frame, &spec)?;
         header.from_grid = spec.from_grid.clone();
@@ -1068,14 +1103,66 @@ impl SampleWriter {
         ))
     }
 
+    /// The dtype a displacement field is stored in (§10.4).  `Auto` measures
+    /// the largest displacement in voxels: `index` vectors are in voxels
+    /// already, `world` vectors are divided by the grid's finest spacing.
+    fn field_storage(
+        &self,
+        transform_id: &str,
+        field: &NdArray,
+        field_grid: &str,
+        vector_space: &str,
+        field_dtype: FieldDtype,
+    ) -> Result<DType> {
+        let values = field.to_f64();
+        match field_dtype {
+            FieldDtype::Float32 => Ok(DType::F32),
+            FieldDtype::Float16 => match values.iter().find(|v| v.is_finite() && v.abs() > FLOAT16_MAX) {
+                Some(v) => Err(Error::invalid(format!(
+                    "transform {}: the field holds {v}, beyond float16's largest value ({FLOAT16_MAX}); store it as \
+                     float32",
+                    repr_str(transform_id)
+                ))),
+                None => Ok(DType::F16),
+            },
+            FieldDtype::Auto => {
+                let Some(per_voxel) = (match vector_space {
+                    "index" => Some(1.0),
+                    _ => self
+                        .grids
+                        .get(field_grid)
+                        .map(|g| g.spacing.iter().copied().fold(f64::INFINITY, f64::min))
+                        .filter(|s| s.is_finite() && *s > 0.0),
+                }) else {
+                    return Ok(DType::F32);
+                };
+                // A value that is no number is no measure of the field: it
+                // stays float32.
+                let small = values.ndim() > 0
+                    && values
+                        .map_axis(ndarray::Axis(0), |v| v.iter().map(|c| c * c).sum::<f64>().sqrt())
+                        .iter()
+                        .all(|n| n.is_finite() && n / per_voxel < FLOAT16_SAFE_VOXELS);
+                Ok(if small { DType::F16 } else { DType::F32 })
+            }
+        }
+    }
+
     fn encode_transform(
         &self,
         transform_id: &str,
         kind: &str,
         spec: &TransformSpec,
         from_frame: &str,
+        field_dtype: FieldDtype,
     ) -> Result<Payload> {
         let id = repr_str(transform_id);
+        if kind != "displacement" && field_dtype != FieldDtype::Float32 {
+            return Err(Error::invalid(format!(
+                "transform {id}: field_dtype chooses how a displacement field is stored, and kind {} has none",
+                repr_str(kind)
+            )));
+        }
         match kind {
             "identity" => Ok(encode_identity()),
             "affine" => match &spec.matrix {
@@ -1090,13 +1177,15 @@ impl SampleWriter {
                     ));
                 };
                 self.check_field_frame(transform_id, field_grid, from_frame)?;
+                let vector_space = spec.vector_space.as_deref().unwrap_or("world");
+                let dtype = self.field_storage(transform_id, field, field_grid, vector_space, field_dtype)?;
                 let payload = encode_displacement(
                     field,
                     field_grid,
-                    spec.vector_space.as_deref().unwrap_or("world"),
+                    vector_space,
                     spec.interpolation.as_deref().unwrap_or("linear"),
                     spec.extrapolation.as_deref().unwrap_or("zero"),
-                    DType::F32,
+                    dtype,
                 )?;
                 self.check_field_lattice(transform_id, &payload.array("field")?.shape(), field_grid, true)?;
                 Ok(payload)

@@ -417,7 +417,8 @@ w.add_transform("tp0_to_tp1", kind="affine",
 
 w.add_transform("warp", kind="displacement",
                 from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
-                field=field, field_grid="ct_tp0", vector_space="world")
+                field=field, field_grid="ct_tp0", vector_space="world",
+                field_dtype="auto")      # float16 where it is safe (§10.3)
 ```
 
 `units` default to those of the grids in the two frames, and a `units` they are

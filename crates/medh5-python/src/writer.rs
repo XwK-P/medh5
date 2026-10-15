@@ -19,7 +19,7 @@ use medh5::sample::writer::{
     Annotated, GridOptions, ImageEdit, ImageOptions, QualityArg, SampleWriter as EngineWriter,
 };
 use medh5::sample::writer_annotations::{
-    AnnotationOptions, ObjectFields, Placement, SegmentationOptions, SegmentationSource, TransformSpec,
+    AnnotationOptions, FieldDtype, ObjectFields, Placement, SegmentationOptions, SegmentationSource, TransformSpec,
 };
 
 use crate::convert::{
@@ -1286,7 +1286,7 @@ impl SampleWriter {
     #[pyo3(signature = (transform_id, *, kind, from_frame, to_frame, matrix=None, field=None, control_points=None,
         components=None, field_grid=None, cp_grid=None, vector_space="world", interpolation="linear",
         extrapolation="zero", order=3, units=None, from_grid=None, to_grid=None, invertible=None, inverse_id=None,
-        metrics=None, prov=None, codec=None))]
+        metrics=None, prov=None, codec=None, field_dtype="float32"))]
     #[allow(clippy::too_many_arguments)]
     fn add_transform(
         &mut self,
@@ -1313,7 +1313,20 @@ impl SampleWriter {
         metrics: Option<&Bound<'_, PyAny>>,
         prov: Option<&Bound<'_, PyAny>>,
         codec: Option<String>,
+        field_dtype: &str,
     ) -> R<Group> {
+        let field_dtype = match field_dtype {
+            "float32" => FieldDtype::Float32,
+            "float16" => FieldDtype::Float16,
+            "auto" => FieldDtype::Auto,
+            other => {
+                return Err(medh5::Error::invalid(format!(
+                    "field_dtype {} is not one of 'float32', 'float16', 'auto'",
+                    medh5::json::repr_str(other)
+                ))
+                .into())
+            }
+        };
         let spec = TransformSpec {
             matrix: is_given(matrix).map(|m| f64_array(&m)).transpose()?,
             field: is_given(field).map(|f| py_to_nd(&f)).transpose()?,
@@ -1337,7 +1350,7 @@ impl SampleWriter {
         let writer = self.writer()?;
         let (id, kind, from, to) =
             (transform_id.to_string(), kind.to_string(), from_frame.to_string(), to_frame.to_string());
-        let group = py.detach(move || writer.add_transform(&id, &kind, &from, &to, spec))?;
+        let group = py.detach(move || writer.add_transform_with(&id, &kind, &from, &to, spec, field_dtype))?;
         Ok(Group::wrap(group))
     }
 

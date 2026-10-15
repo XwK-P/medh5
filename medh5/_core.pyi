@@ -3380,10 +3380,17 @@ class SampleWriter:
         metrics: str | Mapping[str, Any] | None = None,
         prov: Activity | str | None = None,
         codec: str | None = None,
+        field_dtype: str = "float32",
     ) -> Group:
         """A transform mapping points from `from_frame` to `to_frame`:
         `x_M = T(x_F)`, the ITK convention.  `units` defaults to those of the
         grids in the two frames (§10.1).
+
+        `field_dtype` stores a displacement field as `"float32"` (the
+        default), `"float16"` (refused when a finite value would overflow), or
+        `"auto"`: float16 when the largest displacement is below 64 voxels of
+        the field's grid (§10.4).  Any but `"float32"` is refused for another
+        kind.
         """
         ...
     def build_index(
