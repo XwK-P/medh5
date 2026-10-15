@@ -47,15 +47,23 @@
 - **Change.** `transforms::resample(source, plan) -> Result<Resampled>` in the
   engine:
   - **The target** is either an existing grid of the sample (`onto = grid id`),
-    or a new grid in the source grid's frame and timepoint with a requested
-    `spacing`. A new grid keeps the source's direction and covers its extent:
-    the origin is the source's first voxel centre, and each axis gets
-    `ceil(extent / spacing)` voxels.
-  - **The mapping** goes from each target voxel centre to world, through
-    `transform_between(target grid, source grid)` when the frames differ
-    (§10.2's convention: evaluate T at the fixed grid's points and sample the
-    moving image there), then to source index. There is no path: refused, with
-    the two frames named.
+    or a new grid named `grid_id` in the source grid's frame, coordinate system
+    and timepoint with a requested `spacing`. A new grid keeps the source's
+    direction and covers the same physical extent, edge to edge: along each
+    axis the source spans `n · s` from the edge `o − s/2`, so the target gets
+    `ceil(n · s / s′)` voxels and its first centre at `o − s/2 + s′/2`. Voxel
+    edges, not centres, are what is kept (two 1 mm voxels at 2 mm are one voxel
+    over the same 2 mm).
+  - **The mapping** goes from each target voxel centre to world, then to source
+    index. When the two grids are physically comparable (1.0 §3.3 rule 4:
+    one `frame_uid`, one `coord_system`, one S; `Grid::comparable_with`) the
+    affines alone map it. Otherwise it goes through
+    `transform_between(target grid, source grid)` (§10.2's convention: evaluate
+    T at the fixed grid's points and sample the moving image there). Two grids
+    that name one frame but are not comparable (W917: another `coord_system`
+    or S) are refused, since `transform_between` answers "same frame" for them
+    and no transform relates them; so is a pair with no path, naming the two
+    frames.
   - **Interpolation** is `linear` (the default), `nearest` or `cubic`, using
     the existing samplers generalised from fields to image channels. Only
     spatial axes are resampled, channel by channel, and only level 0 of a
@@ -66,8 +74,17 @@
     range.
   - **Outside the source:** a target voxel whose source point lies outside the
     source extent (§10.4's half-voxel margin) takes `fill` (0 unless given).
-    When any voxel does, a `mask` annotation `<image>_valid` on the target grid
-    marks the voxels that did not, and the image's `valid_mask` names it (§4.4).
+    The image gets one `valid_mask` (§4.4), `<new image id>_valid` on the
+    target grid, when any voxel is invalid: the voxels whose source point is
+    inside the extent, intersected with the source's own `valid_mask`
+    resampled `nearest` when it has one. An image names one mask, so the two
+    reasons a voxel holds no data are combined, never one chosen.
+  - **Identifiers.** Every object written gets a new id; nothing is replaced.
+    An output's id is its source's id plus `suffix`, which defaults to
+    `_on_<target grid id>` (an existing grid's, or `grid_id`), so both satisfy
+    1.0 §2.2's syntax (E003). An id already in the file is refused before
+    anything is written, naming it: resampling twice onto one grid needs
+    another `suffix`.
   - **Recorded:** one `resample` activity in `/meta → provenance` with `inputs`
     (the source objects), `outputs`, and `params` (`onto` or `spacing`, the
     transform ids on the path, `interpolation`, `fill`, `dtype`). Every object
@@ -78,7 +95,12 @@
   - `test_S10_2_resample_through_an_affine_matches_scipy`: `map_coordinates`
     with orders 0, 1 and 3 on the composed index mapping.
   - `test_S10_2_a_resample_without_a_transform_path_is_refused`.
-  - `test_S4_4_voxels_outside_the_source_are_filled_and_masked`.
+  - `test_S4_4_voxels_outside_the_source_are_filled_and_masked`, and
+    `test_S4_4_the_source_valid_mask_and_the_extent_are_intersected`.
+  - `test_S3_3_a_new_spacing_keeps_the_source_edges`: two 1 mm voxels at 2 mm
+    are one voxel over the same interval.
+  - `test_S3_3_grids_sharing_a_frame_but_not_comparable_are_refused` (W917).
+  - `test_an_existing_id_is_refused_before_writing`.
   - `test_S11_1_a_resample_is_one_activity_with_every_output`.
   - `test_resampling_onto_the_source_grid_is_the_identity`: same bytes, for
     `nearest`, and to 1e-6 for `linear` and `cubic`.
@@ -91,14 +113,15 @@
 
 - **Change.**
   - `medh5.transforms.resample(path, image_ids, *, onto=None, spacing=None,
-    interpolation="linear", fill=0, dtype=None, out=None, annotations=True) ->
-    ResampleReport`. Exactly one of `onto` and `spacing` is given. `out=None`
+    grid_id=None, suffix=None, interpolation="linear", fill=0, dtype=None,
+    out=None, annotations=True) -> ResampleReport`. Exactly one of `onto` and
+    `spacing` is given, and `grid_id` with `spacing` only (required there). `out=None`
     amends `path` in place; otherwise the result is a new file, and an existing
     `out` is refused, as the converters refuse one.
   - `medh5 resample PATH --image ID [--image ID …] (--onto GRID | --spacing
-    SX,SY[,SZ]) [--interpolation linear|nearest|cubic] [--fill V] [--dtype T]
-    [-o OUT] [--no-annotations] [--json]`, in the native CLI with no Python
-    needed.
+    SX,SY[,SZ] --grid-id NEW) [--suffix S] [--interpolation
+    linear|nearest|cubic] [--fill V] [--dtype T] [-o OUT] [--no-annotations]
+    [--json]`, in the native CLI with no Python needed.
   - `ResampleReport` lists the objects written, the activity id, and the count
     of filled voxels.
 - **Tests.** The command and the function agree, by `content_id`. A usage
@@ -111,11 +134,27 @@
 
 - **Change.** With `annotations=True` (the default), every annotation on a
   resampled image's grid is carried to the target:
-  - **`mask`, in every encoding:** `nearest`, re-encoded by §7.6's selection
-    rule, with `class_ids` and `annotated_class_ids` unchanged (coverage is
-    never collapsed) and `derived_from = [source id]`. An `ignore_mask` or
-    `valid_mask` reference is resampled with it.
-  - **`probmap`:** `linear`, clipped to [0, 1].
+  - Every carried annotation keeps its `class_ids` and `annotated_class_ids`
+    (coverage is never collapsed), names its source in `derived_from`, and
+    takes an id as 10.1 says. An annotation shared by several selected images
+    on one grid is carried once.
+  - **`labelmap`, `layers`, `bitmask`, `mask`:** `nearest`, in the source's own
+    encoding (each layer or bitplane resampled as stored, so exclusivity within
+    a layer holds by construction). An `ignore_mask` reference is resampled
+    with it and repointed.
+  - **`instances`:** object by object, because `instance_ids` are the
+    longitudinal identity contract (§7.4) and a re-encoding by class would
+    merge two same-class objects. Each object's mask is resampled `nearest`
+    over the target voxels its mapped box touches; it keeps its
+    `instance_ids` entry, class and `scores`; its box is recomputed from the
+    resampled mask at voxel edges (§8.1). An object whose resampled mask is
+    empty is refused, naming its instance id, never dropped.
+  - **`probmap`:** `linear` only (cubic's negative weights would leave
+    [0, 1]), in the stored dtype, with `threshold` and the other attributes
+    kept. A convex combination keeps a `normalized` map summing to 1 within
+    §7.5's stored-precision bound, so `normalized` stays true, unless a target
+    voxel was filled: all-zero channels there sum to 0, so `normalized` is
+    written false and the report says why.
   - **World-space geometric annotations** in the same frame need nothing: they
     are not rewritten. Under a transform, points, keypoints and meshes are
     mapped exactly. A box is carried only when the transform keeps axes
@@ -128,6 +167,10 @@
     voxel centres (§8.1).
 - **Tests.**
   - `test_S7_a_resampled_mask_keeps_its_coverage`.
+  - `test_S7_4_resampled_instances_keep_their_ids`: two same-class objects stay
+    two, and a vanishing object is refused.
+  - `test_S7_5_a_normalized_probmap_stays_normalized_inside_the_source` and
+    `test_S7_5_a_filled_probmap_is_written_unnormalized`.
   - `test_S8_1_a_box_survives_a_spacing_change_at_its_edges`: the half-voxel
     shift.
   - `test_S8_a_rotated_box_is_refused_not_approximated`.

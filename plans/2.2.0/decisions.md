@@ -184,19 +184,27 @@ workstream first checks that the 2.1.0 pieces it builds on are on `main`
   path and the interpolation. Converters and loaders keep refusing to resample;
   their refusals name the command instead.
 - **Rules.**
-  - Grids are never invented. Without a transform path the command refuses,
-    as `transform_between` returns `None`; it never assumes alignment.
+  - Grids are never invented. Two grids are mapped by their affines only when
+    §3.3 rule 4 makes them comparable (a shared frame with another
+    `coord_system` or S, W917, is refused); otherwise through
+    `transform_between`, and without a path the command refuses. It never
+    assumes alignment. A new grid keeps the source's voxel edges, not its first
+    centre.
   - Images are interpolated linearly by default (`nearest` and `cubic` on
     request; cubic is the engine's SciPy-exact sampler) on stored values, so
     the rescale attributes carry over. Linear and cubic write `float32` unless
     a `dtype` is requested (rounded half to even, clipped). Only spatial axes
     are resampled, and only level 0 of a multiscale image.
   - Voxels whose source point falls outside the source extent take a fill value
-    (0 unless given), and a `valid_mask` annotation on the target grid marks the
-    rest (§4.4).
-  - Masks use `nearest`, and probmaps use `linear`. The result keeps the
-    source's `class_ids` and `annotated_class_ids`, is re-encoded by §7.6's
-    selection rule, and names its source in `derived_from`.
+    (0 unless given). The image's one `valid_mask` (§4.4) is the in-extent
+    region intersected with the source's own `valid_mask`, resampled.
+  - Every output gets a new id, the source's plus a suffix (`_on_<grid>` by
+    default); an id already in the file is refused before anything is written.
+  - Segmentations use `nearest`, in their own encoding; `instances` object by
+    object, keeping each `instance_id` (an object that vanishes is refused);
+    probmaps `linear`, keeping `normalized` only where no voxel was filled. All
+    keep the source's `class_ids` and `annotated_class_ids` and name it in
+    `derived_from`.
   - World-space geometric annotations stay as they are in the same frame. Under
     a transform, points, keypoints and meshes are mapped exactly. Boxes and
     contours are refused under any transform that does not keep them
