@@ -646,10 +646,10 @@ Draw a task from a cohort manifest: one subject per cohort `subject_id`, its
 entries as its sources, each pinned to what its file holds now, each subject
 in the partition the split gives it — or the claims its samples carry for
 `SET_ID`, each made against this cohort manifest. A k-fold split needs
-`--fold`: that fold is `val`, every other `train`. Refused: an entry the split
-does not place or places `unassigned`, a subject placed in two partitions, a
-claim made against another manifest, and an entry whose recorded
-`content_id` is not its file's.
+`--fold`: that fold is `val`, every other `train`. Refused: a split or a
+claim made from another cohort manifest, an entry the split does not place or
+places `unassigned`, a subject placed in two partitions, and an entry whose
+recorded `content_id` is not its file's.
 
 `--definition` supplies `task`, `policy`, `slots` and `target` (a manifest
 holding them will do); `--id`, `--version`, `--namespace` and `--description`

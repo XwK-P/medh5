@@ -3,10 +3,10 @@
 //!
 //! The cohort says which samples there are and whose; the split, or the
 //! claims its samples carry, says where each subject goes.  Nothing is
-//! guessed: an entry the split does not place, or places `unassigned`, a
-//! subject placed in two partitions, a claim made against another manifest
-//! and an entry whose recorded `content_id` is not its file's are refused,
-//! naming what was found.
+//! guessed: a split or a claim made from another manifest, an entry the
+//! split does not place or places `unassigned`, a subject placed in two
+//! partitions and an entry whose recorded `content_id` is not its file's are
+//! refused, naming what was found.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -201,6 +201,18 @@ impl<'a> Placer<'a> {
                         )));
                     }
                     _ => {}
+                }
+                // A split of another cohort placed what it still names and
+                // carried its partitions into a task of this one.
+                let sha256 = cohort.sha256();
+                if split.manifest_sha256 != sha256 {
+                    return Err(Error::invalid(format!(
+                        "split {} was made from another cohort manifest (digest {}, this one's is {}): re-split this \
+                         manifest, or pass the one the split was made from",
+                        repr_str(&split.set_id),
+                        &split.manifest_sha256[..12.min(split.manifest_sha256.len())],
+                        &sha256[..12]
+                    )));
                 }
                 let leaks = split.leaks();
                 if !leaks.is_empty() {

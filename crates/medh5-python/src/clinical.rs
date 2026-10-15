@@ -396,15 +396,23 @@ fn task_from_cohort<'py>(
 }
 
 /// Write the manifest as the engine writes it, refusing an output that is
-/// one of its sources; `base` resolves relative sources (else the output's
-/// directory).
+/// one of its sources; `base` resolves relative sources (else both the
+/// working directory and the output's directory).
 #[pyfunction]
 #[pyo3(signature = (doc, path, base=None))]
 fn task_save(py: Python<'_>, doc: &Bound<'_, PyAny>, path: PathBuf, base: Option<PathBuf>) -> R<()> {
     let m = manifest(doc)?;
     py.detach(move || -> medh5::Result<()> {
-        let base = base.or_else(|| path.parent().map(Path::to_path_buf));
-        m.check_output(&path, &SourceAccess::new(base.as_deref()))?;
+        // Without a base, a source resolves against the working directory
+        // now and against the output's directory once the manifest is loaded
+        // from there: neither may be the output.
+        let bases: Vec<Option<&Path>> = match &base {
+            Some(base) => vec![Some(base.as_path())],
+            None => vec![None, path.parent()],
+        };
+        for base in bases {
+            m.check_output(&path, &SourceAccess::new(base))?;
+        }
         m.save(&path)
     })?;
     Ok(())

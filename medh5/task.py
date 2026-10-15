@@ -573,10 +573,10 @@ class TaskManifest:
         ``split`` places the subjects: a :class:`~medh5.dataset.Split` of
         this cohort (a k-fold one needs ``fold``, which becomes ``val`` and
         every other fold ``train``), or the ``set_id`` of the claims its
-        samples carry, each made against this manifest.  Refused: an entry
-        the split does not place or places ``unassigned``, a subject placed
-        in two partitions, a claim made against another manifest, and an
-        entry whose recorded ``content_id`` is not its file's.
+        samples carry.  Refused: a split or a claim made from another
+        manifest, an entry the split does not place or places
+        ``unassigned``, a subject placed in two partitions, and an entry
+        whose recorded ``content_id`` is not its file's.
 
         Source URIs are relative to ``base`` --- the directory the manifest
         will be saved in --- where they lie beneath it, else absolute.  The
@@ -672,12 +672,13 @@ class TaskManifest:
         taken += [s.source_id for s in sources if not s._derived]
         placed = []
         for source in sources:
-            if source._derived and source.source_id in taken:
+            derived = source._derived
+            if derived and source.source_id in taken:
                 wider = _core.source_default_id(
                     source.uri, source.sample_key, tuple(taken)
                 )
                 source = replace(source, source_id=wider)
-            if source._derived:
+            if derived:
                 taken.append(source.source_id)
             placed.append(source)
         entry: dict[str, Any] = {

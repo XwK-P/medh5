@@ -204,6 +204,23 @@ class TestManifest:
                 unsaved.save(out)
         assert source.read_bytes() == before
 
+    def test_S3_3_save_without_a_base_guards_the_working_directory(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Without a base, a source resolves against the working directory;
+        the guard looked only beside the output, so ``save("data/p.medh5")``
+        replaced the source ``data/p.medh5`` it pinned."""
+        (tmp_path / "data").mkdir()
+        source = tmp_path / "data" / "p.medh5"
+        History.write(source, subject_id="P-01")
+        monkeypatch.chdir(tmp_path)
+        task = TaskManifest.new("t", "1", identity_namespace="n")
+        task.add_subject("P-01", [SourceRef.pin(source, uri="data/p.medh5")])
+        before = source.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="a source of subject 'P-01'"):
+            task.save(Path("data") / "p.medh5")
+        assert source.read_bytes() == before
+
     def test_S3_3_both_frontends_reconcile_alike(self, tmp_path: Path):
         """The reconcile loop was written twice: the binding kept the declared
         fingerprint the command line dropped.  Both are now the engine's."""
@@ -328,6 +345,17 @@ class TestManifest:
             "n" * 128,
             "n" * 126 + "@2",
         ]
+
+    def test_S2_every_widened_id_is_taken(self):
+        """A widened id was not added to those taken: the third source
+        sharing a derived id was widened to the second's, T204 again."""
+        task = TaskManifest.new("t", "1", identity_namespace="n")
+        pin = "sha256:" + "0" * 64
+        exts = ("medh5", "h5", "hdf5")
+        task.add_subject("P-09", [SourceRef(f"site-a/P-01.{e}", pin) for e in exts])
+        ids = [s.source_id for s in task.subjects[-1].sources]
+        assert ids == ["site-a_P-01", "site-a_P-01@2", "site-a_P-01@3"]
+        assert task.validate() == []
 
     def test_S2_an_explicit_colliding_id_is_still_T204(self, setup):
         task, _ = setup
@@ -3083,6 +3111,14 @@ class TestFromCohort:
             self.build(fewer, "claimed", root)
         with pytest.raises(MEDH5ValidationError, match="has no partition"):
             self.build(claimed, "another-set", root)
+
+    def test_S3_3_a_split_of_another_cohort_is_refused(self, scanned):
+        manifest, root = scanned
+        places = {e.subject_id: ("train", None) for e in manifest}
+        split = self.split_of(manifest, places)
+        fewer = manifest.filter(lambda e: e.subject_id != "P-04")
+        with pytest.raises(MEDH5ValidationError, match="another cohort manifest"):
+            self.build(fewer, split, root)
 
     def test_S3_3_a_subject_in_two_partitions_is_refused(self, scanned):
         from medh5.dataset import Assignment, scan
