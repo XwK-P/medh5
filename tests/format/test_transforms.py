@@ -31,7 +31,7 @@ from medh5.transforms import (
     target_registration_error,
 )
 from medh5.validate import validate_file
-from tests.helpers import ROOT, encode_attr
+from tests.helpers import ROOT, attested_as_written, encode_attr
 from tests.kits import Flat
 
 SHAPE = (12, 16, 16)
@@ -1296,6 +1296,7 @@ class TestUnits:
         path = self._pair(tmp_path / "old.medh5")
         with h5py.File(path, "r+") as handle:
             handle["transforms/t"].attrs["units"] = encode_attr("m")
+        attested_as_written(path)
         with pytest.raises(MEDH5ValidationError) as exc, medh5.amend(path) as w:
             w.extra("note", {"amended": True})
         assert exc.value.code == "E506"

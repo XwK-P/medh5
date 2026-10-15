@@ -1134,6 +1134,32 @@ class TestFixAndScrub:
         assert code == EXIT_OK
         assert "nothing to fix" in out.out
 
+    def test_S2_1_fix_names_the_repair_for_an_unknown_algorithm(
+        self, capsys, sample_path
+    ):
+        """A file declaring a `digest_algo` §2.1 does not permit cannot be
+        diagnosed; the refusal names the one repair, which restamps it in
+        sha256 and records the change."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle.attrs["digest_algo"] = "blake3"
+        before = sample_path.read_bytes()
+        code, out = run(capsys, "fix", str(sample_path))
+        assert code == EXIT_ERROR
+        assert "E703" in out.err and "'blake3'" in out.err
+        assert "medh5 fix --rewrite-digests --reason" in out.err
+        assert sample_path.read_bytes() == before
+        code, out = run(
+            capsys,
+            "fix",
+            str(sample_path),
+            "--rewrite-digests",
+            "--reason",
+            "imported from a blake3 tool",
+        )
+        assert code == EXIT_OK, out.err
+        assert "'blake3'" in out.out and "sha256" in out.out
+        assert run(capsys, "validate", str(sample_path), "--level", "integrity")[0] == 0
+
     def test_fix_refuses_to_restamp_without_a_reason(self, capsys, sample_path):
         before = sample_path.read_bytes()
         code, out = run(capsys, "fix", str(sample_path), "--rewrite-digests")

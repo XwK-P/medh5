@@ -138,6 +138,16 @@ fact that the tool did not verify the content it just re-attested. `--by` names
 who made the change, in the same record. Only the restamp records them, so
 `--reason` or `--by` without `--rewrite-digests` is a usage error.
 
+It is also the one amendment of a file whose attestation broke. Every other
+command that amends a file (`fix` without it, `scrub --apply`, a split claim,
+`clinical augment` and `strip`, `seg`) refuses one whose `content_id` no longer
+recomputes (`E702`) or that holds a digest, or declares a `digest_algo`, it
+cannot read (`E703`), and names this repair. A file declaring an algorithm
+§2.1 does not permit is restamped in `sha256`, and the activity's parameters
+record the change (`"digest_algo": {"from": "blake3", "to": "sha256"}`).
+Without `--rewrite-digests`, such a file is diagnosed as `E703`, naming the
+repair.
+
 ## Longitudinal
 
 ### `medh5 timeline`
