@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ndarray::ArrayD;
-use numpy::{PyUntypedArray, PyUntypedArrayMethods};
+use numpy::{PyArrayDescrMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFrozenSet, PyList, PyString, PyTuple};
@@ -41,6 +41,15 @@ pub fn int_of(obj: &Bound<'_, PyAny>) -> PyResult<i64> {
 }
 
 pub fn ints_of(obj: &Bound<'_, PyAny>) -> PyResult<Vec<i64>> {
+    // A 1-D NumPy array of integers that fit `i64` converts as an array: no
+    // Python int per element, and a large copy runs without the GIL.
+    if let Ok(array) = obj.cast::<PyUntypedArray>() {
+        let dtype = array.dtype();
+        let fits = dtype.kind() == b'i' || (dtype.kind() == b'u' && dtype.itemsize() < 8);
+        if fits && array.ndim() == 1 {
+            return i64_vec(obj);
+        }
+    }
     let items = if obj.hasattr("tolist")? { obj.call_method0("tolist")? } else { obj.clone() };
     if items.is_instance_of::<PyString>() {
         return Err(PyTypeError::new_err("class ids are integers, not a string"));

@@ -30,8 +30,10 @@ from medh5.curation.agreement import dice, iou
 from medh5.transforms import refuse_outside
 
 
-def watched(call: Callable[[], Any]) -> tuple[float, float]:
-    """The call's duration and the longest another thread went unscheduled."""
+def watched(call: Callable[[], Any]) -> tuple[float, float, float]:
+    """The call's duration, the longest another thread went unscheduled during
+    it, and the longest it went unscheduled before it, with nothing running:
+    the ticker's own jitter, which a slow timer (macOS) makes milliseconds."""
     stamps: list[float] = []
     done = threading.Event()
 
@@ -43,23 +45,29 @@ def watched(call: Callable[[], Any]) -> tuple[float, float]:
     ticker = threading.Thread(target=tick)
     ticker.start()
     try:
-        time.sleep(0.01)
+        time.sleep(0.02)
         t0 = time.perf_counter()
         call()
         t1 = time.perf_counter()
     finally:
         done.set()
         ticker.join()
+    before = [t for t in stamps if t < t0]
     inside = [t for t in stamps if t0 < t < t1]
-    return t1 - t0, float(np.diff([t0, *inside, t1]).max())
+    idle = float(np.diff([*before, t0]).max()) if before else 0.0
+    return t1 - t0, float(np.diff([t0, *inside, t1]).max()), idle
 
 
 def released(call: Callable[[], Any], share: float = 0.25) -> None:
-    """Assert no other thread waited *share* of the call or longer, taking
-    the best of three runs: one scheduler hiccup is not the GIL."""
+    """Assert no other thread waited *share* of the call or longer, beyond the
+    ticker's own jitter, taking the best of three runs: one scheduler hiccup
+    is not the GIL.  A call holding the GIL throughout still fails, since the
+    calls here run many times longer than that jitter."""
     runs = [watched(call) for _ in range(3)]
-    took, longest = min(runs, key=lambda run: run[1] / run[0])
-    assert longest < share * took, f"no tick for {longest:.3f} of {took:.3f} s"
+    took, longest, idle = min(runs, key=lambda run: (run[1] - run[2]) / run[0])
+    assert longest < share * took + idle, (
+        f"no tick for {longest:.3f} of {took:.3f} s (idle jitter {idle:.3f} s)"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -129,11 +137,16 @@ class TestMasks:
                 w.add_image("CT", ct, grid="g", modality="CT")
                 w.add_segmentation("seg", grid="g", masks={1: mask}, encoding="bitmask")
 
-        took, longest = watched(write)
+        # The better of two writes: one scheduler hiccup is not the GIL.
+        took, longest, idle = min(
+            (watched(write) for _ in range(2)), key=lambda r: r[1] - r[2]
+        )
         start = time.perf_counter()
         np.ascontiguousarray(mask)
         copy = time.perf_counter() - start
-        assert longest < max(copy / 2, 0.02), f"no tick for {longest:.3f} of {took:.3f}"
+        assert longest < max(copy / 2, 0.02) + idle, (
+            f"no tick for {longest:.3f} of {took:.3f}"
+        )
         with medh5.open(path) as s:
             assert np.array_equal(s.annotations["seg"].dense(), mask[np.newaxis])
 
@@ -158,6 +171,8 @@ class TestGeometric:
         class_ids = np.ones(rows, np.int64)
         released(lambda: encode_boxes(boxes, class_ids))
         released(lambda: encode_points(boxes[:, :, 0]))
+        # The class ids too: an integer array is not walked as Python ints.
+        released(lambda: encode_points(boxes[:, :, 0], class_ids=class_ids))
 
     def test_refuse_outside_releases_the_gil(self):
         inside = np.ones(40_000_000, dtype=bool)
