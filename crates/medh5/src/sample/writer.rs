@@ -190,6 +190,9 @@ pub struct SampleWriter {
     /// The algorithm the commit digests with: an amended file's own, so an
     /// amendment never mixes two (§13.1).
     digest_algo: String,
+    /// The `created` the commit writes in place of now: the conformance
+    /// corpus pins it, so a suite built twice is the same bytes.
+    pub(crate) created: Option<String>,
     /// Every path but `meta` at which the amended file held its `/meta` by a
     /// hard link.  Until the commit re-links each to the document it writes,
     /// the file being built holds a copy of the old document there.
@@ -568,6 +571,7 @@ impl SampleWriter {
             file: Some(file),
             state: State::Open,
             digest_algo: crate::digest::DEFAULT_ALGO.to_string(),
+            created: None,
             meta_aliases: Vec::new(),
             grids: IndexMap::new(),
             images: IndexMap::new(),
@@ -588,7 +592,7 @@ impl SampleWriter {
         };
         let setup = (|| -> Result<()> {
             for name in ["grids", "images", "annotations"] {
-                writer.root()?.create_group(name)?;
+                ops::new_group(&writer.root()?, name)?;
             }
             if let Some((src, without)) = source {
                 writer.inherit(src, without)?;
@@ -777,7 +781,7 @@ impl SampleWriter {
         }
         for name in ["grids", "images", "annotations"] {
             if !ops::exists(&root, name) {
-                root.create_group(name)?;
+                ops::new_group(&root, name)?;
             }
         }
         self.grids = read_grids(&root)?.into_iter().collect();
@@ -1426,7 +1430,7 @@ impl SampleWriter {
         }
         values.extend(pyramid.attrs());
         let parent = self.group("images")?;
-        let group = parent.create_group(image_id)?;
+        let group = ops::new_group(&parent, image_id)?;
         let written = levels
             .iter()
             .zip(&layouts)
@@ -1833,7 +1837,8 @@ impl SampleWriter {
         attrs::write(&root, "medh5_version", &AttrValue::Str(version))?;
         attrs::write(&root, "medh5_kind", &AttrValue::Str("sample".into()))?;
         attrs::write(&root, "medh5_profiles", &crate::annotations::header::list_attr(profiles))?;
-        attrs::write(&root, "created", &AttrValue::Str(utcnow()))?;
+        let created = self.created.clone().unwrap_or_else(utcnow);
+        attrs::write(&root, "created", &AttrValue::Str(created))?;
         attrs::write(&root, "generator", &AttrValue::Str(format!("medh5 {VERSION}")))?;
         attrs::write(&root, "digest_algo", &AttrValue::Str(algo.clone()))?;
         let stored = collect_digests(&root, &["index"])?;

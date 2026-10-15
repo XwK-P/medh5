@@ -180,7 +180,7 @@ fn submitted_codes(entry: &Value) -> (BTreeSet<String>, BTreeSet<String>) {
 }
 
 /// The case a submitted result is about, keyed by file name.
-fn submitted_name(entry: &Value) -> String {
+pub(super) fn submitted_name(entry: &Value) -> String {
     let raw = ["file", "path", "name"]
         .iter()
         .filter_map(|k| entry.get(*k))
@@ -194,15 +194,91 @@ fn strings_of(record: &Value, key: &str) -> Vec<String> {
     record.get(key).and_then(Value::as_array).map(|a| a.iter().map(py_str).collect()).unwrap_or_default()
 }
 
+/// What a score holds an implementation to: every case unless bounded.
+///
+/// An implementation of format 1.0 has no answer to a 1.1 case, and one
+/// written against the first revision of the code table (§15.2) none for a
+/// code a later revision allocated: unbounded, both fail cases they were
+/// never told about.  A case above either bound is not scored, and a
+/// submitted code of a later revision than `codes_revision` is ignored.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScoreOptions {
+    /// Score only the cases addressed to this format version or an earlier
+    /// one (`"1.0"`, `"1.1"`).
+    pub format_version: Option<String>,
+    /// Score only the cases whose codes this revision of the code table
+    /// holds.
+    pub codes_revision: Option<u32>,
+}
+
+impl ScoreOptions {
+    /// Bound the score by format version.
+    #[must_use]
+    pub fn format_version(mut self, version: &str) -> ScoreOptions {
+        self.format_version = Some(version.to_string());
+        self
+    }
+
+    /// Bound the score by code-table revision.
+    #[must_use]
+    pub fn codes_revision(mut self, revision: u32) -> ScoreOptions {
+        self.codes_revision = Some(revision);
+        self
+    }
+}
+
+/// The `since` and `revision` of every code, from the suite's own
+/// `codes.json` where it has one --- a suite published by a later medh5 holds
+/// codes this one does not --- and from this build's table otherwise.
+fn published_codes(root: &Path) -> HashMap<String, (String, u32)> {
+    let mut table: HashMap<String, (String, u32)> = codes::all()
+        .iter()
+        .map(|c| {
+            let since = codes::since(&c.code).unwrap_or("1.0").to_string();
+            (c.code.clone(), (since, codes::revision(&c.code).unwrap_or(1)))
+        })
+        .collect();
+    let published = fs::read_to_string(root.join("codes.json")).ok().and_then(|t| crate::json::loads(&t).ok());
+    for entry in published.iter().flat_map(|t| t.get("codes").and_then(Value::as_array)).flatten() {
+        let (Some(code), Some(since)) =
+            (entry.get("code").and_then(Value::as_str), entry.get("since").and_then(Value::as_str))
+        else {
+            continue;
+        };
+        let revision = entry.get("revision").and_then(Value::as_u64).map_or(1, |r| r as u32);
+        table.insert(code.to_string(), (since.to_string(), revision));
+    }
+    table
+}
+
 /// Score a foreign validator's results against the published expectations.
 ///
 /// A case with no submitted result is a failure, not a skip: silence about a
 /// file you were given is the same as failing to diagnose it.
 pub fn score(root: &Path, submitted: &[Value]) -> Result<Vec<CaseResult>> {
+    score_with(root, submitted, &ScoreOptions::default())
+}
+
+/// [`score`], bounded by `options`: the cases above a bound are left out of
+/// the results, and the codes of a later revision out of what was submitted.
+pub fn score_with(root: &Path, submitted: &[Value], options: &ScoreOptions) -> Result<Vec<CaseResult>> {
+    if let Some(version) = &options.format_version {
+        if super::version_key(version).is_none() {
+            return Err(Error::Value(format!(
+                "format version {} is not a version: give it as major.minor, such as 1.0",
+                crate::json::repr_str(version)
+            )));
+        }
+    }
     let manifest = load_manifest(root)?;
+    let table = published_codes(root);
     let by_file: HashMap<String, &Value> = submitted.iter().map(|e| (submitted_name(e), e)).collect();
     let mut results = Vec::new();
     for record in manifest.get("cases").and_then(Value::as_array).into_iter().flatten() {
+        if !within(record, options, &table) {
+            continue;
+        }
         let name = record.get("name").map(py_str).unwrap_or_default();
         let case = cases().iter().find(|c| c.name == name).cloned().unwrap_or_else(|| Case::from_record(record));
         let file = record.get("file").map(py_str).unwrap_or_default();
@@ -212,7 +288,12 @@ pub fn score(root: &Path, submitted: &[Value]) -> Result<Vec<CaseResult>> {
             results.push(result);
             continue;
         };
-        let (errors, warnings) = submitted_codes(entry);
+        let (mut errors, mut warnings) = submitted_codes(entry);
+        if let Some(bound) = options.codes_revision {
+            let later = |code: &String| table.get(code).is_some_and(|(_, revision)| *revision > bound);
+            errors.retain(|c| !later(c));
+            warnings.retain(|c| !later(c));
+        }
         // Against the published expectations, severity by severity.
         let (missing, unexpected) = super::differences(
             &strings_of(record, "expect_errors"),
@@ -227,6 +308,33 @@ pub fn score(root: &Path, submitted: &[Value]) -> Result<Vec<CaseResult>> {
         results.push(result);
     }
     Ok(results)
+}
+
+/// Whether a manifest record falls within the bounds of `options`.
+fn within(record: &Value, options: &ScoreOptions, table: &HashMap<String, (String, u32)>) -> bool {
+    let expected: Vec<String> =
+        strings_of(record, "expect_errors").into_iter().chain(strings_of(record, "expect_warnings")).collect();
+    if let Some(bound) = &options.format_version {
+        // The record's own statement, and for a suite published before
+        // records stated one, what its codes and clause say.
+        let version = match record.get("format_version").and_then(Value::as_str) {
+            Some(stated) => stated.to_string(),
+            None => {
+                let clause = record.get("clause").map(py_str).unwrap_or_default();
+                let floor = if clause.contains("(1.1)") { "1.1" } else { "1.0" };
+                super::latest_version(floor, expected.iter().filter_map(|c| table.get(c).map(|(s, _)| s.as_str())))
+            }
+        };
+        if super::version_key(&version) > super::version_key(bound) {
+            return false;
+        }
+    }
+    if let Some(bound) = options.codes_revision {
+        if expected.iter().any(|c| table.get(c).is_some_and(|(_, revision)| *revision > bound)) {
+            return false;
+        }
+    }
+    true
 }
 
 /// The `--json` summary of a run or a score.
@@ -321,6 +429,14 @@ nothing about fails too --- silence about a file you were handed is not a pass.
 
 Diagnostic *messages* are yours to write; only the codes are normative.
 
+**An implementation of an earlier version is scored on what it was told
+about.** Each case states its `format_version` (the latest version among the
+codes it expects; not always the one its file declares), and the manifest the
+`codes_revision` of the code table it was built against. `--format-version
+1.0` scores only the cases addressed to 1.0, and `--codes-revision 1` only
+those whose codes revision 1 holds, ignoring any later code you report; the
+cases left out are counted as skipped.
+
 ## Three things worth knowing before you start
 
 **Validate at the declared `level`, not deeper.** `structural` < `semantic` <
@@ -358,6 +474,26 @@ contract (`docs/spec/task-cache-1.md`), not the format. Resolve each source
 ```
 medh5 task validate companion/<fixture>.task.json --json
 medh5 task preflight companion/<fixture>.task.json --json
+```
+
+`companion/caches/` holds feature caches (`medh5.cache/1`) over the same
+samples: a valid cache of each level and one for each of `T401` to `T407`.
+Their entries in `companion/expected.json` have the level `cache`, and a
+`task` (relative to `companion/`) where validating them needs one. Resolve a
+cache's source `uri` against the task's directory when it names one, and
+against the cache's own directory otherwise:
+
+```
+medh5 cache validate companion/caches/<fixture>.medh5cache [--task companion/<task>] --json
+```
+
+Score what checking the fixtures reported: one JSON array of those reports,
+each naming its fixture by `file` (or `path`), with its `findings`, and its
+`ok` and `rows` where it has them. A fixture that states rows states every
+row, so a row you add fails it as one you leave out does:
+
+```
+medh5 conformance score . results.json --companion
 ```
 "#
     )

@@ -926,6 +926,26 @@ fn conformance() -> Command {
                 .about("score any implementation's results against a published suite")
                 .arg(positional("suite", "a directory written by `conformance publish`"))
                 .arg(positional("results", "JSON: [{file, errors, warnings}, ...]"))
+                .arg(opt(
+                    "format_version",
+                    "format-version",
+                    "score only the cases addressed to this format version or an earlier one, such as 1.0",
+                ))
+                .arg(
+                    opt(
+                        "codes_revision",
+                        "codes-revision",
+                        "score only the cases this revision of the code table covers, and ignore codes a later \
+                         one allocated",
+                    )
+                    .value_parser(clap::value_parser!(i64).range(1..=i64::from(u32::MAX))),
+                )
+                .arg(flag(
+                    "companion",
+                    "companion",
+                    "score the task-and-cache fixtures under companion/: RESULTS holds what `task validate`, `task \
+                     preflight` and `cache validate` reported with --json",
+                ))
                 .arg(json()),
         )
 }

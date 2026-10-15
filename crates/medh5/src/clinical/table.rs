@@ -160,14 +160,14 @@ pub fn write(root: &hdf5::Group, records: &ClinicalRecords, profile: &CodecProfi
     if ops::exists(root, GROUP) {
         return Err(Error::invalid(format!("{} already exists; it is replaced, never merged", repr_str(GROUP))));
     }
-    let group = root.create_group(GROUP)?;
+    let group = ops::new_group(root, GROUP)?;
     data::create_scalar_string(&group, DESCRIPTOR, &records.descriptor.dumps())?;
-    write_events(&group.create_group(EVENTS)?, &records.events, profile)?;
+    write_events(&ops::new_group(&group, EVENTS)?, &records.events, profile)?;
     if !records.documents.is_empty() {
-        write_documents(&group.create_group(DOCUMENTS)?, &records.documents, profile)?;
+        write_documents(&ops::new_group(&group, DOCUMENTS)?, &records.documents, profile)?;
     }
     if !records.links.is_empty() {
-        write_links(&group.create_group(LINKS)?, &records.links, profile)?;
+        write_links(&ops::new_group(&group, LINKS)?, &records.links, profile)?;
     }
     Ok(())
 }

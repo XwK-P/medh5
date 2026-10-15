@@ -171,7 +171,7 @@ impl GraphCopy {
             match ops::node_kind(src, &name) {
                 Some(NodeKind::Group) => {
                     let source = src.group(&name)?;
-                    let child = dst.create_group(&name)?;
+                    let child = ops::new_group(dst, &name)?;
                     for key in attrs::names(&source)? {
                         attrs::copy_raw(&source, &child, &key)?;
                     }
