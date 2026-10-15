@@ -334,9 +334,11 @@ fn dataset_default_ratios<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> 
     Ok(out)
 }
 
+/// `(split JSON, groups medh5.split/2 places elsewhere)`: the count only when
+/// `algorithm` is left out and there is no `previous` split, else `None`.
 #[pyfunction]
 #[pyo3(signature = (manifest, *, set_id="default".to_string(), group_by="group_id".to_string(), stratify_by=None,
-    ratios=None, k_folds=None, seed=0))]
+    ratios=None, k_folds=None, seed=0, algorithm=None, previous=None))]
 #[allow(clippy::too_many_arguments)]
 fn dataset_make_splits<'py>(
     py: Python<'py>,
@@ -347,7 +349,9 @@ fn dataset_make_splits<'py>(
     ratios: Option<&Bound<'py, PyAny>>,
     k_folds: Option<i64>,
     seed: i64,
-) -> R<Bound<'py, PyAny>> {
+    algorithm: Option<String>,
+    previous: Option<&Bound<'py, PyAny>>,
+) -> R<(Bound<'py, PyAny>, Option<usize>)> {
     let found = manifest_arg(manifest)?;
     let ratios = match ratios.filter(|r| !r.is_none()) {
         None => None,
@@ -360,13 +364,34 @@ fn dataset_make_splits<'py>(
             Some(map)
         }
     };
+    let previous = match previous.filter(|p| !p.is_none()) {
+        None => None,
+        Some(doc) => Some(split::SplitRecord::from_json(&py_to_json(doc)?)?),
+    };
+    let algorithm = algorithm.as_deref().map(split::SplitAlgorithm::parse).transpose()?;
     let options = split::SplitOptions { set_id, group_by, stratify_by, ratios, k_folds, seed };
-    Ok(json_to_py(py, &split::make_splits(&found, &options)?.to_json())?)
+    let request = split::SplitRequest::from(options).with_previous(previous);
+    let (record, moved) = split::make_splits_asked(&found, &request, algorithm)?;
+    Ok((json_to_py(py, &record.to_json())?, moved))
+}
+
+/// The groups `doc` places elsewhere than `other` does: `{group: (was, now)}`.
+#[pyfunction]
+fn dataset_split_moved_from<'py>(
+    py: Python<'py>,
+    doc: &Bound<'py, PyAny>,
+    other: &Bound<'py, PyAny>,
+) -> R<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    for (group, (was, now)) in split_arg(doc)?.moved_from(&split_arg(other)?) {
+        out.set_item(group, (was, now))?;
+    }
+    Ok(out)
 }
 
 #[pyfunction]
 fn dataset_split_json<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    Ok(json_to_py(py, &split_arg(doc)?.to_json())?)
+    Ok(json_to_py(py, &split::SplitRecord::from_json(&py_to_json(doc)?)?.to_json())?)
 }
 
 #[pyfunction]
@@ -437,7 +462,7 @@ fn dataset_write_claims(
 
 #[pyfunction]
 fn dataset_split_load<'py>(py: Python<'py>, path: PathBuf) -> R<Bound<'py, PyAny>> {
-    Ok(json_to_py(py, &split::load(&path)?.to_json())?)
+    Ok(json_to_py(py, &split::SplitRecord::load(&path)?.to_json())?)
 }
 
 // -- statistics ----------------------------------------------------------------------------------
@@ -467,6 +492,26 @@ fn raw_moments(m: &stats::Moments) -> RawMoments {
     (m.count, m.mean, m.m2, m.minimum, m.maximum, m.nonfinite)
 }
 
+/// The engine's `ClassStats` from a Python `ClassStats`' attributes.
+fn class_stats_of(v: &Bound<'_, PyAny>) -> PyResult<stats::ClassStats> {
+    Ok(stats::ClassStats {
+        class_id: v.getattr("class_id")?.extract()?,
+        key: match v.getattr("key") {
+            Ok(key) => key.extract()?,
+            Err(_) => None,
+        },
+        voxels: v.getattr("voxels")?.extract()?,
+        present_in: v.getattr("present_in")?.extract()?,
+        examined_in: v.getattr("examined_in")?.extract()?,
+    })
+}
+
+/// `ClassStats.to_json`: the engine's JSON for one class.
+#[pyfunction]
+fn dataset_class_stats_json<'py>(py: Python<'py>, s: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    Ok(json_to_py(py, &class_stats_of(s)?.to_json())?)
+}
+
 fn stats_of(obj: &Bound<'_, PyAny>) -> PyResult<stats::DatasetStats> {
     let mut images = IndexMap::new();
     for item in obj.getattr("images")?.call_method0("items")?.try_iter()? {
@@ -476,19 +521,7 @@ fn stats_of(obj: &Bound<'_, PyAny>) -> PyResult<stats::DatasetStats> {
     let mut classes = IndexMap::new();
     for item in obj.getattr("classes")?.call_method0("items")?.try_iter()? {
         let (k, v): (i64, Bound<'_, PyAny>) = item?.extract()?;
-        classes.insert(
-            k,
-            stats::ClassStats {
-                class_id: v.getattr("class_id")?.extract()?,
-                key: match v.getattr("key") {
-                    Ok(key) => key.extract()?,
-                    Err(_) => None,
-                },
-                voxels: v.getattr("voxels")?.extract()?,
-                present_in: v.getattr("present_in")?.extract()?,
-                examined_in: v.getattr("examined_in")?.extract()?,
-            },
-        );
+        classes.insert(k, class_stats_of(&v)?);
     }
     Ok(stats::DatasetStats {
         samples: obj.getattr("samples")?.extract()?,
@@ -717,6 +750,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(dataset_split_empty_folds, m)?,
         wrap_pyfunction!(dataset_split_underfilled, m)?,
         wrap_pyfunction!(dataset_split_leaks, m)?,
+        wrap_pyfunction!(dataset_split_moved_from, m)?,
         wrap_pyfunction!(dataset_write_claims, m)?,
         wrap_pyfunction!(dataset_split_load, m)?,
         wrap_pyfunction!(dataset_moments_update, m)?,
@@ -727,6 +761,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(dataset_stats_from_json, m)?,
         wrap_pyfunction!(dataset_stats_merge, m)?,
         wrap_pyfunction!(dataset_stats_json, m)?,
+        wrap_pyfunction!(dataset_class_stats_json, m)?,
         wrap_pyfunction!(dataset_stats_normalization, m)?,
         wrap_pyfunction!(dataset_stats_class_weights, m)?,
         wrap_pyfunction!(dataset_stats_for, m)?,
@@ -751,5 +786,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         codes.set_item(code, summary)?;
     }
     m.add("CHECK_CODES", codes)?;
+    let severity = PyDict::new(py);
+    for (code, base) in check::CHECK_SEVERITY {
+        severity.set_item(code, base)?;
+    }
+    m.add("CHECK_CODE_SEVERITY", severity)?;
     Ok(())
 }

@@ -1,8 +1,13 @@
-"""A file written whole: to a temporary beside it, renamed over it."""
+"""A file written whole: to a temporary beside it, renamed over it.
+
+`write_text` is the engine's replace (`_core.write_atomic`).
+`temporary_beside` is the Python copy the engine's replaced; it stays while
+`TaskManifest.save` and `write_nifti` still use it, and goes with the last
+of them.
+"""
 
 from __future__ import annotations
 
-import contextlib
 import os
 import secrets
 from pathlib import Path
@@ -29,13 +34,9 @@ def temporary_beside(target: Path) -> tuple[Path, int]:
 
 
 def write_text(target: Path, text: str) -> None:
-    """*text* as *target*'s content, through a temporary renamed over it: a
-    link at *target* is replaced, not written through."""
-    temporary, fd = temporary_beside(target)
-    try:
-        with open(fd, "w", encoding="utf-8") as out:
-            out.write(text)
-        os.replace(temporary, target)
-    finally:
-        with contextlib.suppress(OSError):
-            temporary.unlink(missing_ok=True)
+    """*text* as *target*'s content, as UTF-8 with its ``\n`` kept on every
+    platform, through the engine's replace (§14.4): a link at *target* is
+    kept and the file it names replaced, with that file's mode."""
+    from medh5 import _core
+
+    _core.write_atomic(target, text)

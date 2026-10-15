@@ -161,6 +161,22 @@ identical to standalone samples, so packing and unpacking are pure copies and
 every rule in the specification is written once, against "the sample root"
 (§2.2).
 
+### A split that grows without moving anyone (`medh5.split/2`)
+
+`medh5.split/1` dealt each group to whichever partition was furthest below its
+share, walking the strata round-robin. That meets the ratios, but a group's
+partition then depends on every group dealt before it: one group added to a
+cohort of 115 moved a median of 19 of the others, test subjects into training
+among them, and a model retrained on the re-split has trained on part of its
+old test set. `medh5.split/2` decides the counts first (largest remainder for
+the totals, a controlled rounding for each stratum's share of them) and only
+then which groups fill them, by hash rank within the stratum. A group's place
+depends on its stratum's counts and its own rank, so one new group moves one or
+two others; `previous=` moves none, because what a split promised is that a
+test subject stays one. /1 stays the 2.x default, with a warning only where
+the two disagree, because changing a deterministic split's answer under a
+minor release is exactly the leak it exists to prevent.
+
 ### Why not an existing format
 
 | Format | Why not, on its own | What medh5 takes from it |
@@ -182,6 +198,7 @@ honestly** — coverage, provenance, geometry and integrity.
 | Class-id width | **`uint16`** | The class-id width sets the dtype of every `labelmap` and `layers` volume — 1 or 2 bytes per voxel per layer on the hottest read path — and no clinical vocabulary surveyed approaches 65 534 classes. Instance ids are separately `uint32`/`uint64`, so the cap never limits object count. `wide_labels` is reserved for the day it does (§5.3, §16). |
 | Collections in 1.0 or later | **In 1.0** | Every rule is already written against "the sample root", so collections cost implementation rather than schema; deferring them would have left the small-sample regime without an answer. |
 | Run-length encoding | **Deferred, name reserved** | Its saving over `instances` is small once empty chunks are unallocated, and it costs O(1) region access and a second sparse code path. Converters decode COCO and DICOM SEG runs on the way in (§7.0, §16). |
+| Annotation pyramids | **Withdrawn in 2.1, names reserved** | §4.3 once let a voxel annotation be "pyramided identically" and defined nothing else, and nothing wrote, read or validated one. A later minor that defines them must say which voxel `nearest` keeps under an even factor, what `max` means over class ids, how coverage and the ignore region downsample, and whether levels are digested and indexed. Until then the sampling index's occupancy planes are the coarse per-class map (§4.3, §14.3, §16). |
 | Inline label-set limit | **Inline required up to 4096 classes** | A 500-class set is roughly 120 KB of JSON in `/meta` — affordable for a file that is otherwise images; beyond 4096 classes the `ref` form is the right answer anyway (§5.1). |
 | Ontology codes | **Recommended, not required** | Requiring them would bar legitimate research vocabularies from `seg` without improving the data. Vocabulary discipline is a cohort policy; `W912` reports what is missing (§5.2). |
 | Default codec | **`balanced`** | Writes happen once and reads do not; `balanced` costs little to write and is defensible for a file of unknown lifetime. `training` is one `recompress` away, and moving between profiles invalidates no digest (§14.2). |

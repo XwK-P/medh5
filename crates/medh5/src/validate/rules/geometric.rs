@@ -11,6 +11,7 @@ use crate::geometry::affine::is_proper_rotation;
 use crate::h5::attrs;
 use crate::h5::ops::{self, Node};
 use crate::json::{repr_int_list, repr_str};
+use crate::labels::{ClassKey, LabelSet};
 use crate::validate::Diagnostic;
 use crate::Result;
 
@@ -349,4 +350,100 @@ pub(super) fn check_classification(
         }
     }
     Ok(out)
+}
+
+/// Semantic: under `closure = "implicit"`, a class asserted absent where an
+/// `is_a` descendant is asserted present, in one scope unit (§5.4, §9, W916).
+///
+/// Readers answer the class positive (`state()`) while its stored value says
+/// otherwise.  Not for a class examined and not asserted --- §9's pattern ---
+/// nor for a soft value above 0 below its descendant's, and not without a
+/// label set to read the hierarchy from (one with a cycle or an unknown
+/// parent, E304 or E306, does not parse).
+pub fn check_implicit_closure(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
+    let mut out = Vec::new();
+    let Some(labels) = ctx.document.as_ref().and_then(|d| d.label_set.as_ref()) else { return Ok(out) };
+    for (name, group) in ctx.children("annotations")? {
+        let a = loc(&group);
+        if str_attr(a, "kind")?.as_deref() != Some("classification")
+            || str_attr(a, "closure")?.as_deref() != Some("implicit")
+        {
+            continue;
+        }
+        let (Some(cds), Some(vds)) = (sub_dataset(&group, "class_ids"), sub_dataset(&group, "values")) else {
+            continue;
+        };
+        let classes: Vec<i64> = read_i64(&cds)?.iter().copied().collect();
+        let values: Vec<f64> = read_f64(&vds)?.iter().copied().collect();
+        let units: Option<Vec<i64>> = match sub_dataset(&group, "scope_ids") {
+            Some(ds) => Some(read_i64(&ds)?.iter().copied().collect()),
+            None => None,
+        };
+        // Columns that disagree in length are E404's, not this rule's.
+        if values.len() != classes.len() || units.as_ref().is_some_and(|u| u.len() != classes.len()) {
+            continue;
+        }
+        let found = contradictions(labels, &classes, &values, units.as_deref())?;
+        let Some(first) = found.first() else { continue };
+        let more = match found.len() {
+            1 => String::new(),
+            n => format!(" ({} more such pair(s))", n - 1),
+        };
+        let unit = match first.unit {
+            Some(u) => format!("in scope unit {u}"),
+            None => "in the annotation".into(),
+        };
+        out.push(ctx.err(
+            "W916",
+            format!("/annotations/{name}"),
+            format!(
+                "class {} ({}) is asserted negative ({}) {unit}, where its `is_a` descendant {} ({}) is asserted \
+                 positive: under closure='implicit' readers answer it positive (§5.4, §9){more}",
+                repr_str(&class_key(labels, first.ancestor)),
+                first.ancestor,
+                crate::json::py_float(first.value),
+                repr_str(&class_key(labels, first.descendant)),
+                first.descendant,
+            ),
+        ));
+    }
+    Ok(out)
+}
+
+/// One class asserted at or below 0 under a descendant asserted above it.
+struct Contradiction {
+    unit: Option<i64>,
+    ancestor: i64,
+    value: f64,
+    descendant: i64,
+}
+
+/// Every [`Contradiction`], by scope unit and then row order.
+fn contradictions(
+    labels: &LabelSet,
+    classes: &[i64],
+    values: &[f64],
+    units: Option<&[i64]>,
+) -> Result<Vec<Contradiction>> {
+    let mut by_unit: BTreeMap<Option<i64>, Vec<(i64, f64)>> = BTreeMap::new();
+    for (i, (c, v)) in classes.iter().zip(values).enumerate() {
+        by_unit.entry(units.map(|u| u[i])).or_default().push((*c, *v));
+    }
+    let mut out = Vec::new();
+    for (unit, rows) in by_unit {
+        for &(ancestor, value) in rows.iter().filter(|(_, v)| *v <= 0.0) {
+            for &(descendant, _) in rows.iter().filter(|(_, v)| *v > 0.0) {
+                if labels.contains_id(descendant) && labels.ancestors(&ClassKey::Id(descendant))?.contains(&ancestor) {
+                    out.push(Contradiction { unit, ancestor, value, descendant });
+                    break;
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A class's key in the label set, or its id when the set does not hold it.
+fn class_key(labels: &LabelSet, id: i64) -> String {
+    labels.by_id(id).map_or_else(|| id.to_string(), |c| c.key.clone())
 }

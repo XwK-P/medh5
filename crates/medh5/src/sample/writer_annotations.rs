@@ -492,6 +492,7 @@ impl SampleWriter {
         codec: Option<&str>,
     ) -> Result<hdf5::Group> {
         validate_id(ann_id, "annotation id")?;
+        header.refuse_reserved_attributes()?;
         let node = self.root()?.group("annotations")?;
         if ops::exists(&node, ann_id) {
             return Err(Error::invalid(format!("annotation {} already exists", repr_str(ann_id))));

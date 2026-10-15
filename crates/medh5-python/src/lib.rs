@@ -24,6 +24,7 @@ pub mod dataset;
 mod deprecation;
 pub mod document;
 pub mod errors;
+pub mod files;
 pub mod geometry;
 pub mod integrity;
 pub mod io;
@@ -74,5 +75,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     io::register(m)?;
     clinical::register(m)?;
     preflight::register(m)?;
+    files::register(m)?;
     Ok(())
 }

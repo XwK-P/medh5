@@ -357,15 +357,12 @@ def _finish(report: ConversionReport, args: Any) -> int:
 
 
 def _write_report(path: Path, text: str) -> None:
-    """*text* as *path*, through a rename: a link at *path* is replaced
-    rather than written through to the file it names.  An error names
+    """*text* as *path*, through the engine's replace (§14.4): a link at
+    *path* is kept and the file it names replaced, and an error names
     *path*, not the temporary beside it."""
     from medh5._files import write_text
 
-    try:
-        write_text(path, text)
-    except OSError as exc:
-        raise OSError(exc.errno, exc.strerror, os.fspath(path)) from None
+    write_text(path, text)
 
 
 def _from_nifti(args: Any) -> int:

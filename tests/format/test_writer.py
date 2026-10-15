@@ -323,6 +323,35 @@ class TestImageAndGridEdits:
             assert group.attrs["kind"] in ("mask", b"mask")
 
 
+class TestReservedAnnotationAttributes:
+    """§4.3, §16: voxel annotations are not pyramided in 1.x, and the
+    attributes a pyramid would need are reserved on an annotation."""
+
+    @pytest.mark.parametrize(
+        "name", ["levels", "downsample_factors", "downsample_method", "grid_levels"]
+    )
+    def test_S16_annotation_pyramid_attributes_are_reserved(
+        self, tmp_path: Path, name: str
+    ):
+        """The writer emits none of them, and refuses to carry one a stored
+        header holds into a rewrite of the annotation."""
+        path = tmp_path / "s.medh5"
+        with Flat.open_writer(path) as w:
+            w.add_segmentation(
+                "s", grid="g", masks={3: Flat.mask()}, encoding="bitmask"
+            )
+        with h5py.File(path, "r") as handle:
+            assert not set(handle["annotations/s"].attrs) & {name}
+        with h5py.File(path, "r+") as handle:
+            handle["annotations/s"].attrs[name] = np.array([1, 2], np.int64)
+        with pytest.raises(MEDH5ValidationError) as exc, medh5.amend(path) as w:
+            w.transcode_annotation("s", "layers")
+        assert exc.value.code == "E412"
+        assert name in str(exc.value)
+        with medh5.open(path) as sample:
+            assert sample.annotations["s"].kind == "bitmask"
+
+
 class TestWriterContracts:
     """What the writer is handed reaches the file, or is refused."""
 
