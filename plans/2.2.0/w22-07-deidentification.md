@@ -4,7 +4,7 @@
 |---|---|
 | Branch | `w22/deidentification` |
 | Size | L overall: PR 1 M, PR 2 M–L |
-| Lands after | W22-05 PR 1 |
+| Lands after | v2.1.0 released |
 | Builds on (2.1.0) | `ScrubOptions`, `scrub_each`, per-subject shifts, `--out` (W21-10 PRs 1–2); the clinical derivation and text attestation (W21-10 PR 3) |
 | Owns | `crates/medh5/src/curation/scrub.rs`, `medh5/curation/scrub.py`, `crates/medh5-cli/src/scrub.rs`, `docs/guides/deidentify.md` |
 | Decisions | E7, E8 |

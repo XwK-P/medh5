@@ -836,6 +836,10 @@ content and `content_id`, unless an item fixes it (D20).
 - **Why.** 3.10 reaches end of life in October 2026; dropping an interpreter in
   a minor without notice breaks installs, and an import-time warning breaks
   downstream suites run with `-W error`.
+- **Revised (2026-10-15, before the tag).** The maintainer kept Python 3.10 for
+  2.2.0 (2.2.0 E5). The announcement was withdrawn from the release pull
+  request's changelog, `README.md` and `docs/install.md`; the mechanism stays,
+  for when a dependency forces the floor up.
 
 ### D37 Wheels in 2.1.0
 

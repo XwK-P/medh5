@@ -99,13 +99,28 @@ workstream first checks that the 2.1.0 pieces it builds on are on `main`
   Turning it off without the audit risks data races in the engine's caches, the
   torch handle cache and the leases.
 
-## E5 Python 3.11 is the floor
+## E5 Python 3.10 stays supported
 
-- **Where.** `pyproject.toml`, `Cargo.toml` (pyo3 `abi3-py311`). W22-05.
-- **Decision.** As announced in 2.1.0 (D36): `requires-python >= 3.11`, the
-  wheel tag `cp311-abi3`, `test-min-deps` on 3.11 (NumPy 1.24 and torch 2.0 have
-  cp311 wheels). Coordinate with `abi3t` (E6), which changes the same feature
-  line.
+- **Where.** `pyproject.toml` and `Cargo.toml` (pyo3 `abi3-py310`) stay as they
+  are. No workstream.
+- **Decision.** 2.2.0 keeps `requires-python >= 3.10`, the `cp310-abi3` wheel,
+  3.10 in the test matrix and `test-min-deps` on 3.10. This reverses 2.1.0's D36,
+  which planned the 3.11 floor for 2.2.0; the maintainer decided on 2026-10-15,
+  before `v2.1.0` was tagged, and the announcement was withdrawn from the 2.1.0
+  release pull request (#65).
+- **When the floor does rise.** When medh5 itself can no longer be built or
+  tested on 3.10: PyO3, maturin or the runtime dependency (NumPy, from 1.24)
+  stops supporting it, or the CI runners stop providing it. NumPy 2.3 requiring
+  3.11 does not force it, since 1.24–2.2 still install. An optional extra that
+  drops 3.10 does not force it either: CI installs that extra on 3.11 and later
+  only, where its tests still run, so nothing is skipped without a job that
+  runs it. The floor then rises in a minor, announced one minor ahead
+  (Deprecated in the changelog, `docs/install.md`, `README.md`), the mechanism
+  D36 set up.
+- **Why.** Dropping 3.10 buys medh5 little: one `tomllib` workaround in
+  `test_packaging.py` and one CI row. No 2.2.0 workstream needs 3.11 (`abi3t`
+  needs 3.15, E6). Meanwhile Ubuntu 22.04's system Python is 3.10, in standard
+  support until April 2027, and it is common on hospital and lab servers.
 
 ## E6 `abi3t` when its dependencies exist
 
@@ -140,7 +155,9 @@ workstream first checks that the 2.1.0 pieces it builds on are on `main`
 | Clinical extension columns (FHIR `interpretation`, `referenceRange`; MEDS code modifiers) | a study first: can a 1.1 reader's projection drop an unknown *column* of a known table without misreading the rest (1.1 §4 closes the column set, E804)? If not, they need a new table, which is a new object a projection can drop. Candidate for 1.3. |
 | Annotation pyramids | reserved by 2.1.0 (D11); nobody has defined `nearest` under even factors or `max` over ids |
 | A `bspline` transform kind | ITK B-spline transforms are imported, when exact, as sampled displacement fields (W22-08); a kind of its own needs a demonstrated case the field cannot represent |
-| `rle`, `wide_labels`, image-free subjects | out of scope by design (2.1.0 README) |
+| `rle` | the kind name is reserved (1.0 §16), so a minor could add it as a new kind a 1.1 reader projects, as `polylines` is added here; but 1.0 §7 measured little saving over `instances` for the cost of O(1) region reads and a second sparse path. Needs a measured case `instances` serves badly. |
+| `wide_labels` | out of scope by design (2.1.0 README) |
+| Image-free subjects | not possible in a 1.x minor: E111 and E201 are core errors, and a 1.1 reader projecting a newer file still applies them, so an image-free file would read as invalid (§16). It needs format 2.0's subject-first core (design rationale, "A minor version, and an optional profile"). |
 
 ## E10 HDF5's own close-on-exec
 
@@ -148,3 +165,58 @@ workstream first checks that the 2.1.0 pieces it builds on are on `main`
   `O_CLOEXEC` (and `Wopen` with `_O_NOINHERIT`), adopt it (a `-sys` bump, with
   `SECURITY.md`'s row and advisories re-read) and keep the engine's mark as a
   no-op for safety. If not, nothing changes. W22-05.
+
+## E11 Resampling is a derivation, never a conversion
+
+- **Where.** No specification text: 1.0 already defines everything a resampled
+  object needs. §10.2 defines how to resample through a transform, §4.4's
+  `valid_mask` covers voxels that "resampling" leaves without data, §11.1's
+  activity type `resample` and `prov` attribute record it, and §6.2's
+  `derived_from` links a derived annotation to its source. W22-10.
+- **Decision.** A deliberate command, `medh5 resample` (with
+  `medh5.transforms.resample(...)` in Python, `transforms::resample` in the
+  engine), adds resampled objects to a sample. Each object is either moved
+  onto an existing grid of the sample, through `transform_between` when the
+  frames differ, or onto a new grid in the source's frame with a requested
+  spacing. The source
+  objects stay untouched, and every object it writes has a `prov` reference to
+  one `resample` activity naming the inputs, the target grid, the transform
+  path and the interpolation. Converters and loaders keep refusing to resample;
+  their refusals name the command instead.
+- **Rules.**
+  - Grids are never invented. Two grids are mapped by their affines only when
+    §3.3 rule 4 makes them comparable (a shared frame with another
+    `coord_system` or S, W917, is refused); otherwise through
+    `transform_between`, and without a path the command refuses. It never
+    assumes alignment. A new grid keeps the source's voxel edges, not its first
+    centre.
+  - Images are interpolated linearly by default (`nearest` and `cubic` on
+    request; cubic is the engine's SciPy-exact sampler) on stored values, so
+    the rescale attributes carry over. Linear and cubic write `float32` unless
+    a `dtype` is requested (rounded half to even, clipped). Only spatial axes
+    are resampled, and only level 0 of a multiscale image.
+  - Voxels whose source point falls outside the source extent take a fill value
+    (0 unless given). The image's one `valid_mask` (§4.4) is the in-extent
+    region intersected with the source's own `valid_mask`, resampled.
+  - Every output gets a new id, the source's plus a suffix (`_on_<grid>` by
+    default); an id already in the file is refused before anything is written.
+  - Segmentations use `nearest`, in their own encoding; `instances` object by
+    object, keeping each `instance_id` (an object that vanishes is refused);
+    probmaps `linear`, keeping `normalized` only where no voxel was filled. All
+    keep the source's `class_ids` and `annotated_class_ids` and name it in
+    `derived_from`.
+  - World-space geometric annotations stay as they are in the same frame. Under
+    a transform, points, keypoints and meshes are mapped exactly. Boxes and
+    contours are refused under any transform that does not keep them
+    axis-aligned or planar, never approximated. Index-space ones are
+    re-expressed through world coordinates, and refused under the same rule.
+- **Why.** The format exists so that resampling is not done silently at ingest
+  (1.0 §3's rationale: "makes resampling an explicit, provenance-tracked
+  activity"). An opt-in derivation that records itself keeps that promise.
+  Resampling inside a converter or a loader would not, because the choice of
+  filter and grid disappears into a training run. MONAI already resamples medh5
+  items correctly from their affine, so loaders gain nothing a pre-resampled
+  sample does not give them.
+- **No new code, no format change, no corpus change.** Refusals are
+  `MEDH5ValidationError`s with messages, as the converters' are. The output is
+  an ordinary 1.0 (or 1.1) sample, written at the version its content needs.

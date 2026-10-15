@@ -9,7 +9,7 @@ is to put there.
 | Release | Kind | Plan | Status |
 |---|---|---|---|
 | 2.1.0 | minor: features, errata, deprecations | [2.1.0/README.md](2.1.0/README.md) | planned |
-| 2.2.0 | minor: format 1.2, native converters, platforms | [2.2.0/README.md](2.2.0/README.md) | planned |
+| 2.2.0 | minor: format 1.2, native converters, platforms, resampling | [2.2.0/README.md](2.2.0/README.md) | planned |
 | 2.0.x | patch line, cut on demand | this file, [the 2.0.x line](#the-20x-line) | 2.0.2 released |
 
 ## How to use a plan
@@ -330,7 +330,8 @@ adds its line here when it adds the deprecation.
 | The engine functions with no caller deprecated by W21-06 are removed | 2.1.0 | W21-06 |
 | `h5`, `json`, `pyval` move under `medh5::__private`; `numeric` becomes `pub(crate)`; whether to wrap `hdf5::Group`/`Dataset` is decided | — | 3.0 design |
 
-Not in the ledger, because a minor does it: Python 3.10 support ends in 2.2.0
-(W22-05 PR 1), announced in 2.1.0 (D36). An interpreter past its end of life
-is dropped in a minor, after one release's notice; that is the only removal a
-2.x minor makes.
+Not in the ledger, because a minor does it: dropping an interpreter. One is
+dropped in a minor, after one minor's notice, once a dependency medh5 needs no
+longer supports it (2.2.0 E5); that is the only removal a 2.x minor makes.
+Python 3.10 stays supported in 2.2.0: 2.1.0 had planned to drop it there
+(D36), and the maintainer kept it before 2.1.0 was tagged.

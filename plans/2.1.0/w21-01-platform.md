@@ -233,6 +233,8 @@
   - D36: `docs/install.md`, `README.md` and a Deprecated fragment say 2.1.x is
     the last line to support Python 3.10; 2.2.0 requires 3.11. No runtime
     warning.
+    Withdrawn by the 2.1.0 release pull request (#65) when the maintainer kept
+    3.10 (D36's revision): do not recreate it.
 - **Tests.** In `test_docs_examples.py`: the documented `CARGO_PROFILE_RELEASE_*`
   values in both files equal `[profile.release]` in `Cargo.toml`.
 - **Changelog.** Documentation (the profile); Deprecated, area `platform` (3.10).
