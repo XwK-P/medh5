@@ -39,14 +39,21 @@ an id both sides use that their label sets give different meanings ("liver"
 in one, "spleen" in the other) is refused (C102, the code ``dataset check``
 gives the same clash in a cohort) rather than scored, and so is a class name
 the two resolve to different ids.  Where either side has no label set, an id is
-compared as a number.
+compared as a number.  Two vocabularies are compared by class key
+(``map_classes="key"``) or by an explicit map of classes, and each result's
+``b_class_ids`` says which class of ``b`` each one was compared with.
+
+An agreement's ``against`` names an annotation of the recording sample
+(§11.2): a comparison across two samples has none, and
+:meth:`~VoxelAgreement.to_record` records it only when ``against=`` names one
+(the other rater's annotation, copied in).
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -61,6 +68,14 @@ DEFAULT_IOU: float = _core.AGREEMENT_DEFAULT_IOU
 
 OBJECT_KINDS: tuple[str, ...] = _core.AGREEMENT_OBJECT_KINDS
 """Kinds whose objects carry an axis-aligned box that IoU can be taken over."""
+
+ClassMap = Literal["id", "key"] | Mapping[int | str, int | str]
+"""Which class of ``b`` each class of ``a`` is compared with: by id (one
+vocabulary), by key (two inline label sets), or an explicit one-to-one map."""
+
+MatchBy = Literal["auto", "iou", "instance_id"]
+"""How objects are paired: by ``instance_id`` within one sample where both
+sides share ids (``auto``), always by IoU, or by id (one sample only)."""
 
 
 def dice(a: npt.NDArray[np.bool_], b: npt.NDArray[np.bool_]) -> float | None:
@@ -95,8 +110,13 @@ class VoxelAgreement:
     skipped: tuple[str, ...] = ()
     """Classes not scored: absent from one side's coverage, or empty in both."""
     against: str | None = None
+    """``b``'s path where it is an annotation of ``a``'s sample; ``None``
+    across two samples."""
     class_ids: Mapping[str, int] = field(default_factory=dict)
     """``per_class`` key -> class id, which is what a record is keyed by."""
+    b_class_ids: Mapping[str, int] = field(default_factory=dict)
+    """Each compared class's key in ``a`` -> the class of ``b`` it was
+    compared with."""
 
     @property
     def value(self) -> float | None:
@@ -108,14 +128,16 @@ class VoxelAgreement:
         result: float | None = _core.agreement_voxel_value(self)
         return result
 
-    def to_record(self) -> Agreement:
+    def to_record(self, *, against: str | None = None) -> Agreement:
         """The :class:`Agreement` a ``quality`` record stores (§11.2).
 
         Keyed by class id, as the schema keys ``per_class``; refused when
         nothing was comparable, because 0 would record a disagreement nobody
-        measured.
+        measured.  ``against`` names the annotation of the recording sample
+        compared against; a comparison across two samples is refused without
+        it, since none of its paths names an annotation of this one.
         """
-        return _core.agreement_voxel_record(self)
+        return _core.agreement_voxel_record(self, against)
 
     def to_json(self) -> dict[str, Any]:
         """The report, which states an undefined comparison rather than refusing.
@@ -149,6 +171,9 @@ class InstanceAgreement:
     """``(instance_id, class in a, class in b)`` --- matched but classed apart."""
     skipped: tuple[str, ...] = ()
     """Classes whose objects were left out: not examined by both sides."""
+    b_class_ids: Mapping[str, int] = field(default_factory=dict)
+    """Each compared class's key in ``a`` -> the class of ``b`` it was
+    compared with."""
 
     @property
     def value(self) -> float | None:
@@ -167,14 +192,14 @@ class InstanceAgreement:
         result: float | None = _core.agreement_instance_mean_iou(self)
         return result
 
-    def to_record(self) -> Agreement:
+    def to_record(self, *, against: str | None = None) -> Agreement:
         """The :class:`Agreement` a ``quality`` record stores (§11.2).
 
         No ``per_class``: that map is keyed by class id, and the mean IoU this
         used to put there under the key ``mean_iou`` made every record fail the
-        schema.
+        schema.  ``against`` as :meth:`VoxelAgreement.to_record` takes it.
         """
-        return _core.agreement_instance_record(self)
+        return _core.agreement_instance_record(self, against)
 
     def to_json(self) -> dict[str, Any]:
         result: dict[str, Any] = _core.agreement_instance_json(self)
@@ -187,10 +212,17 @@ def compare_voxel(
     *,
     metric: str = "dice",
     classes: Sequence[int | str] | None = None,
+    map_classes: ClassMap = "id",
 ) -> VoxelAgreement:
-    """Per-class Dice or IoU between two voxel annotations on the same grid."""
+    """Per-class Dice or IoU between two voxel annotations on the same grid.
+
+    ``map_classes`` says which class of ``b`` each class of ``a`` is scored
+    against (:data:`ClassMap`); a class ``b`` lacks is skipped, never scored 0.
+    """
     return VoxelAgreement(
-        **_core.agreement_compare_voxel(a, b, metric=metric, classes=classes)
+        **_core.agreement_compare_voxel(
+            a, b, metric=metric, classes=classes, map_classes=map_classes
+        )
     )
 
 
@@ -200,6 +232,8 @@ def compare_instances(
     *,
     threshold: float = DEFAULT_IOU,
     classes: Sequence[int | str] | None = None,
+    map_classes: ClassMap = "id",
+    match_by: MatchBy = "auto",
 ) -> InstanceAgreement:
     """Object-level agreement between two instance-carrying annotations.
 
@@ -212,9 +246,19 @@ def compare_instances(
     The two must also share a coordinate system: the same grid for ``index``
     boxes, the same frame for ``world`` boxes.  Boxes on a 4 mm and a 1 mm grid
     compared in raw index units overlap where the anatomy does not.
+
+    ``match_by="instance_id"`` refuses two samples: an id names an object of
+    its own sample (§7.4).  ``match_by="iou"`` ignores ids the two share.
     """
     return InstanceAgreement(
-        **_core.agreement_compare_instances(a, b, threshold=threshold, classes=classes)
+        **_core.agreement_compare_instances(
+            a,
+            b,
+            threshold=threshold,
+            classes=classes,
+            map_classes=map_classes,
+            match_by=match_by,
+        )
     )
 
 
@@ -225,6 +269,8 @@ def compare(
     metric: str | None = None,
     threshold: float | None = None,
     classes: Sequence[int | str] | None = None,
+    map_classes: ClassMap = "id",
+    match_by: MatchBy = "auto",
 ) -> VoxelAgreement | InstanceAgreement:
     """Compare two annotations, choosing the comparison their kinds support.
 
@@ -234,7 +280,13 @@ def compare(
     refused rather than ignored, and so is a pair with no common comparison.
     """
     kind, fields = _core.agreement_compare(
-        a, b, metric=metric, threshold=threshold, classes=classes
+        a,
+        b,
+        metric=metric,
+        threshold=threshold,
+        classes=classes,
+        map_classes=map_classes,
+        match_by=match_by,
     )
     if kind == "voxel":
         return VoxelAgreement(**fields)
@@ -244,7 +296,9 @@ def compare(
 __all__ = [
     "DEFAULT_IOU",
     "OBJECT_KINDS",
+    "ClassMap",
     "InstanceAgreement",
+    "MatchBy",
     "VoxelAgreement",
     "box_iou",
     "compare",

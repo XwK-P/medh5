@@ -19,7 +19,7 @@ from medh5.curation.agreement import (
     iou,
 )
 from medh5.errors import MEDH5ValidationError
-from medh5.labels import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet, OntologyCode
 from medh5.validate import validate_file
 from tests.helpers import SHAPE, block, lesion, write_raters
 from tests.kits import Framed
@@ -547,6 +547,26 @@ class TestAcrossSamples:
             same = compare_voxel(first.annotations["seg"], second.annotations["seg"])
             assert same.value == 1.0
 
+    def test_S11_2_a_cross_sample_record_needs_against(self, tmp_path: Path):
+        """A record's `against` is a path of the recording sample: across two
+        samples it named the other file's annotation as though it were here."""
+        a = self._sample(tmp_path / "a.medh5")
+        b = self._sample(tmp_path / "b.medh5")
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            voxel = compare_voxel(sa.annotations["seg"], sb.annotations["seg"])
+            boxes = compare_instances(sa.annotations["boxes"], sb.annotations["boxes"])
+            for result in (voxel, boxes):
+                with pytest.raises(MEDH5ValidationError, match="against"):
+                    result.to_record()
+                with pytest.raises(MEDH5ValidationError, match="against"):
+                    result.to_record(against="/")
+                record = result.to_record(against="/annotations/reference")
+                assert record.against == "annotations/reference"
+        # Within one sample, `against` is the other annotation's own path.
+        with medh5.open(a) as s:
+            one = compare_voxel(s.annotations["seg"], s.annotations["seg"])
+            assert one.to_record().against == "annotations/seg"
+
 
 class TestWorldUnits:
     """World coordinates are numbers in their grid's units (§3.5) and are
@@ -668,10 +688,7 @@ class TestClassMeaningsAcrossFiles:
             # id only `b` uses is named by `b`'s label set.
             result = compare_voxel(sa.annotations["seg"], sb.annotations["seg"])
             assert result.value is None
-            assert result.skipped == (
-                "liver (not examined by both)",
-                "liver (not examined by both)",
-            )
+            assert result.skipped == ("liver (not examined by both)",)
 
     def test_C102_label_sets_that_agree_on_the_class_compare_it(self, tmp_path: Path):
         """A later version of the vocabulary that adds a class: the ids both
@@ -705,6 +722,145 @@ class TestClassMeaningsAcrossFiles:
                     sa.annotations["boxes"], other.annotations["boxes"]
                 )
                 assert found.value == pytest.approx(1.0)
+
+
+class TestClassesAcrossVocabularies:
+    """§11.2: two raters' files often number one vocabulary differently.
+    Compared by id, "liver" in one was scored against "spleen" in the other,
+    or refused with C102; a class map says which class of ``b`` each class
+    of ``a`` is scored against."""
+
+    @staticmethod
+    def _rater(
+        path: Path,
+        classes: list[LabelClass] | None,
+        found: int,
+        *,
+        reference: bool = False,
+    ) -> Path:
+        """Class *found* drawn at one place, as a mask and as a box."""
+        mask = np.zeros(Framed.SHAPE, bool)
+        mask[2:4, 2:5, 2:5] = True
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_grid(
+                "g", shape=Framed.SHAPE, spacing=(2.0, 1.0, 1.0), frame_uid="1.2.3.4"
+            )
+            w.add_image("CT", np.zeros(Framed.SHAPE, np.int16), grid="g", modality="CT")
+            if classes is not None:
+                labels = LabelSet("organs", version="1.0.0", classes=classes)
+                w.label_set(
+                    labels.as_ref("https://example.org/organs") if reference else labels
+                )
+            w.add_segmentation(
+                "seg", grid="g", masks={found: mask}, annotated_classes=[found]
+            )
+            w.add_boxes(
+                "boxes",
+                np.array([Framed.box(2, 4)], np.float32),
+                [found],
+                grid="g",
+                annotated_classes=[found],
+            )
+        return path
+
+    @staticmethod
+    def _organs(*keys: str) -> list[LabelClass]:
+        return [LabelClass(i, k, k.title()) for i, k in enumerate(keys, start=1)]
+
+    def test_S11_2_key_mapping_scores_liver_against_liver_across_vocabularies(
+        self, tmp_path: Path
+    ):
+        a = self._rater(tmp_path / "a.medh5", self._organs("liver", "spleen"), 1)
+        b = self._rater(tmp_path / "b.medh5", self._organs("spleen", "liver"), 2)
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            seg = (sa.annotations["seg"], sb.annotations["seg"])
+            with pytest.raises(MEDH5ValidationError) as caught:
+                compare_voxel(*seg, classes=["liver"])
+            assert caught.value.code == "C102"
+            voxel = compare_voxel(*seg, map_classes="key")
+            assert voxel.per_class == {"liver": 1.0}
+            assert voxel.b_class_ids == {"liver": 2}
+            assert voxel.skipped == ()
+            boxes = (sa.annotations["boxes"], sb.annotations["boxes"])
+            found = compare_instances(*boxes, map_classes="key")
+            assert found.value == pytest.approx(1.0)
+            assert found.b_class_ids == {"liver": 2}
+            kind = compare(*boxes, map_classes="key")
+            assert kind.value == pytest.approx(1.0)
+            # The same pairing, stated: a's liver is b's class 2.
+            explicit = compare_voxel(*seg, map_classes={"liver": 2})
+            assert explicit.per_class == {"liver": 1.0}
+
+    def test_S11_2_a_key_missing_from_b_is_skipped_not_zero(self, tmp_path: Path):
+        a = self._rater(tmp_path / "a.medh5", self._organs("liver", "spleen"), 2)
+        b = self._rater(tmp_path / "b.medh5", self._organs("liver"), 1)
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            result = compare_voxel(
+                sa.annotations["seg"], sb.annotations["seg"], map_classes="key"
+            )
+            assert result.value is None
+            assert result.per_class == {}
+            assert len(result.skipped) == 1
+            assert result.skipped[0].startswith("spleen (not in annotation 'seg'")
+            assert "b.medh5" in result.skipped[0]
+
+    def test_S11_2_one_key_with_two_codes_is_C102(self, tmp_path: Path):
+        def liver(code: str) -> list[LabelClass]:
+            return [
+                LabelClass(
+                    1, "liver", "Liver", codes=(OntologyCode("SNOMED-CT", code),)
+                )
+            ]
+
+        a = self._rater(tmp_path / "a.medh5", liver("10200004"), 1)
+        b = self._rater(tmp_path / "b.medh5", liver("181268008"), 1)
+        same = self._rater(tmp_path / "c.medh5", liver("10200004"), 1)
+        with medh5.open(a) as sa, medh5.open(b) as sb, medh5.open(same) as sc:
+            with pytest.raises(MEDH5ValidationError) as caught:
+                compare_voxel(
+                    sa.annotations["seg"], sb.annotations["seg"], map_classes="key"
+                )
+            assert caught.value.code == "C102"
+            assert "'liver'" in str(caught.value)
+            agreed = compare_voxel(
+                sa.annotations["seg"], sc.annotations["seg"], map_classes="key"
+            )
+            assert agreed.value == 1.0
+
+    def test_S11_2_an_explicit_map_must_be_injective(self, tmp_path: Path):
+        a = self._rater(tmp_path / "a.medh5", self._organs("liver", "spleen"), 1)
+        b = self._rater(tmp_path / "b.medh5", self._organs("organ"), 1)
+        with (
+            medh5.open(a) as sa,
+            medh5.open(b) as sb,
+            pytest.raises(MEDH5ValidationError, match="one to one"),
+        ):
+            compare_voxel(
+                sa.annotations["seg"],
+                sb.annotations["seg"],
+                map_classes={"liver": 1, "spleen": 1},
+            )
+
+    def test_S11_2_a_label_set_by_reference_refuses_key_mapping(self, tmp_path: Path):
+        organs = self._organs("liver", "spleen")
+        a = self._rater(tmp_path / "a.medh5", organs, 1)
+        b = self._rater(tmp_path / "b.medh5", organs, 1, reference=True)
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            seg = (sa.annotations["seg"], sb.annotations["seg"])
+            with pytest.raises(MEDH5ValidationError, match="label set by reference"):
+                compare_voxel(*seg, map_classes="key")
+            # By id, or by an explicit map, the reference is not read.
+            assert compare_voxel(*seg).value == 1.0
+            assert compare_voxel(*seg, map_classes={1: 1}).value == 1.0
+
+    def test_S11_2_skipped_names_each_class_once(self, tmp_path: Path):
+        """An id each side names differently was listed once per side."""
+        a = self._rater(tmp_path / "a.medh5", self._organs("liver", "spleen"), 1)
+        b = self._rater(tmp_path / "b.medh5", self._organs("spleen", "liver"), 2)
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            for name in ("seg", "boxes"):
+                result = compare(sa.annotations[name], sb.annotations[name])
+                assert len(result.skipped) == len(set(result.skipped))
 
 
 class TestInstanceIdsAreSampleScoped:
@@ -787,6 +943,74 @@ class TestInstanceIdsAreSampleScoped:
         assert main(["agree", str(path), "r1", "r2", "--json"]) == 0
         report = json.loads(capsys.readouterr().out)
         assert report["matched_by"] == "instance_id" and report["threshold"] is None
+
+    def test_S7_4_match_by_instance_id_refuses_two_samples(self, tmp_path: Path):
+        a = self._rater(tmp_path / "a.medh5", [(0, 1)], [1])
+        b = self._rater(tmp_path / "b.medh5", [(0, 1)], [1])
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            boxes = (sa.annotations["boxes"], sb.annotations["boxes"])
+            with pytest.raises(MEDH5ValidationError, match="its own sample"):
+                compare_instances(*boxes, match_by="instance_id")
+            assert compare_instances(*boxes, match_by="iou").matched_by == "iou"
+            with pytest.raises(ValueError, match="match_by"):
+                compare_instances(*boxes, match_by="name")
+
+    def test_S7_4_match_by_iou_ignores_shared_ids(self, tmp_path: Path):
+        """Within one sample the ids pair r1's second object with nothing;
+        matched by where they are, both objects pair."""
+        path = tmp_path / "one.medh5"
+        with Framed.writer(path) as w:
+            for name, ids in (("r1", [1, 2]), ("r2", [1, 3])):
+                w.add_boxes(
+                    name,
+                    np.array([Framed.box(0, 1), Framed.box(2, 3)], np.float32),
+                    ["c1", "c1"],
+                    grid="g",
+                    instance_ids=ids,
+                )
+        with medh5.open(path) as s:
+            boxes = (s.annotations["r1"], s.annotations["r2"])
+            assert compare_instances(*boxes).value == pytest.approx(0.5)
+            by_id = compare_instances(*boxes, match_by="instance_id")
+            assert by_id.matched_by == "instance_id"
+            assert by_id.value == pytest.approx(0.5)
+            by_place = compare_instances(*boxes, match_by="iou")
+            assert by_place.matched_by == "iou"
+            assert by_place.value == pytest.approx(1.0)
+            assert by_place.to_json()["threshold"] == pytest.approx(0.5)
+
+    def test_S11_2_the_command_line_maps_classes_and_pairs_by_place(
+        self, tmp_path: Path, capsys
+    ):
+        from medh5.cli import main
+
+        path = tmp_path / "one.medh5"
+        with Framed.writer(path) as w:
+            for name, label, ids in (("r1", "c1", [1, 2]), ("r2", "c2", [1, 3])):
+                w.add_boxes(
+                    name,
+                    np.array([Framed.box(0, 1), Framed.box(2, 3)], np.float32),
+                    [label, label],
+                    grid="g",
+                    instance_ids=ids,
+                )
+        args = ["agree", str(path), "r1", "r2", "--json", "--map-class", "c1=c2"]
+        assert main(args) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["matched_by"] == "instance_id"
+        assert report["value"] == pytest.approx(0.5)
+        assert main([*args, "--match-by", "iou"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["matched_by"] == "iou"
+        assert report["value"] == pytest.approx(1.0)
+        # Unmapped, c1 and c2 are two classes, each examined by one rater.
+        assert main(["agree", str(path), "r1", "r2", "--json"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["class_mismatches"] == [[1, 1, 2]]
+        assert report["skipped"] == [
+            "c1 (not examined by both)",
+            "c2 (not examined by both)",
+        ]
 
 
 class TestBoxesOfOneSpace:

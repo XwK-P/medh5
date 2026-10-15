@@ -540,11 +540,13 @@ medh5.Tracking.__len__	method	()
 medh5.Tracking.class_conflicts	method	()
 medh5.Tracking.coverage	property
 medh5.Tracking.get	method	(instance_id, default=None)
-medh5.Tracking.is_new	method	(instance_id)
+medh5.Tracking.is_new	method	(instance_id, *, located=False)
 medh5.Tracking.is_persistent	method	(instance_id)
-medh5.Tracking.is_resolved	method	(instance_id)
+medh5.Tracking.is_resolved	method	(instance_id, *, located=False)
 medh5.Tracking.items	method	()
 medh5.Tracking.keys	method	()
+medh5.Tracking.reason_at	method	(instance_id, timepoint)
+medh5.Tracking.reasons	method	(instance_id)
 medh5.Tracking.skipped	property
 medh5.Tracking.state_at	method	(instance_id, timepoint)
 medh5.Tracking.states	method	(instance_id)
@@ -2072,7 +2074,7 @@ medh5.collection.open_any	function	(path, *, key=None)
 medh5.collection.open_collection	function	(path)
 medh5.collection.pack	function	(sources, out, *, keys=None)
 medh5.collection.unpack	function	(path, outdir, *, keys=None, suffix='.medh5')
-medh5.compare_annotations	function	(a, b, *, metric=None, threshold=None, classes=None)
+medh5.compare_annotations	function	(a, b, *, metric=None, threshold=None, classes=None, map_classes='id', match_by='auto')
 medh5.conformance	module
 medh5.conformance.CASES	constant	tuple
 medh5.conformance.CHECKSUMS	constant	str
@@ -2181,8 +2183,9 @@ medh5.curation.Identity.sample_id	field
 medh5.curation.Identity.sex	field
 medh5.curation.Identity.subject_id	field
 medh5.curation.Identity.to_json	method	()
-medh5.curation.InstanceAgreement	class	(matched=(), only_in_a=(), only_in_b=(), matched_by='instance_id', threshold=0.5, against=None, class_mismatches=(), skipped=()) bases=
+medh5.curation.InstanceAgreement	class	(matched=(), only_in_a=(), only_in_b=(), matched_by='instance_id', threshold=0.5, against=None, class_mismatches=(), skipped=(), b_class_ids=<factory>) bases=
 medh5.curation.InstanceAgreement.against	field
+medh5.curation.InstanceAgreement.b_class_ids	field
 medh5.curation.InstanceAgreement.class_mismatches	field
 medh5.curation.InstanceAgreement.matched	field
 medh5.curation.InstanceAgreement.matched_by	field
@@ -2192,7 +2195,7 @@ medh5.curation.InstanceAgreement.only_in_b	field
 medh5.curation.InstanceAgreement.skipped	field
 medh5.curation.InstanceAgreement.threshold	field
 medh5.curation.InstanceAgreement.to_json	method	()
-medh5.curation.InstanceAgreement.to_record	method	()
+medh5.curation.InstanceAgreement.to_record	method	(*, against=None)
 medh5.curation.InstanceAgreement.value	property
 medh5.curation.Issue	class	(code, severity='info', class_ids=(), note=None) bases=
 medh5.curation.Issue.class_ids	field
@@ -2250,6 +2253,7 @@ medh5.curation.QualityRecord.issues	field
 medh5.curation.QualityRecord.reviewed_by	field
 medh5.curation.QualityRecord.status	field
 medh5.curation.QualityRecord.to_json	method	()
+medh5.curation.REASONS	constant	tuple
 medh5.curation.RESOLVED	constant	str
 medh5.curation.RFC3339	constant	<external>
 medh5.curation.SEX_VALUES	constant	tuple
@@ -2329,11 +2333,13 @@ medh5.curation.Tracking.__len__	method	()
 medh5.curation.Tracking.class_conflicts	method	()
 medh5.curation.Tracking.coverage	property
 medh5.curation.Tracking.get	method	(instance_id, default=None)
-medh5.curation.Tracking.is_new	method	(instance_id)
+medh5.curation.Tracking.is_new	method	(instance_id, *, located=False)
 medh5.curation.Tracking.is_persistent	method	(instance_id)
-medh5.curation.Tracking.is_resolved	method	(instance_id)
+medh5.curation.Tracking.is_resolved	method	(instance_id, *, located=False)
 medh5.curation.Tracking.items	method	()
 medh5.curation.Tracking.keys	method	()
+medh5.curation.Tracking.reason_at	method	(instance_id, timepoint)
+medh5.curation.Tracking.reasons	method	(instance_id)
 medh5.curation.Tracking.skipped	property
 medh5.curation.Tracking.state_at	method	(instance_id, timepoint)
 medh5.curation.Tracking.states	method	(instance_id)
@@ -2343,19 +2349,22 @@ medh5.curation.Tracking.to_json	method	()
 medh5.curation.Tracking.unexamined	method	()
 medh5.curation.Tracking.values	method	()
 medh5.curation.UNEXAMINED	constant	str
-medh5.curation.VoxelAgreement	class	(metric, per_class, skipped=(), against=None, class_ids=<factory>) bases=
+medh5.curation.VoxelAgreement	class	(metric, per_class, skipped=(), against=None, class_ids=<factory>, b_class_ids=<factory>) bases=
 medh5.curation.VoxelAgreement.against	field
+medh5.curation.VoxelAgreement.b_class_ids	field
 medh5.curation.VoxelAgreement.class_ids	field
 medh5.curation.VoxelAgreement.metric	field
 medh5.curation.VoxelAgreement.per_class	field
 medh5.curation.VoxelAgreement.skipped	field
 medh5.curation.VoxelAgreement.to_json	method	()
-medh5.curation.VoxelAgreement.to_record	method	()
+medh5.curation.VoxelAgreement.to_record	method	(*, against=None)
 medh5.curation.VoxelAgreement.value	property
 medh5.curation.agreement	module
+medh5.curation.agreement.ClassMap	alias
 medh5.curation.agreement.DEFAULT_IOU	constant	float
-medh5.curation.agreement.InstanceAgreement	class	(matched=(), only_in_a=(), only_in_b=(), matched_by='instance_id', threshold=0.5, against=None, class_mismatches=(), skipped=()) bases=
+medh5.curation.agreement.InstanceAgreement	class	(matched=(), only_in_a=(), only_in_b=(), matched_by='instance_id', threshold=0.5, against=None, class_mismatches=(), skipped=(), b_class_ids=<factory>) bases=
 medh5.curation.agreement.InstanceAgreement.against	field
+medh5.curation.agreement.InstanceAgreement.b_class_ids	field
 medh5.curation.agreement.InstanceAgreement.class_mismatches	field
 medh5.curation.agreement.InstanceAgreement.matched	field
 medh5.curation.agreement.InstanceAgreement.matched_by	field
@@ -2365,31 +2374,33 @@ medh5.curation.agreement.InstanceAgreement.only_in_b	field
 medh5.curation.agreement.InstanceAgreement.skipped	field
 medh5.curation.agreement.InstanceAgreement.threshold	field
 medh5.curation.agreement.InstanceAgreement.to_json	method	()
-medh5.curation.agreement.InstanceAgreement.to_record	method	()
+medh5.curation.agreement.InstanceAgreement.to_record	method	(*, against=None)
 medh5.curation.agreement.InstanceAgreement.value	property
+medh5.curation.agreement.MatchBy	alias
 medh5.curation.agreement.OBJECT_KINDS	constant	tuple
-medh5.curation.agreement.VoxelAgreement	class	(metric, per_class, skipped=(), against=None, class_ids=<factory>) bases=
+medh5.curation.agreement.VoxelAgreement	class	(metric, per_class, skipped=(), against=None, class_ids=<factory>, b_class_ids=<factory>) bases=
 medh5.curation.agreement.VoxelAgreement.against	field
+medh5.curation.agreement.VoxelAgreement.b_class_ids	field
 medh5.curation.agreement.VoxelAgreement.class_ids	field
 medh5.curation.agreement.VoxelAgreement.metric	field
 medh5.curation.agreement.VoxelAgreement.per_class	field
 medh5.curation.agreement.VoxelAgreement.skipped	field
 medh5.curation.agreement.VoxelAgreement.to_json	method	()
-medh5.curation.agreement.VoxelAgreement.to_record	method	()
+medh5.curation.agreement.VoxelAgreement.to_record	method	(*, against=None)
 medh5.curation.agreement.VoxelAgreement.value	property
 medh5.curation.agreement.box_iou	function	(a, b)
-medh5.curation.agreement.compare	function	(a, b, *, metric=None, threshold=None, classes=None)
-medh5.curation.agreement.compare_instances	function	(a, b, *, threshold=0.5, classes=None)
-medh5.curation.agreement.compare_voxel	function	(a, b, *, metric='dice', classes=None)
+medh5.curation.agreement.compare	function	(a, b, *, metric=None, threshold=None, classes=None, map_classes='id', match_by='auto')
+medh5.curation.agreement.compare_instances	function	(a, b, *, threshold=0.5, classes=None, map_classes='id', match_by='auto')
+medh5.curation.agreement.compare_voxel	function	(a, b, *, metric='dice', classes=None, map_classes='id')
 medh5.curation.agreement.dice	function	(a, b)
 medh5.curation.agreement.iou	function	(a, b)
 medh5.curation.audit_splits	function	(paths)
 medh5.curation.build_tracks	function	(sample, class_key=None, *, measure=True)
 medh5.curation.carries_instance_ids	function	(annotation)
 medh5.curation.check_timestamp	function	(value, *, where)
-medh5.curation.compare	function	(a, b, *, metric=None, threshold=None, classes=None)
-medh5.curation.compare_instances	function	(a, b, *, threshold=0.5, classes=None)
-medh5.curation.compare_voxel	function	(a, b, *, metric='dice', classes=None)
+medh5.curation.compare	function	(a, b, *, metric=None, threshold=None, classes=None, map_classes='id', match_by='auto')
+medh5.curation.compare_instances	function	(a, b, *, threshold=0.5, classes=None, map_classes='id', match_by='auto')
+medh5.curation.compare_voxel	function	(a, b, *, metric='dice', classes=None, map_classes='id')
 medh5.curation.dice_agreement	function	(per_class, against=None)
 medh5.curation.quality_from_json	function	(doc)
 medh5.curation.quality_to_json	function	(records)

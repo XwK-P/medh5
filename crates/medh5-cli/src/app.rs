@@ -355,6 +355,22 @@ fn curation() -> Vec<Command> {
                     .value_parser(iou_threshold)
                     .allow_negative_numbers(true),
             )
+            .arg(
+                opt("map_classes", "map-classes", "compare classes by id (default) or by key, across two vocabularies")
+                    .value_parser(["id", "key"]),
+            )
+            .arg(
+                append(
+                    "map_class",
+                    "map-class",
+                    "compare class A of the first with class B of the second (A=B, ids or keys; repeatable)",
+                )
+                .conflicts_with("map_classes"),
+            )
+            .arg(
+                opt("match_by", "match-by", "pair objects by instance id within one sample, by IoU, or auto (default)")
+                    .value_parser(["auto", "iou", "instance-id"]),
+            )
             .arg(flag("record", "record", "print the `quality.agreement` record this measurement produces"))
             .arg(json()),
         Command::new("scrub")

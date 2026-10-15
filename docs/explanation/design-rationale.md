@@ -177,6 +177,21 @@ test subject stays one. /1 stays the 2.x default, with a warning only where
 the two disagree, because changing a deterministic split's answer under a
 minor release is exactly the leak it exists to prevent.
 
+### Why tracking has three states and seven reasons
+
+At 2.0.2 a lesion was `resolved` at a follow-up whose grid did not contain it:
+tracking asked only whether the class was examined, never where the object
+was. A fourth state (`outside_fov`) would have broken every caller matching on
+three, and meant nothing a reader cannot already read as `unexamined`. Making
+every absence that cannot be located `unexamined` would have removed every
+negative from unregistered longitudinal samples, which are common. So the
+states stay three, and each unseen (object, visit) carries a reason: the
+object's boxes mapped into the visit's grid through the shared frame or affine
+transforms decide it where they can (`located`, `outside_fov`, `ignored`),
+1.0's class-level rule where nothing relates the visits (`class_examined`,
+`unrelated`), and the reason says which, so a caller that wants only located
+negatives asks for them (`located=True`).
+
 ### Why not an existing format
 
 | Format | Why not, on its own | What medh5 takes from it |

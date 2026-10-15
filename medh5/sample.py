@@ -557,9 +557,10 @@ class Sample:
     ) -> Tracking:
         """Join ``instance_id`` across timepoints --- the tracking operation (§7.4).
 
-        Whether an absence means *resolved* or *unexamined* is answered by
-        ``annotated_class_ids`` (§11.3), which is why the result carries the
-        coverage it needs.
+        Whether an absence means *resolved* or *unexamined* depends on whether
+        the object was looked for there: ``annotated_class_ids`` (§11.3), the
+        ignore region (§7.7) and where the object lies, mapped from the visits
+        that saw it.  ``Tracking.reason_at`` says which answered.
         """
         found: Tracking = self._handle.tracks(class_key, measure=measure)
         return found

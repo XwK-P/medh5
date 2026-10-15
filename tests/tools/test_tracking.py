@@ -255,7 +255,297 @@ class TestIgnoredRegions:
         row = next(line for line in out.splitlines() if line.split()[:1] == ["7"])
         assert row.split()[1:4] == ["lesion", "8", "unexamined"]
         legend = " ".join(out.split())
-        assert "examined at that timepoint, outside any ignore region, and" in legend
+        assert "looked for at that timepoint and not found" in legend
+
+
+class TestWhyAnAbsence:
+    """§7.4 (D12): an absence is a finding only where the object was looked
+    for.  Every unseen (object, visit) carries one reason, and only `located`
+    and `class_examined` leave it `resolved`.  At 2.0.2 a lesion was
+    `resolved` at a follow-up whose grid did not contain it."""
+
+    LESION = lesion(8, 8, 8, 2)  # voxels 6..9 on every axis
+
+    @staticmethod
+    def _visits(
+        path: Path,
+        label_set,
+        *,
+        baseline: str = "mask",
+        follow_up: str = "instances",
+        found: tuple[str, ...] = ("tp0",),
+        origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        registration: str | None = "affine",
+        ignore: np.ndarray | None = None,
+        valid: np.ndarray | None = None,
+    ) -> Path:
+        """Lesion 7 seen at the visits in `found`; each other visit has one
+        empty annotation that examined the lesion class.  The follow-up's grid
+        sits at `origin`; `registration` relates the two frames (or nothing)."""
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            w.label_set(label_set)
+            for tp in ("tp0", "tp1"):
+                grid = f"g_{tp}"
+                w.add_grid(
+                    grid,
+                    shape=SHAPE,
+                    spacing=(1.0, 1.0, 1.0),
+                    origin=origin if tp == "tp1" else (0.0, 0.0, 0.0),
+                    timepoint=tp,
+                    frame_uid=f"pseudo:{tp}",
+                )
+                fov = None
+                if valid is not None and tp == "tp1":
+                    w.add_mask("fov_tp1", valid, grid=grid)
+                    fov = "fov_tp1"
+                w.add_image(
+                    f"CT_{tp}",
+                    np.zeros(SHAPE, np.int16),
+                    grid=grid,
+                    modality="CT",
+                    valid_mask=fov,
+                )
+                seen = tp in found
+                if seen and baseline == "boxes":
+                    w.add_boxes(
+                        f"les_{tp}",
+                        boxes=[[[0.5, 4.5], [5.5, 9.5], [5.5, 9.5]]],
+                        class_ids=[3],
+                        grid=grid,
+                        instance_ids=[7],
+                        annotated_classes=[3],
+                    )
+                elif seen or follow_up == "instances":
+                    instances = (
+                        [
+                            InstanceInput(
+                                class_id=3, instance_id=7, mask=TestWhyAnAbsence.LESION
+                            )
+                        ]
+                        if seen
+                        else []
+                    )
+                    w.add_segmentation(
+                        f"les_{tp}",
+                        grid=grid,
+                        instances=instances,
+                        annotated_classes=[3],
+                        encoding="instances",
+                        ignore=None if seen else ignore,
+                    )
+                else:  # a semantic mask: class 3 examined, no object identity
+                    w.add_segmentation(
+                        f"les_{tp}",
+                        grid=grid,
+                        masks={3: lesion(3, 20, 20, 1)},
+                        annotated_classes=[3],
+                        encoding="labelmap",
+                    )
+            if registration == "affine":
+                w.add_transform(
+                    "tp0_to_tp1",
+                    kind="affine",
+                    matrix=np.eye(4),
+                    from_frame="pseudo:tp0",
+                    to_frame="pseudo:tp1",
+                )
+            elif registration == "displacement":
+                w.add_transform(
+                    "tp0_to_tp1",
+                    kind="displacement",
+                    field=np.zeros((3, *SHAPE), dtype=np.float32),
+                    field_grid="g_tp0",
+                    from_frame="pseudo:tp0",
+                    to_frame="pseudo:tp1",
+                )
+        return path
+
+    def test_S7_4_an_object_outside_the_follow_up_grid_is_unexamined(
+        self, tmp_path, label_set
+    ):
+        """The 2.0.2 case: an identity registration and the follow-up's grid
+        100 mm away, so the lesion maps to index -94.5 ... -90.5 there."""
+        path = self._visits(tmp_path / "away.medh5", label_set, origin=(100.0, 0, 0))
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            assert tracking.reason_at(7, "tp1") == "outside_fov"
+            assert tracking.state_at(7, "tp1") == UNEXAMINED
+            assert not tracking.is_resolved(7)
+            assert tracking.reasons(7) == {"tp0": None, "tp1": "outside_fov"}
+            assert tracking.coverage["tp1"] == frozenset({3}), "class-level"
+
+    def test_S7_4_an_object_outside_the_valid_mask_is_unexamined(
+        self, tmp_path, label_set
+    ):
+        valid = np.ones(SHAPE, bool)
+        valid[:, :, :8] = False  # the lesion's voxels 6 and 7 were not acquired
+        path = self._visits(tmp_path / "fov.medh5", label_set, valid=valid)
+        with medh5.open(path) as sample:
+            assert sample.tracks().reason_at(7, "tp1") == "outside_fov"
+        valid = np.ones(SHAPE, bool)
+        valid[:, :, 12:] = False  # acquired everywhere the lesion is
+        path = self._visits(tmp_path / "fov-away.medh5", label_set, valid=valid)
+        with medh5.open(path) as sample:
+            assert sample.tracks().reason_at(7, "tp1") == "located"
+
+    def test_S7_4_an_ignore_region_away_from_the_object_leaves_a_finding(
+        self, tmp_path, label_set
+    ):
+        """2.0.2 counted any ignore region against every absence."""
+        path = self._visits(
+            tmp_path / "away.medh5", label_set, ignore=lesion(8, 18, 18, 2)
+        )
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            assert tracking.reason_at(7, "tp1") == "located"
+            assert tracking.state_at(7, "tp1") == RESOLVED
+            assert tracking.is_resolved(7)
+            assert tracking.is_resolved(7, located=True)
+            assert tracking.coverage["tp1"] == frozenset(), "class-level"
+
+    def test_S7_4_an_ignore_region_touching_the_object_is_ignored(
+        self, tmp_path, label_set
+    ):
+        ignored = np.zeros(SHAPE, bool)
+        ignored[9, 9, 9] = True  # one voxel of the lesion's extent
+        path = self._visits(tmp_path / "touch.medh5", label_set, ignore=ignored)
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            assert tracking.reason_at(7, "tp1") == "ignored"
+            assert tracking.state_at(7, "tp1") == UNEXAMINED
+            assert not tracking.is_resolved(7)
+
+    def test_S7_4_unregistered_frames_fall_back_to_class_coverage(
+        self, tmp_path, label_set
+    ):
+        path = self._visits(tmp_path / "loose.medh5", label_set, registration=None)
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            assert tracking.reason_at(7, "tp1") == "class_examined"
+            assert tracking.state_at(7, "tp1") == RESOLVED
+            assert tracking.is_resolved(7)
+            assert not tracking.is_resolved(7, located=True)
+        path = self._visits(
+            tmp_path / "loose-ignored.medh5",
+            label_set,
+            registration=None,
+            ignore=lesion(8, 18, 18, 2),
+        )
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            assert tracking.reason_at(7, "tp1") == "unrelated"
+            assert tracking.state_at(7, "tp1") == UNEXAMINED
+
+    def test_S7_4_a_semantic_mask_alone_is_no_identity(self, tmp_path, label_set):
+        path = self._visits(
+            tmp_path / "semantic.medh5", label_set, follow_up="semantic"
+        )
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            assert tracking.reason_at(7, "tp1") == "no_identity"
+            assert tracking.state_at(7, "tp1") == UNEXAMINED
+
+    def test_S7_4_a_displacement_field_does_not_locate(self, tmp_path, label_set):
+        """A warped box's corners do not bound it: even a zero field leaves
+        the object unlocated, and an ignore region then may hide it."""
+        path = self._visits(
+            tmp_path / "warp.medh5", label_set, registration="displacement"
+        )
+        with medh5.open(path) as sample:
+            assert sample.tracks().reason_at(7, "tp1") == "class_examined"
+        path = self._visits(
+            tmp_path / "warp-ignored.medh5",
+            label_set,
+            registration="displacement",
+            ignore=lesion(8, 18, 18, 2),
+        )
+        with medh5.open(path) as sample:
+            assert sample.tracks().reason_at(7, "tp1") == "unrelated"
+
+    def test_S7_4_the_located_extent_rounds_out_at_voxel_edges(
+        self, tmp_path, label_set
+    ):
+        """Boxes sit at voxel edges: `[0.5, 4.5]` is voxels 1 to 4, so an
+        ignore region at voxel 5 lies beside the object, and one at 4 on it."""
+        for voxel, reason in ((5, "located"), (4, "ignored"), (0, "located")):
+            ignored = np.zeros(SHAPE, bool)
+            ignored[voxel, 7, 7] = True
+            path = self._visits(
+                tmp_path / f"edge-{voxel}.medh5",
+                label_set,
+                baseline="boxes",
+                ignore=ignored,
+            )
+            with medh5.open(path) as sample:
+                assert sample.tracks().reason_at(7, "tp1") == reason, voxel
+
+    def test_S7_4_is_new_needs_the_baseline_to_have_imaged_the_place(
+        self, tmp_path, label_set
+    ):
+        new = self._visits(tmp_path / "new.medh5", label_set, found=("tp1",))
+        with medh5.open(new) as sample:
+            tracking = sample.tracks()
+            assert tracking.reason_at(7, "tp0") == "located"
+            assert tracking.is_new(7) and tracking.is_new(7, located=True)
+        # The follow-up's grid is 100 mm from the baseline's, so the baseline
+        # never imaged where the lesion appeared.
+        path = self._visits(
+            tmp_path / "unimaged.medh5", label_set, found=("tp1",), origin=(100.0, 0, 0)
+        )
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            assert tracking.reason_at(7, "tp0") == "outside_fov"
+            assert not tracking.is_new(7)
+            assert tracking.summary()["new"] == []
+        loose = self._visits(
+            tmp_path / "loose.medh5", label_set, found=("tp1",), registration=None
+        )
+        with medh5.open(loose) as sample:
+            tracking = sample.tracks()
+            assert tracking.is_new(7) and not tracking.is_new(7, located=True)
+
+    def test_S7_4_reasons_travel_with_the_tracking(self, tmp_path, label_set):
+        import copy
+        import json
+        import pickle
+
+        from medh5.curation import REASONS, Tracking
+
+        assert REASONS == (
+            "located",
+            "class_examined",
+            "outside_fov",
+            "ignored",
+            "unrelated",
+            "no_identity",
+            "not_examined",
+        )
+        path = self._visits(tmp_path / "away.medh5", label_set, origin=(100.0, 0, 0))
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+        entry = json.loads(json.dumps(tracking.to_json()))["tracks"][0]
+        assert entry["reasons"] == {"tp0": None, "tp1": "outside_fov"}
+        assert entry["states"] == {"tp0": PRESENT, "tp1": UNEXAMINED}
+        for copied in (pickle.loads(pickle.dumps(tracking)), copy.copy(tracking)):
+            assert copied.reasons(7) == tracking.reasons(7)
+        # A pickle from before reasons reads each absence by its class-level rule.
+        rebuild, state = tracking.__reduce__()
+        old = rebuild(*state[:4])
+        assert isinstance(old, Tracking)
+        assert old.reason_at(7, "tp1") == "class_examined"
+
+    def test_the_command_line_shows_why(self, tmp_path, label_set, capsys):
+        from medh5.cli import main
+
+        path = self._visits(tmp_path / "away.medh5", label_set, origin=(100.0, 0, 0))
+        assert main(["track", str(path)]) == 0
+        out = capsys.readouterr().out
+        row = next(line for line in out.splitlines() if line.split()[:1] == ["7"])
+        assert row.split()[-1] == "tp1:outside_fov"
+        assert "reasons" in out.splitlines()[0].split()
+        assert "outside_fov" in " ".join(out.split()[-80:])
 
 
 class TestClassConflicts:
@@ -821,7 +1111,7 @@ class TestVolumeUnits:
         assert main(["track", str(path)]) == 0
         out = capsys.readouterr().out
         row = next(line for line in out.splitlines() if line.split()[:1] == ["7"])
-        assert row.split()[2:] == ["128", "128", "+0.0%"]
+        assert row.split()[2:] == ["128", "128", "+0.0%", "-"]
         assert "mm³" in out
 
 

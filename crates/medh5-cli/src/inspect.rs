@@ -8,7 +8,7 @@ use medh5::hdf5::types::TypeDescriptor as TD;
 use serde_json::{json, Map, Value};
 
 use medh5::collection::{open_any, AnyFile, Collection};
-use medh5::curation::tracking::{build_tracks, Track, Tracking};
+use medh5::curation::tracking::{locate_tracks, LocatedTracking, Track, Tracking};
 use medh5::h5::{attrs, ops};
 use medh5::integrity::repair::{fix, FixOptions, Repair};
 use medh5::integrity::stale_index_entries;
@@ -652,11 +652,12 @@ fn track(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             AnyFile::Sample(s) => s,
         };
         let class_key = get_str(m, "class_key").map(|k| ClassKey::Key(k.to_string()));
-        let tracking = build_tracks(&sample, class_key.as_ref(), true)?;
+        let located = locate_tracks(&sample, class_key.as_ref(), true)?;
         if flag(m, "json") {
-            ctx.emit(&tracking.to_json(), true);
+            ctx.emit(&located.to_json(), true);
             return Ok(EXIT_OK);
         }
+        let tracking = &located.tracking;
         if tracking.tracks.is_empty() {
             // The skipped ones carry instance ids, of a kind that does not join.
             ctx.print(if tracking.skipped.is_empty() {
@@ -664,14 +665,14 @@ fn track(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             } else {
                 "no instance-carrying annotation in this sample joins across visits"
             });
-            print_skipped(&tracking, ctx);
+            print_skipped(tracking, ctx);
             return Ok(EXIT_OK);
         }
         let timepoints: Vec<String> =
             if tracking.timepoints.is_empty() { vec!["-".into()] } else { tracking.timepoints.clone() };
         let mut rows = Vec::new();
         for (instance_id, track) in &tracking.tracks {
-            let states = tracking.states(*instance_id);
+            let states = located.states(*instance_id);
             let mut row = vec![
                 instance_id.to_string(),
                 track.class_key.clone().filter(|k| !k.is_empty()).unwrap_or_else(|| track.class_id().to_string()),
@@ -694,12 +695,19 @@ fn track(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                     }
                 });
             }
-            row.push(trend(&tracking, *instance_id, track, &timepoints));
+            row.push(trend(&located, *instance_id, track, &timepoints));
+            let reasons: Vec<String> = located
+                .reasons(*instance_id)
+                .into_iter()
+                .filter_map(|(tp, reason)| reason.map(|r| format!("{tp}:{}", r.as_str())))
+                .collect();
+            row.push(if reasons.is_empty() { "-".into() } else { reasons.join(",") });
             rows.push(row);
         }
         let mut headers = vec!["instance".to_string(), "class".to_string()];
         headers.extend(timepoints.iter().cloned());
         headers.push("trend".into());
+        headers.push("reasons".into());
         ctx.print(table(&rows, &headers));
         for (instance_id, class_ids) in tracking.class_conflicts() {
             ctx.print(format!(
@@ -707,11 +715,16 @@ fn track(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 medh5::json::repr_int_list(&class_ids)
             ));
         }
-        print_skipped(&tracking, ctx);
+        print_skipped(tracking, ctx);
         ctx.print(
-            "\nvolume in mm³ (mm² on a 2-D grid), or in px on an uncalibrated grid; `resolved` means the class was \
-             examined at that timepoint, outside any ignore region, and the object was not found, `unexamined` that \
-             nobody looked for it there, or that an ignore region may hide it (spec §7.4, §7.7, §11.3).",
+            "\nvolume in mm³ (mm² on a 2-D grid), or in px on an uncalibrated grid; `resolved` means the object was \
+             looked for at that timepoint and not found, `unexamined` that nobody looked for it there.  An absence is \
+             a finding (`resolved`) where the object, mapped from the visits that saw it through the shared frame or \
+             affine transforms, lies inside the grid, its acquired voxels and outside any ignore region (located), or \
+             where no geometry relates the visits and the class was examined outside any ignore region \
+             (class_examined: a registration would decide).  Otherwise it is `unexamined`: outside_fov, ignored, \
+             unrelated (no geometry, and an ignore region that may hide it), no_identity (no instance_ids) or \
+             not_examined (spec §7.4, §7.7, §11.3).",
         );
         Ok(EXIT_OK)
     })();
@@ -729,7 +742,7 @@ fn print_skipped(tracking: &Tracking, ctx: &mut Ctx) {
 }
 
 /// Relative volume change from first to last visit, where it is measurable.
-fn trend(tracking: &Tracking, instance_id: u64, track: &Track, timepoints: &[String]) -> String {
+fn trend(tracking: &LocatedTracking, instance_id: u64, track: &Track, timepoints: &[String]) -> String {
     if timepoints.len() < 2 {
         return "-".into();
     }
@@ -738,10 +751,10 @@ fn trend(tracking: &Tracking, instance_id: u64, track: &Track, timepoints: &[Str
         Err(_) => return "-".into(),
         Ok(None) => {}
     }
-    if tracking.is_new(instance_id) {
+    if tracking.is_new(instance_id, false) {
         return "new".into();
     }
-    if tracking.is_resolved(instance_id) {
+    if tracking.is_resolved(instance_id, false) {
         return "resolved".into();
     }
     "-".into()

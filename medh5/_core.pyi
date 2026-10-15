@@ -152,6 +152,7 @@ __all__ = [
     "QUALITY_FIELDS",
     "QUALITY_STATUS",
     "QualityRecord",
+    "REASONS",
     "RELATIONS",
     "RESERVED_KINDS",
     "RESOLVED",
@@ -665,6 +666,7 @@ PROFILES: tuple[str, ...]
 PSEUDONYM_SOURCE: str
 QUALITY_FIELDS: frozenset[str]
 QUALITY_STATUS: tuple[str, ...]
+REASONS: tuple[str, ...]
 RELATIONS: tuple[str, ...]
 RESERVED_KINDS: tuple[str, ...]
 RESOLVED: str
@@ -749,6 +751,8 @@ def agreement_compare(
     metric: str | None = None,
     threshold: float | None = None,
     classes: Any = None,
+    map_classes: Any = None,
+    match_by: str = "auto",
 ) -> tuple[str, dict[Any, Any]]:
     """The comparison two annotations' kinds support:
     `("voxel" | "instance", fields)`.
@@ -756,7 +760,13 @@ def agreement_compare(
     ...
 
 def agreement_compare_instances(
-    a: Any, b: Any, *, threshold: float = ..., classes: Any = None
+    a: Any,
+    b: Any,
+    *,
+    threshold: float = ...,
+    classes: Any = None,
+    map_classes: Any = None,
+    match_by: str = "auto",
 ) -> dict[Any, Any]:
     """Object-level agreement between two annotations: the fields of an
     `InstanceAgreement`.
@@ -764,7 +774,7 @@ def agreement_compare_instances(
     ...
 
 def agreement_compare_voxel(
-    a: Any, b: Any, *, metric: str = ..., classes: Any = None
+    a: Any, b: Any, *, metric: str = ..., classes: Any = None, map_classes: Any = None
 ) -> dict[Any, Any]:
     """Per-class Dice or IoU between two voxel annotations: the fields of a
     `VoxelAgreement`.
@@ -777,14 +787,16 @@ def agreement_dice(a: Any, b: Any) -> float | None:
 
 def agreement_instance_json(agreement: Any) -> Any: ...
 def agreement_instance_mean_iou(agreement: Any) -> float | None: ...
-def agreement_instance_record(agreement: Any) -> Agreement: ...
+def agreement_instance_record(
+    agreement: Any, against: str | None = None
+) -> Agreement: ...
 def agreement_instance_value(agreement: Any) -> float | None: ...
 def agreement_iou(a: Any, b: Any) -> float | None:
     """Intersection over union, or `None` when both masks are empty."""
     ...
 
 def agreement_voxel_json(agreement: Any) -> Any: ...
-def agreement_voxel_record(agreement: Any) -> Agreement: ...
+def agreement_voxel_record(agreement: Any, against: str | None = None) -> Agreement: ...
 def agreement_voxel_value(agreement: Any) -> float | None: ...
 def amend(path: str | os.PathLike[str], *, codec: str | None = None) -> SampleWriter:
     """Copy-on-write amend: build a new file from the old and replace it.
@@ -4121,7 +4133,7 @@ class Track:
 @final
 class Tracking:
     """`{instance_id: Track}` with the coverage needed to tell *resolved* from
-    *unexamined*.
+    *unexamined*, and the reason for every absence.
     """
     def __contains__(self, key: Any, /) -> bool:
         """Return bool(key in self)."""
@@ -4137,25 +4149,39 @@ class Tracking:
     @property
     def coverage(self) -> dict[Any, Any]:
         """`{timepoint: frozenset of class ids}`: the classes the annotators at
-        each timepoint committed to finding (§11.3), whose absence is
-        therefore a finding --- those of the annotations there that ignore no
-        part of their grid (§7.7).
+        each timepoint committed to finding (§11.3), of the annotations there
+        that ignore no part of their grid (§7.7).  Class-level: it does not
+        say where anyone looked, which `reason_at` does.
         """
         ...
     def get(self, instance_id: Any, default: Any = None) -> Any: ...
-    def is_new(self, instance_id: int) -> bool:
+    def is_new(self, instance_id: int, *, located: bool = False) -> bool:
         """Absent-then-present: `resolved` at the first timepoint (looked for
-        and not seen) and `present` at a later one.
+        and not seen) and `present` at a later one.  With `located`, only
+        where the object was located at the first (not by class alone).
         """
         ...
     def is_persistent(self, instance_id: int) -> bool: ...
-    def is_resolved(self, instance_id: int) -> bool:
+    def is_resolved(self, instance_id: int, *, located: bool = False) -> bool:
         """Present-then-gone: `present` at the first timepoint and `resolved` at
-        the last, whose annotators looked for it.
+        the last, whose annotators looked for it.  With `located`, only where
+        the object was located at the last.
         """
         ...
     def items(self) -> tuple[tuple[int, Track], ...]: ...
     def keys(self) -> tuple[int, ...]: ...
+    def reason_at(self, instance_id: int, timepoint: str) -> str | None:
+        """Why the object is absent at `timepoint` (`REASONS`): `located` or
+        `class_examined` where it is `resolved`, `outside_fov`, `ignored`,
+        `unrelated`, `no_identity` or `not_examined` where it is
+        `unexamined`; `None` where it was seen.
+        """
+        ...
+    def reasons(self, instance_id: int) -> dict[str, str | None]:
+        """`{timepoint: reason_at(instance_id, timepoint)}` over every
+        timepoint, in order.
+        """
+        ...
     @property
     def skipped(self) -> dict[str, str]:
         """`{annotation: why}` for the annotations that carry `instance_ids`
@@ -4164,10 +4190,9 @@ class Tracking:
         ...
     def state_at(self, instance_id: int, timepoint: str) -> str:
         """`present`, `resolved` or `unexamined`.  `resolved` is claimed only
-        where the object's class is in that timepoint's `coverage`; anywhere
-        else an unseen object is `unexamined`: nobody looked, or an ignore
-        region may hide it, so its absence measures nothing.  `KeyError` for
-        an id no track has.
+        where the object was looked for there (`reason_at` says how); anywhere
+        else an unseen object is `unexamined`, and its absence measures
+        nothing.  `KeyError` for an id no track has.
         """
         ...
     def states(self, instance_id: int) -> dict[str, str]:

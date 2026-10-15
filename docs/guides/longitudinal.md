@@ -121,32 +121,52 @@ The reason this is not a dictionary lookup:
 | State | Meaning |
 |---|---|
 | `present` | the object was found at this visit |
-| `resolved` | the class **was examined** at this visit, outside any ignore region, and the object was not found |
-| `unexamined` | nobody looked for that class at this visit, or an ignore region (§7.7) may hide it |
+| `resolved` | the object **was looked for** at this visit and not found |
+| `unexamined` | nobody looked for it there: the class was not examined, the object lies outside what was imaged, or an ignore region (§7.7) may hide it |
 
 ```python
 tracking.state_at(7, "tp1")     # "resolved"
 tracking.states(7)              # {"tp0": "present", "tp1": "resolved"}
+tracking.reason_at(7, "tp1")    # "located": why the absence is, or is not, a finding
+tracking.reasons(7)             # {"tp0": None, "tp1": "located"}
 tracking.is_new(7)
 tracking.is_resolved(7)
+tracking.is_resolved(7, located=True)   # only where the object was located
 tracking.is_persistent(7)
 tracking.unexamined()           # {timepoint: instance ids unexamined there}
-tracking.coverage               # {timepoint: class ids whose absence there is a finding}
+tracking.coverage               # {timepoint: class ids examined, class-level}
 ```
 
 A lesion that responded to treatment and a lesion nobody segmented at the
 follow-up look identical if you only check whether the id is present. They are
-completely different findings, and the state is derived from
-`annotated_class_ids` and the annotation's ignore region — from what the
-annotator committed to — rather than from absence.
+completely different findings, and the state is derived from what the
+annotator committed to (`annotated_class_ids`, the ignore region) and from
+where the object lies, rather than from absence.
 
-An annotation whose ignore region holds any voxel examined its classes only
-outside that region, and nothing records whether a missing object lay inside
-it. So it adds nothing to `coverage`: an object it does not show is
-`unexamined` at its visit, never `resolved`. The baseline is read the same
-way — `is_new` asks that the baseline examined the class and did not find the
-object — so a lesion first seen at follow-up is not new where the baseline
-ignored part of its volume.
+Every unseen (object, visit) carries one reason (`medh5.curation.REASONS`).
+Tracking maps the object's boxes from the visits that saw it into each
+annotation of the visit that did not, through the shared frame or a path of
+affine transforms, and rounds the result out to whole voxels: the object's
+*located extent* there.
+
+| Reason | State | When |
+|---|---|---|
+| `located` | `resolved` | the located extent lies in the grid, in its images' acquired voxels (`valid_mask`, §4.4), and outside the ignore region |
+| `class_examined` | `resolved` | no geometry relates the visits, and the class was examined with nothing ignored: 1.0's class-level rule, which a registration would decide |
+| `outside_fov` | `unexamined` | the located extent leaves the grid or the acquired voxels |
+| `ignored` | `unexamined` | the located extent holds an ignored voxel |
+| `unrelated` | `unexamined` | no geometry relates the visits, and the annotation ignores some voxels, which may be where the object is |
+| `no_identity` | `unexamined` | the class was examined by an annotation without `instance_ids` (a semantic mask) |
+| `not_examined` | `unexamined` | nothing at the visit examined the class |
+
+Where a visit's annotations disagree, the first reason in that order wins. A
+displacement field or a B-spline does not locate the object, since a warped
+box's corners do not bound it; nor does a path where any observation fails to
+map. An ignore region away from the object leaves its absence a finding. The
+baseline is read the same way: `is_new` asks that the baseline looked for the
+object where it later appeared, so a lesion first seen at a follow-up is not
+new where the baseline never imaged that place, or ignored it.
+`located=True` on `is_new` and `is_resolved` refuses the class-level fallback.
 
 ### Class conflicts
 
@@ -158,6 +178,16 @@ One object with two classes across visits is either a reclassification worth
 knowing about or a mistake worth finding. The validator raises `W909` for it,
 sample-scoped, because the costly case is a disagreement *between* two visits'
 annotations rather than within one.
+
+### Two readers of one follow-up
+
+An `instance_id` joins an object across the visits of one sample; it names
+nothing in another file. Comparing two readers' files of one visit therefore
+pairs objects by where they are, and `match_by="instance_id"` is refused there.
+Where the readers used two numberings of one vocabulary, `map_classes="key"`
+scores liver against liver, and the comparison is recorded only against an
+annotation of the recording sample
+([agreement](../reference/curation.md#two-vocabularies)).
 
 ## Train on the pairs
 

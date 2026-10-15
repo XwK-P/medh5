@@ -1580,7 +1580,7 @@ impl SampleHandle {
             _ => None,
         };
         let sample = self.sample()?;
-        let tracks = py.detach(move || medh5::curation::tracking::build_tracks(&sample, key.as_ref(), measure))?;
+        let tracks = py.detach(move || medh5::curation::tracking::locate_tracks(&sample, key.as_ref(), measure))?;
         Ok(crate::tracking::Tracking::wrap(tracks))
     }
 }
