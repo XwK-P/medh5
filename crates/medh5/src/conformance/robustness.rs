@@ -62,9 +62,9 @@ pub fn write(dir: &Path) -> Result<Vec<PathBuf>> {
 /// limit, and 30,000 overflowed the stack.  Opening it refuses it past
 /// [`MAX_DEPTH`].
 fn deep_groups(root: &hdf5::Group) -> Result<()> {
-    let mut group = root.create_group(GROUP)?;
+    let mut group = ops::new_group(root, GROUP)?;
     for _ in 0..64 * MAX_DEPTH {
-        group = group.create_group("a")?;
+        group = ops::new_group(&group, "a")?;
     }
     Ok(())
 }
@@ -72,7 +72,7 @@ fn deep_groups(root: &hdf5::Group) -> Result<()> {
 /// One chunked `uint8` dataset of `len` bytes with `filters`, in the planted
 /// group, carrying a digest: verifying it reads it.
 fn planted(root: &hdf5::Group, len: usize, filters: Vec<Filter>) -> Result<hdf5::Dataset> {
-    let group = root.create_group(GROUP)?;
+    let group = ops::new_group(root, GROUP)?;
     let layout = Layout { chunks: Some(vec![len]), filters };
     let ds = data::create_empty(&group, "data", DType::U8, &[len], &layout)?;
     attrs::write(&ds, "digest", &any_digest())?;
@@ -98,7 +98,7 @@ fn write_raw_chunk(ds: &hdf5::Dataset, bytes: &[u8]) -> Result<()> {
 /// h5py names a filter it has not got.  HDF5 searched its plugin directories
 /// for a library to run; the engine turns that off, and the read fails.
 fn unregistered_filter(root: &hdf5::Group) -> Result<()> {
-    let group = root.create_group(GROUP)?;
+    let group = ops::new_group(root, GROUP)?;
     let dims = [4096u64];
     // SAFETY: under HDF5's lock; every identifier made here is closed here.
     let id = crate::h5::locked(|| unsafe {
@@ -155,7 +155,7 @@ fn zstd_bomb(root: &hdf5::Group) -> Result<()> {
 fn blosc2_overclaim(root: &hdf5::Group) -> Result<()> {
     let blosc2 = || vec![Filter::user(medh5_sys::BLOSC2_FILTER_ID as _, &[0, 0, 0, 0, 5, 1, 0])];
     let large = 4 << 20;
-    let scratch = root.create_group("x_scratch")?;
+    let scratch = ops::new_group(root, "x_scratch")?;
     let zeros = NdArray::from_vec(&[large], vec![0f64; large])?.astype(DType::U8);
     let source = data::create(&scratch, "zeros", &zeros, &Layout { chunks: Some(vec![large]), filters: blosc2() })?;
     let (_, chunk) = ops::read_raw_chunk(&source, &[0])?;
