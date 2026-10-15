@@ -897,25 +897,70 @@ impl Transform {
     ///
     /// `roi` is resolved as [`Transform::read_field`] resolves it: one slice
     /// per spatial axis of the field grid, whole axes after the last one
-    /// given, NumPy's negative and out-of-range bounds.  The determinant is
-    /// differenced on the region's own lattice, its edges one-sidedly as the
-    /// field's are, so a slice with a step other than 1 is refused --- the
-    /// step was ignored, and a strided region reported folding where there
-    /// is none --- and so is an axis of fewer than 2 voxels.
+    /// given, NumPy's negative and out-of-range bounds, and a positive step.
+    /// The region's determinant is the whole field's at the voxels it
+    /// selects: the differences reach one voxel past the region and are
+    /// one-sided only at the field's own edges, so a region's edges do not
+    /// depend on where it was cut, a strided region keeps a fold narrower
+    /// than its step, and an axis of one voxel is accepted.  The field itself
+    /// needs at least 2 voxels on every axis.  Only the voxels the region
+    /// needs are read, in slabs along the first axis.
     pub fn jacobian_determinant(&self, roi: Option<&[Slice]>) -> Result<ArrayD<f64>> {
+        self.jacobian_within(roi, JACOBIAN_SLAB_BYTES)
+    }
+
+    /// [`Transform::jacobian_determinant`], reading windows of at most
+    /// `budget` bytes of `f64` field values, or three planes when one plane
+    /// is more.
+    fn jacobian_within(&self, roi: Option<&[Slice]>, budget: usize) -> Result<ArrayD<f64>> {
+        use ndarray::SliceInfoElem;
+
         let grid = self.field_grid()?;
         let owner = format!("transform {}", repr_str(&self.transform_id));
-        let bounds = roi_bounds(grid, roi.unwrap_or_default(), &owner)?;
-        if let Some((axis, _)) = bounds.iter().enumerate().find(|(_, (a, b))| b - a < 2) {
+        let spatial = grid.spatial_shape();
+        if let Some(axis) = spatial.iter().position(|n| *n < 2) {
             return Err(Error::Value(format!(
-                "{owner}: the {} spans 1 voxel on axis {axis}, and a Jacobian takes a difference along every axis, \
-                 which needs at least 2",
-                if roi.is_some() { "region" } else { "field" }
+                "{owner}: the field spans {} voxel on axis {axis}, and a Jacobian takes a difference along every \
+                 axis, which needs at least 2",
+                spatial[axis]
             )));
         }
-        let window: Vec<Slice> = bounds.iter().map(|(a, b)| Slice::new(*a as i64, *b as i64)).collect();
-        let field = self.read_field(Some(&window), None)?.to_f64();
-        jacobian_determinant(&field, &cropped_grid(grid, &window)?, &self.vector_space()?)
+        let selection = roi_selection(grid, roi.unwrap_or_default(), &owner)?;
+        let vector_space = self.vector_space()?;
+        let counts: Vec<usize> = selection.iter().map(|(a, b, step)| (b - a).div_ceil(*step)).collect();
+        let mut out = ArrayD::<f64>::zeros(IxDyn(&counts));
+        // The window on the other axes is the same for every slab.
+        let rest: Vec<(usize, usize)> =
+            selection.iter().zip(&spatial).skip(1).map(|((a, b, step), n)| halo(*a, *b, *step, *n)).collect();
+        let plane = rest.iter().map(|(a, b)| b - a).product::<usize>() * spatial.len() * size_of::<f64>();
+        let planes = (budget / plane.max(1)).max(3);
+        let (start, _, step) = selection[0];
+        let per_slab = ((planes - 2) / step).max(1);
+        let mut done = 0;
+        while done < counts[0] {
+            let take = per_slab.min(counts[0] - done);
+            let first = start + done * step;
+            let stop = first + (take - 1) * step + 1;
+            let (w0, w1) = halo(first, stop, step, spatial[0]);
+            let mut window = vec![Slice::new(w0 as i64, w1 as i64)];
+            window.extend(rest.iter().map(|(a, b)| Slice::new(*a as i64, *b as i64)));
+            let field = self.read_field(Some(&window), None)?.to_f64();
+            let determinant = jacobian_determinant(&field, &cropped_grid(grid, &window)?, &vector_space)?;
+            // Ended past the last voxel selected rather than at the stop,
+            // which can lie past the window.
+            let local = |a: usize, b: usize, step: usize, w: usize| SliceInfoElem::Slice {
+                start: (a - w) as isize,
+                end: Some((a + (b - a - 1) / step * step + 1 - w) as isize),
+                step: step as isize,
+            };
+            let mut pick = vec![local(first, stop, step, w0)];
+            pick.extend(selection.iter().skip(1).zip(&rest).map(|((a, b, step), (w, _))| local(*a, *b, *step, *w)));
+            let mut into = vec![local(done, done + take, 1, 0)];
+            into.extend(rest.iter().map(|_| SliceInfoElem::from(..)));
+            out.slice_mut(into.as_slice()).assign(&determinant.slice(pick.as_slice()));
+            done += take;
+        }
+        Ok(out)
     }
 
     /// Fraction of voxels that fold.
@@ -1253,13 +1298,16 @@ pub fn basis(order: i64, t: f64) -> Result<Vec<f64>> {
     }
 }
 
-/// The `(start, stop)` voxels `roi` selects on each spatial axis of `grid`,
-/// resolved as [`Transform::read_field`] resolves it: NumPy's negative and
-/// out-of-range bounds, and whole axes after the last slice given.  A region
-/// is a block of the grid's own lattice, so more slices than spatial axes, a
-/// step other than 1 and an axis left without a voxel are refused, the error
-/// naming `owner`.
-fn roi_bounds(grid: &Grid, roi: &[Slice], owner: &str) -> Result<Vec<(usize, usize)>> {
+/// The bytes of `f64` field values a Jacobian reads at once: a larger region
+/// is read and differenced in slabs along its first axis.
+const JACOBIAN_SLAB_BYTES: usize = 64 << 20;
+
+/// The `(start, stop, step)` voxels `roi` selects on each spatial axis of
+/// `grid`, resolved as [`Transform::read_field`] resolves it: NumPy's
+/// negative and out-of-range bounds, a positive step, and whole axes after
+/// the last slice given.  More slices than spatial axes and an axis left
+/// without a voxel are refused, the error naming `owner`.
+fn roi_selection(grid: &Grid, roi: &[Slice], owner: &str) -> Result<Vec<(usize, usize, usize)>> {
     let spatial = grid.spatial_shape();
     if roi.len() > spatial.len() {
         return Err(Error::Value(format!(
@@ -1274,14 +1322,35 @@ fn roi_bounds(grid: &Grid, roi: &[Slice], owner: &str) -> Result<Vec<(usize, usi
         .enumerate()
         .map(|(axis, n)| {
             let (a, b, step) = roi.get(axis).copied().unwrap_or_default().resolve(*n)?;
+            if a == b {
+                return Err(Error::Value(format!("{owner}: roi selects no voxel on axis {axis}, which has {n}")));
+            }
+            Ok((a, b, step))
+        })
+        .collect()
+}
+
+/// The window the selection `start..stop` by `step` (not empty) is
+/// differenced in, on an axis of `n` voxels: one voxel past the first and
+/// the last voxel it selects, where the axis has one, so that each takes
+/// the difference the whole field gives it.  At least 2 voxels when `n` is.
+fn halo(start: usize, stop: usize, step: usize, n: usize) -> (usize, usize) {
+    let last = start + (stop - start - 1) / step * step;
+    (start.saturating_sub(1), (last + 2).min(n))
+}
+
+/// The `(start, stop)` voxels `roi` selects on each spatial axis of `grid`,
+/// as [`roi_selection`] resolves them.  A region is a block of the grid's
+/// own lattice, so a step other than 1 is refused.
+fn roi_bounds(grid: &Grid, roi: &[Slice], owner: &str) -> Result<Vec<(usize, usize)>> {
+    roi_selection(grid, roi, owner)?
+        .into_iter()
+        .map(|(a, b, step)| {
             if step != 1 {
                 return Err(Error::Value(format!(
                     "{owner}: a region of interest is a block of the grid's own lattice, so a slice with step \
                      {step} is refused; take the region, then slice the result with the step"
                 )));
-            }
-            if a == b {
-                return Err(Error::Value(format!("{owner}: roi selects no voxel on axis {axis}, which has {n}")));
             }
             Ok((a, b))
         })
@@ -1714,6 +1783,55 @@ mod tests {
         assert!(!Arc::ptr_eq(&alone.cubic, &cwarp.cubic));
         let inverse = Transform::inverse_of(both.clone());
         assert!(Arc::ptr_eq(&inverse.kept, &both.kept), "an inverse opens through the sample's caches");
+    }
+
+    /// A region was read and differenced as if it were the whole field, one-
+    /// sidedly at its own edges.  Its window reaches one voxel past the first
+    /// and the last voxel selected, stopping only at the field's edges, and a
+    /// region read in slabs of a plane or two is the region read at once.
+    #[test]
+    fn s10_the_roi_window_reads_one_voxel_beyond() {
+        assert_eq!(halo(2, 6, 1, 12), (1, 7));
+        assert_eq!(halo(0, 12, 1, 12), (0, 12));
+        assert_eq!(halo(0, 6, 1, 12), (0, 7));
+        assert_eq!(halo(6, 12, 1, 12), (5, 12));
+        assert_eq!(halo(5, 6, 1, 12), (4, 7), "one voxel, and one either side");
+        assert_eq!(halo(0, 1, 1, 12), (0, 2), "two voxels at the field's edge");
+        assert_eq!(halo(11, 12, 1, 12), (10, 12));
+        assert_eq!(halo(1, 12, 2, 12), (0, 12), "the last selected is 11");
+        assert_eq!(halo(0, 12, 5, 12), (0, 12), "the last selected is 10");
+        assert_eq!(halo(1, 9, 4, 12), (0, 7), "the last selected is 5");
+
+        let dir = tempfile::tempdir().unwrap();
+        let pair = crate::bench::synthetic_pair(dir.path(), &[9, 7, 6], "portable", 3).unwrap();
+        let sample = crate::sample::open_sample(&pair).unwrap();
+        let warp = sample.transform("warp").unwrap();
+        let whole = warp.jacobian_determinant(None).unwrap();
+        // On an axis of 7, `::4` selects 0 and 4: its stop, 7, lies past
+        // the window, 0..6, which panicked.
+        let regions: [&[Slice]; 5] = [
+            &[Slice { start: None, stop: Some(-1), step: Some(3) }, Slice { start: None, stop: None, step: Some(4) }],
+            &[],
+            &[Slice::new(2, 6)],
+            &[Slice { start: Some(1), stop: None, step: Some(2) }, Slice::new(3, 4)],
+            &[Slice { start: Some(-2), stop: None, step: Some(3) }, Slice::full(), Slice::new(0, 1)],
+        ];
+        for roi in regions {
+            let at_once = warp.jacobian_within(Some(roi), usize::MAX).unwrap();
+            for budget in [0, 1, 7 * 6 * 3 * 8 * 4] {
+                assert_eq!(warp.jacobian_within(Some(roi), budget).unwrap(), at_once, "{roi:?} in {budget}");
+            }
+            let mut pick: Vec<ndarray::SliceInfoElem> = roi
+                .iter()
+                .zip([9, 7, 6])
+                .map(|(s, n)| {
+                    let (a, b, step) = s.resolve(n).unwrap();
+                    ndarray::SliceInfoElem::Slice { start: a as isize, end: Some(b as isize), step: step as isize }
+                })
+                .collect();
+            pick.resize(3, ndarray::SliceInfoElem::from(..));
+            assert_eq!(at_once, whole.slice(pick.as_slice()).to_owned(), "{roi:?}");
+        }
     }
 
     fn graph(edges: &[(&str, &[&str])]) -> IndexMap<String, Vec<String>> {

@@ -32,7 +32,7 @@ from medh5.transforms import (
 )
 from medh5.validate import validate_file
 from tests.helpers import ROOT, attested_as_written, encode_attr
-from tests.kits import Flat
+from tests.kits import Flat, FoldKit
 
 SHAPE = (12, 16, 16)
 
@@ -448,8 +448,9 @@ class TestDisplacement:
 
     def test_S10_4_a_jacobian_roi_is_the_same_region_of_the_field(self, tmp_path):
         """On a curved field the determinant varies, so a region resolved to
-        the wrong voxels shows: away from its own edges, which are differenced
-        one-sidedly, the region's determinant is the field's."""
+        the wrong voxels shows.  The region's determinant is the field's,
+        its own edges included: they were differenced one-sidedly, and
+        matched the field's only away from them."""
         grid_shape = (10, 9, 8)
         x = np.arange(grid_shape[0], dtype=np.float64)[:, None, None]
         y = np.arange(grid_shape[1], dtype=np.float64)[None, :, None]
@@ -476,18 +477,11 @@ class TestDisplacement:
                 (np.s_[-7:, -6:, 0:100], np.s_[3:10, 3:9, 0:8]),
             ]:
                 region = warp.jacobian_determinant(roi)
-                assert np.allclose(
-                    region[1:-1, 1:-1, 1:-1], whole[same][1:-1, 1:-1, 1:-1]
-                )
+                assert np.array_equal(region, whole[same])
 
     @pytest.mark.parametrize(
         ("roi", "match"),
         [
-            (np.s_[::2], "step 2"),
-            (np.s_[::2, ::2, ::2], "step 2"),
-            (np.s_[1::3, ::2, :], "step 3"),
-            (np.s_[4:5], "1 voxel on axis 0"),
-            (np.s_[:, 3:4, :], "1 voxel on axis 1"),
             (np.s_[10:4], "no voxel on axis 0"),
             (np.s_[:, :, 99:], "no voxel on axis 2"),
             (np.s_[:, :, :, :], "4 axes"),
@@ -496,8 +490,9 @@ class TestDisplacement:
     def test_S10_4_a_jacobian_roi_it_cannot_difference_is_refused(
         self, tmp_path, roi, match
     ):
-        """A strided region was differenced as if contiguous: ``::2`` on a
-        field folding nowhere reported 100% folding."""
+        """A region that selects no voxel, or names more axes than the grid
+        has, is refused.  A step and a one-voxel axis are accepted
+        (:class:`TestRoiJacobian`): the region is the field's own voxels."""
         path = registered(tmp_path / "reg.medh5", displacement=True)
         with medh5.open(path) as sample:
             warp = sample.transforms["refine"]
@@ -2389,3 +2384,111 @@ class TestInverseOfAChain:
                 "a01⁻¹",
             ]
             assert s.transform_between("F0", "F2").transform_id == "c02"
+
+
+class TestRoiJacobian:
+    """A region's Jacobian is the field's own, read off its voxels: the
+    differences reach one voxel past the region, and are one-sided only at
+    the field's own edges."""
+
+    @staticmethod
+    def _curved(path: Path, shape: tuple[int, int, int] = (9, 7, 6)) -> Path:
+        rng = np.random.default_rng(3)
+        field = rng.normal(0.0, 0.4, (3, *shape)).astype(np.float32)
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.5, 0.8, 1.2), frame_uid="F0")
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="F0",
+                to_frame="F1",
+                field=field,
+                field_grid="g",
+            )
+        return path
+
+    def test_S10_the_jacobian_of_a_roi_is_the_fields_own(self, tmp_path: Path):
+        """Over random contiguous and strided regions, negative bounds and
+        one-voxel axes included: the region's determinant is the whole
+        field's, sliced."""
+        from hypothesis import given, settings
+        from hypothesis import strategies as st
+
+        shape = (9, 7, 6)
+        path = self._curved(tmp_path / "curved.medh5", shape)
+        bound = st.one_of(st.none(), st.integers(-12, 12))
+
+        axis = st.builds(slice, bound, bound, st.one_of(st.none(), st.integers(1, 4)))
+
+        with medh5.open(path) as s:
+            warp = s.transforms["warp"]
+            whole = warp.jacobian_determinant()
+
+            @settings(max_examples=150, deadline=None, database=None)
+            @given(st.tuples(*(axis for _ in shape)))
+            def check(roi: tuple[slice, ...]) -> None:
+                if any(
+                    len(range(*r.indices(n))) == 0
+                    for r, n in zip(roi, shape, strict=True)
+                ):
+                    with pytest.raises(ValueError, match="no voxel"):
+                        warp.jacobian_determinant(roi)
+                    return
+                region = warp.jacobian_determinant(roi)
+                assert region.shape == whole[roi].shape
+                assert np.allclose(region, whole[roi], rtol=1e-12, atol=1e-12)
+                expected = float(np.mean(whole[roi] <= 0))
+                assert warp.folding_fraction(roi) == pytest.approx(expected)
+
+            check()
+
+    def test_S10_tiled_rois_fold_as_the_whole_field(self, tmp_path: Path):
+        """At 2.0.2 the tiles [0:6] and [6:12] each saw no fold, differencing
+        their own edges one-sidedly."""
+        path = FoldKit.write(tmp_path / "fold.medh5")
+        with medh5.open(path) as s:
+            warp = s.transforms["warp"]
+            whole = warp.jacobian_determinant()
+            assert np.allclose(whole[FoldKit.FOLD], -0.5)
+            assert int(np.count_nonzero(whole <= 0)) == 4  # one plane of 2×2
+            assert warp.folding_fraction() == pytest.approx(1 / 12)
+            for tiles in (
+                (np.s_[0:4], np.s_[4:8], np.s_[8:12]),
+                (np.s_[0:6], np.s_[6:12]),
+            ):
+                parts = [warp.jacobian_determinant(tile) for tile in tiles]
+                assert np.array_equal(np.concatenate(parts), whole)
+                folds = sum(int(np.count_nonzero(part <= 0)) for part in parts)
+                assert folds == 4
+
+    def test_S10_a_strided_roi_keeps_a_one_voxel_fold(self, tmp_path: Path):
+        """A step was refused; differencing on the sampled lattice instead
+        would miss a fold narrower than the step.  The region keeps the
+        field's own determinant at the voxels it selects."""
+        path = FoldKit.write(tmp_path / "fold.medh5")
+        with medh5.open(path) as s:
+            warp = s.transforms["warp"]
+            region = warp.jacobian_determinant(np.s_[1::2])
+            assert region.shape == (6, 2, 2)
+            assert np.allclose(region[2], -0.5), "x = 5 is the third of 1, 3, 5"
+            assert warp.folding_fraction(np.s_[1::2]) == pytest.approx(1 / 6)
+            assert warp.folding_fraction(np.s_[::2]) == 0.0
+
+    def test_S10_a_one_voxel_roi_axis_is_accepted(self, tmp_path: Path):
+        path = FoldKit.write(tmp_path / "fold.medh5")
+        with medh5.open(path) as s:
+            warp = s.transforms["warp"]
+            region = warp.jacobian_determinant(np.s_[5:6, 0:1])
+            assert region.shape == (1, 1, 2)
+            assert np.allclose(region, -0.5)
+            assert warp.folding_fraction(np.s_[5:6]) == 1.0
+
+    def test_S10_a_one_voxel_field_axis_is_still_refused(self, tmp_path: Path):
+        """The field itself needs two voxels on each axis to difference."""
+        path = FoldKit.write(tmp_path / "flat.medh5", shape=(12, 1, 2))
+        with medh5.open(path) as s:
+            warp = s.transforms["warp"]
+            for roi in (None, np.s_[2:6]):
+                with pytest.raises(ValueError, match="field spans 1 voxel on axis 1"):
+                    warp.jacobian_determinant(roi)

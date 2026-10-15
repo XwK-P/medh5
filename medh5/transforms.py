@@ -275,18 +275,23 @@ class DisplacementTransform(Transform):
         """``det(I + du/dx)`` per voxel of the field grid, or of *roi*.
 
         *roi* takes what :meth:`read_field` takes: one slice per spatial axis,
-        whole axes after the last one given, and NumPy's negative and
-        out-of-range bounds.  The derivative is a difference on the region's
-        own lattice --- one-sided at its edges, as at the field's --- so a
-        slice with a step other than 1 is refused (take the region, then slice
-        the result), and so is an axis of fewer than 2 voxels.
+        whole axes after the last one given, NumPy's negative and out-of-range
+        bounds, and a positive step.  The result is the whole field's
+        determinant at the voxels *roi* selects,
+        ``jacobian_determinant(roi) == jacobian_determinant()[roi]``: the
+        differences reach one voxel past the region and are one-sided only at
+        the field's own edges, so a strided region keeps a fold narrower than
+        its step and an axis of one voxel is accepted.  Only the voxels the
+        region needs are read.  The field itself needs at least 2 voxels on
+        every axis.
         """
         found: npt.NDArray[np.float64] = self._handle.jacobian_determinant(roi)
         return found
 
     def folding_fraction(self, roi: Sequence[slice] | None = None) -> float:
         """The fraction of voxels where the map folds (``det J <= 0``), over
-        the field or *roi* (as :meth:`jacobian_determinant` takes it)."""
+        the field or the voxels *roi* selects (as :meth:`jacobian_determinant`
+        takes it)."""
         return float(self._handle.folding_fraction(roi))
 
     @property

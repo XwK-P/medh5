@@ -173,6 +173,10 @@ t.is_invertible                    # the file claims the mapping is invertible
 t.inverse()                        # the stored inverse; a chain's or composite's
                                    # steps inverted in reverse; or None
 t.transform_points(points)         # world -> world, in t.units
+# A displacement field, w, also has:
+# w.jacobian_determinant(roi)      # det(I + du/dx): the whole field's, at the
+#                                  # voxels roi selects (== w.jacobian_determinant()[roi])
+# w.folding_fraction(roi)          # the fraction of those voxels with det <= 0
 
 from medh5.transforms import jacobian_determinant, target_registration_error
 target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ...}

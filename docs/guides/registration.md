@@ -100,6 +100,13 @@ are NaN and `n` is 0, rather than a zero that reads as a perfect registration.
 `weights` are one per landmark, finite and non-negative, and not all zero;
 anything else is refused rather than averaged.
 
+A displacement field's `jacobian_determinant(roi)` and `folding_fraction(roi)`
+check it for folding (`det(I + du/dx) <= 0`). A region's determinant is the
+whole field's at the voxels it selects — its differences reach one voxel past
+the region — so tiles of a large field add up to the field, a strided region
+such as `np.s_[::2]` keeps a fold narrower than its step, and only the voxels
+the region needs are read.
+
 ## When there is no path
 
 `transform_between` returns `None` rather than raising, and rather than
