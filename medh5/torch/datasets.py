@@ -512,6 +512,10 @@ class GridPatchDataset(_Base):
     The cover is planned on the grid the images read share (the reference
     grid when none is read), so images on more than one grid are refused
     here rather than at the first item.
+
+    Each item's ``meta["cover"]`` is ``{"file": i, "index": k, "of": n}``: the
+    *k*-th of the *n* patches covering ``paths[i]``, which is what
+    :class:`~medh5.torch.GridStitcher` counts a file's completion by.
     """
 
     def __init__(
@@ -526,18 +530,24 @@ class GridPatchDataset(_Base):
         self.patch_size = patch_size
         self.overlap = int(overlap)
         self._plan: list[tuple[str, Patch]] = []
-        for path in self.paths:
+        self._cover: list[tuple[int, int, int]] = []
+        # Per file: the spatial shape and grid its cover is planned on, and
+        # where its patches start in the plan --- what a stitcher reads.
+        self._volumes: list[tuple[tuple[int, ...], str]] = []
+        self._starts: list[int] = []
+        for i, path in enumerate(self.paths):
             with self._scan(path) as sample:
                 planned = sample.grids[
                     self._images_grid(sample) or sample.reference_grid.grid_id
                 ]
                 shape, grid_id = planned.spatial_shape, planned.grid_id
-            self._plan.extend(
-                (path, patch)
-                for patch in grid_patches(
-                    shape, patch_size, overlap=self.overlap, grid_id=grid_id
-                )
+            patches = grid_patches(
+                shape, patch_size, overlap=self.overlap, grid_id=grid_id
             )
+            self._volumes.append((tuple(int(n) for n in shape), str(grid_id)))
+            self._starts.append(len(self._plan))
+            self._plan.extend((path, patch) for patch in patches)
+            self._cover.extend((i, k, len(patches)) for k in range(len(patches)))
 
     def __len__(self) -> int:
         return len(self._plan)
@@ -551,8 +561,10 @@ class GridPatchDataset(_Base):
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         path, patch = self._plan[index]
+        file, k, n = self._cover[index]
         with self._lease(path) as sample:
-            return self._item(sample, patch)
+            cover = {"file": file, "index": k, "of": n}
+            return self._item(sample, patch, {"cover": cover})
 
 
 class PairedPatchDataset(_Base):

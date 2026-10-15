@@ -75,10 +75,48 @@ ds = GridPatchDataset(paths, patch_size=(96, 96, 96), overlap=16,
                       images=["CT"])
 ```
 
-Every patch position, in order, with a recorded pad — so you can stitch the
-output back together. The tiling itself is `medh5.sampling.grid_patches(shape,
-patch_size, overlap=...)`, which needs no torch, for an inference loop of your
-own.
+Every patch position, in order, with a recorded pad, and each item's
+`meta["cover"]` — `{"file": i, "index": k, "of": n}`, the *k*-th of the *n*
+patches covering `paths[i]`. `GridStitcher` stitches the predictions back,
+in whatever order the loader delivers them, and hands back each file's volume
+as soon as its last patch arrives:
+
+```python
+from medh5.torch import GridPatchDataset, GridStitcher
+
+ds = GridPatchDataset(paths, patch_size=(8, 8, 8), overlap=2, images=["CT"])
+stitcher = GridStitcher(ds, mode="gaussian")      # or "constant": a plain mean
+loader = DataLoader(ds, batch_size=4, collate_fn=collate)
+for batch in loader:
+    predictions = batch["images"]["CT"]           # your model's output here
+    for path, volume in stitcher.add(predictions, batch["meta"]):
+        print(path, volume.shape)                 # one file, stitched
+stitcher.finish()
+```
+
+A prediction is shaped as its patch, after `channels` when the model returns
+channels (`GridStitcher(ds, channels=3)`); the padding a patch carries past the
+volume is cut off. Overlaps are blended with Gaussian weights, highest at a
+patch's centre, or averaged (`mode="constant"`). `stitcher.pending` maps each
+file not yet returned to the patches it is missing, and `finish()` refuses,
+naming every such file, rather than return a volume with holes —
+`finish(partial=True)` returns what arrived, `NaN` where nothing did. One
+accumulator is open per file in flight: a float32 volume per channel, and one
+of weights.
+
+The tiling itself is `medh5.sampling.grid_patches(shape, patch_size,
+overlap=...)`, and the stitching `medh5.sampling.PatchAggregator`, which need no
+torch, for an inference loop of your own:
+
+```python
+from medh5.sampling import PatchAggregator, grid_patches
+
+volume = s.images["CT"].read(physical=True)
+aggregator = PatchAggregator(volume.shape, mode="gaussian")
+for patch in grid_patches(volume.shape, (8, 8, 8), overlap=2):
+    aggregator.add(patch.apply_padding(volume[patch.slices]), patch)
+assert np.allclose(aggregator.result(), volume, atol=1e-3)
+```
 
 ### PairedPatchDataset — the same place at two visits
 
@@ -210,11 +248,36 @@ loader = DataLoader(ds, batch_size=4, sampler=FileGroupedSampler(ds, seed=0),
 
 The order is a function of `(seed, epoch)`, and the epoch is the dataset's:
 `ds.set_epoch(epoch)` redraws the patches and reorders the files. Pass it
-instead of `shuffle=True`, not with it. It works with the four datasets above,
-which say which items read which file (`file_groups()`) — `ClinicalTaskDataset`
-does not, and is refused — and with workers `samples_per_volume` should be a
-multiple of `batch_size`, since a file whose items straddle two batches is
-opened by both workers.
+instead of `shuffle=True`, not with it. It works with the four datasets above
+and with `ClinicalTaskDataset`, whose rows it groups by subject (every row of a
+subject reads the same sources); each says which items read which file
+(`file_groups()`). With workers `samples_per_volume` should be a multiple of
+`batch_size`, since a file whose items straddle two batches is opened by both
+workers.
+
+Under DDP, `FileGroupedSampler` takes the place of `DistributedSampler`, which
+deals items round-robin and so hands every rank a patch of every file. Each
+rank takes one contiguous share of the epoch's order — the same length on
+every rank, every epoch, so no collective waits on a rank that ran out — and a
+file is split between ranks only where a share ends: at most
+`num_replicas - 1` files an epoch are read by two neighbouring ranks.
+`num_replicas` and `rank` default to `torch.distributed`'s world size and rank,
+when a process group is initialised:
+
+```python
+from medh5.torch import FileGroupedSampler
+
+sampler = FileGroupedSampler(ds, seed=0, num_replicas=2, rank=1)
+loader = DataLoader(ds, batch_size=4, sampler=sampler, collate_fn=collate)
+for epoch in range(epochs):
+    ds.set_epoch(epoch)
+    sampler.set_epoch(epoch)     # on every rank, so the ranks agree on the order
+    for batch in loader:
+        pass
+```
+
+The epoch's order is extended cyclically to a multiple of `num_replicas`, as
+`DistributedSampler` pads; `drop_last=True` cuts it to one instead.
 
 The cache is shared by the threads of a process and locked. A handle is held
 for the length of an item, so a thread-based loader never has one closed under
@@ -300,6 +363,7 @@ batch = next(iter(DataLoader(train, batch_size=8, collate_fn=collate_clinical)))
 | `base` | The directory relative source URIs resolve against — the manifest's own directory when omitted |
 | `strict` | Refuse a task whose preflight has findings (default), or keep only the unaffected rows |
 | `preflight` | This manifest's `Preflight`, when it has been run already; one of another task, or another instance of this one, is refused (T404). Run here when omitted |
+| `class_ignore` | Add `class_ignore[slot]`, the ignore mask per class (below); off by default |
 
 A batch, for `B` rows:
 
@@ -311,6 +375,7 @@ A batch, for `B` rows:
 | `image_time[slot][...]` | `(B, 2)`, `(B,)` | The image's acquisition (`start_age_h`) and availability (`available_age_h`), as ages before the cutoff, with `start_known` and `available_known` |
 | `label[slot]`, `annotated[slot]` | `(B, K, *patch)`, `(B, K)` | Supervision for the slot's `classes`, and whether each was examined (coverage) |
 | `ignore[slot]` | `(B, *patch)` bool | Voxels a loss must not score: padding, and the ignore regions of the annotations that label or examined one of the slot's `classes` (an annotation of other classes only has no say). It is one mask for every class, so with several classes a region one annotation ignores is masked for the others' supervision too |
+| `class_ignore[slot]` | `(B, K, *patch)` bool | With `class_ignore=True`: channel *k* is the padding and the ignore regions of the annotations that label or examined class *k* only (1.0 §7.7: a region belongs to its annotation), in the slot's class order; all `True` where the slot is empty. `ignore` is the union of its channels |
 | `events[...]` | `(B, N)`, `(B, N, 2)` | The admitted versions in input order, padded to the longest history; `mask` marks real events, `length` counts them (below) |
 | `documents[...]` | `(B, M, D)`, `(B, M)`, `(B, M, 2)` | `features` of the admitted documents, `event` (the owning version's position in `events`), `start_age_h` and `available_age_h` with their `*_known`; `mask` and `length` |
 | `target["value"]`, `target["observed"]` | `(B,)` | The label, and whether it is observed (a censored row is not) |
@@ -372,8 +437,59 @@ Annotations arrive as `int64` label volumes with their own grid's affine, and
 every voxel of the §7.7 ignore region is `65535` whichever encoding stores it —
 pass `ignore_index=65535` to the loss.
 
-The affine construction (`affine_for`, `convert_affine`) does not import MONAI,
-so the geometry is testable — and tested — in an environment without it.
+An identifier a sample does not have — a `frame_uid`, `value_units`,
+`modality`, `timepoint`, `subject_id`, or the `sample_key` of a file outside a
+collection — is `"none"` in `meta["medh5"]`, MONAI's own spelling: its
+`list_data_collate` refuses a `None`, so samples without a frame of reference
+(every NIfTI and nnU-Net import) could not be batched. `from_metatensor` reads
+`"none"` back as `None`.
+
+### A reader for `LoadImage`
+
+`MedH5Reader` is a MONAI `ImageReader`, so `LoadImage` and `LoadImaged` open a
+`.medh5` — or a collection member, written `path::key` as a split names it —
+with the affine `to_metatensor` gives:
+
+```python
+from monai.transforms import Compose, EnsureChannelFirstd, LoadImaged
+from medh5.monai import MedH5Reader
+
+load = Compose([
+    LoadImaged("image", reader=MedH5Reader("CT")),
+    LoadImaged("label", reader=MedH5Reader(annotation="organs"), dtype=None),
+    EnsureChannelFirstd(["image", "label"]),
+])
+item = load({"image": "case.medh5", "label": "case.medh5"})
+member = LoadImaged("image", reader=MedH5Reader("CT"))({"image": "shard.medh5c::case_0001"})
+```
+
+`MedH5Reader()` without an image reads the sample's only image, and refuses a
+sample holding several, naming them. `annotation=` reads a voxel annotation as
+`to_dict` does — `int64`, `65535` in the ignore region — so pass `dtype=None` to
+`LoadImaged`, which otherwise casts to `float32`. Several files given to one
+call stack as channels, only when they share one grid. The reader leases each
+file from the per-process handle cache, so a worker opens a file once however
+many items read it.
+
+`LoadMedH5d` is `to_dict` as a dictionary transform: one key naming the sample,
+and one output key per image and annotation, read from one lease:
+
+```python
+from monai.transforms import Compose, EnsureChannelFirstd, Spacingd
+from medh5.monai import LoadMedH5d
+
+pipeline = Compose([
+    LoadMedH5d("path", images=["CT"], annotations=["organs"]),
+    EnsureChannelFirstd(["CT", "organs"]),
+    Spacingd(["CT", "organs"], pixdim=(1.5, 1.5, 1.5), mode=("bilinear", "nearest")),
+])
+item = pipeline({"path": "case.medh5"})
+```
+
+`import medh5.monai` imports no MONAI: the reader and the transform subclass
+MONAI's, and are loaded when they are first asked for. The affine construction
+(`affine_for`, `convert_affine`) does not import MONAI either, so the geometry is
+testable — and tested — in an environment without it.
 
 ## Related
 

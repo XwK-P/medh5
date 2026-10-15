@@ -3237,6 +3237,12 @@ medh5.labels.load_file	function	(path)
 medh5.labels.register	function	(name, label_set)
 medh5.labels.unregister	function	(name)
 medh5.monai	module
+medh5.monai.LoadMedH5d	class	(keys='path', *, images=None, annotations=(), space=None, physical=True, allow_missing_keys=False) bases=
+medh5.monai.LoadMedH5d.__call__	method	(data)
+medh5.monai.MedH5Reader	class	(image=None, *, annotation=None, sample_key=None, physical=True, space=None, level=0, dtype=<value>) bases=
+medh5.monai.MedH5Reader.get_data	method	(img)
+medh5.monai.MedH5Reader.read	method	(data, **kwargs)
+medh5.monai.MedH5Reader.verify_suffix	method	(filename)
 medh5.monai.SPACES	constant	tuple
 medh5.monai.affine_for	function	(sample, image_id, *, space=None, level=0)
 medh5.monai.available	function	()
@@ -3412,6 +3418,7 @@ medh5.sample.annotation_id	function	(reference)
 medh5.sample.create	function	(path, *, sample_id=None, subject_id=None, codec='balanced', profiles=None)
 medh5.sample.open_sample	function	(path, mode='r')
 medh5.sampling	module
+medh5.sampling.BLEND_MODES	constant	tuple
 medh5.sampling.PAIR_MODES	constant	tuple
 medh5.sampling.PairReport	class	(files=0, pairs=0, skipped=<factory>) bases=
 medh5.sampling.PairReport.add_skip	method	(path)
@@ -3432,6 +3439,17 @@ medh5.sampling.Patch.slices	field
 medh5.sampling.Patch.strategy	field
 medh5.sampling.Patch.to_json	method	()
 medh5.sampling.Patch.used_index	field
+medh5.sampling.PatchAggregator	class	(spatial_shape, *, channels=None, mode='gaussian', sigma_scale=0.125, dtype=<value>, grid_id=None) bases=
+medh5.sampling.PatchAggregator.add	method	(prediction, patch)
+medh5.sampling.PatchAggregator.channels	property
+medh5.sampling.PatchAggregator.count	property
+medh5.sampling.PatchAggregator.coverage	property
+medh5.sampling.PatchAggregator.dtype	property
+medh5.sampling.PatchAggregator.grid_id	property
+medh5.sampling.PatchAggregator.mode	property
+medh5.sampling.PatchAggregator.result	method	(*, uncovered=nan)
+medh5.sampling.PatchAggregator.sigma_scale	property
+medh5.sampling.PatchAggregator.spatial_shape	property
 medh5.sampling.PatchSampler	class	(patch_size, *, strategy='balanced', foreground_prob=0.5, foreground_classes=None, class_weights='uniform') bases=
 medh5.sampling.PatchSampler.class_weights	property
 medh5.sampling.PatchSampler.draw	method	(sample, annotation=None, rng=None, *, grid=None)
@@ -3451,6 +3469,7 @@ medh5.sampling.TimepointPairSampler	class	(mode='consecutive') bases=
 medh5.sampling.TimepointPairSampler.__call__	method	(sample)
 medh5.sampling.TimepointPairSampler.mode	property
 medh5.sampling.TimepointPairSampler.pairs	method	(sample)
+medh5.sampling.blend_weights	function	(patch_size, *, mode='gaussian', sigma_scale=0.125)
 medh5.sampling.coerce_patch_size	function	(patch_size, ndim)
 medh5.sampling.grid_patches	function	(shape, patch_size, *, overlap=0, grid_id=None)
 medh5.sampling.iter_patches	function	(sample, sampler, *, annotation=None, n=1, rng=None)
@@ -3735,9 +3754,10 @@ medh5.torch	module
 medh5.torch.ALIGNMENTS	constant	tuple
 medh5.torch.AVAILABLE	constant	bool
 medh5.torch.CACHE	constant	medh5.torch.handles.HandleCache
-medh5.torch.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None) bases=
+medh5.torch.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, class_ignore=False) bases=
 medh5.torch.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.ClinicalTaskDataset.__len__	method	()
+medh5.torch.ClinicalTaskDataset.file_groups	method	()
 medh5.torch.ConceptVocabulary	class	(concepts, stats=<factory>, fitted_on=None, units=<factory>, categories=<factory>) bases=
 medh5.torch.ConceptVocabulary.__len__	method	()
 medh5.torch.ConceptVocabulary.categories	field
@@ -3757,15 +3777,21 @@ medh5.torch.ConceptVocabulary.stats	field
 medh5.torch.ConceptVocabulary.to_json	method	()
 medh5.torch.ConceptVocabulary.units	field
 medh5.torch.ConceptVocabulary.value_index	method	(token, text)
-medh5.torch.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0) bases=
+medh5.torch.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0, num_replicas=None, rank=None, drop_last=False) bases=
 medh5.torch.FileGroupedSampler.__iter__	method	()
 medh5.torch.FileGroupedSampler.__len__	method	()
 medh5.torch.FileGroupedSampler.groups	property
+medh5.torch.FileGroupedSampler.num_replicas	property
+medh5.torch.FileGroupedSampler.rank	property
 medh5.torch.FileGroupedSampler.set_epoch	method	(epoch)
 medh5.torch.GridPatchDataset	class	(paths, patch_size, *, overlap=0, **kwargs) bases=
 medh5.torch.GridPatchDataset.__getitem__	method	(index)
 medh5.torch.GridPatchDataset.__len__	method	()
 medh5.torch.GridPatchDataset.file_groups	method	()
+medh5.torch.GridStitcher	class	(dataset, *, channels=None, mode='gaussian', sigma_scale=0.125, dtype=<value>) bases=
+medh5.torch.GridStitcher.add	method	(predictions, meta)
+medh5.torch.GridStitcher.finish	method	(*, partial=False)
+medh5.torch.GridStitcher.pending	property
 medh5.torch.HandleCache	class	(maxsize=32) bases=
 medh5.torch.HandleCache.__len__	method	()
 medh5.torch.HandleCache.clear	method	()
@@ -3830,9 +3856,10 @@ medh5.torch.VolumeDataset.__getitem__	method	(index)
 medh5.torch.VolumeDataset.__len__	method	()
 medh5.torch.VolumeDataset.file_groups	method	()
 medh5.torch.clinical	module
-medh5.torch.clinical.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None) bases=
+medh5.torch.clinical.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, class_ignore=False) bases=
 medh5.torch.clinical.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.clinical.ClinicalTaskDataset.__len__	method	()
+medh5.torch.clinical.ClinicalTaskDataset.file_groups	method	()
 medh5.torch.clinical.ConceptVocabulary	class	(concepts, stats=<factory>, fitted_on=None, units=<factory>, categories=<factory>) bases=
 medh5.torch.clinical.ConceptVocabulary.__len__	method	()
 medh5.torch.clinical.ConceptVocabulary.categories	field
@@ -3904,13 +3931,20 @@ medh5.torch.handles.worker_init_fn	function	(worker_id)
 medh5.torch.open_cached	function	(path, sample_key=None)
 medh5.torch.require_torch	function	()
 medh5.torch.samplers	module
-medh5.torch.samplers.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0) bases=
+medh5.torch.samplers.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0, num_replicas=None, rank=None, drop_last=False) bases=
 medh5.torch.samplers.FileGroupedSampler.__iter__	method	()
 medh5.torch.samplers.FileGroupedSampler.__len__	method	()
 medh5.torch.samplers.FileGroupedSampler.groups	property
+medh5.torch.samplers.FileGroupedSampler.num_replicas	property
+medh5.torch.samplers.FileGroupedSampler.rank	property
 medh5.torch.samplers.FileGroupedSampler.set_epoch	method	(epoch)
 medh5.torch.set_cache_size	function	(maxsize)
 medh5.torch.stack_images	function	(batch, order)
+medh5.torch.stitch	module
+medh5.torch.stitch.GridStitcher	class	(dataset, *, channels=None, mode='gaussian', sigma_scale=0.125, dtype=<value>) bases=
+medh5.torch.stitch.GridStitcher.add	method	(predictions, meta)
+medh5.torch.stitch.GridStitcher.finish	method	(*, partial=False)
+medh5.torch.stitch.GridStitcher.pending	property
 medh5.torch.worker_init_fn	function	(worker_id)
 medh5.transforms	module
 medh5.transforms.AffineTransform	class	(handle) bases=medh5.transforms.Transform

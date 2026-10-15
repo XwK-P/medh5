@@ -24,6 +24,11 @@ things to a loss:
     come from after the cutoff; a 0 in an unexamined class is not a negative;
 ``ignore[slot]``
     voxels a loss must not score (§7.7 ignore regions, and padding);
+``class_ignore[slot]``
+    with ``class_ignore=True``, the same per class, ``(K, *patch)``: channel
+    *k* is the padding and the ignore regions of the annotations that label
+    or examined class *k* only, so one rater's ignore band does not mask
+    another rater's class; ``ignore`` is their union;
 ``target["observed"]``
     whether the row's target is observed; a censored row trains its inputs
     with the target masked out;
@@ -73,6 +78,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5._files import write_text
 from medh5.cache import (
     CacheReport,
     FeatureCache,
@@ -281,12 +287,23 @@ class ConceptVocabulary:
 
     @property
     def digest(self) -> str:
+        """``sha256:`` of the vocabulary's JSON, sorted and without whitespace.
+
+        Not 1.0 §5.1's canonical JSON: non-ASCII text is ``\\u``-escaped here,
+        where §5.1 writes it as UTF-8.  It stays so (2.1.0 decision D34): a
+        feature cache records this digest to say which encoder built it
+        (``medh5.cache/1``), and changing it would make every cache built with
+        a non-ASCII concept stale for no gain in correctness.
+        """
         text = json.dumps(self.to_json(), sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def save(self, path: PathLike) -> Path:
+        """Write the vocabulary to *path*, whole: through a temporary renamed
+        over it, so a reader never sees half of one, and a failed write leaves
+        the previous vocabulary in place."""
         path = Path(path)
-        path.write_text(json.dumps(self.to_json(), indent=2) + "\n", encoding="utf-8")
+        write_text(path, json.dumps(self.to_json(), indent=2) + "\n")
         return path
 
     @classmethod
@@ -447,6 +464,11 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
     ``encode(text) -> array`` that reads the admitted text when the item is
     built.  ``row_features`` is a patient-level cache built for this task; it
     is validated against the task (T404--T406) before any row reads it.
+
+    ``class_ignore=True`` adds ``class_ignore[slot]`` beside ``ignore[slot]``
+    for every slot with classes: one channel per class, in the slot's class
+    order, masked only by the annotations of that class (1.0 §7.7), for a loss
+    computed per class.
     """
 
     def __init__(
@@ -461,8 +483,10 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
         base: PathLike | None = None,
         strict: bool = True,
         preflight: Preflight | None = None,
+        class_ignore: bool = False,
     ) -> None:
         require_torch()
+        self.class_ignore = bool(class_ignore)
         self.task = task if isinstance(task, TaskManifest) else TaskManifest.load(task)
         self.base = Path(base) if base is not None else self.task.base
         report = preflight if preflight is not None else self.task.preflight(self.base)
@@ -537,6 +561,17 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
     def __len__(self) -> int:
         return len(self.rows)
 
+    def file_groups(self) -> list[list[int]]:
+        """Row indices per subject, in order of first appearance, for
+        :class:`~medh5.torch.FileGroupedSampler`: every row of a subject leases
+        the same sources.  A row without a subject is a group of its own."""
+        groups: dict[object, list[int]] = {}
+        for index, row in enumerate(self.rows):
+            subject = row.subject_index
+            key: object = ("row", index) if subject is None else subject
+            groups.setdefault(key, []).append(index)
+        return list(groups.values())
+
     def _placeholder_channels(self, report: Preflight) -> dict[str, int]:
         """Per slot some row leaves empty, its placeholder's channel extent.
 
@@ -605,6 +640,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                 "label": np.zeros((len(classes), *shape), dtype=np.float32),
                 "annotated": np.zeros(len(classes), dtype=bool),
                 "ignore": np.ones(shape, dtype=bool),
+                "class_ignore": np.ones((len(classes), *shape), dtype=bool),
                 "time": _no_time(),
             }
         image = sample.images[fill.image_id]
@@ -636,6 +672,10 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
         # Padding is never scored; inside the window, the annotations decide.
         inner = [s.stop - s.start for s in roi]
         ignore = np.pad(np.zeros(inner, dtype=bool), pad, constant_values=True)
+        # Per class, the ignore regions of the annotations that label or
+        # examined it (§7.7: a region belongs to its annotation); `ignore` is
+        # their union.
+        class_ignore = np.repeat(ignore[None], len(classes), axis=0)
         # Labels are supervision, like the target: read from every annotation
         # on the grid, including ones drawn after the cutoff.  They never enter
         # an input --- the ROI above was centred on eligible annotations only.
@@ -660,9 +700,13 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                     label[i] = np.maximum(label[i], plane)
             for i, c in enumerate(classes):
                 annotated[i] |= c in examined
-            ignore |= np.pad(
+            region = np.pad(
                 sample.ignore_region(ann_id, list(roi)), pad, constant_values=True
             )
+            ignore |= region
+            for i, c in enumerate(classes):
+                if c in present or c in examined:
+                    class_ignore[i] |= region
         time = _no_time()
         subject = row.subject
         if subject is not None and fill.event_id is not None:
@@ -681,6 +725,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             "label": label,
             "annotated": annotated,
             "ignore": ignore,
+            "class_ignore": class_ignore,
             "time": time,
         }
 
@@ -891,6 +936,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             label: dict[str, Any] = {}
             annotated: dict[str, Any] = {}
             ignore: dict[str, Any] = {}
+            class_ignore: dict[str, Any] = {}
             times: dict[str, Any] = {}
             visits: dict[str, Any] = {}
             for slot in self.slots:
@@ -912,6 +958,8 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                 if slot.classes:
                     label[slot.name] = to_tensor(read["label"])
                     annotated[slot.name] = to_tensor(read["annotated"])
+                    if self.class_ignore:
+                        class_ignore[slot.name] = to_tensor(read["class_ignore"])
                 visits[slot.name] = {
                     "image_id": fill.image_id,
                     "event_id": fill.event_id,
@@ -960,6 +1008,8 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             if label:
                 item["label"] = label
                 item["annotated"] = annotated
+            if class_ignore:
+                item["class_ignore"] = class_ignore
             if reads_documents:
                 docs = self._document_features(row, samples)
                 assert docs is not None
@@ -1055,7 +1105,7 @@ def _no_events() -> dict[str, npt.NDArray[Any]]:
 
 
 _SEQUENCES = ("events", "documents")
-_SLOTTED = ("images", "valid", "ignore", "label")
+_SLOTTED = ("images", "valid", "ignore", "class_ignore", "label")
 
 
 def collate_clinical(batch: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
