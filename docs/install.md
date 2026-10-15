@@ -58,7 +58,7 @@ which cannot load the first. medh5 is not yet audited for running without the
 GIL, so it asks for it: importing medh5 turns the GIL back on, and Python says
 so once with a `RuntimeWarning`. Everything works as it does on a regular
 CPython; nothing runs in parallel that would not there. Running without the GIL
-is planned for 2.2.
+is planned for 2.2; see [Threads, processes and open files](explanation/concurrency.md).
 
 Anywhere else, pip builds medh5 from its source package instead. That takes
 several minutes and needs:

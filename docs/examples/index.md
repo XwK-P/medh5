@@ -201,7 +201,8 @@ they exist), ≈14 % on its own. Reading the clinical tables twice — hashed,
 then validated — is not where the time goes: every HDF5 read with its
 decompression, in both passes, is 6.5 %, so one pass would save 3–4 % and tie
 the digest code to clinical parsing. Threads do not help — every HDF5 call
-holds one lock; four threads ran slower than one. Items with notes are bound by
+holds one lock; four threads ran slower than one
+([why](../explanation/concurrency.md)). Items with notes are bound by
 the deliberately naive `HashingTextEncoder`: without documents the same items
 build at ≈130 per second.
 

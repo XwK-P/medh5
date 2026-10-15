@@ -941,7 +941,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `PairedPatchDataset` | class | Corresponding patches from two visits of one subject (§3.7, §10). | [PyTorch and MONAI › PairedPatchDataset — the same place at two visits](torch.md#pairedpatchdataset--the-same-place-at-two-visits) |
 | `PairReport` | class | What a paired dataset kept and what it skipped. |  |
 | `Patch` | class | One draw: where to read, and how the location was chosen. |  |
-| `PatchDataset` | class | `samples_per_volume` patches from each file, drawn by a sampler. | [PyTorch and MONAI › PatchDataset — random patches](torch.md#patchdataset--random-patches) |
+| `PatchDataset` | class | `samples_per_volume` patches from each file, drawn by a sampler. | [Threads, processes and open files › Fork and exec](../explanation/concurrency.md#fork-and-exec) |
 | `PatchSampler` | class | Choose patch windows in a volume (spec §14.3). | [PyTorch and MONAI › PatchDataset — random patches](torch.md#patchdataset--random-patches) |
 | `require_torch` | function | Without PyTorch, raise an `ImportError` that says how to install it — or, when it is installed and fails to import, why. |  |
 | `set_cache_size` | function | Resize this process's cache: how many files each worker keeps open. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
@@ -949,7 +949,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `TimepointPair` | class | One ordered pair of visits, and the change label spanning it, if any. |  |
 | `TimepointPairSampler` | class | Enumerate the visit pairs a longitudinal model trains on (§3.7, §9). | [PyTorch and MONAI › PairedPatchDataset — the same place at two visits](torch.md#pairedpatchdataset--the-same-place-at-two-visits) |
 | `VolumeDataset` | class | One item per file: the whole volume, eagerly read. | [PyTorch and MONAI › VolumeDataset — whole volumes](torch.md#volumedataset--whole-volumes) |
-| `worker_init_fn` | function | `DataLoader(worker_init_fn=...)`: drop handles inherited across `fork` (in a process that opened them, close them; see `HandleCache.clear`). | [PyTorch and MONAI › The DataLoader](torch.md#the-dataloader) |
+| `worker_init_fn` | function | `DataLoader(worker_init_fn=...)`: drop handles inherited across `fork` (in a process that opened them, close them; see `HandleCache.clear`). | [Threads, processes and open files › Fork and exec](../explanation/concurrency.md#fork-and-exec) |
 
 ## `medh5.torch.clinical` { #medh5-torch-clinical }
 
@@ -977,7 +977,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `GridPatchDataset` | class | Deterministic sliding-window cover of every file — the inference path. | [PyTorch and MONAI › GridPatchDataset — deterministic tiling, for inference](torch.md#gridpatchdataset--deterministic-tiling-for-inference) |
 | `LABEL_FORMATS` | constant (`tuple`) |  |  |
 | `PairedPatchDataset` | class | Corresponding patches from two visits of one subject (§3.7, §10). | [PyTorch and MONAI › PairedPatchDataset — the same place at two visits](torch.md#pairedpatchdataset--the-same-place-at-two-visits) |
-| `PatchDataset` | class | `samples_per_volume` patches from each file, drawn by a sampler. | [PyTorch and MONAI › PatchDataset — random patches](torch.md#patchdataset--random-patches) |
+| `PatchDataset` | class | `samples_per_volume` patches from each file, drawn by a sampler. | [Threads, processes and open files › Fork and exec](../explanation/concurrency.md#fork-and-exec) |
 | `VolumeDataset` | class | One item per file: the whole volume, eagerly read. | [PyTorch and MONAI › VolumeDataset — whole volumes](torch.md#volumedataset--whole-volumes) |
 
 ## `medh5.torch.handles` { #medh5-torch-handles }
@@ -989,7 +989,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `HandleCache` | class | PID-scoped, thread-safe LRU cache of open samples. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
 | `open_cached` | function | Open a sample — or a collection member — through the per-worker cache. |  |
 | `set_cache_size` | function | Resize this process's cache: how many files each worker keeps open. | [PyTorch and MONAI › Keeping a file's items together](torch.md#keeping-a-files-items-together) |
-| `worker_init_fn` | function | `DataLoader(worker_init_fn=...)`: drop handles inherited across `fork` (in a process that opened them, close them; see `HandleCache.clear`). | [PyTorch and MONAI › The DataLoader](torch.md#the-dataloader) |
+| `worker_init_fn` | function | `DataLoader(worker_init_fn=...)`: drop handles inherited across `fork` (in a process that opened them, close them; see `HandleCache.clear`). | [Threads, processes and open files › Fork and exec](../explanation/concurrency.md#fork-and-exec) |
 
 ## `medh5.torch.samplers` { #medh5-torch-samplers }
 

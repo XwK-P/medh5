@@ -267,6 +267,14 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
         "fails the next guide's preflight (T302); amend a copy.",
         None,
     ),
+    (
+        "Blosc2 decoding said to release HDF5's lock",
+        r"Blosc2[^.]{0,120}?(outside (HDF5's |the )?(global )?lock|"
+        r"releases? (HDF5's |the )(global )?lock)",
+        "only a window read decompresses Blosc2 blocks outside the lock; a whole "
+        "read, and every other filter, decompresses under it.",
+        r"window",
+    ),
 )
 
 

@@ -221,6 +221,9 @@ ownership on every access, so a forked worker abandons the parent's handles on
 first use rather than reading through or closing them. The callback just does
 that reset eagerly, at worker start, instead of lazily.
 
+[Threads, processes and open files](../explanation/concurrency.md) covers
+workers, threads and `fork` together.
+
 If you need your one `worker_init_fn` slot for seeding or other setup, call it
 from your own:
 
