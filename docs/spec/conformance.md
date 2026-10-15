@@ -5,17 +5,18 @@ makes "conforming MEDH5 file" a claim somebody else can test.
 
 ## The corpus
 
-171 cases, each a file plus the **exact set of diagnostic codes** a conforming
-validator must emit for it. 57 are valid files an implementation must accept,
+172 cases, each a file plus the **exact set of diagnostic codes** a conforming
+validator must emit for it. 58 are valid files an implementation must accept,
 38 of them with specific warnings; 114 are invalid ones it must reject with
 specific errors. Between them they hold at least one case for every code in
 the specification's tables: 1.0 §15.2, and the codes [1.1](medh5-1.1.md) §11.2
 adds.
 
-36 of the cases are the `clinical` profile's (format 1.1): the worked example of
+37 of the cases are the `clinical` profile's (format 1.1): the worked example of
 1.1 §9.3 — two imaging visits, an intervening lab, a delayed report and its
 revision, a follow-up assessment — a one-visit history, time uncertainty,
-UTF-8 text, a vocabulary wider than the voxel class space, a collection mixing
+UTF-8 text, a shifted clock whose shift is withheld, a vocabulary wider than
+the voxel class space, a collection mixing
 1.0 and 1.1 members, a higher minor read as a projection, and one invalid file
 at least per clinical code. The cases of 1.0 are unchanged, and a 1.0 file stays a
 1.0 file: nothing in the suite asks an implementation of 1.0 to read clinical
@@ -28,7 +29,7 @@ against each other.
 ```
 $ medh5 conformance list
 $ medh5 conformance run /tmp/corpus
-171/171 cases pass
+172/172 cases pass
 ```
 
 A test in this repository asserts that the specification's tables (1.0 §15.2
@@ -39,12 +40,12 @@ code the other lacks.
 
 ```
 $ medh5 conformance publish suite/
-wrote the suite to suite/: 171 cases, see suite/README.md
+wrote the suite to suite/: 172 cases, see suite/README.md
 ```
 
 | File | |
 |---|---|
-| `*.medh5`, `*.medh5c` | the cases: 165 samples and six collections |
+| `*.medh5`, `*.medh5c` | the cases: 166 samples and six collections |
 | `expected.json` | per case: the clause, the level, and the expected codes |
 | `codes.json` | the diagnostic code table as data (1.0 §15.2 and 1.1 §11.2) |
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |
@@ -120,7 +121,7 @@ one JSON array:
 
 ```
 $ medh5 conformance score suite/ results.json
-171/171 cases pass
+172/172 cases pass
 ```
 
 The scorer also takes the shape `medh5 validate --json` reports a file in: a
@@ -217,7 +218,7 @@ publish("suite/")
 check_checksums("suite/")           # names of files whose bytes changed
 
 results = score("suite/", submitted)
-summarize(results)                  # {"cases": 171, "passed": 171, "ok": True, ...}
+summarize(results)                  # {"cases": 172, "passed": 172, "ok": True, ...}
 ```
 
 ## Profiles

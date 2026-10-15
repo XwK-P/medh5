@@ -191,7 +191,8 @@ pub struct SampleWriter {
     /// amendment never mixes two (§13.1).
     digest_algo: String,
     /// The `created` the commit writes in place of now: the conformance
-    /// corpus pins it, so a suite built twice is the same bytes.
+    /// corpus pins it, so a suite built twice is the same bytes, and a strict
+    /// scrub cuts it to its year.
     pub(crate) created: Option<String>,
     /// Every path but `meta` at which the amended file held its `/meta` by a
     /// hard link.  Until the commit re-links each to the document it writes,

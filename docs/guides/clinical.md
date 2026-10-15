@@ -229,6 +229,24 @@ with medh5.open("P-03-dropped.medh5") as s:
     assert s.version == "1.0"
 ```
 
+## Share it de-identified
+
+De-identifying a history is another derivation (1.1 §10). `medh5 scrub --apply` moves every time on
+a `utc` clock by the one shift `/meta`'s dates take — effective and available bounds alike, so a
+cutoff moved by the shift admits the same versions — makes the clock `shifted_utc`, and re-mints the
+clock, event, record, document and encounter ids from the salt, so a subject's fragments scrubbed
+with one salt still share a clock. The text keeps its bytes, and so every span; it is
+de-identified by a tool that handles free text, and attested with `--attest-text`:
+
+<!-- illustrative -->
+```bash
+medh5 scrub cohort/P-03.medh5 --apply --salt "$SALT" --date-shift-range=-400:-100 \
+    --attest-text "philter 2.1" --out shared/P-03.medh5
+```
+
+[De-identify and publish](deidentify.md#4-a-clinical-sample) has the rules it applies and what
+blocks it.
+
 ## Check it
 
 ```bash

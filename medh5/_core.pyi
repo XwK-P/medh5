@@ -493,6 +493,7 @@ __all__ = [
     "schema",
     "schema_text",
     "scrub_apply",
+    "scrub_check",
     "scrub_finding",
     "scrub_finding_json",
     "scrub_finding_line",
@@ -1774,11 +1775,35 @@ def scrub_apply(
     profile: str = ...,
     salt: str = ...,
     date_shift_days: int | None = None,
+    date_shift_range: tuple[int, int] | None = None,
     performed_by: str | None = None,
     pseudonymise_ids: bool = False,
+    withhold_shift: bool | None = None,
+    out: str | os.PathLike[str] | None = None,
+    out_dir: str | os.PathLike[str] | None = None,
+    attest_text: str | None = None,
 ) -> dict[Any, Any]:
     """Act on the actionable findings and write the §11.4 attestation.  The
     report's fields.
+    """
+    ...
+
+def scrub_check(
+    apply_changes: bool,
+    *,
+    profile: str = ...,
+    salt: str = ...,
+    date_shift_days: int | None = None,
+    date_shift_range: tuple[int, int] | None = None,
+    performed_by: str | None = None,
+    pseudonymise_ids: bool = False,
+    withhold_shift: bool | None = None,
+    out: str | os.PathLike[str] | None = None,
+    out_dir: str | os.PathLike[str] | None = None,
+    attest_text: str | None = None,
+) -> None:
+    """Refuse what these options cannot do, before any file is read
+    (`ScrubOptions::check`).
     """
     ...
 

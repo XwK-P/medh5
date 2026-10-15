@@ -111,7 +111,9 @@ def write_sample(
                 )
         if index and masks is not None:
             w.build_index(max_coords=64)
-        w.deidentification(method="dicom-psi-profile", date_shift_days=-117)
+        # No amount of shift stated: a file shared beyond whoever holds the
+        # key does not state one (§11.4), and a scrub reports one that does.
+        w.deidentification(method="dicom-psi-profile")
     return path
 
 

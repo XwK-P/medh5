@@ -17,7 +17,7 @@
 //! on a frame of reference, so it becomes a stable hash of itself.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use indexmap::IndexMap;
@@ -25,14 +25,18 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use crate::array::{DType, NdArray};
-use crate::curation::identity::{ID_SOURCE, PSEUDONYM_SOURCE};
+use crate::curation::identity::{shift_of, ID_SOURCE, PSEUDONYM_SOURCE};
 use crate::document::{SampleDocument, META_DATASET};
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::{data, ops};
 use crate::json::{py_float, py_str, repr_list, repr_str};
-use crate::sample::writer::amend;
-use crate::sample::{frame_references, open_sample, Sample, FRAME_ATTRS};
+use crate::sample::writer::{amend, amend_into};
+use crate::sample::{frame_references, open_sample, FRAME_ATTRS};
 use crate::{Error, Result};
+
+mod clinical;
+
+pub use clinical::{CLINICAL, CLINICAL_CLOCK, CLINICAL_ID, CLINICAL_TEXT};
 
 pub const PROFILES: [&str; 2] = ["basic", "strict"];
 
@@ -191,9 +195,24 @@ pub const FREE_TEXT: usize = 200;
 /// Findings `--apply` never acts on by itself: every other record refers to
 /// the sample by these ids.
 pub const UNFIXABLE_LOCATIONS: [&str; 2] = ["identity.sample_id", "identity.subject_id"];
-/// Rules that only `--profile strict` acts on.
+/// Rules that only `--profile strict` acts on, as 2.0 had them.
+#[deprecated(since = "2.1.0", note = "lists only the rules of 2.0; use strict_rules(); removed in 3.0")]
 pub const STRICT_RULES: [&str; 6] =
     ["free_text", "staff_name", "person_name", "quasi_identifier", "age", "organization_name"];
+
+/// What [`strict_rules`] answers.
+const STRICT: &[&str] =
+    &["free_text", "staff_name", "person_name", "quasi_identifier", "age", "organization_name", DATE_SHIFT_RECORDED];
+
+/// Rules that only `--profile strict` acts on.  A slice, so a rule a later
+/// minor adds is not a break.
+pub fn strict_rules() -> &'static [&'static str] {
+    STRICT
+}
+
+/// A record that states the amount of its date shift (D14): one known date
+/// restores every other.
+pub const DATE_SHIFT_RECORDED: &str = "date_shift_recorded";
 /// Findings about what the sample is *called*.
 pub const IDENTITY_RULES: [&str; 2] = ["identity", "file_name"];
 
@@ -216,6 +235,9 @@ const ROOT_MANAGED_ATTRS: [&str; 7] =
 /// their own covers (the clinical profile).  Elsewhere a byte buffer or a
 /// type this tool cannot decode may hold text, so it is reported, not passed.
 const DEFINED_GROUPS: [&str; 6] = ["images", "annotations", "grids", "transforms", "index", "clinical"];
+
+/// The clinical profile's descriptor, which [`clinical::examine`] reads.
+const CLINICAL_META: &str = "clinical/meta";
 
 /// How many of the non-string datasets outside [`DEFINED_GROUPS`] the
 /// `not_checked` note names; the rest are counted.
@@ -380,6 +402,54 @@ fn id_tokens(text: &str, id: &str) -> Vec<(usize, usize)> {
 fn is_dicom_uid(text: &str) -> bool {
     static CELL: OnceLock<Regex> = OnceLock::new();
     anchored(regex(&CELL, r"^[0-9]+(\.[0-9]+){3,}$"), text)
+}
+
+/// A whole value that is a date in a locale's order: `DD.MM.YYYY`, or
+/// `DD/MM/YYYY` or `MM/DD/YYYY`, naming a real day under either order its
+/// separator allows.  Which number is the day is a guess, so it is reported,
+/// never shifted.
+fn is_locale_date(text: &str) -> bool {
+    static CELL: OnceLock<Regex> = OnceLock::new();
+    let pattern = regex(&CELL, r"^([0-9]{1,2})([./])([0-9]{1,2})([./])([0-9]{4})$");
+    let Some(c) = pattern.captures(text.trim()) else { return false };
+    if c[2] != c[4] {
+        return false;
+    }
+    let (Ok(a), Ok(b), Ok(year)) = (c[1].parse::<u32>(), c[3].parse::<u32>(), c[5].parse::<i64>()) else {
+        return false;
+    };
+    valid_date(year, b, a) || (&c[2] == "/" && valid_date(year, a, b))
+}
+
+/// A whole value that is a DICOM time (TM): `HHMMSS`, with an optional
+/// fraction of up to six digits.
+fn is_dicom_time(text: &str) -> bool {
+    static CELL: OnceLock<Regex> = OnceLock::new();
+    let pattern = regex(&CELL, r"^([0-9]{2})([0-9]{2})([0-9]{2})(?:\.[0-9]{1,6})?$");
+    let Some(c) = pattern.captures(text.trim()) else { return false };
+    let (Ok(h), Ok(m), Ok(sec)) = (c[1].parse::<u32>(), c[2].parse::<u32>(), c[3].parse::<u32>()) else {
+        return false;
+    };
+    h < 24 && m < 60 && sec <= 60
+}
+
+/// A key that names a time: one ending in `Time` or `_time`, so a six-digit
+/// id under any other key is not read as one.
+fn names_a_time(key: &str) -> bool {
+    key.ends_with("Time") || key.ends_with("_time")
+}
+
+/// A tool's timestamp already cut to its year, as `--profile strict` leaves it.
+fn is_year_stamp(text: &str) -> bool {
+    static CELL: OnceLock<Regex> = OnceLock::new();
+    regex(&CELL, r"^[0-9]{4}-01-01T00:00:00Z$").is_match(text)
+}
+
+/// `text` cut to its year, `YYYY-01-01T00:00:00Z`, so it stays an RFC 3339
+/// timestamp (E604); `None` when it does not open with a year.
+fn year_stamp(text: &str) -> Option<String> {
+    let year = text.get(..4).filter(|y| y.bytes().all(|b| b.is_ascii_digit()))?;
+    Some(format!("{year}-01-01T00:00:00Z"))
 }
 
 fn has_date(text: &str) -> bool {
@@ -662,6 +732,9 @@ struct Sweep<'r> {
     /// anything: a recorded 0 shifted nothing, so it silences nothing.
     recorded_shift: Option<i64>,
     dates_shifted: bool,
+    /// The dates were shifted by a withheld amount, though the activity that
+    /// says so is not written yet: `apply`'s re-scan, before it records it.
+    withheld: bool,
     /// Timepoint dates, by position, that disagree with the recorded shift.
     disagreeing: BTreeMap<usize, String>,
     /// The ids this run replaces, looked for in every other string.
@@ -682,6 +755,7 @@ impl<'r> Sweep<'r> {
             date_shift_days: None,
             recorded_shift: None,
             dates_shifted: false,
+            withheld: false,
             disagreeing: BTreeMap::new(),
             replaced: Vec::new(),
             unexamined: Vec::new(),
@@ -836,6 +910,18 @@ impl<'r> Sweep<'r> {
             let detail = if keyed { "a date attribute copied from the source" } else { WHOLE_DATE_DETAIL };
             return Some(self.date(&text, path, detail, review));
         }
+        if names_a_time(key) && matches!(value, Slot::Json(Value::String(s)) if is_dicom_time(s)) {
+            self.find(
+                "dicom_time",
+                path,
+                "a DICOM time (TM): beside a date it narrows an acquisition to the second, and a shift moves days, \
+                 not times --- a person must judge it",
+                Some(&text),
+                false,
+                review,
+            );
+            return Some(Kept::Same);
+        }
         None
     }
 
@@ -966,6 +1052,18 @@ impl<'r> Sweep<'r> {
                 _ => value.to_string(),
             };
         }
+        if is_locale_date(value) {
+            self.find(
+                "locale_date",
+                r#where,
+                "a date in a locale's order (DD.MM.YYYY, DD/MM/YYYY or MM/DD/YYYY): which number is the day is a \
+                 guess, so it is not shifted --- a person must judge it",
+                Some(value),
+                false,
+                review,
+            );
+            return value.to_string();
+        }
         let mut value = value.to_string();
         if has_uid_token(&value) {
             self.find(
@@ -1064,9 +1162,24 @@ impl<'r> Sweep<'r> {
     /// Every string in `/meta`; the cleaned document when writing.
     fn document(&mut self, doc: &Map<String, Value>) -> Map<String, Value> {
         let record = doc.get("deidentification").and_then(Value::as_object);
-        self.recorded_shift = recorded_shift(record.and_then(|r| r.get("date_shift_days")));
-        self.dates_shifted = self.recorded_shift.is_some();
-        self.disagreeing = self.recorded_shift.map(|days| disagreeing(doc, days)).unwrap_or_default();
+        let state = shifted(doc);
+        self.recorded_shift = match state {
+            Shifted::Recorded(days) => Some(days),
+            _ => None,
+        };
+        self.dates_shifted = state != Shifted::No || self.withheld;
+        self.disagreeing = if self.dates_shifted { disagreeing(doc, self.recorded_shift) } else { BTreeMap::new() };
+        if let Some(days) = self.recorded_shift {
+            self.find(
+                DATE_SHIFT_RECORDED,
+                "deidentification.date_shift_days",
+                "the record states the amount of its date shift, so one known date restores every other: withhold \
+                 it (--withhold-shift, D14) --- --profile strict withholds it",
+                Some(&days.to_string()),
+                false,
+                None,
+            );
+        }
         let mut out = doc.clone();
         let identity = doc.get("identity").and_then(Value::as_object).cloned().unwrap_or_default();
         out.insert("identity".into(), Value::Object(self.identity(&identity, doc)));
@@ -1441,7 +1554,16 @@ impl<'r> Sweep<'r> {
         let r#where = format!("provenance.activities[{}]", py_str(&id));
         let mut out = activity.clone();
         for (key, value) in activity {
-            if ["id", "type", "agent", "started", "ended"].contains(&key.as_str()) {
+            if key == "started" || key == "ended" {
+                if let Some(kept) = value.as_str().and_then(|t| self.tool_time(t, &format!("{}.{key}", r#where))) {
+                    match kept {
+                        Kept::Value(v) => out.insert(key.clone(), v),
+                        _ => out.remove(key),
+                    };
+                }
+                continue;
+            }
+            if ["id", "type", "agent"].contains(&key.as_str()) {
                 continue;
             }
             let path = format!("{}.{key}", r#where);
@@ -1463,6 +1585,54 @@ impl<'r> Sweep<'r> {
         }
         self.name(&id, &format!("{}.id", r#where));
         Value::Object(out)
+    }
+
+    /// A tool's timestamp (10.3): the root `created` attribute, or an
+    /// activity's `started` or `ended`.  It says when a tool ran, which dates
+    /// the acquisition when a converter ran beside the scanner.  `strict` cuts
+    /// it to its year; `basic` reports it once dates are shifted, since then
+    /// it is an unshifted time beside shifted ones, and leaves it.  What a
+    /// writing sweep leaves, when it changes it.
+    fn tool_time(&mut self, text: &str, r#where: &str) -> Option<Kept> {
+        if is_year_stamp(text) {
+            return None;
+        }
+        if self.strict {
+            self.find(
+                "tool_timestamp",
+                r#where,
+                "a tool's time: it dates the acquisition when the tool ran beside the scanner --- --profile strict \
+                 cuts it to its year",
+                Some(text),
+                true,
+                None,
+            );
+            if !self.writing {
+                return None;
+            }
+            return Some(match year_stamp(text) {
+                Some(year) => {
+                    self.actions.push(format!("{} cut to its year", r#where));
+                    Kept::Value(Value::String(year))
+                }
+                None => {
+                    self.actions.push(format!("{} removed", r#where));
+                    Kept::Drop
+                }
+            });
+        }
+        if self.dates_shifted {
+            self.find(
+                "tool_timestamp",
+                r#where,
+                "a tool's time, unshifted beside shifted dates: it may date the acquisition --- left as it is; \
+                 --profile strict cuts it to its year",
+                Some(text),
+                false,
+                None,
+            );
+        }
+        None
     }
 
     fn split(&mut self, claim: &Value, index: usize) -> Value {
@@ -1489,8 +1659,15 @@ impl<'r> Sweep<'r> {
     /// link holds one --- a later hard link, a soft link, a committed type ---
     /// and reaches every object once, at its first path, for what it holds.
     fn hdf5(&mut self, root: &hdf5::Group) -> Result<()> {
+        // Every commit stamps `created` afresh, so after a scrub it is the
+        // scrub's own time: `basic` passes it over, and `strict` cuts it
+        // (an amendment's root has none until the commit, which `apply` cuts).
+        if let (true, Ok(Some(created))) = (self.strict, attrs::get_str(root, "created")) {
+            self.tool_time(&created, "root.created");
+        }
         self.attributes(root, "root", &ROOT_MANAGED_ATTRS)?;
         let meta = ops::object_id_by_name(root, META_DATASET);
+        let profile_meta = crate::clinical::recognised(root);
         let links = links(root)?;
         let mut copies = Vec::new();
         let mut aliases = Vec::new();
@@ -1535,7 +1712,11 @@ impl<'r> Sweep<'r> {
                     self.attributes(d, &r#where, &skip)?;
                     // `/meta` under any name is the document `document` read.
                     let document = link.path == META_DATASET || (meta.is_some() && link.id == meta);
-                    if !document && self.dataset(d, &r#where, &link.path)? {
+                    // The profile's descriptor is examined with the profile,
+                    // whose clock it is, and never rewritten here: a changed
+                    // clock would reinterpret every time (1.1 §3).
+                    let descriptor = profile_meta && link.path == CLINICAL_META;
+                    if !document && !descriptor && self.dataset(d, &r#where, &link.path)? {
                         copies.extend(link.id);
                     }
                 }
@@ -2013,7 +2194,7 @@ fn escalate(report: &mut ScrubReport) {
         return;
     }
     for finding in &mut report.findings {
-        if STRICT_RULES.contains(&finding.rule.as_str())
+        if strict_rules().contains(&finding.rule.as_str())
             && finding.fixable
             && !UNFIXABLE_LOCATIONS.contains(&finding.r#where.as_str())
         {
@@ -2038,6 +2219,11 @@ pub fn scan(path: &Path, profile: &str) -> Result<ScrubReport> {
 /// [`scan`], looking for the `replaced` ids as well: only the run that
 /// replaced them knows what to look for.
 fn scan_with(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<ScrubReport> {
+    Ok(scan_examined(path, profile, replaced)?.0)
+}
+
+/// [`scan_with`], and what the clinical profile is to `apply`.
+fn scan_examined(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<(ScrubReport, clinical::Profile)> {
     check_profile(profile)?;
     let mut report = ScrubReport::new(&path.to_string_lossy(), profile);
     let sample = open_sample(path)?;
@@ -2050,53 +2236,30 @@ fn scan_with(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<ScrubR
         // One sweep: what `document` learns (a recorded date shift) governs
         // the attributes too.
         let mut sweep = Sweep::new(&mut report);
+        sweep.strict = profile == "strict";
         sweep.replaced = replaced.to_vec();
         sweep.document(&doc);
         scan_frames(&frame_references(&sample.root)?, sweep.report);
         sweep.hdf5(&sample.root)?;
     }
     scan_file_name(path, &document.identity.sample_id, &document.identity.subject_id, &mut report);
-    if let Some(extent) = clinical_extent(&sample)? {
-        report.add(
-            "clinical",
-            "clinical",
-            &format!(
-                "the clinical profile ({extent}) is not examined by this tool: its documents, coded and free-text \
-                 values and its clock carry what the sweep does not read, and a date shift would not move that clock \
-                 (1.1 §6) --- a person must review it, or share the imaging projection (`medh5 clinical strip`)"
-            ),
-            None,
-            false,
-            false,
-        );
-        report.not_checked.push("the clinical profile: its documents, its event text and its clock".into());
-    }
+    // The ids the clinical text must not hold: the sample's, and those this
+    // run replaced.
+    let mut ids: Vec<String> = [&document.identity.sample_id, &document.identity.subject_id]
+        .into_iter()
+        .filter(|id| !id.starts_with(PSEUDONYM_PREFIX) && id.chars().count() >= MIN_SWEPT_ID)
+        .cloned()
+        .collect();
+    ids.extend(replaced.iter().map(|r| r.old.clone()));
+    ids.sort();
+    ids.dedup();
+    let found = clinical::examine(&sample, &doc, &ids, &mut report)?;
     escalate(&mut report);
-    Ok(report)
+    Ok((report, found))
 }
 
-/// How much a sample's clinical profile holds, when it has one.
-///
-/// The profile is outside what this tool examines.  Its text is packed UTF-8
-/// (`uint8` buffers), which the string sweep never reads, and a date shift
-/// moves `/meta`'s dates, not the clinical clock, so the images and the
-/// history would tell two times.  1.1 §6 says de-identification covers the
-/// body as well as the metadata; until this tool covers it, a clinical sample
-/// is never reported clean and is not scrubbed (see [`apply`]).  A
-/// `clinical` group the sample does not declare (E803) is read no better, so
-/// it counts too.
-fn clinical_extent(sample: &Sample) -> Result<Option<String>> {
-    if !sample.profiles()?.contains(crate::clinical::PROFILE) {
-        let undeclared = ops::exists(&sample.root, crate::clinical::GROUP);
-        return Ok(undeclared.then(|| "a `clinical` group the sample does not declare".to_string()));
-    }
-    Ok(Some(match sample.clinical() {
-        Ok(Some(c)) => format!("{} event version(s), {} document(s)", c.events.len(), c.documents().len()),
-        _ => "tables this tool could not read".into(),
-    }))
-}
-
-/// What `apply` does beyond scanning.
+/// What `apply` does beyond scanning, as 2.0 asked for it.  [`ScrubOptions`]
+/// holds everything this does and more; this converts into it.
 #[derive(Debug, Clone, Default)]
 pub struct ApplyOptions {
     pub profile: String,
@@ -2108,44 +2271,385 @@ pub struct ApplyOptions {
     pub pseudonymise_ids: bool,
 }
 
-/// Act on the actionable findings and write the §11.4 attestation.
-pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
-    let profile = if options.profile.is_empty() { "basic" } else { options.profile.as_str() };
-    if options.pseudonymise_ids && options.salt.is_empty() {
-        return Err(Error::invalid(
-            "pseudonymise_ids needs a salt: a sample or subject id is usually a record number, and an unsalted hash \
-             of one is reversed by hashing every record number; pass --salt and keep it apart from the data",
-        ));
+/// How `apply` moves the dates it acts on.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DateShift {
+    /// None: a date `apply` acts on is removed --- an interval that cannot be
+    /// trusted is worse than none.  A file whose dates were shifted keeps them.
+    #[default]
+    None,
+    /// Every date moves by this many days.
+    Days(i64),
+    /// A nonzero number of days in `[min, max]`, taken from the salt and the
+    /// subject (D14): one subject's files share it, and its amount is always
+    /// withheld.
+    Range(i64, i64),
+}
+
+/// The widest shift [`DateShift::Range`] takes, in days either way: a
+/// thousand years is already past every calendar date a scan shifts.
+const MAX_SHIFT: i64 = 365_250;
+
+/// Everything `apply` and `scan` can be asked for, checked as one
+/// ([`ScrubOptions::check`]).  Built from `Default` and the `with_*` methods.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct ScrubOptions {
+    /// `basic` (when empty) or `strict`.
+    pub profile: String,
+    /// Salts every pseudonym and shift commitment; keep it apart from the data.
+    pub salt: String,
+    pub date_shift: DateShift,
+    /// Who performed the de-identification: a person agent, recorded.
+    pub performed_by: Option<String>,
+    /// Replace `sample_id` and `subject_id` with salted stable pseudonyms.
+    pub pseudonymise_ids: bool,
+    /// Whether the record omits the amount of the shift (D14).  Unset, a
+    /// strict scrub withholds it and a basic one records it; medh5 3.0
+    /// withholds it by default.
+    pub withhold_shift: Option<bool>,
+    /// Write the scrubbed sample here and leave the source as it is.
+    pub out: Option<PathBuf>,
+    /// Write the scrubbed sample into this directory, as `<sample_id>.medh5`
+    /// when ids are pseudonymised (the pseudonym without its `pseudo:`), else
+    /// under the source's name; the source is left as it is.
+    pub out_dir: Option<PathBuf>,
+    /// The tool that de-identified a clinical sample's text, attested with
+    /// the digests of the bytes it attests (D15).
+    pub attest_text: Option<String>,
+}
+
+impl From<ApplyOptions> for ScrubOptions {
+    fn from(options: ApplyOptions) -> ScrubOptions {
+        ScrubOptions {
+            profile: options.profile,
+            salt: options.salt,
+            date_shift: options.date_shift_days.map_or(DateShift::None, DateShift::Days),
+            performed_by: options.performed_by,
+            pseudonymise_ids: options.pseudonymise_ids,
+            ..ScrubOptions::default()
+        }
     }
-    if options.date_shift_days == Some(0) {
-        // Recorded, a shift of nothing silenced every later date scan.
-        return Err(Error::invalid(
-            "date_shift_days=0 shifts nothing, and a file that records a shift has its dates passed over by every \
-             later scan; pass a shift of at least one day, or none to remove the dates",
-        ));
+}
+
+impl ScrubOptions {
+    pub fn with_profile(mut self, profile: impl Into<String>) -> Self {
+        self.profile = profile.into();
+        self
     }
-    let mut report = scan(path, profile)?;
-    let shown = repr_str(&path.to_string_lossy());
-    // Refused before anything is written.
-    let (recorded, replaced) = {
-        let sample = open_sample(path)?;
-        if let Some(extent) = clinical_extent(&sample)? {
-            // The attestation would claim a de-identification this tool did
-            // not do (`clinical_extent`).
+
+    pub fn with_salt(mut self, salt: impl Into<String>) -> Self {
+        self.salt = salt.into();
+        self
+    }
+
+    pub fn with_date_shift(mut self, shift: DateShift) -> Self {
+        self.date_shift = shift;
+        self
+    }
+
+    pub fn with_performed_by(mut self, performed_by: impl Into<String>) -> Self {
+        self.performed_by = Some(performed_by.into());
+        self
+    }
+
+    pub fn with_pseudonymise_ids(mut self, pseudonymise_ids: bool) -> Self {
+        self.pseudonymise_ids = pseudonymise_ids;
+        self
+    }
+
+    pub fn with_withhold_shift(mut self, withhold: bool) -> Self {
+        self.withhold_shift = Some(withhold);
+        self
+    }
+
+    pub fn with_out(mut self, out: impl Into<PathBuf>) -> Self {
+        self.out = Some(out.into());
+        self
+    }
+
+    pub fn with_out_dir(mut self, out_dir: impl Into<PathBuf>) -> Self {
+        self.out_dir = Some(out_dir.into());
+        self
+    }
+
+    pub fn with_attest_text(mut self, tool: impl Into<String>) -> Self {
+        self.attest_text = Some(tool.into());
+        self
+    }
+
+    fn profile(&self) -> &str {
+        if self.profile.is_empty() {
+            "basic"
+        } else {
+            &self.profile
+        }
+    }
+
+    /// Refuse what these options cannot do, before any file is read: the
+    /// options only `apply` acts on, without it (a scan meant as a salted,
+    /// shifted scrub would exit as a plain scan); a pseudonym or a range
+    /// without a salt; a shift of nothing; two places for one result.  One
+    /// message for the command line and the API, which name the options
+    /// differently, so it names each both ways.
+    pub fn check(&self, apply_changes: bool) -> Result<()> {
+        check_profile(self.profile())?;
+        if !apply_changes {
+            let given: Vec<&str> = [
+                (!self.salt.is_empty(), "--salt (salt)"),
+                (matches!(self.date_shift, DateShift::Days(_)), "--date-shift-days (date_shift_days)"),
+                (matches!(self.date_shift, DateShift::Range(..)), "--date-shift-range (date_shift_range)"),
+                (self.performed_by.is_some(), "--by (performed_by)"),
+                (self.pseudonymise_ids, "--pseudonymise-ids (pseudonymise_ids)"),
+                (self.withhold_shift.is_some(), "--withhold-shift (withhold_shift)"),
+                (self.out.is_some(), "--out (out)"),
+                (self.out_dir.is_some(), "--out-dir (out_dir)"),
+                (self.attest_text.is_some(), "--attest-text (attest_text)"),
+            ]
+            .into_iter()
+            .filter_map(|(set, name)| set.then_some(name))
+            .collect();
+            if given.is_empty() {
+                return Ok(());
+            }
             return Err(Error::invalid(format!(
-                "{shown} carries the clinical profile ({extent}), which this tool does not de-identify: its text and \
-                 clock would keep what a scrub removes elsewhere, under an attestation that says otherwise. Share the \
-                 imaging projection (`medh5 clinical strip`), or de-identify the clinical records with a tool that \
-                 covers them and record it"
+                "nothing is written without --apply (apply_changes=True), so {} would do nothing: add --apply, or \
+                 leave {} out",
+                given.join(" and "),
+                if given.len() == 1 { "it" } else { "them" }
             )));
         }
-        let document = sample.document()?;
-        let days = document.deidentification.as_ref().and_then(|r| r.date_shift_days.clone()).map(Value::Number);
-        let replaced = if options.pseudonymise_ids { ids_replaced(document, &options.salt) } else { Vec::new() };
-        (recorded_shift(days.as_ref()), replaced)
+        if self.pseudonymise_ids && self.salt.is_empty() {
+            return Err(Error::invalid(
+                "--pseudonymise-ids (pseudonymise_ids) needs --salt (salt): a sample or subject id is usually a \
+                 record number, and an unsalted hash of one is reversed by hashing every record number; pass a salt \
+                 and keep it apart from the data",
+            ));
+        }
+        match self.date_shift {
+            // Recorded, a shift of nothing silenced every later date scan.
+            DateShift::Days(0) => {
+                return Err(Error::invalid(
+                    "--date-shift-days 0 (date_shift_days=0) shifts nothing, and a file that records a shift has its \
+                     dates passed over by every later scan; give a shift of at least one day, or none to remove the \
+                     dates",
+                ))
+            }
+            DateShift::Range(min, max) => {
+                if min > max || (min == 0 && max == 0) {
+                    return Err(Error::invalid(format!(
+                        "--date-shift-range {min}:{max} (date_shift_range=({min}, {max})) holds no nonzero shift: \
+                         give MIN:MAX with MIN <= MAX, around at least one day other than 0"
+                    )));
+                }
+                if min < -MAX_SHIFT || max > MAX_SHIFT {
+                    return Err(Error::invalid(format!(
+                        "--date-shift-range {min}:{max} reaches past {MAX_SHIFT} days either way, beyond every date a \
+                         shift can move"
+                    )));
+                }
+                if self.salt.is_empty() {
+                    return Err(Error::invalid(
+                        "--date-shift-range (date_shift_range) needs --salt (salt): the shift is taken from the salt \
+                         and the subject, and without one anyone holding the subject's id computes it",
+                    ));
+                }
+                if self.withhold_shift == Some(false) {
+                    return Err(Error::invalid(
+                        "a shift taken from --date-shift-range (date_shift_range) is always withheld: leave out \
+                         withhold_shift=False",
+                    ));
+                }
+            }
+            _ => {}
+        }
+        if self.out.is_some() && self.out_dir.is_some() {
+            return Err(Error::invalid("--out (out) and --out-dir (out_dir) name two places for one result: give one"));
+        }
+        if self.attest_text.as_deref().is_some_and(|t| t.trim().is_empty()) {
+            return Err(Error::invalid(
+                "--attest-text (attest_text) names the tool that de-identified the text, and is empty",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Where `apply` writes `path`'s result, whose sample id is `sample_id`:
+    /// `path` itself, unless asked for a copy.  A copy never replaces a file.
+    fn output(&self, path: &Path, sample_id: &str) -> Result<PathBuf> {
+        let out = match (&self.out, &self.out_dir) {
+            (Some(out), _) => out.clone(),
+            (None, Some(dir)) => {
+                let name = if self.pseudonymise_ids {
+                    let id = if sample_id.starts_with(PSEUDONYM_PREFIX) {
+                        sample_id.to_string()
+                    } else {
+                        pseudonymise(sample_id, &self.salt)
+                    };
+                    // `:` cannot be in a Windows file name.
+                    format!("{}.medh5", &id[PSEUDONYM_PREFIX.len()..])
+                } else {
+                    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                };
+                dir.join(name)
+            }
+            (None, None) => return Ok(path.to_path_buf()),
+        };
+        let same = out == path
+            || matches!((std::fs::canonicalize(&out), std::fs::canonicalize(path)), (Ok(a), Ok(b)) if a == b);
+        if same {
+            return Ok(path.to_path_buf());
+        }
+        if out.exists() {
+            return Err(Error::invalid(format!(
+                "{} exists; a scrub to a copy writes a new file and does not overwrite one",
+                repr_str(&out.to_string_lossy())
+            )));
+        }
+        Ok(out)
+    }
+}
+
+/// HMAC-SHA256 (RFC 2104), for the shift a range gives a subject and the
+/// commitment to a withheld shift.
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    if key.len() > block.len() {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let inner = Sha256::new().chain_update(block.map(|b| b ^ 0x36)).chain_update(message).finalize();
+    Sha256::new().chain_update(block.map(|b| b ^ 0x5c)).chain_update(inner).finalize().into()
+}
+
+/// What a withheld shift's activity records (D14): a re-run with the same
+/// salt and shift verifies against it, and without the salt it says nothing.
+fn shift_commitment(salt: &str, days: i64) -> String {
+    hex::encode(hmac_sha256(salt.as_bytes(), format!("shift:{days}").as_bytes()))
+}
+
+/// The shift [`DateShift::Range`] gives a subject: HMAC-SHA256 of the salt
+/// and the subject's salted pseudonym, over the nonzero days in the range.
+/// Keyed by the pseudonym, so the files of one subject agree whether or not
+/// a run has already pseudonymised the id.
+fn range_shift(min: i64, max: i64, salt: &str, subject_id: &str) -> i64 {
+    let key =
+        if subject_id.starts_with(PSEUDONYM_PREFIX) { subject_id.to_string() } else { pseudonymise(subject_id, salt) };
+    let spans_zero = min <= 0 && 0 <= max;
+    let choices = (max - min + 1) as u64 - u64::from(spans_zero);
+    let digest = hmac_sha256(salt.as_bytes(), key.as_bytes());
+    let pick = u64::from_be_bytes(digest[..8].try_into().expect("eight bytes")) % choices;
+    let day = min + pick as i64;
+    if spans_zero && day >= 0 {
+        day + 1
+    } else {
+        day
+    }
+}
+
+/// Where a run without a salt would hash a name (D26): an agent's name it
+/// pseudonymises, or, under `strict`, the person `--by` adds.
+fn hashed_name(report: &ScrubReport, options: &ScrubOptions, strict: bool) -> Option<String> {
+    let agent = |f: &&Finding| {
+        f.r#where.starts_with("provenance.agents[")
+            && match f.rule.as_str() {
+                "staff_name" | "organization_name" => f.r#where.ends_with(']'),
+                "person_name" => f.r#where.ends_with("].name"),
+                _ => false,
+            }
     };
-    if let (Some(asked), Some(recorded)) = (options.date_shift_days, recorded) {
-        if asked != recorded {
+    report
+        .findings
+        .iter()
+        .filter(|f| f.actionable)
+        .find(agent)
+        .map(|f| f.r#where.clone())
+        .or_else(|| (strict && options.performed_by.is_some()).then(|| "the person --by names".to_string()))
+}
+
+/// Act on the actionable findings and write the §11.4 attestation.
+pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
+    apply_with(path, &ScrubOptions::from(options.clone()))
+}
+
+/// [`apply`], with every option: a shift taken from a range or withheld, a
+/// copy rather than a rewrite.
+pub fn apply_with(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> {
+    options.check(true)?;
+    let profile = options.profile();
+    let strict = profile == "strict";
+    let (mut report, found) = scan_examined(path, profile, &[])?;
+    let shown = repr_str(&path.to_string_lossy());
+    // The clinical profile: refused, carried as it is, or derived (D15).
+    let examined = match &found {
+        clinical::Profile::Absent => None,
+        clinical::Profile::Unread(what) => {
+            return Err(Error::invalid(format!(
+                "{shown} carries {what}, which this tool does not read as the clinical profile, so a scrub could not \
+                 say what it holds: share the imaging projection (`medh5 clinical strip`)"
+            )))
+        }
+        clinical::Profile::Examined(examined) => {
+            if let Some(why) = clinical::refusal(examined, options.attest_text.is_some(), &shown) {
+                return Err(Error::invalid(why));
+            }
+            Some(examined)
+        }
+    };
+    // A utc clock is the subject's own time; ids are re-minted on request.
+    // Either writes the records again, as new versions of a new sample.
+    let derives = examined.is_some_and(|e| e.utc || (options.pseudonymise_ids && e.ids));
+    if derives && options.salt.is_empty() {
+        return Err(Error::invalid(format!(
+            "{shown}'s clinical records are written again with every id re-minted from --salt (salt), so that a \
+             subject's fragments scrubbed with one salt still share a clock: pass a salt and keep it apart from the \
+             data"
+        )));
+    }
+    // Refused before anything is written.
+    let (state, replaced, prior, subject_id, sample_id, records) = {
+        let sample = open_sample(path)?;
+        let records = match sample.clinical()? {
+            Some(clinical) if derives => Some(clinical.records()?),
+            _ => None,
+        };
+        let document = sample.document()?;
+        let doc = match document.to_json() {
+            Value::Object(m) => m,
+            _ => Map::new(),
+        };
+        let replaced = if options.pseudonymise_ids { ids_replaced(document, &options.salt) } else { Vec::new() };
+        let identity = &document.identity;
+        (
+            shifted(&doc),
+            replaced,
+            document.deidentification.clone(),
+            identity.subject_id.clone(),
+            identity.sample_id.clone(),
+            records,
+        )
+    };
+    if options.salt.is_empty() {
+        if let Some(named) = hashed_name(&report, options, strict) {
+            return Err(Error::invalid(format!(
+                "pseudonymising the name at {named} needs --salt (salt): a name is guessable, and an unsalted hash \
+                 of one is reversed by hashing candidate names; pass a salt and keep it apart from the data"
+            )));
+        }
+    }
+    let out = options.output(path, &sample_id)?;
+    let asked = match options.date_shift {
+        DateShift::Days(days) => Some(days),
+        DateShift::Range(min, max) => Some(range_shift(min, max, &options.salt, &subject_id)),
+        _ => None,
+    };
+    let withhold = matches!(options.date_shift, DateShift::Range(..)) || options.withhold_shift.unwrap_or(strict);
+    // The shift the dates have after this run, when it is known.
+    let days = match (&state, asked) {
+        (Shifted::Recorded(recorded), Some(asked)) if asked != *recorded => {
             // Its dates moved by one amount; a second would leave the record
             // true of some dates and false of the rest.
             return Err(Error::invalid(format!(
@@ -2153,17 +2657,78 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
                  would make the record false --- pass the recorded shift, or none"
             )));
         }
-    }
-    let strict = profile == "strict";
+        (Shifted::Recorded(recorded), _) => Some(*recorded),
+        (Shifted::Withheld(_), None) if options.withhold_shift == Some(false) => {
+            return Err(Error::invalid(format!(
+                "{shown} withholds its date shift, so there is no amount to record: pass the shift its dates were \
+                 moved by, with the salt that withheld it, or leave withhold_shift out"
+            )));
+        }
+        // Withheld without a salt, so nothing checks a shift against it:
+        // its dates are left alone, and the amount stays unstated.
+        (Shifted::Withheld(None), Some(_)) if withhold => None,
+        (Shifted::Withheld(None), Some(_)) => {
+            return Err(Error::invalid(format!(
+                "{shown} withholds its date shift with nothing to check one against (it was withheld without a \
+                 salt), so no amount can be recorded for it: withhold the shift, or pass none"
+            )));
+        }
+        (Shifted::Withheld(Some(commitment)), Some(asked)) => {
+            if shift_commitment(&options.salt, asked) != *commitment {
+                return Err(Error::invalid(format!(
+                    "{shown} withholds a date shift that is not {asked} days under this salt: its dates were moved \
+                     once, by another shift or with another salt --- pass the shift and the salt it was withheld \
+                     with, or no shift"
+                )));
+            }
+            Some(asked)
+        }
+        (_, asked) => asked,
+    };
+    // Every clinical time moves by the shift `/meta`'s dates take.
+    let clinical_shift = match examined {
+        Some(e) if e.utc => match days {
+            Some(days) => clinical::shift_us(days)?,
+            None => {
+                return Err(Error::invalid(format!(
+                    "{shown}'s clinical clock is utc, so its times are the subject's own: they move by the shift \
+                     /meta's dates take, and none is known --- give --date-shift-days (date_shift_days) or \
+                     --date-shift-range (date_shift_range){}",
+                    if matches!(state, Shifted::Withheld(_)) {
+                        ", with the salt its dates were shifted with"
+                    } else {
+                        ""
+                    }
+                )))
+            }
+        },
+        _ => 0,
+    };
+    let moved = days.is_some() || matches!(state, Shifted::Withheld(_));
+    let withheld = withhold && moved;
+    // Never made without a salt: over a few thousand days it is no secret.
+    let commitment = match (&state, days) {
+        _ if !withheld => None,
+        (_, Some(days)) if !options.salt.is_empty() => Some(shift_commitment(&options.salt, days)),
+        (Shifted::Withheld(kept), None) => kept.clone(),
+        _ => None,
+    };
     let mut renamed: Vec<(String, String)> = Vec::new();
-    let mut writer = amend(path, None)?;
+    // Derived, the source's records are left behind and written again.
+    let without: &[&str] = if records.is_some() { &[crate::clinical::GROUP] } else { &[] };
+    let mut writer =
+        if out == path && without.is_empty() { amend(path, None)? } else { amend_into(path, &out, None, without)? };
     let result = (|| -> Result<()> {
-        let mut date_shift_days = options.date_shift_days;
         let mut notes = Vec::new();
-        if let Some(days) = recorded {
-            // Shifting twice makes the recorded offset a lie.
-            date_shift_days = Some(days);
-            notes.push(format!("dates were left alone: already shifted by {days} days"));
+        match &state {
+            Shifted::Recorded(recorded) => {
+                notes.push(format!("dates were left alone: already shifted by {recorded} days"))
+            }
+            Shifted::Withheld(_) => notes.push("dates were left alone: already shifted, by an amount withheld".into()),
+            Shifted::No => {}
+        }
+        if matches!(state, Shifted::Recorded(_)) && withheld {
+            notes.push("deidentification.date_shift_days withheld".into());
         }
         // The performer is declared before the sweep, so the name this run
         // adds gets the same treatment as the names it found.
@@ -2180,7 +2745,7 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
         sweep.writing = true;
         sweep.strict = strict;
         sweep.salt = options.salt.clone();
-        sweep.date_shift_days = date_shift_days;
+        sweep.date_shift_days = days;
         sweep.uid_map = report.uid_map.clone();
         sweep.replaced = replaced.clone();
         let mut cleaned = sweep.document(&doc);
@@ -2190,7 +2755,17 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
         writer.set_document(SampleDocument::from_json(&Value::Object(cleaned))?);
         let root = writer.root()?;
         sweep.hdf5(&root)?;
-        let actions = std::mem::take(&mut sweep.actions);
+        let mut actions = std::mem::take(&mut sweep.actions);
+        if strict {
+            // The commit stamps `created`, so the time it would stamp is cut;
+            // the re-scan below reads the attribute before the commit does.
+            let year = year_stamp(&crate::sample::writer::utcnow()).unwrap_or_default();
+            attrs::write(&root, "created", &AttrValue::Str(year.clone()))?;
+            writer.created = Some(year);
+            if report.findings.iter().any(|f| f.rule == "tool_timestamp" && f.r#where == "root.created") {
+                actions.push("root.created cut to its year".into());
+            }
+        }
         let uid_map = std::mem::take(&mut sweep.uid_map);
         drop(sweep);
         report.uid_map = uid_map;
@@ -2208,40 +2783,109 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
         removed.extend(actions);
         removed.extend(writer.remap_frame_uids(&frame_map)?.into_iter().map(|l| format!("{l} -> pseudonymised")));
 
+        // The clinical records, derived (D15), and the text's attestation.
+        let mut attested = Vec::new();
+        let mut derived = false;
+        if let Some(examined) = examined {
+            let mut digests = examined.digests.clone();
+            let mut reminted = None;
+            if let Some(records) = records {
+                let n = records.events.len();
+                let (records, minted) = clinical::derive(records, clinical_shift, &options.salt)?;
+                writer.add_records(records)?;
+                digests = clinical::rekeyed(&digests, &minted);
+                // Keyed by kind: an event and its record often share an id.
+                for r in &minted {
+                    report.uid_map.insert(format!("{}:{}", r.kind, r.old), r.new.clone());
+                }
+                removed.push(format!(
+                    "clinical records written again as new versions: {n} event version(s){}, {} id(s) re-minted",
+                    match days {
+                        Some(days) if examined.utc => {
+                            format!(" moved by the date shift, the clock shifted_utc ({days} days)")
+                        }
+                        _ => String::new(),
+                    },
+                    minted.len()
+                ));
+                reminted = Some(minted);
+                derived = true;
+            }
+            // Asked for now, or carried to the re-minted ids from the
+            // attestations that already held, each by its own tool.
+            let named = options.attest_text.as_deref();
+            for (tool, digests) in clinical::attestations_to_write(examined, named, &digests, reminted.as_deref()) {
+                let by = match (&options.performed_by, named) {
+                    (None, Some(named)) => writer.software(named, None, Map::new())?.id,
+                    _ => agent.id.clone(),
+                };
+                let mut fields = Map::new();
+                fields.insert("tool".into(), json!(tool));
+                fields.insert("params".into(), Value::Object(clinical::attestation(&tool, &digests)));
+                writer.activity("deidentify", Some(&by), None, fields)?;
+                removed.push(format!("clinical text attested as de-identified by {}", repr_str(&tool)));
+                attested.push(tool);
+            }
+        }
+
         let summary = format!(
-            "medh5 scrub {profile}: container metadata only, voxel data not examined; {}{}",
+            "medh5 scrub {profile}: container metadata only, voxel data not examined; {}{}{}",
             if strict { "quasi-identifiers removed" } else { "quasi-identifiers retained for review" },
             if options.pseudonymise_ids {
                 "; sample and subject ids pseudonymised"
             } else {
                 "; sample and subject ids retained"
+            },
+            match (derived, attested.is_empty()) {
+                (true, _) => format!(
+                    "; clinical records written again as new versions; clinical text attested by {}, not by this \
+                     tool",
+                    attested.join(", ")
+                ),
+                (false, false) => format!("; clinical text attested by {}, not by this tool", attested.join(", ")),
+                (false, true) => String::new(),
             }
         );
+        let now = crate::sample::writer::utcnow();
         let mut record = Map::new();
         record.insert("method".into(), json!("medh5-scrub"));
         record.insert("profile".into(), json!(summary));
-        record.insert("date_shift_days".into(), json!(date_shift_days));
+        if let (Some(days), false) = (days, withheld) {
+            record.insert("date_shift_days".into(), json!(days));
+        }
         record.insert(
             "id_mapping".into(),
             json!(if !options.salt.is_empty() && !report.uid_map.is_empty() { "external" } else { "none" }),
         );
         record.insert("performed_by".into(), json!(agent.id));
-        record.insert("burned_in_annotation_checked".into(), json!(false));
+        record.insert("date".into(), json!(if strict { year_stamp(&now).unwrap_or(now) } else { now }));
+        // A check a person recorded is not undone by a tool that did not
+        // look at the pixels.
+        let checked = prior.as_ref().and_then(|r| r.burned_in_annotation_checked) == Some(true);
+        record.insert("burned_in_annotation_checked".into(), json!(checked));
         writer.deidentification(record)?;
         // Re-scan the cleaned state after the record exists, and put the
         // result in the activity, where an auditor of the attestation looks.
-        let left = rescan(&writer, profile, &replaced)?;
+        let left = rescan(&writer, profile, &replaced, withheld)?;
+        let mut params = Map::new();
+        params.insert("findings".into(), json!(report.findings.len()));
+        params.insert("changes".into(), json!(removed.len()));
+        params.insert("remaining".into(), json!(left.findings.len()));
+        params.insert("remaining_actionable".into(), json!(left.actionable().len()));
+        if withheld {
+            params.insert("dates".into(), json!("shifted"));
+            params.insert("shift".into(), json!("withheld"));
+            if let Some(commitment) = &commitment {
+                params.insert("shift_commitment".into(), json!(commitment));
+            }
+        }
+        // The record holds one method; the one this replaces is kept here.
+        if let Some(method) = prior.as_ref().map(|r| r.method.clone()).filter(|m| m != "medh5-scrub") {
+            params.insert("prior_method".into(), json!(method));
+        }
         let mut fields = Map::new();
         fields.insert("tool".into(), json!(format!("medh5 scrub --profile {profile}")));
-        fields.insert(
-            "params".into(),
-            json!({
-                "findings": report.findings.len(),
-                "changes": removed.len(),
-                "remaining": left.findings.len(),
-                "remaining_actionable": left.actionable().len(),
-            }),
-        );
+        fields.insert("params".into(), Value::Object(params));
         writer.activity("deidentify", Some(&agent.id), None, fields)?;
         report.actions = removed;
         report.applied = true;
@@ -2258,9 +2902,27 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
     }
     // The claim is checked against the file, not against the intention ---
     // and for the ids it replaced, which a later scan cannot know to look for.
-    report.remaining = scan_with(path, profile, &replaced)?.findings;
-    let stems = stems(path);
-    let name_of_file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    report.path = out.to_string_lossy().into_owned();
+    report.remaining = scan_with(&out, profile, &replaced)?.findings;
+    if options.salt.is_empty() && !report.uid_map.is_empty() {
+        // D26: medh5 3.0 requires a salt.
+        let unsalted = Finding {
+            rule: "unsalted_pseudonym".into(),
+            r#where: "uid_map".into(),
+            detail: format!(
+                "{} value(s) were pseudonymised without a salt: anyone holding an original UID hashes it and finds \
+                 this file --- pass --salt (salt); medh5 3.0 requires one",
+                report.uid_map.len()
+            ),
+            value: None,
+            actionable: false,
+            fixable: false,
+        };
+        report.findings.push(unsalted.clone());
+        report.remaining.push(unsalted);
+    }
+    let stems = stems(&out);
+    let name_of_file = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     for (name, old) in &renamed {
         if stems.contains(old) {
             report.remaining.push(Finding {
@@ -2341,7 +3003,12 @@ fn ids_replaced(document: &SampleDocument, salt: &str) -> Vec<Replaced> {
 
 /// Every rule over a writer's state, without going back to disk, so the count
 /// recorded in the attestation describes the file it ships in.
-fn rescan(writer: &crate::sample::writer::SampleWriter, profile: &str, replaced: &[Replaced]) -> Result<ScrubReport> {
+fn rescan(
+    writer: &crate::sample::writer::SampleWriter,
+    profile: &str,
+    replaced: &[Replaced],
+    withheld: bool,
+) -> Result<ScrubReport> {
     let mut report = ScrubReport::new("<amend>", profile);
     let doc = match writer.document().to_json() {
         Value::Object(m) => m,
@@ -2349,6 +3016,8 @@ fn rescan(writer: &crate::sample::writer::SampleWriter, profile: &str, replaced:
     };
     {
         let mut sweep = Sweep::new(&mut report);
+        sweep.strict = profile == "strict";
+        sweep.withheld = withheld;
         sweep.replaced = replaced.to_vec();
         sweep.document(&doc);
         scan_frames(&writer.frame_uids()?, sweep.report);
@@ -2362,7 +3031,39 @@ fn rescan(writer: &crate::sample::writer::SampleWriter, profile: &str, replaced:
 /// recorded 0 shifted nothing, so it is read as no shift --- left standing,
 /// it silenced every later date scan.
 fn recorded_shift(days: Option<&Value>) -> Option<i64> {
-    days.and_then(|d| d.as_i64().or_else(|| d.as_f64().map(|f| f as i64))).filter(|d| *d != 0)
+    days.and_then(Value::as_number).and_then(shift_of)
+}
+
+/// What a sample's de-identification says about its dates.
+#[derive(Debug, Clone, PartialEq)]
+enum Shifted {
+    /// Nothing says they moved.
+    No,
+    /// The record states the amount.
+    Recorded(i64),
+    /// The record withholds the amount, and a de-identification activity
+    /// says the dates were shifted (D14); with the commitment to the amount,
+    /// when the run that withheld it had a salt.
+    Withheld(Option<String>),
+}
+
+/// Whether, and how, `doc`'s dates were shifted.
+fn shifted(doc: &Map<String, Value>) -> Shifted {
+    let Some(record) = doc.get("deidentification").and_then(Value::as_object) else { return Shifted::No };
+    if let Some(days) = recorded_shift(record.get("date_shift_days")) {
+        return Shifted::Recorded(days);
+    }
+    let activities = doc.get("provenance").and_then(|p| p.get("activities")).and_then(Value::as_array);
+    let withheld = activities
+        .into_iter()
+        .flatten()
+        .filter(|a| a.get("type").and_then(Value::as_str) == Some("deidentify"))
+        .filter_map(|a| a.get("params").and_then(Value::as_object))
+        .rfind(|params| params.get("dates").and_then(Value::as_str) == Some("shifted"));
+    match withheld {
+        Some(params) => Shifted::Withheld(params.get("shift_commitment").and_then(Value::as_str).map(str::to_string)),
+        None => Shifted::No,
+    }
 }
 
 /// Timepoints, by position, whose date disagrees with the recorded shift,
@@ -2373,7 +3074,7 @@ fn recorded_shift(days: Option<&Value>) -> Option<i64> {
 /// date added after the shift names another.  The baseline is the one the
 /// earliest dated timepoint names (its interval is 0 when it states none),
 /// and a date with no interval to check it by is not reported.
-fn disagreeing(doc: &Map<String, Value>, shift: i64) -> BTreeMap<usize, String> {
+fn disagreeing(doc: &Map<String, Value>, shift: Option<i64>) -> BTreeMap<usize, String> {
     let timepoints = doc.get("timepoints").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     let mut implied: Vec<(usize, u64, f64)> = Vec::new();
     for (position, tp) in timepoints.iter().enumerate() {
@@ -2394,10 +3095,13 @@ fn disagreeing(doc: &Map<String, Value>, shift: i64) -> BTreeMap<usize, String> 
         .filter(|(_, _, day)| (day - baseline).abs() > BASELINE_TOLERANCE)
         .map(|(position, _, day)| {
             let apart = (day - baseline).round() as i64;
+            let stated = match shift {
+                Some(days) => format!("whose record states a shift of {days} days"),
+                None => "whose dates were shifted by an amount it withholds".to_string(),
+            };
             let detail = format!(
                 "a date {apart} day(s) off what timepoints[{reference}].date and both days_from_baseline imply, in a \
-                 sample whose record states a shift of {shift} days: a date added after the shift was not shifted --- \
-                 a person must check it (§11.4)"
+                 sample {stated}: a date added after the shift was not shifted --- a person must check it (§11.4)"
             );
             (*position, detail)
         })
@@ -2460,6 +3164,10 @@ fn shift(value: &str, days: Option<i64>) -> Option<String> {
 }
 
 /// Scan or apply over several files.
+#[deprecated(
+    since = "2.1.0",
+    note = "stops at the first refused file and loses the reports before it; use scrub_each; removed in 3.0"
+)]
 pub fn scrub_paths<P: AsRef<Path>>(
     paths: &[P],
     apply_changes: bool,
@@ -2467,6 +3175,29 @@ pub fn scrub_paths<P: AsRef<Path>>(
 ) -> Result<Vec<ScrubReport>> {
     let profile = if options.profile.is_empty() { "basic" } else { options.profile.as_str() };
     paths.iter().map(|p| if apply_changes { apply(p.as_ref(), options) } else { scan(p.as_ref(), profile) }).collect()
+}
+
+/// Scan, or with `apply_changes` apply, each of `paths`: every one, in
+/// order.  The outer error is [`ScrubOptions::check`]'s, before any file is
+/// read; each file's own refusal is its entry, so a refused file neither stops
+/// the ones after it nor loses the reports of the ones before it, whose
+/// `uid_map` is the only key to the pseudonyms they now hold.
+pub fn scrub_each<P: AsRef<Path>>(
+    paths: &[P],
+    apply_changes: bool,
+    options: &ScrubOptions,
+) -> Result<Vec<Result<ScrubReport>>> {
+    options.check(apply_changes)?;
+    if options.out.is_some() && paths.len() > 1 {
+        return Err(Error::invalid(format!(
+            "--out (out) names one file, and {} were given: use --out-dir (out_dir)",
+            paths.len()
+        )));
+    }
+    Ok(paths
+        .iter()
+        .map(|p| if apply_changes { apply_with(p.as_ref(), options) } else { scan(p.as_ref(), options.profile()) })
+        .collect())
 }
 
 #[cfg(test)]
@@ -2624,7 +3355,7 @@ mod tests {
             {"id": "tp3", "index": 3, "date": "2020-01-21T23:59:00", "days_from_baseline": 20.9},
             {"id": "tp4", "index": 4, "date": "2021-06-01"},
         ]});
-        let found = disagreeing(doc.as_object().unwrap(), -117);
+        let found = disagreeing(doc.as_object().unwrap(), Some(-117));
         assert_eq!(found.keys().copied().collect::<Vec<_>>(), vec![2]);
         assert!(found[&2].contains("118 day(s) off what timepoints[0].date"), "{}", found[&2]);
         assert!(found[&2].contains("a shift of -117 days"), "{}", found[&2]);
@@ -2671,6 +3402,90 @@ mod tests {
         assert_eq!(reached[1].target.as_deref(), Some("/x_a/table"));
         assert_eq!(reached[6].id, reached[4].id, "the later name is the same object");
         assert_eq!(reached[2].id, reached[0].id, "the loop is the group it is in");
+    }
+
+    /// `shift_days` read a recorded 0 as a shift while the scrub read it as
+    /// none; both now read whole days through one function.
+    #[test]
+    fn s11_4_shift_days_and_recorded_shift_agree() {
+        use crate::curation::identity::Deidentification;
+        for days in [json!(0), json!(0.0), json!(-117), json!(-117.0), json!(30), json!(2.5)] {
+            let record = Deidentification::from_json(Some(&json!({"method": "m", "date_shift_days": days})));
+            let from_record = record.ok().flatten().and_then(|r| r.shift_days());
+            assert_eq!(from_record, recorded_shift(Some(&days)), "{days}");
+        }
+        assert_eq!(recorded_shift(Some(&json!(-117.0))), Some(-117));
+    }
+
+    /// RFC 4231, test case 2.
+    #[test]
+    fn s11_4_hmac_is_rfc_2104() {
+        let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
+        assert_eq!(hex::encode(mac), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+        let long = hmac_sha256(&[0xaa; 131], b"Test Using Larger Than Block-Size Key - Hash Key First");
+        assert_eq!(hex::encode(long), "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+    }
+
+    /// A range gives every subject a nonzero shift inside it, one subject
+    /// one shift, however its id is spelt now.
+    #[test]
+    fn s11_4_a_range_gives_a_nonzero_shift_inside_it() {
+        for (min, max) in [(-3, 3), (-1, 1), (0, 2), (-2, 0), (5, 5), (-365, -30)] {
+            for subject in ["a", "b", "subj-1", "MRN-000042", "Doe^Jane"] {
+                let day = range_shift(min, max, "pep", subject);
+                assert!(day != 0 && (min..=max).contains(&day), "{min}:{max} gave {day}");
+                assert_eq!(day, range_shift(min, max, "pep", &pseudonymise(subject, "pep")));
+            }
+        }
+        let spread: std::collections::HashSet<i64> =
+            (0..50).map(|i| range_shift(-1000, 1000, "pep", &format!("s{i}"))).collect();
+        assert!(spread.len() > 40, "{}", spread.len());
+    }
+
+    #[test]
+    fn s11_4_a_locale_date_and_a_dicom_time() {
+        for date in ["31.01.2020", "1.2.2020", "01/31/2020", "31/01/2020", " 03/04/2020 "] {
+            assert!(is_locale_date(date), "{date}");
+        }
+        for text in ["01.31.2020", "13/13/2020", "31.01/2020", "2020-01-31", "31.01.20", "on 31.01.2020"] {
+            assert!(!is_locale_date(text), "{text}");
+        }
+        for time in ["102200", "235960", "000000.5", "102200.123456"] {
+            assert!(is_dicom_time(time), "{time}");
+        }
+        for text in ["1022", "246000", "106000", "102200.1234567", "10:22:00"] {
+            assert!(!is_dicom_time(text), "{text}");
+        }
+        assert!(names_a_time("AcquisitionTime") && names_a_time("study_time"));
+        assert!(!names_a_time("SeriesNumber") && !names_a_time("timepoint"));
+    }
+
+    #[test]
+    fn s11_4_a_tool_time_is_cut_to_its_year() {
+        assert_eq!(year_stamp("2020-01-31T10:22:00Z").as_deref(), Some("2020-01-01T00:00:00Z"));
+        assert_eq!(year_stamp("yesterday"), None);
+        assert!(is_year_stamp("2020-01-01T00:00:00Z") && !is_year_stamp("2020-01-31T00:00:00Z"));
+    }
+
+    /// One list, checked once: what the command line and the API refuse.
+    #[test]
+    fn s11_4_options_are_checked_once() {
+        let message = |options: ScrubOptions, apply: bool| options.check(apply).unwrap_err().to_string();
+        let o = ScrubOptions::default;
+        assert!(o().check(false).is_ok() && o().check(true).is_ok());
+        let both = message(o().with_salt("p").with_out_dir("d"), false);
+        assert!(both.contains("--salt (salt) and --out-dir (out_dir) would do nothing"), "{both}");
+        assert!(message(o().with_pseudonymise_ids(true), true).contains("needs --salt (salt)"));
+        assert!(message(o().with_date_shift(DateShift::Days(0)), true).contains("shifts nothing"));
+        assert!(message(o().with_date_shift(DateShift::Range(0, 0)).with_salt("p"), true).contains("no nonzero"));
+        assert!(message(o().with_date_shift(DateShift::Range(-9, -1)), true).contains("needs --salt"));
+        let range = o().with_date_shift(DateShift::Range(-9, -1)).with_salt("p").with_withhold_shift(false);
+        assert!(message(range, true).contains("always withheld"));
+        assert!(message(o().with_out("a").with_out_dir("b"), true).contains("two places"));
+        assert!(message(o().with_attest_text(" "), true).contains("is empty"));
+        assert!(message(o().with_profile("loose"), false).contains("unknown profile"));
+        let old = ApplyOptions { date_shift_days: Some(-3), ..ApplyOptions::default() };
+        assert_eq!(ScrubOptions::from(old).date_shift, DateShift::Days(-3));
     }
 
     #[test]

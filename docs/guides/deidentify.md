@@ -10,16 +10,15 @@ untouched. **A file this tool calls clean may still be identifying.** Pixel
 de-identification is a separate job, and this page assumes you have done it or
 established that you do not need to.
 
-**Nor does it de-identify the clinical profile** (format 1.1). Reports, the
-text of every event, coded values and the subject clock can carry anything
-an identifier can, and a date shift applied to `/meta` would not move the
-clinical clock — images and history would tell two times (1.1 §3, §6). So a
-scan of a sample that carries the profile reports it as **not examined** (it is
-never clean), and `--apply` refuses the file rather than attest a
-de-identification it did not do. Share the imaging projection instead —
+**Nor does it rewrite clinical text** (format 1.1). It reads the clinical
+profile — its clock, its ids, and its text one document at a time — and finds
+names, dates, UIDs and record numbers there, but a report is free text no rule
+can clear, and a rewritten text would move every span that points into it. So
+the text must be de-identified by a tool or a person who can, and attested as
+such (section 4); until then the sample is never clean and `--apply` refuses
+it. If the history is not needed, share the imaging projection instead:
 `medh5 clinical strip case.medh5 --out case.imaging.medh5` writes the sample
-without its clinical records, as a different file — or de-identify the
-records with a tool that covers free text and dates, and record that.
+without its clinical records, as a different file.
 
 ## 1. Look before you change anything
 
@@ -46,10 +45,12 @@ alike; and every string dataset — including objects and attributes written by 
 newer version, which `amend` carries through without understanding them. JSON
 stored inside a string (an attribute holding a serialized mapping, a box's
 `attributes` column) is decoded and examined as a mapping. The few fields it
-skips are skipped by name, with the reason in the code: the writer's own
-timestamp and digests, which every commit rewrites; provenance `started` and
-`ended`, which say when a tool ran rather than when the subject was seen; and
-closed vocabularies such as `sex`.
+skips are skipped by name, with the reason in the code: the writer's digests,
+which every commit rewrites, and closed vocabularies such as `sex`. A tool's
+timestamps — provenance `started` and `ended`, the file's `created` — say when
+a tool ran, not when the subject was seen, but a scan run the day of the visit
+dates the visit: `strict` cuts them to their year (`tool_timestamp`), and
+`basic` reports them for review once the dates are shifted.
 
 **What it does not read, it reports.** Strings inside a compound, array or
 variable-length type are not decoded, so a dataset whose type holds them, at any
@@ -68,7 +69,9 @@ where a pseudonym belongs — alone, inside a provenance reference such as
 provenance, unshifted dates and date-times (ISO 8601 or DICOM, alone or inside
 a longer string such as `CT_2020-01-31.nii`; a value that is wholly a date is
 one under any key, `RadiopharmaceuticalStartDateTime` as surely as
-`StudyDate`), ages over 90, the names of person and organization agents, a copy
+`StudyDate`), a date in a locale's order (`31.01.2020`, `01/31/2020`) and a
+DICOM time (`093000`) under a key that names a time, which are reported
+rather than shifted since which number is the day is a guess, ages over 90, the names of person and organization agents, a copy
 of the sample document outside `/meta` or `/meta` itself under a second name
 (either keeps every identifier `--apply` replaces in the document, so `--apply`
 removes it), and free text no rule can judge. That last category is why the
@@ -102,13 +105,15 @@ the rest, build it on the report rather than on the exit code — but not on
 publication should: the sample's own ids while they are identifiers
 (`open_identity`: `--apply` never rewrites them by itself), a sample carrying
 the clinical profile (rule `clinical`: not examined, and refused by `--apply`),
-and whatever the scan could not read (`unreadable`, `too_deep`). Block on all
-of them:
+whatever the scan could not read (`unreadable`, `too_deep`), and a name, date,
+UID or record number in clinical text (`clinical_text`), which a person must
+check even in text attested as de-identified. Block on all of them:
 
 ```python
 from medh5.curation import scrub
 
 NOT_EXAMINED = {"clinical", "unreadable", "too_deep"}
+FOR_A_PERSON = {"clinical_text"}
 
 reports = [scrub.scan(p) for p in paths]
 blocking = [
@@ -116,7 +121,7 @@ blocking = [
     for r in reports
     if r.actionable
     or r.open_identity
-    or any(f.rule in NOT_EXAMINED for f in r.findings)
+    or any(f.rule in NOT_EXAMINED | FOR_A_PERSON for f in r.findings)
 ]
 for r in reports:
     for f in r.needs_review:
@@ -130,24 +135,28 @@ it: removed it, or decided outside this gate that it can go.
 ## 2. Apply, with a salt
 
 ```bash
-medh5 scrub out/*.medh5 --apply --date-shift-days -117 --salt "$SALT" --by RAD-07
+medh5 scrub out/*.medh5 --apply --date-shift-days -117 --withhold-shift --salt "$SALT" --by RAD-07
 ```
 
 ```python
-report = scrub.apply(path, date_shift_days=-117, salt=SALT)
+report = scrub.apply(path, date_shift_days=-117, withhold_shift=True, salt=SALT)
 ```
 
-`--date-shift-days`, `--salt` and `--by` act only with `--apply`, and without
-it they are refused rather than ignored: a scan meant as a salted, shifted
-scrub would otherwise exit as a plain scan. `scrub.scrub_paths` refuses its
-apply options without `apply_changes=True` the same way. Like the command line,
-it processes every path even when one is refused — a clinical sample always is
-— and then raises the first refusal, carrying every path's report in order as
+Every option but `--profile` acts only with `--apply`, and without it they are
+refused rather than ignored: a scan meant as a salted, shifted scrub would
+otherwise exit as a plain scan. The engine checks the options once, before any
+file is read, so the command line and `scrub.scrub_paths` (without
+`apply_changes=True`) refuse the same combinations in the same words. Like the
+command line, `scrub_paths` processes every path even when one is refused — a
+clinical sample with unattested text, say — and then raises the first refusal, carrying every path's report in order as
 `reports` (`None` for a refused path), so the `uid_map` of a file already
 rewritten is never lost.
 
 `--apply` writes the scrubbed version beside the file and renames it over the
-original. Through a symbolic link, the file the link names is rewritten and the
+original — or, with `--out FILE` (`out=`), to a new file, leaving the source
+as it was; `--out-dir DIR` (`out_dir=` in `scrub_paths`) does that for each of
+several files, naming each by its pseudonymised sample id under
+`--pseudonymise-ids`. A copy never replaces an existing file. Through a symbolic link, the file the link names is rewritten and the
 link kept. A file with several hard links is replaced at the path given only,
 and its other names keep the original, identifiers and all: remove them. A link
 in a directory anyone can write to, such as `/tmp`, that neither you nor the
@@ -169,8 +178,8 @@ answer as the exit code.
 `--profile strict` includes a person or organization agent's name (replaced by
 a stable pseudonym, so the graph still says two activities were the same
 person — salted with `--salt` and recorded in `uid_map` like every other
-pseudonym, since an unsalted hash of a name is reversed by hashing candidate
-names), an age over 90 (recorded as 90: Safe Harbor aggregates every age over
+pseudonym; without a salt the run is refused, since an unsalted hash of a name
+is reversed by hashing candidate names), an age over 90 (recorded as 90: Safe Harbor aggregates every age over
 89 into one "90 or older" category, so 90 itself is the category and stays),
 and flagged free text (removed). Provenance paths keep only their
 file name, and under `strict` lose that too.
@@ -217,7 +226,9 @@ gets everywhere else. `pseudonymise(uid, salt)` is stable, which means a cohort
 scrubbed file by file — even on different machines — still joins afterwards.
 Only a *salted* run records `id_mapping: external`; an unsalted hash is
 recoverable by anyone holding the original UIDs, and claiming otherwise would
-be exactly the overclaim this tool exists to avoid. **Keep the salt, and keep
+be exactly the overclaim this tool exists to avoid. An unsalted run that
+pseudonymised anything says so in its report (`unsalted_pseudonym`); medh5 3.0
+will require the salt. **Keep the salt, and keep
 it separately from the data.** The same goes for `report.uid_map` (`uid_map` in
 `--json` output): it maps every original value the run replaced — UIDs, the ids
 under `--pseudonymise-ids`, the names `strict` pseudonymises — to its
@@ -234,10 +245,29 @@ version that reads as a date, which is a build's and not the subject's. A date
 `--apply` cannot shift — written in another script's digits, or moved off the
 calendar — is removed.
 
-A file is shifted once. Its record keeps the shift, and a later run leaves its
-dates alone: with no `--date-shift-days`, or the same one, it re-attests the
-recorded shift, and a different one is refused, since the record would then be
-false of some of the dates. A shift of `0` is refused too — it moves nothing,
+**Withhold the amount.** A record that says `date_shift_days: -117` lets
+anyone holding one true date restore every other. `--withhold-shift`
+(`withhold_shift=True`) leaves the amount out: the record says nothing of it,
+and the de-identification activity says the dates were shifted, with a
+commitment to the amount — a salted hash of it, which a re-run with the same
+salt and shift checks. `--profile strict` withholds by default; `basic` still
+records the amount, and says that medh5 3.0 will withhold it unless you choose.
+Pass `withhold_shift=False` to keep recording it on purpose.
+
+**A shift per subject.** `--date-shift-range MIN:MAX`
+(`date_shift_range=(min, max)`) takes the shift from the salt and the subject
+id: a nonzero number of days in the range, different between subjects and the
+same for every file of one subject, so a subject's visits still line up. It
+needs `--salt`, and it is always withheld.
+
+```bash
+medh5 scrub out/*.medh5 --apply --date-shift-range=-400:-100 --salt "$SALT" --out-dir shared/
+```
+
+A file is shifted once. Its record keeps the shift — or the activity its
+commitment — and a later run leaves its dates alone: with no shift, or the
+same one under the same salt, it re-attests it, and a different one is
+refused, since the record would then be false of some of the dates. A shift of `0` is refused too — it moves nothing,
 and a record of it would pass every later date over; a record that says `0` —
 an earlier version wrote one when asked to — is read as no shift at all. A
 timepoint whose `date` was
@@ -251,17 +281,83 @@ The record is part of the file, not a note in a README:
 ```python
 w.deidentification(method="dicom-psi-profile",
                    profile="DICOM PS3.15 E.1 basic + clean pixel",
-                   date_shift_days=-117, id_mapping="external",
+                   id_mapping="external",
                    performed_by=rad.id, burned_in_annotation_checked=True)
 ```
 
 `--apply` writes one for you. Set `burned_in_annotation_checked` yourself, and
-only if you actually checked — `scrub` sets it `false`, because it did not.
+only if you actually checked — `scrub` leaves it `false` when it was, because
+it did not look, and keeps a `true` someone recorded. State `date_shift_days`
+only in a file that stays with whoever holds the key (1.0 §11.4).
 
 **A file with no de-identification record must be treated as potentially
 identifying.** Absence is never evidence.
 
-## 4. Re-index, then check the cohort
+## 4. A clinical sample
+
+A sample with a clinical history (format 1.1) is scanned like any other, and
+the profile adds four rules:
+
+| Rule | Reports | `--apply` |
+|---|---|---|
+| `clinical_clock` | a `utc` clock: every time on it is the subject's own | moves every time by the shift |
+| `clinical_id` | the clock's id, encounter ids, and event, record or document ids holding a name, a date, a UID or the sample's ids | re-mints them, with a salt |
+| `clinical_text` | a name, date, UID or one of the sample's ids in a document or a short text column, with its byte span | refuses while a name, UID or id is there |
+| `clinical` | each document, and the short text columns, that no one has attested as de-identified | refuses until attested |
+
+Text is read one document at a time, so a long report never sits in memory
+beside the others, and a document whose bytes do not read is reported as
+`unreadable` while the rest are still examined.
+
+**The text is attested, not rewritten.** De-identify it with a tool that
+handles free text — or by hand — and write the result as the sample's text;
+then record that:
+
+<!-- illustrative -->
+```bash
+medh5 scrub case.medh5 --apply --salt "$SALT" --attest-text "philter 2.1"
+```
+
+`--attest-text TOOL` (`attest_text=`) writes a `deidentify` activity holding
+the digest of each document's bytes and of the short text columns. It holds
+only while those bytes do: change a document and its `clinical` finding comes
+back. On its own it touches nothing under `clinical/` — it is the "attest an
+external de-identification" amendment.
+
+**The history is written again, as a new sample** (1.1 §10). When the clock is
+`utc`, or with `--pseudonymise-ids`, `--apply` cannot amend the records in
+place — an event version is immutable, and so is its clock (1.1 §3, §7.3) — so
+it writes them as new versions:
+
+- every time, effective and available alike, moves by the one shift `/meta`'s
+  dates take, and a `utc` clock becomes `shifted_utc`; a `utc` clock needs a
+  shift, and the run is refused without one;
+- the clock, event, record, document and encounter ids are re-minted from the
+  salt (`pseudo.event.…`), and every link follows them; the clock's new id is
+  the same in every fragment of the subject scrubbed with one salt, so they
+  still join (task-cache-1 T304);
+- the text keeps its bytes, so every span still points where it did, and its
+  attestation follows the documents to their new ids;
+- a selection at a cutoff moved by the shift admits the same versions.
+
+<!-- illustrative -->
+```python
+report = scrub.apply(
+    path,
+    salt=SALT,
+    date_shift_range=(-400, -100),
+    attest_text="philter 2.1",
+    out="shared/case.medh5",
+)
+report.uid_map["event:rep_v2"]    # the new id of event rep_v2
+```
+
+`report.uid_map` keys a re-minted id by its kind (`event:`, `record:`,
+`document:`, `encounter:`, `clock:`), since an event and its record often
+share one; it is the key to the history's pseudonyms, and as identifying as
+the rest of the map.
+
+## 5. Re-index, then check the cohort
 
 A cohort that mixes de-identified and non-de-identified samples is the failure
 this catches, and no per-file check can see it. **Re-index first**, or it will

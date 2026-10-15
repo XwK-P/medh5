@@ -297,7 +297,9 @@ fails the audit.
 ### `medh5 scrub`
 
 ```
-medh5 scrub PATH... [--profile basic|strict] [--apply [--date-shift-days N] [--salt S] [--by WHO] [--pseudonymise-ids]] [--json]
+medh5 scrub PATH... [--profile basic|strict] [--json]
+    [--apply [--salt S] [--date-shift-days N | --date-shift-range MIN:MAX] [--withhold-shift]
+             [--by WHO] [--pseudonymise-ids] [--out FILE | --out-dir DIR] [--attest-text TOOL]]
 ```
 
 Find identifiers in the container. Without `--apply` nothing is written and the
@@ -327,12 +329,30 @@ pseudonyms. A file still named after the old id is reported: `scrub` does not
 rename files.
 
 ```
-$ medh5 scrub out/*.medh5 --apply --date-shift-days -117 --by RAD-07
+$ medh5 scrub out/*.medh5 --apply --date-shift-days -117 --withhold-shift --salt "$SALT" --by RAD-07
 ```
 
 Running it twice does not shift dates twice: a second run with a different
-shift is refused, as is a shift of zero. `--date-shift-days`, `--salt` and
-`--by` act only with `--apply`, and are refused without it.
+shift is refused, as is a shift of zero. `--withhold-shift` leaves the amount
+out of the record (one known date restores every other) and records that the
+dates were shifted, with a salted commitment to the amount; `--profile strict`
+withholds by default, and `basic` notes that medh5 3.0 will.
+`--date-shift-range MIN:MAX` takes a nonzero shift in the range from `--salt`
+and the subject id, the same for every file of one subject, and always
+withheld. `--out FILE` writes the result to a new file and leaves the source as
+it is; `--out-dir DIR` does that for each path. A name pseudonymised under
+`strict` needs `--salt`.
+
+On a clinical sample (format 1.1) the scan reads the clock, the ids and each
+document's text, and `--apply` refuses while text is unattested or holds a
+name, a UID or one of the sample's ids. `--attest-text TOOL` records that TOOL
+de-identified the text, with the digests of the bytes it covers. A `utc` clock,
+or `--pseudonymise-ids`, writes the history again as new versions: times moved
+by the shift, the clock `shifted_utc`, every id re-minted from `--salt` (see
+the [de-identification guide](../guides/deidentify.md#4-a-clinical-sample)).
+
+Every option but `--profile` and `--json` acts only with `--apply`, and is
+refused without it.
 
 ## Collections
 
