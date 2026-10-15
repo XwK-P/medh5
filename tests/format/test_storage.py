@@ -4,9 +4,11 @@ recompression (spec §14)."""
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import h5py
 import numpy as np
@@ -1088,3 +1090,177 @@ class TestLinkGraphs:
             assert isinstance(link, h5py.SoftLink) and link.path == "/x_ext/d"
             assert ext["alias"] == ext["d"]  # one object, two names
             assert ext["loop"] == ext  # the cycle, as stored
+
+
+def _report(path: Path, text: str) -> None:
+    from medh5 import cli
+
+    cli._write_report(path, text)
+
+
+def _sidecar(path: Path, text: str) -> None:
+    from medh5.io import nifti
+
+    nifti._replace_text(path, text)
+
+
+def _files_write_text(path: Path, text: str) -> None:
+    from medh5._files import write_text
+
+    write_text(path, text)
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    medh5._core.write_atomic(path, text)
+
+
+# Every Python site that writes a file through the engine's replace so far.
+# Each owner that moves a site (tests/project/test_layers.py) adds it here.
+_SITES = {
+    "write_atomic": _write_atomic,
+    "files.write_text": _files_write_text,
+    "convert --report": _report,
+    "nifti sidecar": _sidecar,
+}
+
+
+@pytest.mark.parametrize("write", _SITES.values(), ids=list(_SITES))
+class TestOneReplace:
+    """Every file medh5 writes from Python is replaced as an amendment
+    replaces a sample (§14.4, D23): at 2.0.2 a report replaced a link, lost
+    the file's mode, and wrote CRLF on Windows."""
+
+    def test_S14_4_a_link_is_kept_and_the_file_it_names_replaced(
+        self, tmp_path: Path, write: Any
+    ):
+        real = tmp_path / "data" / "real.json"
+        real.parent.mkdir()
+        real.write_bytes(b"before\n")
+        link = tmp_path / "given.json"
+        try:
+            link.symlink_to(Path("data", "real.json"))
+        except OSError as exc:  # pragma: no cover - no links on this file system
+            pytest.skip(str(exc))
+        write(link, "after\n")
+        assert link.is_symlink() and os.readlink(link) == str(Path("data", "real.json"))
+        assert real.read_bytes() == b"after\n"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["data", "given.json"]
+        assert [p.name for p in real.parent.iterdir()] == ["real.json"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    def test_S14_4_the_file_s_mode_is_kept(self, tmp_path: Path, write: Any):
+        target = tmp_path / "private.json"
+        target.write_bytes(b"before\n")
+        target.chmod(0o600)
+        write(target, "after\n")
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert target.read_bytes() == b"after\n"
+
+    def test_S14_4_a_read_only_file_is_replaced_and_stays_read_only(
+        self, tmp_path: Path, write: Any
+    ):
+        """Windows refused both: `os.replace` over a read-only file."""
+        target = tmp_path / "read-only.json"
+        target.write_bytes(b"before\n")
+        target.chmod(stat.S_IREAD)
+        try:
+            write(target, "after\n")
+            assert not target.stat().st_mode & stat.S_IWRITE
+            assert target.read_bytes() == b"after\n"
+        finally:
+            target.chmod(stat.S_IREAD | stat.S_IWRITE)
+        assert [p.name for p in tmp_path.iterdir()] == [target.name]
+
+    def test_S14_4_newlines_are_written_as_given(self, tmp_path: Path, write: Any):
+        target = tmp_path / "lines.json"
+        write(target, "a\nb\r\nc\n")
+        assert target.read_bytes() == b"a\nb\r\nc\n"
+
+
+class TestStagedFile:
+    """A foreign writer's file (nibabel, pydicom) through the same replace."""
+
+    def test_S14_4_write_atomic_and_the_engine_s_own_saves_are_one(
+        self, tmp_path: Path
+    ):
+        """The Python door and the engine's own writer (a cohort manifest)
+        write the same bytes with the same mode."""
+        from medh5.dataset.manifest import Manifest
+
+        engine, python = tmp_path / "engine.json", tmp_path / "python.json"
+        Manifest(entries=[]).save(engine)
+        medh5._core.write_atomic(python, engine.read_text(encoding="utf-8"))
+        assert python.read_bytes() == engine.read_bytes()
+        assert python.stat().st_mode == engine.stat().st_mode
+        if sys.platform != "win32":
+            for target in (engine, python):
+                target.chmod(0o600)
+            Manifest(entries=[]).save(engine)
+            medh5._core.write_atomic(python, engine.read_bytes())
+            assert stat.S_IMODE(engine.stat().st_mode) == 0o600
+            assert stat.S_IMODE(python.stat().st_mode) == 0o600
+
+    def test_S14_4_a_staged_file_keeps_the_suffix_and_replaces_on_exit(
+        self, tmp_path: Path
+    ):
+        target = tmp_path / "image.nii.gz"
+        target.write_bytes(b"before")
+        with medh5._core.stage_file(target) as staged:
+            assert staged.path.parent == tmp_path
+            assert staged.path.name.endswith("-image.nii.gz")
+            assert staged.target == target.resolve()
+            staged.path.write_bytes(b"after")
+            assert target.read_bytes() == b"before"
+        assert target.read_bytes() == b"after"
+        assert [p.name for p in tmp_path.iterdir()] == ["image.nii.gz"]
+
+    def test_S14_4_a_staged_file_is_discarded_on_an_exception(self, tmp_path: Path):
+        target = tmp_path / "image.nii.gz"
+        target.write_bytes(b"before")
+        with pytest.raises(KeyError), medh5._core.stage_file(target) as staged:
+            staged.path.write_bytes(b"half")
+            raise KeyError("the writer failed")
+        assert target.read_bytes() == b"before"
+        assert [p.name for p in tmp_path.iterdir()] == ["image.nii.gz"]
+
+    def test_S14_4_a_staged_file_commits_or_aborts_once(self, tmp_path: Path):
+        committed = medh5._core.stage_file(tmp_path / "a.txt")
+        committed.path.write_bytes(b"a")
+        committed.commit()
+        committed.abort()  # nothing left to discard
+        with pytest.raises(MEDH5FileError, match="already"):
+            committed.commit()
+        assert (tmp_path / "a.txt").read_bytes() == b"a"
+
+        aborted = medh5._core.stage_file(tmp_path / "b.txt")
+        aborted.path.write_bytes(b"b")
+        aborted.abort()
+        with pytest.raises(MEDH5FileError, match="already"):
+            aborted.commit()
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
+
+    def test_S14_4_write_atomic_writes_text_or_bytes(self, tmp_path: Path):
+        medh5._core.write_atomic(tmp_path / "t", "é\n")
+        medh5._core.write_atomic(tmp_path / "b", b"\x00\xff")
+        assert (tmp_path / "t").read_bytes() == "é\n".encode()
+        assert (tmp_path / "b").read_bytes() == b"\x00\xff"
+        with pytest.raises(TypeError, match="str or bytes"):
+            medh5._core.write_atomic(tmp_path / "n", 3)  # type: ignore[arg-type]
+
+    def test_S14_4_an_error_names_the_file_not_its_temporary(self, tmp_path: Path):
+        missing = tmp_path / "no-such-directory" / "r.json"
+        with pytest.raises(OSError, match="no-such-directory") as caught:
+            medh5._core.write_atomic(missing, "x")
+        assert ".tmp" not in str(caught.value)
+
+    def test_S14_4_same_file_follows_links(self, tmp_path: Path):
+        a = tmp_path / "a"
+        a.write_bytes(b"")
+        (tmp_path / "b").write_bytes(b"")
+        assert medh5._core.same_file(a, a)
+        assert not medh5._core.same_file(a, tmp_path / "b")
+        try:
+            (tmp_path / "link").symlink_to(a)
+        except OSError:  # pragma: no cover - no links on this file system
+            return
+        assert medh5._core.same_file(tmp_path / "link", a)
