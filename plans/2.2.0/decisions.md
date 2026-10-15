@@ -73,10 +73,18 @@ workstream first checks that the 2.1.0 pieces it builds on are on `main`
 - **Decision.** The engine gains a NIfTI-1/NIfTI-2 reader and writer (a
   hand-written header codec; both byte orders; `.nii`, `.nii.gz`, `.hdr`/`.img`)
   behind all three frontends. Its contract is parity with 2.1.0's Python
-  converter: on a golden corpus recorded from 2.1.0, the import's report JSON and
-  `content_id` are byte-identical, and exports agree by header fields and voxel
-  bytes (not by gzip stream). nibabel becomes a test dependency; the `nifti` extra
-  stays (empty or nibabel) for compatibility.
+  converter: on a golden corpus recorded from 2.1.0, every object the import
+  writes has the same digest, its `/meta` is the same JSON except the version
+  the `software` agent records (`medh5.__version__`, which `/meta`'s line in
+  `content_id` covers, 1.0 §13.2), and its report JSON is the same except the
+  paths it names; exports agree by header fields and voxel bytes (not by gzip
+  stream). Those are the only differences the parity test allows, plus any it
+  lists by name (W22-10's reworded refusals). nibabel becomes a test
+  dependency, and nothing in the runtime imports it: the other modules that
+  reach it through `medh5/io/nifti.py` (ITK displacement fields in
+  `medh5/io/itk.py`, nnU-Net export in `medh5/io/nnunetv2.py`) move to the
+  engine's reader and writer with it. The `nifti` extra stays (empty) for
+  compatibility.
 - **Why.** The standalone binary and Homebrew users cannot convert the most common
   format without Python; three frontends should run one implementation. The
   `nifti` crate (0.18) reads NIfTI-1 only and pulls in several dependencies;

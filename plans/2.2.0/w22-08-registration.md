@@ -15,13 +15,14 @@
 > medh5 2.2.0 in this repository. First read `plans/README.md`,
 > `plans/2.2.0/README.md` and `plans/2.2.0/decisions.md` (E9), then
 > `plans/2.2.0/w22-08-registration.md` in full. Check that 2.1.0's ITK I/O is on
-> `main`. Work from the latest `main` on `w22/registration`; land the two pull
-> requests in order. PR 2 begins with a measurement: import a B-spline only if the
-> stored field reproduces ITK's transform exactly (within 1e-6 mm, everywhere in
-> the transform's domain), and otherwise keep the refusal and write down why.
-> Geometry is never invented. Write tests first, run the local gate from
-> `CLAUDE.md` and the `test-itk` job's tests, add fragments, open `W22-08: …` pull
-> requests, and do not merge.
+> `main`. Work from the latest `main` on `w22/registration`; land the two items
+> in order, as one pull request. PR 2 begins with a measurement: import a
+> B-spline only if the stored field reproduces ITK's transform exactly (within
+> 1e-6 mm, everywhere in the transform's domain), and otherwise keep the refusal
+> and write down why. Geometry is never invented. Write tests first, run the
+> local gate from `CLAUDE.md` and the `test-itk` job's tests, add fragments,
+> open a `W22-08: …` pull request, and arm auto-merge only as plans/README.md's
+> "Review before the queue" says.
 
 ## Pull requests
 
@@ -34,9 +35,13 @@
 
 ### 08.1 ITK's HDF5 transform files (PR 1)
 
-- **State at 2.1.0 (planned).** `read_itk_transform` parses `.tfm`/`.txt` and
-  ANTs' MATLAB v4 `.mat`; ITK `.h5` transform files are refused. h5py is a test
-  dependency only.
+- **State at 2.1.0** (checked at v2.1.0). `read_itk_transform` parses
+  `.tfm`/`.txt` and ANTs' MATLAB v4 `.mat`; ITK `.h5` transform files are
+  refused (`medh5/io/itk.py`). h5py is a test dependency and the optional
+  `h5py` extra, never a dependency of the converters. NIfTI displacement
+  fields go through `medh5/io/nifti.py`, which W22-02 moves onto the engine
+  in its last pull request; this workstream's tests must pass either side of
+  that.
 - **Change.** Read and write ITK's HDF5 transform layout (`/TransformGroup/<n>/`
   with `TransformType`, `TransformParameters`, `TransformFixedParameters`) for the
   types 2.1.0 supports, through the engine's HDF5 (a small reader in
@@ -49,7 +54,8 @@
 
 ### 08.2 B-spline transforms: exact, or refused with the reason (PR 2)
 
-- **State at 2.1.0 (planned).** B-spline files are refused. medh5's displacement
+- **State at 2.1.0** (checked at v2.1.0). B-spline files are refused
+  (`_LATER` in `itk.py`). medh5's displacement
   fields interpolate linearly or by cubic B-spline after prefiltering their
   samples (1.0 §10.4).
 - **Study first.** Store an ITK `BSplineTransform` as a displacement field on its

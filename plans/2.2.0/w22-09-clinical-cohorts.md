@@ -10,16 +10,17 @@
 
 ## Session prompt
 
-> Implement workstream W22-09 (clinical import across a cohort) of medh5 2.2.0 in
-> this repository. First read `plans/README.md` and `plans/2.2.0/README.md`, then
-> `plans/2.2.0/w22-09-clinical-cohorts.md` in full. Check that 2.1.0's MEDS and
-> FHIR importers (W21-12) are on `main`. Work from the latest `main` on
-> `w22/clinical-cohorts`; land the two pull requests in order. Each subject's
-> result must be byte-identical to importing that subject alone with 2.1.0's
-> per-sample importer: the batch path changes the cost, never the answer. Memory
-> stays bounded by one subject's rows. Write tests first, run the local gate from
-> `CLAUDE.md` and the `meds` job's tests, add fragments, open `W22-09: …` pull
-> requests, and do not merge.
+> Implement workstream W22-09 (clinical import across a cohort) of medh5 2.2.0
+> in this repository. First read `plans/README.md` and `plans/2.2.0/README.md`,
+> then `plans/2.2.0/w22-09-clinical-cohorts.md` in full. Check that 2.1.0's MEDS
+> and FHIR importers (W21-12) are on `main`. Work from the latest `main` on
+> `w22/clinical-cohorts`; land the two items in order, as one pull request. Each
+> subject's result must be byte-identical to importing that subject alone with
+> the per-sample importer (`augment_from_meds`, `augment_from_fhir`): the batch
+> path changes the cost, never the answer. Memory stays bounded by one subject's
+> rows. Write tests first, run the local gate from `CLAUDE.md` and the `meds`
+> job's tests, add fragments, open a `W22-09: …` pull request, and arm
+> auto-merge only as plans/README.md's "Review before the queue" says.
 
 ## Pull requests
 
@@ -32,8 +33,10 @@
 
 ### 09.1 A MEDS dataset into a cohort, in one pass (PR 1)
 
-- **State at 2.1.0 (planned).** `read_meds` scans the dataset once per sample, so
-  a cohort of N subjects costs N scans.
+- **State at 2.1.0** (checked at v2.1.0). `read_meds` (`medh5/io/meds.py`)
+  scans the dataset once per sample, filtering to one subject, so a cohort of
+  N subjects costs N scans. `read_fhir` reads a Bundle or a list of resources,
+  not NDJSON.
 - **Change.** `augment_cohort_from_meds(dataset, mapping: Mapping[int, str |
   os.PathLike[str]], *, out_dir=None, **options) -> CohortImport` (`mapping` from
   MEDS `subject_id` to the sample it augments): one pass over the dataset's
