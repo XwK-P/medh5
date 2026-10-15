@@ -82,7 +82,7 @@ enum Loc {
 
 fn loc_of(obj: &Bound<'_, PyAny>) -> PyResult<Loc> {
     if let Ok(d) = obj.cast::<Dataset>() {
-        return Ok(Loc::Dataset(d.get().ds.clone()));
+        return Ok(Loc::Dataset(d.get().ds().clone()));
     }
     if let Ok(g) = obj.cast::<Group>() {
         return Ok(Loc::Group(g.get().group.clone()));
@@ -136,7 +136,7 @@ fn attr_names_arg(
 #[pyfunction]
 #[pyo3(signature = (dataset, path=None, algo="sha256"))]
 fn dataset_digest(py: Python<'_>, dataset: &Bound<'_, PyAny>, path: Option<String>, algo: &str) -> R<String> {
-    let ds = crate::nodes::dataset_arg(dataset)?.get().ds.clone();
+    let ds = crate::nodes::dataset_arg(dataset)?.get().ds().clone();
     let path = path.unwrap_or_else(|| ds.name().trim_start_matches('/').to_string());
     Ok(py.detach(move || digest::dataset_digest(&ds, &path, algo))?)
 }
@@ -235,7 +235,7 @@ fn verify_root<'py>(
 
 #[pyfunction]
 fn raw_chunks<'py>(py: Python<'py>, dataset: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
-    let ds = crate::nodes::dataset_arg(dataset)?.get().ds.clone();
+    let ds = crate::nodes::dataset_arg(dataset)?.get().ds().clone();
     let chunks = py.detach(move || verify::raw_chunks(&ds))?;
     Ok(PyList::new(py, chunks.iter().map(|c| PyBytes::new(py, c)))?)
 }

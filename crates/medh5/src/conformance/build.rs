@@ -427,7 +427,7 @@ fn reseal(root: &hdf5::Group) -> Result<()> {
 // -- builders -------------------------------------------------------------------------
 
 /// A valid, minimal-but-complete sample: one grid, one image, one timepoint.
-fn base(path: &Path, shape: &[usize]) -> Result<()> {
+pub(super) fn base(path: &Path, shape: &[usize]) -> Result<()> {
     let mut rng = Rng::new(SEED);
     write(path, Some("subj-A"), |w| {
         w.identity(fields(json!({"sex": "F", "bodypart": "abdomen"})))?;

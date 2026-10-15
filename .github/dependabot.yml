@@ -5,7 +5,8 @@
 #
 # Nothing else is updated from here, on purpose.  A Cargo.lock update has to
 # regenerate THIRD_PARTY_NOTICES in the same commit, or CI fails, and a
-# Dependabot pull request cannot; the package's Python requirements are floors,
+# Dependabot pull request cannot: .github/workflows/lock-refresh.yml refreshes
+# the lock every week instead, notices included; the package's Python requirements are floors,
 # which CI installs (`test-min-deps`), not versions to follow; and what is
 # pinned exactly (the Rust in rust-toolchain.toml, ruff and mypy in the `dev`
 # extra, the docs toolchain in docs/requirements.txt, the build tools in

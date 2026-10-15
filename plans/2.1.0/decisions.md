@@ -842,9 +842,8 @@ content and `content_id`, unless an item fixes it (D20).
 - **Decision.** Add cp314t wheels (PyO3 builds a version-specific extension for
   a free-threaded interpreter; `gil_used = true` stays, so CPython re-enables
   the GIL at import with a warning: safe, and medh5 installs without a
-  compiler). Add Windows arm64 only if the `windows-11-arm` runner is available
-  to the repository (unverified at planning time); otherwise it moves to 2.2.0.
-  musllinux, `abi3t`, the free-threading audit and the x86_64 macOS
+  compiler). Windows arm64 is not planned: the release stays on the five
+  targets it ships. musllinux, `abi3t`, the free-threading audit and the x86_64 macOS
   cross-build are 2.2.0. W21-01.
 
 ### D38 Deprecations
