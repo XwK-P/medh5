@@ -109,6 +109,8 @@ PRESENT: str = _core.PRESENT
 RESOLVED: str = _core.RESOLVED
 UNEXAMINED: str = _core.UNEXAMINED
 STATES: tuple[str, ...] = _core.STATES
+REASONS: tuple[str, ...] = _core.REASONS
+"""Why an unseen object is or is not a finding (§7.4), in precedence order."""
 
 Sequence.register(Timeline)
 Mapping.register(Tracking)
@@ -135,6 +137,7 @@ __all__ = [
     "PSEUDONYM_SOURCE",
     "QUALITY_FIELDS",
     "QUALITY_STATUS",
+    "REASONS",
     "RESOLVED",
     "RFC3339",
     "SEX_VALUES",

@@ -12,9 +12,14 @@
 //!
 //! Compared across two files, a class id is a number within its own label
 //! set: an id the two label sets give different meanings is refused (C102)
-//! rather than scored.
+//! rather than scored.  Two vocabularies are compared by class key
+//! ([`ClassMap::Key`]) or by an explicit map of ids ([`ClassMap::Explicit`]),
+//! through [`compare_with`].
 //!
-//! A record is keyed the way §11.2 keys it, `per_class` by class **id**.
+//! A record is keyed the way §11.2 keys it, `per_class` by class **id**, and
+//! its `against` names an annotation of the recording sample (§11.2): a
+//! comparison across two samples has none, and is recorded only through
+//! `to_record_against`.
 
 use std::collections::BTreeSet;
 
@@ -27,7 +32,7 @@ use crate::array::Slice;
 use crate::curation::quality::Agreement;
 use crate::curation::tracking::carries_instance_ids;
 use crate::json::{num, py_float, repr, repr_int_list, repr_int_tuple, repr_str};
-use crate::labels::{ClassKey, LabelSet};
+use crate::labels::{ClassKey, LabelClass, LabelSet};
 use crate::numeric::mean;
 use crate::{Error, Result};
 
@@ -205,14 +210,24 @@ impl VoxelAgreement {
         mean(&self.per_class.values().copied().collect::<Vec<_>>())
     }
 
-    /// The [`Agreement`] a `quality` record stores (§11.2).
+    /// The [`Agreement`] a `quality` record stores (§11.2).  Refused for a
+    /// comparison across two samples, which names no annotation of the
+    /// recording one: [`VoxelAgreement::to_record_against`] names it.
     pub fn to_record(&self) -> Result<Agreement> {
+        let against = recorded_against(self.against.as_deref())?;
+        self.to_record_against(&against)
+    }
+
+    /// [`VoxelAgreement::to_record`] against `against`: the path, from the
+    /// recording sample's root, of the annotation of that sample that holds
+    /// what was compared against (the other rater's, copied in).
+    pub fn to_record_against(&self, against: &str) -> Result<Agreement> {
         let value = measured(self.value(), &self.skipped)?;
         let mut per_class = IndexMap::new();
         for (key, score) in &self.per_class {
             per_class.insert(self.class_id(key)?.to_string(), *score);
         }
-        Ok(Agreement { metric: self.metric.clone(), value, against: self.against.clone(), per_class })
+        Ok(Agreement { metric: self.metric.clone(), value, against: Some(checked_against(against)?), per_class })
     }
 
     fn class_id(&self, key: &str) -> Result<i64> {
@@ -287,12 +302,21 @@ impl InstanceAgreement {
         mean(&self.matched.iter().map(|m| m.2).collect::<Vec<_>>())
     }
 
-    /// The [`Agreement`] a `quality` record stores (§11.2), without `per_class`.
+    /// The [`Agreement`] a `quality` record stores (§11.2), without
+    /// `per_class`.  Refused for a comparison across two samples, as
+    /// [`VoxelAgreement::to_record`] is.
     pub fn to_record(&self) -> Result<Agreement> {
+        let against = recorded_against(self.against.as_deref())?;
+        self.to_record_against(&against)
+    }
+
+    /// [`InstanceAgreement::to_record`] against `against`, an annotation of
+    /// the recording sample.
+    pub fn to_record_against(&self, against: &str) -> Result<Agreement> {
         Ok(Agreement {
             metric: "object_f1".into(),
             value: measured(self.value(), &self.skipped)?,
-            against: self.against.clone(),
+            against: Some(checked_against(against)?),
             per_class: IndexMap::new(),
         })
     }
@@ -336,6 +360,20 @@ impl Comparison {
         }
     }
 
+    pub fn to_record_against(&self, against: &str) -> Result<Agreement> {
+        match self {
+            Comparison::Voxel(v) => v.to_record_against(against),
+            Comparison::Instance(i) => i.to_record_against(against),
+        }
+    }
+
+    fn skipped_mut(&mut self) -> &mut Vec<String> {
+        match self {
+            Comparison::Voxel(v) => &mut v.skipped,
+            Comparison::Instance(i) => &mut i.skipped,
+        }
+    }
+
     pub fn to_json(&self) -> Value {
         match self {
             Comparison::Voxel(v) => v.to_json(),
@@ -359,38 +397,259 @@ fn repr_opt(value: Option<&str>) -> String {
     repr(&json!(value))
 }
 
+/// The `against` a record takes from a comparison, or the refusal of one
+/// across two samples (§11.2).
+fn recorded_against(against: Option<&str>) -> Result<String> {
+    against.map(str::to_string).ok_or_else(|| {
+        Error::invalid(
+            "this comparison is across two samples, so no annotation of the recording sample holds what it was \
+             compared against; an agreement's `against` names an annotation of its own sample (§11.2), so copy the \
+             other annotation in and give its path as `against`",
+        )
+    })
+}
+
+/// An `against` path as a record stores it: a path from the sample root.
+fn checked_against(against: &str) -> Result<String> {
+    let path = against.trim_start_matches('/');
+    if path.is_empty() {
+        return Err(Error::invalid("an agreement's `against` is the path of an annotation of the recording sample"));
+    }
+    Ok(path.to_string())
+}
+
+/// Which class of `b` each class of `a` is compared with.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ClassMap {
+    /// One id names one class on both sides (one vocabulary); ids the two
+    /// label sets give different meanings are refused (C102).
+    #[default]
+    Id,
+    /// Classes of one key are compared, across two inline label sets; a key
+    /// `b` lacks is skipped, and one key with two ontology codes is C102.
+    Key,
+    /// `a`'s class id -> `b`'s, injective; classes it does not name are not
+    /// compared.
+    Explicit(IndexMap<i64, i64>),
+}
+
+/// How objects are paired.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MatchBy {
+    /// By `instance_id` within one sample where both sides carry ids and
+    /// share one, else by IoU.
+    #[default]
+    Auto,
+    /// By IoU, whatever ids the two share.
+    Iou,
+    /// By `instance_id`, within one sample only: an id names an object of
+    /// its own sample (§7.4).
+    InstanceId,
+}
+
+impl MatchBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MatchBy::Auto => "auto",
+            MatchBy::Iou => "iou",
+            MatchBy::InstanceId => "instance_id",
+        }
+    }
+}
+
+/// What [`compare_with`] takes; `Default` is [`compare`]'s defaults.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct CompareOptions {
+    pub metric: Option<String>,
+    pub threshold: Option<f64>,
+    pub classes: Option<Vec<ClassKey>>,
+    pub map_classes: ClassMap,
+    pub match_by: MatchBy,
+}
+
+/// A comparison, and the classes it compared: `a`'s key -> `(id in a, id in b)`.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Compared {
+    pub comparison: Comparison,
+    pub pairs: IndexMap<String, (i64, i64)>,
+}
+
 struct Pair {
-    /// The ids `classes` named, as both sides resolve them; `None` for all.
+    /// The ids `classes` named, as `a` resolves them; `None` for all.
     asked: Option<Vec<i64>>,
-    classes: Vec<i64>,
+    /// `(id in a, id in b)` for each class both sides examined.
+    pairs: Vec<(i64, i64)>,
     skipped: Vec<String>,
 }
 
-/// Classes both sides committed to finding, in a stable order (§11.3).
-fn classes_to_compare(a: &Annotation, b: &Annotation, classes: Option<&[ClassKey]>) -> Result<Pair> {
-    let asked: Option<Vec<i64>> = match classes {
-        Some(keys) => Some(keys.iter().map(|k| resolve_on_both(a, b, k)).collect::<Result<_>>()?),
-        None => None,
-    };
-    let wanted: Vec<i64> = match &asked {
-        Some(ids) => ids.clone(),
-        None => {
-            let mut all: Vec<i64> = a.class_ids().iter().chain(b.class_ids()).copied().collect();
-            all.sort_unstable();
-            all.dedup();
-            all
+impl Pair {
+    /// `a`'s class -> `b`'s, for the compared classes.
+    fn to_b(&self) -> std::collections::HashMap<i64, i64> {
+        self.pairs.iter().copied().collect()
+    }
+
+    /// `a`'s key -> `(id in a, id in b)`.
+    fn named(&self, a: &Annotation) -> IndexMap<String, (i64, i64)> {
+        self.pairs.iter().map(|(x, y)| (a.class_key(*x), (*x, *y))).collect()
+    }
+}
+
+/// Classes both sides committed to finding, in a stable order (§11.3), each
+/// with the class of `b` it is compared with.
+fn classes_to_compare(a: &Annotation, b: &Annotation, classes: Option<&[ClassKey]>, map: &ClassMap) -> Result<Pair> {
+    let mut skipped = Vec::new();
+    let (asked, candidates): (Option<Vec<i64>>, Vec<(i64, i64)>) = match map {
+        ClassMap::Id => {
+            let asked: Option<Vec<i64>> = match classes {
+                Some(keys) => Some(keys.iter().map(|k| resolve_on_both(a, b, k)).collect::<Result<_>>()?),
+                None => None,
+            };
+            let wanted: Vec<i64> = match &asked {
+                Some(ids) => ids.clone(),
+                None => sorted_ids(a.class_ids().iter().chain(b.class_ids())),
+            };
+            (asked, wanted.into_iter().map(|c| (c, c)).collect())
+        }
+        ClassMap::Key => {
+            let (left, right) = inline_label_sets(a, b)?;
+            let asked: Option<Vec<i64>> = match classes {
+                Some(keys) => Some(keys.iter().map(|k| a.resolve_class(k)).collect::<Result<_>>()?),
+                None => None,
+            };
+            let wanted = asked.clone().unwrap_or_else(|| sorted_ids(a.class_ids().iter()));
+            let mut pairs = Vec::new();
+            for id in wanted {
+                let Some(class) = left.by_id(id) else {
+                    skipped.push(format!("{id} (not in {})", vocabulary_of(a)));
+                    continue;
+                };
+                match right.by_key(&class.key) {
+                    None => skipped.push(format!("{} (not in {})", class.key, vocabulary_of(b))),
+                    Some(other) => {
+                        check_codes(class, other, a, b)?;
+                        pairs.push((id, other.id));
+                    }
+                }
+            }
+            if asked.is_none() {
+                for id in sorted_ids(b.class_ids().iter()) {
+                    if let Some(class) = right.by_id(id) {
+                        if left.by_key(&class.key).is_none() {
+                            skipped.push(format!("{} (not in {})", class.key, vocabulary_of(a)));
+                        }
+                    }
+                }
+            }
+            (asked, pairs)
+        }
+        ClassMap::Explicit(explicit) => {
+            check_injective(explicit)?;
+            let asked: Option<Vec<i64>> = match classes {
+                Some(keys) => Some(keys.iter().map(|k| a.resolve_class(k)).collect::<Result<_>>()?),
+                None => None,
+            };
+            let pairs = match &asked {
+                None => explicit.iter().map(|(x, y)| (*x, *y)).collect(),
+                Some(ids) => {
+                    let mut pairs = Vec::new();
+                    for id in ids {
+                        match explicit.get(id) {
+                            Some(other) => pairs.push((*id, *other)),
+                            None => skipped.push(format!("{} (not in the class map)", a.class_key(*id))),
+                        }
+                    }
+                    pairs
+                }
+            };
+            (asked, pairs)
         }
     };
-    let mut out = Pair { asked, classes: Vec::new(), skipped: Vec::new() };
-    for class_id in wanted {
-        let key = ClassKey::Id(class_id);
-        if a.is_annotated(&key)? && b.is_annotated(&key)? {
-            out.classes.push(class_id);
+    let mut out = Pair { asked, pairs: Vec::new(), skipped };
+    for (x, y) in candidates {
+        if a.is_annotated(&ClassKey::Id(x))? && b.is_annotated(&ClassKey::Id(y))? {
+            out.pairs.push((x, y));
+        } else if x == y {
+            out.skipped.push(format!("{} (not examined by both)", key_of(a, b, x)));
         } else {
-            out.skipped.push(format!("{} (not examined by both)", key_of(a, b, class_id)));
+            out.skipped.push(format!("{} (not examined by both)", a.class_key(x)));
         }
     }
     Ok(out)
+}
+
+fn sorted_ids<'a>(ids: impl Iterator<Item = &'a i64>) -> Vec<i64> {
+    let mut all: Vec<i64> = ids.copied().collect();
+    all.sort_unstable();
+    all.dedup();
+    all
+}
+
+/// Both sides' label sets, which comparing by key reads: inline ones, since
+/// a label set by reference carries no classes to read keys from.
+fn inline_label_sets<'a>(a: &'a Annotation, b: &'a Annotation) -> Result<(&'a LabelSet, &'a LabelSet)> {
+    let inline = |ann: &'a Annotation| -> Result<&'a LabelSet> {
+        match ann.label_set() {
+            Some(set) if set.form == "inline" => Ok(set),
+            Some(set) => Err(Error::invalid(format!(
+                "comparing classes by key reads both label sets, and {} is a label set by reference ({}); \
+                 compare by id, or give an explicit class map",
+                vocabulary_of(ann),
+                repr_opt(set.uri.as_deref())
+            ))),
+            None => Err(Error::invalid(format!(
+                "comparing classes by key reads both label sets, and {} has none; compare by id, or give an \
+                 explicit class map",
+                vocabulary_of(ann)
+            ))),
+        }
+    };
+    Ok((inline(a)?, inline(b)?))
+}
+
+/// Refuse one key whose two classes name two codes in one ontology (C102):
+/// matched by key, they would be scored as one class though their codes say
+/// they are two.
+fn check_codes(left: &LabelClass, right: &LabelClass, a: &Annotation, b: &Annotation) -> Result<()> {
+    for x in &left.codes {
+        for y in right.codes.iter().filter(|y| y.system == x.system) {
+            if !left.codes.iter().any(|c| c.system == y.system && c.code == y.code) {
+                return Err(Error::coded(
+                    "C102",
+                    format!(
+                        "class {} is {} {} in {} and {} {} in {}; one key with two codes is two classes, so it is \
+                         not compared by key",
+                        repr_str(&left.key),
+                        x.system,
+                        repr_str(&x.code),
+                        vocabulary_of(a),
+                        y.system,
+                        repr_str(&y.code),
+                        vocabulary_of(b)
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a class map that sends two classes of `a` to one of `b`, which
+/// would count that class twice.
+fn check_injective(map: &IndexMap<i64, i64>) -> Result<()> {
+    let mut seen: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    for (x, y) in map {
+        if let Some(first) = seen.insert(*y, *x) {
+            return Err(Error::invalid(format!(
+                "the class map sends classes {first} and {x} to class {y}; a class map is one to one, or the \
+                 class it sends two classes to is counted twice"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// A class id's key in the label set of a side that uses it: an id only `b`
@@ -494,6 +753,17 @@ pub fn compare_voxel(
     metric: &str,
     classes: Option<&[ClassKey]>,
 ) -> Result<VoxelAgreement> {
+    Ok(voxel_with(a, b, metric, classes, &ClassMap::Id)?.0)
+}
+
+/// [`compare_voxel`] under a class map, with the pairs it compared.
+fn voxel_with(
+    a: &Annotation,
+    b: &Annotation,
+    metric: &str,
+    classes: Option<&[ClassKey]>,
+    map: &ClassMap,
+) -> Result<(VoxelAgreement, Pair)> {
     if metric != "dice" && metric != "iou" {
         return Err(Error::invalid(format!("unknown agreement metric {}", repr_str(metric))));
     }
@@ -510,8 +780,10 @@ pub fn compare_voxel(
             ),
         ));
     }
-    let pair = classes_to_compare(a, b, classes)?;
-    check_meanings(a, b, &shared_ids(a, &[], b, &[], pair.asked.as_deref()))?;
+    let pair = classes_to_compare(a, b, classes, map)?;
+    if *map == ClassMap::Id {
+        check_meanings(a, b, &shared_ids(a, &[], b, &[], pair.asked.as_deref()))?;
+    }
     // A voxel either annotation ignores (§7.7) is evidence neither for nor
     // against agreement, so it is left out of both: counted, it scored a rater
     // against voxels the other declared unexamined.
@@ -523,11 +795,11 @@ pub fn compare_voxel(
         }
         (left, right) => left.or(right),
     };
-    let counts = class_counts(a, b, &pair.classes, ignored.as_ref())?;
+    let counts = class_counts(a, b, &pair.pairs, ignored.as_ref())?;
     let mut per_class = IndexMap::new();
     let mut ids = IndexMap::new();
-    let mut skipped = pair.skipped;
-    for (class_id, (both, left, right)) in pair.classes.into_iter().zip(counts) {
+    let mut skipped = pair.skipped.clone();
+    for ((class_id, _), (both, left, right)) in pair.pairs.iter().copied().zip(counts) {
         let score = if metric == "dice" { dice_of(both, left + right) } else { iou_of(both, left + right - both) };
         let key = a.class_key(class_id);
         match score {
@@ -539,13 +811,15 @@ pub fn compare_voxel(
             }
         }
     }
-    Ok(VoxelAgreement {
-        metric: metric.into(),
-        per_class,
-        skipped,
-        against: Some(format!("annotations/{}", b.ann_id)),
-        class_ids: ids,
-    })
+    let found = VoxelAgreement { metric: metric.into(), per_class, skipped, against: against_of(a, b), class_ids: ids };
+    Ok((found, pair))
+}
+
+/// What a comparison is against: `b`'s path where it is an annotation of
+/// `a`'s sample, else nothing --- recorded in `a`, a path of `b`'s sample
+/// names an annotation of `a`'s, or none (§11.2).
+fn against_of(a: &Annotation, b: &Annotation) -> Option<String> {
+    one_sample(a, b).then(|| format!("annotations/{}", b.ann_id))
 }
 
 /// Said of two grids in two samples that do not count one lattice.
@@ -608,7 +882,7 @@ const SLAB_VOXELS: usize = 1 << 26;
 fn class_counts(
     a: &Annotation,
     b: &Annotation,
-    classes: &[i64],
+    classes: &[(i64, i64)],
     ignored: Option<&ArrayD<bool>>,
 ) -> Result<Vec<(u64, u64, u64)>> {
     counts_in_slabs(a, b, classes, ignored, SLAB_VOXELS)
@@ -619,7 +893,7 @@ fn class_counts(
 fn counts_in_slabs(
     a: &Annotation,
     b: &Annotation,
-    classes: &[i64],
+    classes: &[(i64, i64)],
     ignored: Option<&ArrayD<bool>>,
     budget: usize,
 ) -> Result<Vec<(u64, u64, u64)>> {
@@ -673,9 +947,10 @@ fn counts_in_slabs(
         roi.extend(rest.iter().map(|_| Slice::full()));
         let kept = ignored.map(|region| region.slice_axis(Axis(0), ndarray::Slice::from(start..stop)));
         for (ids, tallies) in classes.chunks(group).zip(counts.chunks_mut(group)) {
-            let keys: Vec<ClassKey> = ids.iter().map(|c| ClassKey::Id(*c)).collect();
-            let left = a.dense(Some(&keys), Some(&roi))?;
-            let right = b.dense(Some(&keys), Some(&roi))?;
+            let keys_a: Vec<ClassKey> = ids.iter().map(|c| ClassKey::Id(c.0)).collect();
+            let keys_b: Vec<ClassKey> = ids.iter().map(|c| ClassKey::Id(c.1)).collect();
+            let left = a.dense(Some(&keys_a), Some(&roi))?;
+            let right = b.dense(Some(&keys_b), Some(&roi))?;
             same_shape(&left, &right, a, b)?;
             for (i, tally) in tallies.iter_mut().enumerate() {
                 let (x, y) = (left.index_axis(Axis(0), i), right.index_axis(Axis(0), i));
@@ -780,6 +1055,19 @@ pub fn compare_instances(
     threshold: f64,
     classes: Option<&[ClassKey]>,
 ) -> Result<InstanceAgreement> {
+    Ok(instances_with(a, b, threshold, classes, &ClassMap::Id, MatchBy::Auto)?.0)
+}
+
+/// [`compare_instances`] under a class map and a way of pairing objects,
+/// with the class pairs it compared.
+fn instances_with(
+    a: &Annotation,
+    b: &Annotation,
+    threshold: f64,
+    classes: Option<&[ClassKey]>,
+    map: &ClassMap,
+    match_by: MatchBy,
+) -> Result<(InstanceAgreement, Pair)> {
     // As `medh5 agree --threshold` holds it: NaN matched no object, and 0 or
     // less every pair, objects that do not touch among them.
     let in_range = threshold > 0.0 && threshold <= 1.0;
@@ -802,15 +1090,34 @@ pub fn compare_instances(
     }
     check_same_space(a, b)?;
     check_axes(a, b)?;
-    let pair = classes_to_compare(a, b, classes)?;
+    if match_by == MatchBy::InstanceId && !one_sample(a, b) {
+        return Err(Error::invalid(format!(
+            "annotations {} and {} are in two samples, and an instance_id names an object of its own sample \
+             (§7.4): two files numbering from 1 share ids, not objects; match by IoU",
+            repr_str(&a.ann_id),
+            repr_str(&b.ann_id)
+        )));
+    }
+    let pair = classes_to_compare(a, b, classes, map)?;
     let mut left = a.instances()?;
     let mut right = b.instances()?;
     in_the_world_of(a, b, &mut right)?;
-    if let Some(asked) = &pair.asked {
-        left.retain(|o| asked.contains(&o.class_id));
-        right.retain(|o| asked.contains(&o.class_id));
+    if *map == ClassMap::Id {
+        if let Some(asked) = &pair.asked {
+            left.retain(|o| asked.contains(&o.class_id));
+            right.retain(|o| asked.contains(&o.class_id));
+        }
+        check_meanings(a, b, &shared_ids(a, &left, b, &right, pair.asked.as_deref()))?;
+    } else {
+        // Only the mapped classes are compared, each of b's objects under
+        // the class of a it maps from.
+        let to_a: std::collections::HashMap<i64, i64> = pair.pairs.iter().map(|(x, y)| (*y, *x)).collect();
+        left.retain(|o| pair.pairs.iter().any(|(x, _)| *x == o.class_id));
+        right.retain(|o| to_a.contains_key(&o.class_id));
+        for object in &mut right {
+            object.class_id = to_a[&object.class_id];
+        }
     }
-    check_meanings(a, b, &shared_ids(a, &left, b, &right, pair.asked.as_deref()))?;
     check_boxes(a, &left)?;
     check_boxes(b, &right)?;
     // `instance_id` names an object within its own sample (§7.4), so only
@@ -819,20 +1126,35 @@ pub fn compare_instances(
     let ids_b: std::collections::HashSet<u64> = right.iter().map(|o| o.instance_id).collect();
     let shared: std::collections::HashSet<u64> =
         left.iter().map(|o| o.instance_id).filter(|i| ids_b.contains(i)).collect();
-    let by_id = one_sample(a, b) && !shared.is_empty() && carries_instance_ids(a)? && carries_instance_ids(b)?;
+    let identified = carries_instance_ids(a)? && carries_instance_ids(b)?;
+    let by_id = match match_by {
+        MatchBy::Iou => false,
+        MatchBy::InstanceId if !identified => {
+            return Err(Error::invalid(format!(
+                "matching by instance_id needs ids on both sides, and {} carries none",
+                repr_str(if carries_instance_ids(a)? { &b.ann_id } else { &a.ann_id })
+            )));
+        }
+        MatchBy::InstanceId => true,
+        MatchBy::Auto => one_sample(a, b) && !shared.is_empty() && identified,
+    };
+    let against = against_of(a, b);
     let mut result = if by_id {
-        match_by_id(&left, &right, &shared, threshold, &b.ann_id)?
+        match_by_id(&left, &right, &shared, threshold, against)?
     } else {
-        match_by_iou(&left, &right, threshold, &b.ann_id)?
+        match_by_iou(&left, &right, threshold, against)?
     };
     let class_a: std::collections::HashMap<usize, i64> = left.iter().map(|o| (o.index, o.class_id)).collect();
     let class_b: std::collections::HashMap<usize, i64> = right.iter().map(|o| (o.index, o.class_id)).collect();
+    // Coverage is each side's own: a's class, as b names it, in b's.
+    let to_b = pair.to_b();
+    let in_b = |c: i64| if *map == ClassMap::Id { c } else { to_b.get(&c).copied().unwrap_or(c) };
     let looked_a = a.annotated_class_ids();
     let looked_b = b.annotated_class_ids();
-    result.only_in_a.retain(|i| looked_b.contains(&class_a[i]));
+    result.only_in_a.retain(|i| looked_b.contains(&in_b(class_a[i])));
     result.only_in_b.retain(|j| looked_a.contains(&class_b[j]));
-    result.skipped = pair.skipped;
-    Ok(result)
+    result.skipped = pair.skipped.clone();
+    Ok((result, pair))
 }
 
 /// Refuse boxes of different numbers of spatial axes (E414).  A grid's
@@ -929,7 +1251,7 @@ fn match_by_id(
     right: &[Instance],
     shared: &std::collections::HashSet<u64>,
     threshold: f64,
-    against: &str,
+    against: Option<String>,
 ) -> Result<InstanceAgreement> {
     let by_id_b: std::collections::HashMap<u64, &Instance> = right.iter().map(|o| (o.instance_id, o)).collect();
     let mut matched = Vec::new();
@@ -947,14 +1269,19 @@ fn match_by_id(
         only_in_b: right.iter().filter(|o| !shared.contains(&o.instance_id)).map(|o| o.index).collect(),
         matched_by: "instance_id".into(),
         threshold,
-        against: Some(format!("annotations/{against}")),
+        against,
         class_mismatches: mismatches,
         skipped: Vec::new(),
     })
 }
 
 /// Greedy highest-IoU-first matching, one object to at most one object.
-fn match_by_iou(left: &[Instance], right: &[Instance], threshold: f64, against: &str) -> Result<InstanceAgreement> {
+fn match_by_iou(
+    left: &[Instance],
+    right: &[Instance],
+    threshold: f64,
+    against: Option<String>,
+) -> Result<InstanceAgreement> {
     let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
     for (i, obj) in left.iter().enumerate() {
         for (j, other) in right.iter().enumerate() {
@@ -986,7 +1313,7 @@ fn match_by_iou(left: &[Instance], right: &[Instance], threshold: f64, against: 
         only_in_b: right.iter().enumerate().filter(|(j, _)| !used_b.contains(j)).map(|(_, o)| o.index).collect(),
         matched_by: "iou".into(),
         threshold,
-        against: Some(format!("annotations/{against}")),
+        against,
         class_mismatches: Vec::new(),
         skipped: Vec::new(),
     })
@@ -1004,8 +1331,23 @@ pub fn compare(
     threshold: Option<f64>,
     classes: Option<&[ClassKey]>,
 ) -> Result<Comparison> {
-    if OBJECT_KINDS.contains(&a.kind()) && OBJECT_KINDS.contains(&b.kind()) {
-        if let Some(m) = metric {
+    let options = CompareOptions {
+        metric: metric.map(str::to_string),
+        threshold,
+        classes: classes.map(<[ClassKey]>::to_vec),
+        ..CompareOptions::default()
+    };
+    Ok(compare_with(a, b, &options)?.comparison)
+}
+
+/// [`compare`] with every option: which class of `b` each class of `a` is
+/// compared with ([`ClassMap`]), and how objects are paired ([`MatchBy`]).
+/// The result names the class pairs it compared.  A skipped class is listed
+/// once.
+pub fn compare_with(a: &Annotation, b: &Annotation, options: &CompareOptions) -> Result<Compared> {
+    let classes = options.classes.as_deref();
+    let (comparison, pair) = if OBJECT_KINDS.contains(&a.kind()) && OBJECT_KINDS.contains(&b.kind()) {
+        if let Some(m) = &options.metric {
             return Err(Error::invalid(format!(
                 "metric {} scores voxels; {} and {} are compared object by object, as F1 at an IoU threshold",
                 repr_str(m),
@@ -1013,23 +1355,60 @@ pub fn compare(
                 repr_str(&b.ann_id)
             )));
         }
-        return Ok(Comparison::Instance(compare_instances(a, b, threshold.unwrap_or(DEFAULT_IOU), classes)?));
-    }
-    if a.is_voxel() && b.is_voxel() {
-        if threshold.is_some() {
+        let threshold = options.threshold.unwrap_or(DEFAULT_IOU);
+        let (found, pair) = instances_with(a, b, threshold, classes, &options.map_classes, options.match_by)?;
+        (Comparison::Instance(found), pair)
+    } else if a.is_voxel() && b.is_voxel() {
+        if options.threshold.is_some() || options.match_by != MatchBy::Auto {
             return Err(Error::invalid(format!(
-                "threshold matches objects; {} and {} are compared voxel by voxel",
+                "{} matches objects; {} and {} are compared voxel by voxel",
+                if options.threshold.is_some() { "threshold" } else { "match_by" },
                 repr_str(&a.ann_id),
                 repr_str(&b.ann_id)
             )));
         }
-        return Ok(Comparison::Voxel(compare_voxel(a, b, metric.unwrap_or("dice"), classes)?));
+        let metric = options.metric.as_deref().unwrap_or("dice");
+        let (found, pair) = voxel_with(a, b, metric, classes, &options.map_classes)?;
+        (Comparison::Voxel(found), pair)
+    } else {
+        return Err(Error::invalid(format!(
+            "cannot compare {} with {}: transcode them to a common kind first",
+            repr_str(a.kind()),
+            repr_str(b.kind())
+        )));
+    };
+    Ok(compared(comparison, &pair, a))
+}
+
+/// [`compare_voxel`] with [`compare_with`]'s options (`metric`, `classes`,
+/// `map_classes`); a threshold or a way of pairing objects is refused.
+pub fn compare_voxel_with(a: &Annotation, b: &Annotation, options: &CompareOptions) -> Result<Compared> {
+    if options.threshold.is_some() || options.match_by != MatchBy::Auto {
+        return Err(Error::invalid("a threshold and match_by pair objects; voxel agreement compares voxels"));
     }
-    Err(Error::invalid(format!(
-        "cannot compare {} with {}: transcode them to a common kind first",
-        repr_str(a.kind()),
-        repr_str(b.kind())
-    )))
+    let metric = options.metric.as_deref().unwrap_or("dice");
+    let (found, pair) = voxel_with(a, b, metric, options.classes.as_deref(), &options.map_classes)?;
+    Ok(compared(Comparison::Voxel(found), &pair, a))
+}
+
+/// [`compare_instances`] with [`compare_with`]'s options (`threshold`,
+/// `classes`, `map_classes`, `match_by`); a metric is refused.
+pub fn compare_instances_with(a: &Annotation, b: &Annotation, options: &CompareOptions) -> Result<Compared> {
+    if let Some(metric) = &options.metric {
+        return Err(Error::invalid(format!("metric {} scores voxels; objects are compared as F1", repr_str(metric))));
+    }
+    let threshold = options.threshold.unwrap_or(DEFAULT_IOU);
+    let (found, pair) =
+        instances_with(a, b, threshold, options.classes.as_deref(), &options.map_classes, options.match_by)?;
+    Ok(compared(Comparison::Instance(found), &pair, a))
+}
+
+/// A comparison with its class pairs, each skipped class listed once.
+fn compared(mut comparison: Comparison, pair: &Pair, a: &Annotation) -> Compared {
+    let skipped = comparison.skipped_mut();
+    let mut seen = BTreeSet::new();
+    skipped.retain(|s| seen.insert(s.clone()));
+    Compared { comparison, pairs: pair.named(a) }
 }
 
 #[cfg(test)]
@@ -1154,7 +1533,8 @@ mod tests {
             // class at a time.  Then two classes, four, all of them, and
             // slabs of several chunks, to the whole grid at once.
             for budget in [1, slab - 1, slab, 2 * slab, 4 * slab, 5 * slab, 10 * slab, SLAB_VOXELS] {
-                let counted = counts_in_slabs(a, b, &ids, ignored.as_ref(), budget).unwrap();
+                let pairs: Vec<(i64, i64)> = ids.iter().map(|c| (*c, *c)).collect();
+                let counted = counts_in_slabs(a, b, &pairs, ignored.as_ref(), budget).unwrap();
                 assert_eq!(counted, whole, "{x} vs {y} in a budget of {budget}");
             }
         }

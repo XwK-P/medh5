@@ -10,11 +10,12 @@ use clap::ArgMatches;
 use serde_json::{json, Map, Value};
 
 use medh5::collection::{open_collection, pack, unpack};
-use medh5::curation::agreement::{compare, Comparison};
+use medh5::curation::agreement::{compare_with, ClassMap, CompareOptions, Comparison, MatchBy};
 use medh5::curation::splits::{audit_splits, memberships_of};
 use medh5::error::os_error;
 use medh5::h5::file::same_file;
 use medh5::json::{py_str, repr_str};
+use medh5::labels::ClassKey;
 use medh5::sample::writer::default_ids;
 use medh5::Error;
 
@@ -256,6 +257,14 @@ fn score(value: Option<f64>) -> String {
     }
 }
 
+/// A class as the command line names it: an id, or a key.
+fn class_key(text: &str) -> ClassKey {
+    match text.parse::<i64>() {
+        Ok(id) => ClassKey::Id(id),
+        Err(_) => ClassKey::Key(text.to_string()),
+    }
+}
+
 fn agree(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = req_str(m, "path");
     let (a, b) = (req_str(m, "a"), req_str(m, "b"));
@@ -263,8 +272,33 @@ fn agree(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         let sample = sample_file(path)?;
         let first = sample.annotation(a)?;
         let second = sample.annotation(b)?;
-        // `compare` picks the comparison the two kinds support.
-        let result = compare(first, second, get_str(m, "metric"), get_f64(m, "threshold"), None)?;
+        // `compare_with` picks the comparison the two kinds support.
+        let mut options = CompareOptions::default();
+        options.metric = get_str(m, "metric").map(str::to_string);
+        options.threshold = get_f64(m, "threshold");
+        options.match_by = match get_str(m, "match_by") {
+            Some("iou") => MatchBy::Iou,
+            Some("instance-id") => MatchBy::InstanceId,
+            _ => MatchBy::Auto,
+        };
+        options.map_classes = match (get_str(m, "map_classes"), get_strs(m, "map_class")) {
+            (_, Some(pairs)) => {
+                let mut map = indexmap::IndexMap::new();
+                for pair in pairs {
+                    let Some((x, y)) = pair.split_once('=') else {
+                        return Ok(ctx.fail(format!(
+                            "--map-class takes A=B, a class of each annotation; got {}",
+                            repr_str(&pair)
+                        )));
+                    };
+                    map.insert(first.resolve_class(&class_key(x))?, second.resolve_class(&class_key(y))?);
+                }
+                ClassMap::Explicit(map)
+            }
+            (Some("key"), None) => ClassMap::Key,
+            _ => ClassMap::Id,
+        };
+        let result = compare_with(first, second, &options)?.comparison;
         let mut payload = result.to_json();
         if flag(m, "record") {
             let mut out = Map::new();

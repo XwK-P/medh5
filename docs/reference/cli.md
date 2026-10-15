@@ -180,12 +180,15 @@ medh5 track PATH [--class KEY] [--key K] [--json]
 
 Join instance ids across visits: per object, its volume at each timepoint in
 mm³ (in px on an uncalibrated grid), the relative change, and whether it is
-`present`, `resolved` or `unexamined`. `resolved` means the class was examined
-at this visit, outside any ignore region, and the object was not found;
-`unexamined`, that nobody looked for that class at this visit, or that an
-ignore region (§7.7) may hide it. Masks, boxes, oriented boxes and points
-join; an annotation of another kind that carries `instance_ids` is named as
-skipped, and the rest still join.
+`present`, `resolved` or `unexamined`. `resolved` means the object was looked
+for at this visit and not found; `unexamined`, that nobody looked for it there.
+The `reasons` column says why for each visit that did not see it
+(`tp1:outside_fov`): `located` or `class_examined` where it is `resolved`,
+`outside_fov`, `ignored`, `unrelated`, `no_identity` or `not_examined` where it
+is `unexamined` (§7.4; the [longitudinal guide](../guides/longitudinal.md)
+has the rule), and `--json` gives each track its `reasons`. Masks, boxes,
+oriented boxes and points join; an annotation of another kind that carries
+`instance_ids` is named as skipped, and the rest still join.
 
 ## Annotations
 
@@ -267,7 +270,7 @@ Agents, activities, quality records and the de-identification record.
 ### `medh5 agree`
 
 ```
-medh5 agree PATH A B [--metric dice|iou] [--threshold T] [--record] [--json]
+medh5 agree PATH A B [--metric dice|iou] [--threshold T] [--map-classes id|key | --map-class A=B ...] [--match-by auto|iou|instance-id] [--record] [--json]
 ```
 
 Per-class Dice or IoU between two voxel annotations, and object F1 between two
@@ -280,6 +283,11 @@ comparison with nothing to score says so rather than reporting 0. The two must
 share a grid (for index boxes) or a frame (for world boxes). `--record` prints
 the `quality.agreement` record the measurement produces, keyed by class id, and
 exits 1 when there is nothing to record.
+
+`--map-classes key` compares classes of one key rather than one id, across two
+inline label sets; `--map-class A=B`, repeatable, pairs a class of `A` with one
+of `B` by key or id, one to one. `--match-by iou` pairs objects by where they are
+even where both carry instance ids, and `--match-by instance-id` by id alone.
 
 ### `medh5 splits`
 
