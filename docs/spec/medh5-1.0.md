@@ -447,8 +447,8 @@ this to a tolerance of 1e-3: each spacing relative to the derived spacing, and t
 the level's voxel along each of its axes (its offset from the derived origin, in the level's index
 coordinates).
 
-Voxel annotations MAY be pyramided identically, with `downsample_method = "nearest"` or `"max"`
-(never `"mean"`) — see §7.
+Voxel annotations are not pyramided in 1.x: an annotation's datasets hold one level, on the
+annotation's grid. The attributes such a pyramid would need are reserved (§16).
 
 ### 4.4 Validity masks
 
@@ -1693,6 +1693,7 @@ for the meanings given rather than reassigning them.
 |---|---|---|---|
 | `rle` | annotation `kind` | Chunked compression already leaves unwritten chunks unallocated, so the disk saving over `instances` is small, while it costs O(1) ROI access and a second sparse code path (§7.0). Converters decode run-length payloads instead (§7.6). | per-class run-length encoding over C-order voxel indices |
 | `wide_labels` | profile | `uint16` class ids cap a vocabulary at 65 534, which covers every clinical use case surveyed; `uint8`/`uint16` labelmap dtype economics dominate the common path (§5.3). | `uint32` class ids for vocabularies beyond 65 534 classes |
+| `levels`, `downsample_factors`, `downsample_method`, `grid_levels` | attributes, on an annotation | The rule for `nearest` under an even factor, the meaning of `max` over class ids, and how coverage and the ignore region downsample were never defined, and nothing implemented them; the sampling index's occupancy planes (§14.3) already give a coarse per-class map. A writer **MUST NOT** emit them on an annotation; the reference writer refuses them. | a voxel annotation's pyramid, laid out as §4.3 lays out an image's |
 
 ---
 
@@ -1808,10 +1809,10 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 2.3 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.04 ms at 63
 classes), a metadata-only read 0.13 ms, and `open()` → first patch 1.6 ms.
 
-Eighty-three clauses have been corrected — ten during implementation, eleven in the 1.x package
+Eighty-four clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
 package, one when it implemented 1.1, twenty-eight in the audits of 2.0 before its release,
-twenty-three in the audit of 2.0.1, and six in the development of 2.1 — each because
+twenty-three in the audit of 2.0.1, and seven in the development of 2.1 — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1900,6 +1901,7 @@ implementation could honestly promise, as written:
 | §13.1, §15.2 | Revision 2 of the code table allocates **W915**: a dataset without a `digest`, inside an object a declared `content_id` covers. The SHOULD of §13.1 had no code, so `validate --level strict` passed a file that `verify` failed as unattested, and a CI gating on the validator missed an edit to that dataset that nothing could detect. A warning, as for any recommendation (§15.2): content the text allows stays valid. |
 | §13.1 | `<hex>` is lowercase hexadecimal of the algorithm's length, and any other spelling is malformed (**E703**). The clause said nothing of the spelling, and the reference read a digest as Python's `int(hex, 16)` reads a number, accepting a sign, `0x`, `_`, whitespace, uppercase and short hex: an uppercase digest of unchanged bytes was reported as a mismatch (**E701**) and its root as tampered with (**E702**), sending people looking for corruption that was not there. A `content_id` spelled otherwise is E703 too, and `fix --rewrite-digests` restamps either. |
 | §13.3 | `H` is the algorithm the `source_digest` prefix names, which need not be the root's `digest_algo`, and an entry naming one outside §2.1, or malformed, is ignored like a stale one. The clause gave the prefix and never said what `H` was; the reference always hashed in sha256, so a third party reading `<algo>` as the file's algorithm wrote a sha512 index into a sha512 file and the reference declared it stale (**W905**), failing the file at `strict`. Every index the reference wrote stays current. |
+| §4.3, §16 | Voxel annotations are not pyramided in 1.x, and `levels`, `downsample_factors`, `downsample_method` and `grid_levels` are reserved on an annotation. §4.3 said voxel annotations "MAY be pyramided identically, with `nearest` or `max`" and defined nothing more: which voxel `nearest` takes under an even factor, what `max` means over class ids, how coverage and the ignore region downsample, whether levels are digested or indexed. Nothing wrote, read or validated one, so no file changes meaning. |
 
 ### C.2 Prototype checks
 
