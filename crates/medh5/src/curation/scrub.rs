@@ -2531,13 +2531,22 @@ fn shift_commitment(salt: &str, days: i64) -> String {
     hex::encode(hmac_sha256(salt.as_bytes(), format!("shift:{days}").as_bytes()))
 }
 
+/// The subject's salted pseudonym, whether or not a run has already
+/// pseudonymised its id: what keys a subject's shift and its re-minted ids.
+fn subject_key(subject_id: &str, salt: &str) -> String {
+    if subject_id.starts_with(PSEUDONYM_PREFIX) {
+        subject_id.to_string()
+    } else {
+        pseudonymise(subject_id, salt)
+    }
+}
+
 /// The shift [`DateShift::Range`] gives a subject: HMAC-SHA256 of the salt
 /// and the subject's salted pseudonym, over the nonzero days in the range.
 /// Keyed by the pseudonym, so the files of one subject agree whether or not
 /// a run has already pseudonymised the id.
 fn range_shift(min: i64, max: i64, salt: &str, subject_id: &str) -> i64 {
-    let key =
-        if subject_id.starts_with(PSEUDONYM_PREFIX) { subject_id.to_string() } else { pseudonymise(subject_id, salt) };
+    let key = subject_key(subject_id, salt);
     let spans_zero = min <= 0 && 0 <= max;
     let choices = (max - min + 1) as u64 - u64::from(spans_zero);
     let digest = hmac_sha256(salt.as_bytes(), key.as_bytes());
@@ -2791,7 +2800,8 @@ pub fn apply_with(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> {
             let mut reminted = None;
             if let Some(records) = records {
                 let n = records.events.len();
-                let (records, minted) = clinical::derive(records, clinical_shift, &options.salt)?;
+                let (records, minted) =
+                    clinical::derive(records, clinical_shift, &options.salt, &subject_key(&subject_id, &options.salt))?;
                 writer.add_records(records)?;
                 digests = clinical::rekeyed(&digests, &minted);
                 // Keyed by kind: an event and its record often share an id.

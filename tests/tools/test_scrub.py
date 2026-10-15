@@ -1788,7 +1788,9 @@ class TestClinicalScrub:
             ]
             row = names.index(document_id)
             text = table["text/data"]
-            start, end = table["text/offsets"][row : row + 2]
+            # Plain ints: NumPy 1's uint64 plus an int is a float, which h5py
+            # refuses as an index.
+            start, end = (int(o) for o in table["text/offsets"][row : row + 2])
             stored = bytes(text[start:end])
             assert len(old) == len(new) and old in stored
             at = start + stored.index(old)
@@ -1945,6 +1947,25 @@ class TestClinicalScrub:
             with medh5.open(path) as sample:
                 clocks.append(sample.clinical.clock.id)
         assert clocks[0] == clocks[1] != clocks[2]
+
+    def test_S3_two_subjects_sharing_a_clock_id_get_different_ones(
+        self, tmp_path: Path
+    ):
+        # Each subject takes its own shift from the range, so one new id for
+        # both would claim their shifted times share a clock.
+        clocks = []
+        for subject in ("P-01", "P-02"):
+            path = self._utc(tmp_path, name=f"{subject}.medh5", subject_id=subject)
+            scrubber.apply(
+                path,
+                salt="pep",
+                date_shift_range=(-400, -30),
+                withhold_shift=True,
+                attest_text="philter",
+            )
+            with medh5.open(path) as sample:
+                clocks.append(sample.clinical.clock.id)
+        assert clocks[0] != clocks[1]
 
     def test_S7_3_reminted_ids_keep_every_link_resolving(self, tmp_path: Path):
         path = self._clinical(tmp_path, text=self.CLEAN)

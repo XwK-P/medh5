@@ -333,9 +333,11 @@ it writes them as new versions:
   dates take, and a `utc` clock becomes `shifted_utc`; a `utc` clock needs a
   shift, and the run is refused without one;
 - the clock, event, record, document and encounter ids are re-minted from the
-  salt (`pseudo.event.…`), and every link follows them; the clock's new id is
-  the same in every fragment of the subject scrubbed with one salt, so they
-  still join (task-cache-1 T304);
+  salt and the subject (`pseudo.event.…`), and every link follows them; the
+  clock's new id is the same in every fragment of the subject scrubbed with one
+  salt, so they still join (task-cache-1 T304), and two subjects whose sources
+  share an id (a clock named `ehr`) get different ones, since each may be
+  shifted by its own amount;
 - the text keeps its bytes, so every span still points where it did, and its
   attestation follows the documents to their new ids;
 - a selection at a cutoff moved by the shift admits the same versions.

@@ -443,10 +443,13 @@ pub(super) struct Reminted {
     pub new: String,
 }
 
-/// An id of the profile's re-minted from the salt: the same old id and salt
-/// give the same new one, in every fragment.
-pub(super) fn remint(kind: &str, old: &str, salt: &str) -> String {
-    let mac = super::hmac_sha256(salt.as_bytes(), format!("{kind}:{old}").as_bytes());
+/// An id of the profile's re-minted from the salt and the subject: the same
+/// subject, old id and salt give the same new one, in every fragment, and two
+/// subjects that share an id (a clock named `ehr`, each shifted by its own
+/// amount) do not share its new one.  `subject` is the subject's salted
+/// pseudonym.
+pub(super) fn remint(kind: &str, old: &str, salt: &str, subject: &str) -> String {
+    let mac = super::hmac_sha256(salt.as_bytes(), format!("{subject}\n{kind}:{old}").as_bytes());
     format!("{PSEUDO_ID}{kind}.{}", &hex::encode(mac)[..24])
 }
 
@@ -454,14 +457,19 @@ pub(super) fn remint(kind: &str, old: &str, salt: &str) -> String {
 /// `shift_us`, a `utc` clock become `shifted_utc`, and every id re-minted,
 /// with each link and each attestation key following.  The old and new ids,
 /// for the report's key.
-pub(super) fn derive(records: ClinicalRecords, shift_us: i64, salt: &str) -> Result<(ClinicalRecords, Vec<Reminted>)> {
+pub(super) fn derive(
+    records: ClinicalRecords,
+    shift_us: i64,
+    salt: &str,
+    subject: &str,
+) -> Result<(ClinicalRecords, Vec<Reminted>)> {
     let mut replaced: Vec<Reminted> = Vec::new();
     let mut minted: HashMap<(&'static str, String), String> = HashMap::new();
     let mut mint = |kind: &'static str, old: &str, replaced: &mut Vec<Reminted>| -> String {
         minted
             .entry((kind, old.to_string()))
             .or_insert_with(|| {
-                let new = remint(kind, old, salt);
+                let new = remint(kind, old, salt, subject);
                 replaced.push(Reminted { kind, old: old.to_string(), new: new.clone() });
                 new
             })
@@ -578,9 +586,9 @@ mod tests {
     fn s10_a_derivation_moves_every_bound_and_remints_every_id() {
         let source = utc_records();
         let shift = -30 * DAY;
-        let (derived, reminted) = derive(source.clone(), shift, "pep").unwrap();
+        let (derived, reminted) = derive(source.clone(), shift, "pep", "s1").unwrap();
         assert_eq!(derived.descriptor.clock.reference, "shifted_utc");
-        assert_eq!(derived.descriptor.clock.id, remint("clock", "ehr", "pep"));
+        assert_eq!(derived.descriptor.clock.id, remint("clock", "ehr", "pep", "s1"));
         let id = |kind: &str, old: &str| reminted.iter().find(|r| r.kind == kind && r.old == old).unwrap().new.clone();
         for (was, now) in source.events.iter().zip(&derived.events) {
             assert_eq!(now.event_id, id("event", &was.event_id));
@@ -616,7 +624,7 @@ mod tests {
     #[test]
     fn s10_a_relative_clock_keeps_its_times() {
         let source = worked_records();
-        let (derived, _) = derive(source.clone(), 0, "pep").unwrap();
+        let (derived, _) = derive(source.clone(), 0, "pep", "s1").unwrap();
         assert_eq!(derived.descriptor.clock.reference, source.descriptor.clock.reference);
         assert_eq!(derived.descriptor.clock.origin_description, source.descriptor.clock.origin_description);
         let times = |r: &ClinicalRecords| r.events.iter().map(|e| (e.effective_start, e.available)).collect::<Vec<_>>();
@@ -625,18 +633,26 @@ mod tests {
 
     #[test]
     fn s10_one_salt_mints_one_id_and_another_salt_another() {
-        assert_eq!(remint("clock", "ehr", "pep"), remint("clock", "ehr", "pep"));
-        assert_ne!(remint("clock", "ehr", "pep"), remint("clock", "ehr", "salt"));
-        assert_ne!(remint("event", "x", "pep"), remint("record", "x", "pep"));
-        let id = remint("document", "report-1", "pep");
+        assert_eq!(remint("clock", "ehr", "pep", "s1"), remint("clock", "ehr", "pep", "s1"));
+        assert_ne!(remint("clock", "ehr", "pep", "s1"), remint("clock", "ehr", "salt", "s1"));
+        assert_ne!(remint("event", "x", "pep", "s1"), remint("record", "x", "pep", "s1"));
+        let id = remint("document", "report-1", "pep", "s1");
         assert!(id.starts_with("pseudo.document.") && id.len() == "pseudo.document.".len() + 24);
+    }
+
+    #[test]
+    fn s10_two_subjects_sharing_an_id_get_different_ones() {
+        // Each subject may be shifted by its own amount: one clock id for
+        // both would claim their times share a clock.
+        assert_ne!(remint("clock", "ehr", "pep", "s1"), remint("clock", "ehr", "pep", "s2"));
+        assert_ne!(remint("event", "lab-1", "pep", "s1"), remint("event", "lab-1", "pep", "s2"));
     }
 
     #[test]
     fn s10_a_shift_past_the_clock_is_refused() {
         let mut records = utc_records();
         records.events[0].available = Some(Bounds::exact(i64::MIN + 1));
-        assert!(derive(records, -DAY, "pep").is_err());
+        assert!(derive(records, -DAY, "pep", "s1").is_err());
         assert!(shift_us(i64::MAX / 2).is_err());
     }
 
