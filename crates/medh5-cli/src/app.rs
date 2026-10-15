@@ -301,8 +301,12 @@ fn curation() -> Vec<Command> {
             .arg(paths("sample files to pack"))
             .arg(out_required(format!("output {SUFFIX} file")))
             .arg(
-                append("keys", "key", "sample key for each source, in order; defaults to the file stem")
-                    .value_name("KEY"),
+                append(
+                    "keys",
+                    "key",
+                    "sample key for each source, in order; defaults to the file name up to its first dot",
+                )
+                .value_name("KEY"),
             )
             .arg(json()),
         Command::new("unpack")

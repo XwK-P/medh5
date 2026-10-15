@@ -228,10 +228,11 @@ pub fn open_any(path: &Path, key: Option<&str>) -> Result<AnyFile> {
     Ok(AnyFile::Sample(Sample::from_root(root, Some(handle), Some(path.to_path_buf()))))
 }
 
-/// The sample key a file gets when none is supplied: its stem.
+/// The sample key a file gets when none is supplied: its name up to its
+/// first dot (medh5 3.0 takes the stem, the name less its last suffix).
 pub fn default_key(path: &Path) -> Result<String> {
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    Ok(validate_sample_key(name.split('.').next().unwrap_or(""))?.to_string())
+    let ids = crate::sample::writer::default_ids(path)?;
+    Ok(validate_sample_key(&ids.current)?.to_string())
 }
 
 /// The `content_id` a sample root's stored digests compute to, when it has
