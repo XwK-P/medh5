@@ -53,7 +53,7 @@ lane threads:
 
 | In 2.1.0 | So in 2.2.0 |
 |---|---|
-| A merge-queue run took 18–28 minutes alone and 43–74 minutes when three to five overlapped; one timed out at 60 minutes with every check green. The Intel Mac build, the slowest job, ran only in the queue, so an Intel-only failure (#51) cost a whole re-queue. | The queue's timeout is 120 minutes. W22-05's macOS x86_64 cross-build lands first, as lane A's enabler, and runs on pull requests again. The maintainer may lower the queue's build concurrency (the release checklist). |
+| A merge-queue run took 18–28 minutes alone and 43–74 minutes when three to five overlapped; one timed out at 60 minutes with every check green. The Intel Mac build, the slowest job, ran only in the queue, so an Intel-only failure (#51) cost a whole re-queue. | The queue's timeout is 120 minutes. W22-05's macOS x86_64 cross-build lands first, as lane A's enabler, and runs on pull requests again unless its own run shows it is still the slowest chain (05.2 decides by that measurement and says it). The maintainer may lower the queue's build concurrency (the release checklist). |
 | Most queue drops were conflicts in four files that nearly every pull request touched: the API snapshot, `_core.pyi`, `cli.md` and `app.rs`. | plans/README.md says how to bring `main` into each; the shared-files table below names them. |
 | Lanes sat idle for hours with a dropped pull request (#55, 07:32 to 15:47) or a merged edge, because nothing woke them. | plans/README.md, "Waiting and waking": check-ins, subscriptions to the pull requests a lane waits on, an hourly sweep by the coordinator. |
 | One lane carried four pull requests in series, and the documentation waited on its last; lanes B, D and F were done by early afternoon. | The lanes below are balanced against their edges: NIfTI has a lane to itself, and enhanced DICOM fills lane F's wait for it. |
@@ -119,10 +119,9 @@ and the stress job pass (E4).
 | F, derivations and DICOM | W22-10 PR 1 → W22-03 → W22-10 PR 2 | `w22/resample`, `w22/enhanced-dicom`, `w22/resample-2` |
 
 Lane C is the critical path: W22-02 is the largest workstream, and lane F's
-last pull request waits on it. Lane F does W22-03 while it waits; W22-03 and
-W22-10 PR 2 both change `medh5/io/dicom.py`, so one lane holds both. With
-fewer than six sessions, merge lanes in order: A with D, B with E, and C and F
-stay apart.
+last pull request waits on it. Lane F does W22-03 while it waits, which
+takes the work off lane C; the two share no file. With fewer than six
+sessions, merge lanes in order: A with D, B with E, and C and F stay apart.
 
 ### Shared files (2.2.0)
 
@@ -133,7 +132,7 @@ stay apart.
 | `crates/medh5/src/conformance/**`, stated corpus counts | W22-01 | — (no other workstream adds a case) |
 | `medh5/io/nifti.py`, `crates/medh5/src/convert/nifti/` | W22-02 | W22-10 PR 2 (refusal wording, after W22-02) |
 | `medh5/io/itk.py`, `medh5/io/nnunetv2.py` | W22-08 (`itk.py`) | W22-02 PRs 4–6 (their NIfTI calls move to the engine) |
-| `medh5/io/dicom.py`, `medh5/io/_frames.py` | W22-03 | W22-10 PR 2 (refusal wording; same lane) |
+| `medh5/io/dicom.py`, `medh5/io/_frames.py` | W22-03 | — (W22-10 leaves the DICOM messages as they are, 10.4) |
 | `.github/workflows/{ci,build,release}.yml`, `.github/scripts/build-dist.sh`, `tests/project/test_packaging.py` | W22-05 | W22-02 PR 2 (the `gz*` symbol check), W22-04 (the free-threaded job), W22-06 (`fuzz.yml` only) |
 | `crates/medh5-python/src/**` pyclasses | W22-04 | each binding's owner adds new pyclasses `frozen` from the start (E4) |
 | `tests/project/python_api.txt`, `medh5/_core.pyi`, `docs/reference/cli.md`, `crates/medh5-cli/src/app.rs` | no owner | every workstream that adds an API or a command; see plans/README.md, "Shared files" |

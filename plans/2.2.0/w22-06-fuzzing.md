@@ -3,10 +3,10 @@
 | | |
 |---|---|
 | Branch | `w22/fuzzing` |
-| Size | M–L: 06.2 first, then 06.1 |
+| Size | M–L |
 | Lands after | v2.1.0 released |
 | Builds on (2.1.0) | `fuzz/` and `fuzz.yml`, Rust instrumented with AddressSanitizer (W21-01 PR 1) |
-| Owns | `fuzz/`, `.github/workflows/fuzz.yml`; for 06.2, the smallest engine change each bound needs (in `h5/`, said in the pull request) |
+| Owns | `fuzz/`, `.github/workflows/fuzz.yml`; for 06.1, the smallest engine change each bound needs (in `h5/`, said in the pull request) |
 
 ## Session prompt
 
@@ -23,24 +23,7 @@
 
 ## Items
 
-### 06.1 HDF5 and Blosc2 under AddressSanitizer (PR 1)
-
-- **State at 2.1.0** (checked at v2.1.0). The fuzz targets (`open_validate`,
-  `clinical_columns`, `zstd_filter`, `blosc2_filter`) instrument Rust only; the C
-  code (HDF5, c-blosc2, zstd) runs uninstrumented, so a memory error there is
-  found only if it crashes. The three are built three ways: HDF5 with CMake
-  through hdf5-metno-src, the vendored C-Blosc2 by `medh5-sys`'s `build.rs`,
-  and zstd by zstd-sys; each needs the flags its own way.
-- **Change.** Build HDF5 and Blosc2 for the fuzz job with `CC=clang` and
-  `CFLAGS=-fsanitize=address,fuzzer-no-link`, using a clang whose LLVM matches the
-  dated nightly's; set `HDF5_ENABLE_USING_MEMCHECKER=ON` if hdf5-metno-src forwards
-  it, so HDF5's free lists do not hide errors from ASan (if it does not, say so and
-  propose the upstream change). Keep the 2.1.0 schedule and limits.
-- **Tests.** `test_fuzzing_runs_on_a_dated_nightly` extended: the C build flags are
-  present in the fuzz job only.
-- **Changelog.** `<!-- no entry: CI only -->`.
-
-### 06.2 The known HDF5 failures: bounded, so the job finds new ones (PR 1, first)
+### 06.1 The known HDF5 failures: bounded, so the job finds new ones (PR 1)
 
 - **State at 2.1.0** (checked at v2.1.0). `fuzz (open_validate)` has failed on
   every run since W21-01, on cases inside HDF5's C code that 2.1.0's fuzzing
@@ -62,3 +45,20 @@
   the session, not to the repository).
 - **Changelog.** Security, area `validation`, for each bound; otherwise `<!--
   no entry: CI only -->`.
+
+### 06.2 HDF5 and Blosc2 under AddressSanitizer (PR 1)
+
+- **State at 2.1.0** (checked at v2.1.0). The fuzz targets (`open_validate`,
+  `clinical_columns`, `zstd_filter`, `blosc2_filter`) instrument Rust only; the C
+  code (HDF5, c-blosc2, zstd) runs uninstrumented, so a memory error there is
+  found only if it crashes. The three are built three ways: HDF5 with CMake
+  through hdf5-metno-src, the vendored C-Blosc2 by `medh5-sys`'s `build.rs`,
+  and zstd by zstd-sys; each needs the flags its own way.
+- **Change.** Build HDF5 and Blosc2 for the fuzz job with `CC=clang` and
+  `CFLAGS=-fsanitize=address,fuzzer-no-link`, using a clang whose LLVM matches the
+  dated nightly's; set `HDF5_ENABLE_USING_MEMCHECKER=ON` if hdf5-metno-src forwards
+  it, so HDF5's free lists do not hide errors from ASan (if it does not, say so and
+  propose the upstream change). Keep the 2.1.0 schedule and limits.
+- **Tests.** `test_fuzzing_runs_on_a_dated_nightly` extended: the C build flags are
+  present in the fuzz job only.
+- **Changelog.** `<!-- no entry: CI only -->`.
