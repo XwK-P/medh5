@@ -31,8 +31,7 @@ and per-class ignore masks, the batch commands gain `--workers`, and
 free-threaded CPython 3.14 gets a wheel. The converters gain FRACTIONAL SEG,
 codes and laterality in SEG, per-slice PET rescale, RTSTRUCT points, nnU-Net
 test cases and ITK transforms. Every release artifact is attested, and the
-crates are published through trusted publishing. 2.1.x is the last line to
-support Python 3.10.
+crates are published through trusted publishing.
 
 ### Security
 
@@ -489,9 +488,6 @@ support Python 3.10.
   status the engine wrote outside its table is refused rather than read as
   the table's last word. `build_document_cache` files documents by the
   engine's ownership rule, the one `validate_cache` holds entries to.
-- **2.1.x is the last line to support Python 3.10.** Python 3.10 reaches its
-  end of life in October 2026, and medh5 2.2.0 will require Python 3.11 or
-  later. Nothing changes for 3.10 within 2.1.x, and nothing warns at run time.
 - **Six engine functions and one type that nothing called are deprecated
   in the Rust crate:** `clinical::columns::columns_of` (an unknown table
   name answered with the link columns), `annotations::encode::array_data`

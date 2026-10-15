@@ -74,10 +74,9 @@ at all: PyO3, the library that binds the engine to Python, does not support
 them. If pip prints `Building wheel for medh5`, it found no wheel for your
 system and needs these three.
 
-The 2.1 releases are the last to support Python 3.10, which reaches its end
-of life in October 2026: medh5 2.2.0 will require Python 3.11 or later. Nothing
-changes for 3.10 within 2.1.x, and nothing warns at run time; pin `"medh5<2.2"`
-to stay on a 3.10 interpreter.
+Python 3.10 reaches its end of life in October 2026. medh5 still supports it,
+and nothing warns at run time; dropping it will be announced one minor release
+ahead.
 
 ## Only the command line
 
