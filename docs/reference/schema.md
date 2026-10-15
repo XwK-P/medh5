@@ -26,7 +26,7 @@ medh5 validate case_0001.medh5 --level structural
 
 The tables below are generated from the schema itself at build time.
 
-<!--@schema-->
+<!--@schema medh5-sample-1.0-->
 
 ## Related
 

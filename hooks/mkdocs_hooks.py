@@ -2,7 +2,7 @@
 
 Several jobs, all in service of one rule: **a fact belongs in exactly one
 place.** The changelog and the code and schema tables are rendered from their
-sources, below; the sample-document schema is published as the file the engine
+sources, below; the engine's four schemas are published as the files it
 embeds; and the URLs pages and scripts used to have keep answering (`REDIRECTS`,
 `ASSET_ALIASES`).
 
@@ -22,7 +22,7 @@ The entries waiting in `changes/` for the next release are spliced in under
 resolved on the pull request that adds it.
 
 Then the tables.  The diagnostic codes, the cohort check codes and the
-sample-document schema are all *already* defined precisely somewhere in the
+schemas are all *already* defined precisely somewhere in the
 repository, and were all *also* being retyped by hand into prose pages --- in
 two different wordings, in the case of the C1xx codes.  The code table says in
 its own `$comment` that "the validator, conformance corpus and documentation
@@ -33,8 +33,8 @@ Reading those sources costs the build nothing, which matters because
 `docs/requirements.txt` deliberately does not install `medh5` --- the site is
 hand-written Markdown, and a build should not need a Rust toolchain to compile
 the engine.  So the engine's data is read where it lives: the diagnostic code
-table is `crates/medh5/data/codes.json` and the schema the JSON file beside it,
-both embedded by the engine, and the cohort codes are the `CHECK_CODES` table in
+table is `crates/medh5/data/codes.json` and the schemas the JSON files beside
+it, all embedded by the engine, and the cohort codes are the `CHECK_CODES` table in
 `crates/medh5/src/dataset/check.rs`, *parsed* rather than compiled.  The task
 and cache codes are not rendered: task-cache-1 §9 carries its table inline, and
 a test holds that table to the engine's `CODES`.
@@ -46,6 +46,7 @@ import importlib.util
 import json
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -54,10 +55,38 @@ from mkdocs.structure.files import File, Files
 # (path relative to the repository root, path it is served at on the site)
 INCLUDED: tuple[tuple[str, str], ...] = (("CHANGELOG.md", "changelog.md"),)
 
-# The sample-document schema, published verbatim so that it has a stable URL to
-# cite and to download, next to the page that explains it.
-SCHEMA_SOURCE = "crates/medh5/data/medh5-sample-1.0.schema.json"
-SCHEMA_TARGET = "reference/medh5-sample-1.0.schema.json"
+# The engine's schemas, each published verbatim so that it has a stable URL to
+# cite and to download, and rendered as tables on the page that explains it
+# (`<!--@schema NAME-->`).  A schema's `$id` stays what it is: an `$id`
+# identifies a schema and third parties may have registered the shipped bytes
+# by it, so the page states where the file is served instead.
+#
+# (name, page that renders it, the Python function that returns its text)
+SCHEMAS: tuple[tuple[str, str, str], ...] = (
+    ("medh5-sample-1.0", "reference/schema.md", "medh5.document.schema_text"),
+    ("medh5-clinical-1", "reference/clinical-schema.md", "medh5.clinical.schema_text"),
+    ("medh5-task-1", "reference/task-schema.md", "medh5.task.schema_text"),
+    ("medh5-cache-1", "reference/cache-schema.md", "medh5.cache.schema_text"),
+)
+SCHEMA_DIR = "crates/medh5/data"
+SCHEMA_SITE_DIR = "reference/schemas"
+
+# The sample-document schema was published here before there were four.  A JSON
+# file cannot redirect, so the same bytes are served at both paths.
+SCHEMA_ALIASES: tuple[tuple[str, str], ...] = (
+    ("reference/medh5-sample-1.0.schema.json", "medh5-sample-1.0"),
+)
+
+
+def schema_source(name: str) -> str:
+    """Where a schema lives in the repository."""
+    return f"{SCHEMA_DIR}/{name}.schema.json"
+
+
+def schema_target(name: str) -> str:
+    """Where a schema is served on the site."""
+    return f"{SCHEMA_SITE_DIR}/{name}.schema.json"
+
 
 # Files that were published verbatim at one path and now live at another.
 #
@@ -337,6 +366,12 @@ def _type_of(schema: dict[str, Any]) -> str:
     if ref:
         name = ref.rsplit("/", 1)[-1]
         return f"[`{name}`](#{name.lower()})"
+    # A nullable reference (`anyOf: [{$ref}, {type: null}]`) is the common case
+    # in the clinical, task and cache schemas; a blank cell documented it as
+    # untyped.
+    for union in ("anyOf", "oneOf"):
+        if branches := schema.get(union):
+            return " or ".join(_type_of(b) or "a value" for b in branches)
     kind = schema.get("type", "")
     if isinstance(kind, list):
         # `["string", "null"]` is a nullable string, not a list-typed value.
@@ -466,21 +501,43 @@ def _property_table(schema: dict[str, Any]) -> list[str]:
     return rows
 
 
-def _schema_markdown(root: Path) -> str:
-    """The sample document schema, as prose tables plus the document itself."""
-    path = root / SCHEMA_SOURCE
+def _read_schema(root: Path, name: str) -> bytes:
+    path = root / schema_source(name)
     if not path.is_file():
-        raise FileNotFoundError(f"the sample-document schema is not at {path}")
-    raw = path.read_text(encoding="utf-8")
+        raise FileNotFoundError(
+            f"the schema {name!r} listed in hooks/mkdocs_hooks.py:SCHEMAS is not "
+            f"at {path}"
+        )
+    return path.read_bytes()
+
+
+def _schema_markdown(root: Path, name: str, site_url: str = "") -> str:
+    """A schema as prose tables, then the document itself.
+
+    A schema whose root is an object gets its properties tabled; one whose root
+    only refers to a definition (`medh5-clinical-1` is a set of definitions, one
+    of them the descriptor) says which, and the definitions carry the rest.
+    """
+    raw = _read_schema(root, name).decode("utf-8")
     doc = json.loads(raw)
     defs = doc.get("$defs", {})
+    page, function = next((p, f) for n, p, f in SCHEMAS if n == name)
 
-    out: list[str] = ["## The document", ""]
-    out += _property_table(doc)
+    out: list[str] = []
+    if "properties" in doc:
+        out += ["## The document", ""]
+        out += _property_table(doc)
+    elif ref := doc.get("$ref"):
+        out += [
+            "## The document",
+            "",
+            f"The schema validates a document as {_type_of({'$ref': ref})}; its "
+            "other definitions are referenced by name (`#/$defs/<name>`).",
+        ]
     # Which objects accept keys the schema does not name.  Asserting a blanket
-    # policy here would be wrong --- the root is closed, but `identity` and
-    # `cohort` are deliberately open --- and asserting it *by hand* would go
-    # stale the first time that changed.  Derive it.
+    # policy here would be wrong --- the sample document is closed, but
+    # `identity` and `cohort` are deliberately open --- and asserting it *by
+    # hand* would go stale the first time that changed.  Derive it.
     open_defs = [
         n for n, sub in defs.items() if sub.get("additionalProperties") is True
     ]
@@ -494,13 +551,16 @@ def _schema_markdown(root: Path) -> str:
         if prop.get("type") == "object"
         and prop.get("additionalProperties") is not False
     ]
-    closed = (
-        "The document itself is **closed**: `additionalProperties` is `false`, so a "
-        "key the schema does not name is a schema failure (`E005`) rather than a "
-        "silently ignored extension. Use `extra` for anything the schema does not "
-        "define."
-    )
-    out += ["", closed, ""]
+    if doc.get("additionalProperties") is False:
+        closed = (
+            "The document itself is **closed**: `additionalProperties` is "
+            "`false`, so a key the schema does not name is a schema failure "
+            "rather than a silently ignored extension."
+        )
+        if "extra" in doc.get("properties", {}):
+            closed += " Use `extra` for anything the schema does not define."
+        out += ["", closed]
+    out.append("")
     if open_defs:
         out += [
             "**Not every object is closed.** "
@@ -515,8 +575,9 @@ def _schema_markdown(root: Path) -> str:
             ", ".join(f"`{n}`" for n in open_maps)
             + (" is an open map" if len(open_maps) == 1 else " are open maps")
             + ": the keys are yours. Where a value schema is given it still "
-            "applies; where `additionalProperties` is omitted entirely, as on "
-            "`extra`, the values are unconstrained too.",
+            "applies; where `additionalProperties` is omitted entirely"
+            + (", as on `extra`," if "extra" in open_maps else ",")
+            + " the values are unconstrained too.",
             "",
         ]
     out += [
@@ -526,8 +587,8 @@ def _schema_markdown(root: Path) -> str:
         "other.",
         "",
     ]
-    for name, sub in defs.items():
-        out += [f"### {name}", ""]
+    for def_name, sub in defs.items():
+        out += [f"### {def_name}", ""]
         if description := sub.get("description"):
             out += [description, ""]
         if sub.get("additionalProperties") is True:
@@ -545,12 +606,18 @@ def _schema_markdown(root: Path) -> str:
             ]
         out.append("")
 
+    # Relative to the page, so it holds under Read the Docs' version prefix.
+    depth = page.count("/")
+    link = "../" * depth + schema_target(name)
+    file_name = link.rsplit("/", 1)[-1]
+    served = f" at `{site_url.rstrip('/')}/{schema_target(name)}`" if site_url else ""
     out += [
         "## The schema itself",
         "",
-        f"Published verbatim at [`{SCHEMA_TARGET.rsplit('/', 1)[-1]}`]"
-        f"({SCHEMA_TARGET.rsplit('/', 1)[-1]}). The format engine embeds the same "
-        "file, and `medh5.document.schema()` returns it.",
+        f"Published verbatim as [`{file_name}`]({link}){served}. Its `$id`, "
+        f"`{doc.get('$id', '')}`, identifies the schema; it is not where the file "
+        f"is served. The format engine embeds the same file, and `{function}()` "
+        "returns it.",
         "",
         "```json",
         raw.rstrip(),
@@ -563,10 +630,19 @@ def _schema_markdown(root: Path) -> str:
 # Substitution, with a loud failure if a marker goes missing
 # --------------------------------------------------------------------------
 
-_MARKERS: dict[str, Any] = {
-    "<!--@diagnostic-codes-->": _codes_markdown,
-    "<!--@cohort-codes-->": _cohort_codes_markdown,
-    "<!--@schema-->": _schema_markdown,
+
+def _schema_marker(name: str) -> Callable[[Path, Any], str]:
+    def render(root: Path, config: Any) -> str:
+        return _schema_markdown(root, name, config.get("site_url") or "")
+
+    return render
+
+
+# marker -> render(repository root, MkDocs config)
+_MARKERS: dict[str, Callable[[Path, Any], str]] = {
+    "<!--@diagnostic-codes-->": lambda root, _config: _codes_markdown(root),
+    "<!--@cohort-codes-->": lambda root, _config: _cohort_codes_markdown(root),
+    **{f"<!--@schema {name}-->": _schema_marker(name) for name, _, _ in SCHEMAS},
 }
 
 _SEEN: dict[str, int] = dict.fromkeys(_MARKERS, 0)
@@ -653,10 +729,12 @@ def on_files(files: Files, config: Any) -> Files:
             File.generated(config, destination, content=content.encode("utf-8"))
         )
 
-    schema = root / SCHEMA_SOURCE
-    if not schema.is_file():
-        raise FileNotFoundError(f"the sample-document schema is not at {schema}")
-    files.append(File.generated(config, SCHEMA_TARGET, content=schema.read_bytes()))
+    for name, _, _ in SCHEMAS:
+        content = _read_schema(root, name)
+        files.append(File.generated(config, schema_target(name), content=content))
+    for path, name in SCHEMA_ALIASES:
+        content = _read_schema(root, name)
+        files.append(File.generated(config, path, content=content))
 
     for old, new in ASSET_ALIASES:
         source = root / "docs" / new
@@ -684,7 +762,7 @@ def on_page_markdown(markdown: str, page: Any, config: Any, files: Files) -> str
             # Render first, count second.  A source that is temporarily invalid
             # --- malformed schema JSON, say --- raises here, and a count already
             # committed would survive into the next `mkdocs serve` rebuild.
-            rendered = render(root)
+            rendered = render(root, config)
             _SEEN[marker] += found
             markdown = markdown.replace(marker, rendered)
     return markdown

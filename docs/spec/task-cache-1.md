@@ -484,7 +484,7 @@ this table to it.
 
 | Artifact | Where |
 |---|---|
-| `medh5-task-1.schema.json`, `medh5-cache-1.schema.json` | The engine (`crates/medh5/data/`) and the published conformance suite |
+| `medh5-task-1.schema.json`, `medh5-cache-1.schema.json` | The engine (`crates/medh5/data/`) and the published conformance suite; rendered and published on the [task manifest schema](../reference/task-schema.md) and [cache manifest schema](../reference/cache-schema.md) pages |
 | Fixtures | `companion/` in the published [conformance suite](conformance.md#the-task-and-cache-fixtures): one invalid manifest per T-code from T101 to T306, and two valid tasks whose every row's selection, slot and label is stated |
 | Engine | `medh5::companion` — `task`, `view` (preflight), `cache`, `source` |
 | Python | `medh5.task`, `medh5.cache`, `medh5.torch.clinical` ([Train on clinical tasks](../guides/clinical-training.md)) |

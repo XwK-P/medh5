@@ -722,3 +722,47 @@ def test_the_cohort_check_page_shows_each_codes_severity(monkeypatch) -> None:
     assert dict(rows) == CHECK_CODE_SEVERITY
     assert [code for code, _ in rows] == sorted(CHECK_CODES)
     assert "`C401`" in table.split("\n\n", 1)[1]
+
+
+def _published_schemas() -> tuple[tuple[str, str, str], ...]:
+    """`SCHEMAS` from the docs hook, read without importing MkDocs."""
+    import ast
+
+    tree = ast.parse((ROOT / "hooks/mkdocs_hooks.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == (
+            "SCHEMAS"
+        ):
+            assert node.value is not None
+            found: tuple[tuple[str, str, str], ...] = ast.literal_eval(node.value)
+            return found
+    raise AssertionError("hooks/mkdocs_hooks.py defines no SCHEMAS")
+
+
+def test_every_engine_schema_is_published() -> None:
+    """A schema the engine embeds has a page and a URL on the site.
+
+    At 2.0.2 only the sample-document schema did; the clinical, task and cache
+    schemas shipped in the engine and the corpus and nowhere a reader could
+    browse them.
+    """
+    data = ROOT / "crates/medh5/data"
+    engine = {p.name.removesuffix(".schema.json") for p in data.glob("*.schema.json")}
+    published = _published_schemas()
+    assert {name for name, _, _ in published} == engine
+    nav = (ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+    for name, page, _ in published:
+        text = (DOCS / page).read_text(encoding="utf-8")
+        assert text.count(f"<!--@schema {name}-->") == 1, (name, page)
+        assert f": {page}\n" in nav, f"{page} is not in the nav"
+
+
+def test_a_published_schema_is_the_embedded_bytes() -> None:
+    """The file the site serves is the one the engine validates with."""
+    import importlib
+
+    for name, _, function in _published_schemas():
+        module, attr = function.rsplit(".", 1)
+        embedded = getattr(importlib.import_module(module), attr)()
+        source = ROOT / "crates/medh5/data" / f"{name}.schema.json"
+        assert embedded == source.read_text(encoding="utf-8"), name
