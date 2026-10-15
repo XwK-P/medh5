@@ -12,8 +12,9 @@ pip install "medh5[torch]"
 
 `VolumeDataset`, `PatchDataset` and `GridPatchDataset` take the same reading
 arguments: `images`, `annotations`, `label_format` (`onehot`, `labelmap`,
-`instances` or `none`), `physical`, `dtype`, `timepoint`. A patch is drawn, and
-a cover planned, on the grid the images they read share, so `timepoint="tp1"`
+`instances` or `none`), `physical`, `dtype`, `timepoint`. A physical read is
+float32 only where a rescale applies; pass `dtype` for one type across a
+cohort. A patch is drawn, and a cover planned, on the grid the images they read share, so `timepoint="tp1"`
 reads the follow-up's grid; `images=` given beside it must be at that visit. `PairedPatchDataset` takes `images`, `physical` and
 `dtype`, and refuses the other three: a pair chooses its own visits.
 

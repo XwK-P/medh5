@@ -111,6 +111,8 @@ img.dataset                               # the stored dataset (a view, below)
 
 `physical=True` applies `slope` and `intercept`. When an image declares
 neither, the stored values are already physical and the flag changes nothing.
+A physical read is float32 only where a rescale applies; pass `dtype` for one
+type across a cohort (`img.read(physical=True, dtype=np.float32)`).
 
 ### Annotations
 

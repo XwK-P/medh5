@@ -87,6 +87,13 @@ def _parser_tree() -> dict[tuple[str, ...], dict[str, Any]]:
 # here is cheaper than the round trip that found it the first time.
 STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
     (
+        "physical=True said to return float32",
+        r"physical=True\)?`? (returns|gives|reads as)( always)? `?float32",
+        "a physical read is float32 only where a rescale applies; pass dtype "
+        "for one type across a cohort (D27).",
+        None,
+    ),
+    (
         "a missing file said to escape FileNotFoundError",
         r"`except FileNotFoundError` does not catch it",
         "a missing file is MEDH5FileNotFoundError, a FileNotFoundError with "

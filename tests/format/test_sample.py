@@ -285,6 +285,54 @@ class TestWriteRead:
                 ct.read(physical=True), ct.read(), strict=True
             )
 
+    def test_S4_2_a_physical_read_without_a_rescale_is_the_stored_values_in_their_type(
+        self, tmp_path
+    ):
+        """D27: a physical read is float32 only where a rescale applies."""
+        path = tmp_path / "stored.medh5"
+        values = np.arange(np.prod(SHAPE), dtype=np.uint16).reshape(SHAPE)
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("MR", values, grid="g", modality="MR")
+        with medh5.open(path) as sample:
+            found = sample.images["MR"].read(physical=True)
+        np.testing.assert_array_equal(found, values, strict=True)
+
+    def test_S4_2_an_identity_rescale_declared_explicitly_reads_as_stored(
+        self, tmp_path
+    ):
+        path = tmp_path / "identity.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT",
+                np.full(SHAPE, -7, np.int16),
+                grid="g",
+                modality="CT",
+                rescale_slope=1.0,
+                rescale_intercept=0.0,
+            )
+        with medh5.open(path) as sample:
+            image = sample.images["CT"]
+            assert not image.is_rescaled
+            assert image.read(physical=True).dtype == np.int16
+
+    def test_S4_2_dtype_gives_one_type_across_a_cohort(self, tmp_path):
+        """Two files, one rescaled and one not: ``dtype`` reads both alike."""
+        read = []
+        for name, slope in (("a", None), ("b", 0.5)):
+            path = tmp_path / f"{name}.medh5"
+            with medh5.create(path, codec="portable") as w:
+                w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+                extra = {} if slope is None else {"rescale_slope": slope}
+                w.add_image(
+                    "CT", np.full(SHAPE, 8, np.int16), grid="g", modality="CT", **extra
+                )
+            with medh5.open(path) as sample:
+                read.append(sample.images["CT"].read(physical=True, dtype=np.float32))
+        assert [r.dtype for r in read] == [np.float32, np.float32]
+        assert (read[0][0, 0, 0], read[1][0, 0, 0]) == (8.0, 4.0)
+
     @pytest.mark.parametrize("odd", [None, np.nan, np.inf, 0.5])
     def test_S4_2_W907_advises_int16_only_where_it_holds_every_value(
         self, tmp_path, odd
