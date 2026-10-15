@@ -365,16 +365,15 @@ class _Reader:
             shared["encounter_id"] = str(encounter) if encounter else None
             self.dropped(resource)
             event_id = record + suffix
-            values: dict[str, Any] = {}
-            if kind == "Observation":
-                found = self.value(resource, label)
-                if found is None:
-                    continue
-                values = found
-            self.add(event_id, record, coding, shared, values, chains)
             if kind == "DiagnosticReport":
+                self.add(event_id, record, coding, shared, {}, chains)
                 self.report_parts(resource, event_id, label)
                 continue
+            # A parent value with no event form leaves the parent out, and
+            # not its components: each is an event of its own.
+            found = self.value(resource, label)
+            if found is not None:
+                self.add(event_id, record, coding, shared, found, chains)
             parts = resource.get("component") or []
             if components and len(parts) != len(components):
                 self.warn(
@@ -502,7 +501,10 @@ def _order(
                 f"{name} has two different resources as version {version}"
             )
     unique = list(by_version.items())
-    if all(v.isdigit() for v, _ in unique):
+    numbers = {int(v) for v, _ in unique if v.isascii() and v.isdigit()}
+    if len(numbers) == len(unique):
+        # Distinct integers only: "1" and "01" are two versionIds with one
+        # number, and Bundle order is not a revision order.
         return [r for _, r in sorted(unique, key=lambda item: int(item[0]))]
     stamps = [(r.get("meta") or {}).get("lastUpdated") for _, r in unique]
     if all(stamps):

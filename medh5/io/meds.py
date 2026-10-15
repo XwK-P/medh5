@@ -31,8 +31,9 @@ them onto events, inventing nothing MEDS does not say:
   ``value_text``; a row holding both is refused unless ``both_values`` says
   which to keep.  A unit comes only from a declared column: MEDS has none.
 * **Ids.** ``event_id = record_id = "meds." +`` 24 hex digits of the SHA-256
-  of the row's canonical JSON, so a re-extraction keeps them, and importing
-  the same rows again is refused as repeated ids.
+  of the row's canonical JSON (with the declared ``unit`` and ``available``
+  columns), so a re-extraction keeps them, and importing the same rows again
+  is refused as repeated ids.
 * **Left out unless asked.** ``MEDS_BIRTH`` rows (a birth instant
   identifies), and free text: rows of ``document_codes`` become ``document``
   events, owning their ``text_value`` only with ``texts=True``.
@@ -327,6 +328,13 @@ def read_meds(
             "numeric_value": number,
             "text_value": word,
         }
+        # A declared extension column changes the event it is read into, so
+        # it is part of the row's identity: otherwise two rows that differ
+        # only there would take their ids in scan order.
+        if "unit" in names:
+            identity["unit"] = units[i]
+        if "available" in names:
+            identity["available"] = available[i]
         if number is not None and word is not None:
             if both_values == "refuse":
                 raise MEDH5ValidationError(

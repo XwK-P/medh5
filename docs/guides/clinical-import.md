@@ -45,7 +45,7 @@ without writing anything.
 | `code` | under a prefix of `code_systems`, that system (`LOINC/2160-0` is `http://loinc.org`, `2160-0`); otherwise verbatim, in `code_system` (default `meds:<dataset_name>` from `metadata/dataset.json`) |
 | `numeric_value`, `text_value` | `value_num`, `value_text`. A row holding both is refused unless `both_values` is `"numeric"` or `"text"`. `unit` comes only from a column you declare (`columns={"unit": …}`), else it is null (W914) |
 | no MEDS column | `kind` from a prefix of `kinds`, else `other`; `status` is `unknown` unless `status=`; `available_us` is null unless `columns={"available": …}` |
-| ids | `event_id = record_id = "meds." +` the first 24 hex digits of the SHA-256 of the row's canonical JSON; a repeated row gets `.2`, `.3`. A re-extraction keeps the ids, so importing the same rows twice is refused |
+| ids | `event_id = record_id = "meds." +` the first 24 hex digits of the SHA-256 of the row's canonical JSON, declared `unit` and `available` columns included; a repeated row gets `.2`, `.3`. A re-extraction keeps the ids, so importing the same rows twice is refused |
 | `MEDS_BIRTH` | left out (`exclude_codes`), with a note |
 | text | rows whose code is in `document_codes` become `document` events; they own their `text_value` only with `texts=True` |
 
@@ -86,7 +86,7 @@ assert result["events"] == 1 and not report.guesses
 
 | FHIR R4 | Event |
 |---|---|
-| `id`, `meta.versionId` | `record_id` is `obs.<id>` or `dr.<id>`. With several versions of one resource, `event_id` adds `.v<versionId>` and each version `supersedes` the one before; versions that cannot be ordered (by a numeric `versionId`, else by `meta.lastUpdated`) are refused |
+| `id`, `meta.versionId` | `record_id` is `obs.<id>` or `dr.<id>`. With several versions of one resource, `event_id` adds `.v<versionId>` and each version `supersedes` the one before; versions that cannot be ordered (by numeric `versionId`s naming distinct numbers, else by `meta.lastUpdated`) are refused |
 | `status` | `preliminary`, `final`, `cancelled`, `unknown` kept; `partial` is `preliminary`; `amended`, `corrected` and `appended` are `amended` (a `decision` note); `entered-in-error` is `entered_in_error`; `registered` is left out |
 | `code.coding` | the first coding in `prefer_systems` order, else the first, gives `code_system`, `code` and `code_version`. Without a coding the resource is left out, with a warning: no code is guessed from `code.text` |
 | `effectiveDateTime`, `effectiveInstant` | a `point`, its bounds the value's precision (year, month, day or instant). A time without an offset needs `timezone`; a date with no known zone spans every instant it covers anywhere |

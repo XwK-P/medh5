@@ -156,6 +156,13 @@ def test_S5_2_versions_supersede():
     assert [(link.source_id, link.target_id) for link in records.links] == [
         ("obs.creat.va", "obs.creat.vb")
     ]
+    # "1" and "01" are two versionIds with one number: not an order either.
+    same = [
+        {**first, "meta": {"versionId": "1"}},
+        {**second, "meta": {"versionId": "01"}},
+    ]
+    with pytest.raises(MEDH5ValidationError, match="have no order"):
+        _read(same)
 
 
 def test_S10_components_are_events_of_their_own():
@@ -168,6 +175,18 @@ def test_S10_components_are_events_of_their_own():
     assert systolic.record_id == "obs.bp.c0"
     (dropped,) = report.of_kind("dropped")
     assert dropped.detail == {"interpretation": 1, "referenceRange": 1}
+
+
+def test_S10_a_parent_value_left_out_keeps_its_components():
+    panel = next(r for r in Fhir.resources() if r.get("id") == "bp")
+    ranged = {**panel, "valueRange": {"low": {"value": 1}, "high": {"value": 2}}}
+    others = [r for r in Fhir.resources() if r.get("id") != "bp"]
+    records, report = _read([*others, ranged])
+    found = _events(records)
+    assert "obs.bp" not in found
+    assert found["obs.bp.c0"].value_num == 120.0
+    assert found["obs.bp.c1"].value_num == 80.0
+    assert any("valueRange" in n.message for n in report.of_kind("value"))
 
 
 def test_S10_registered_is_skipped():

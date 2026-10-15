@@ -206,6 +206,30 @@ def test_S10_ids_survive_reextraction(tmp_path, dataset):
     assert report.of_kind("id")
 
 
+def test_S10_a_declared_column_is_part_of_the_id(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    lab = Meds.rows()[2]
+    rows, units = [lab, lab], ["mg/dL", "umol/L"]
+    known = [datetime.datetime(2020, 3, 2), datetime.datetime(2020, 3, 9)]
+
+    def read(name, order):
+        root = Meds.write(
+            tmp_path / name,
+            [rows[i] for i in order],
+            extra={
+                "unit": (pa.string(), [units[i] for i in order]),
+                "reported": (pa.timestamp("us"), [known[i] for i in order]),
+            },
+        )
+        columns = {"unit": "unit", "available": "reported"}
+        records, _ = read_meds(root, **_utc(timezone=NEW_YORK, columns=columns))
+        return {e.event_id: (e.unit, e.available_us) for e in records.events}
+
+    first, again = read("first", [0, 1]), read("again", [1, 0])
+    assert first == again and len(first) == 2
+    assert not any(i.endswith(".2") for i in first)
+
+
 def test_S10_a_reimport_is_refused(tmp_path, dataset):
     sample = Meds.sample(tmp_path / "s.medh5")
     options = _utc(timezone=NEW_YORK)
