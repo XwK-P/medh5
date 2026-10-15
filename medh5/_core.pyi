@@ -3516,6 +3516,9 @@ class SampleWriter:
         masks: Mapping[Any, npt.NDArray[Any]] | None = None,
         probabilities: Mapping[Any, npt.NDArray[Any]] | None = None,
         instances: Sequence[InstanceInput] | None = None,
+        labelmap: npt.NDArray[np.integer[Any]] | None = None,
+        label_values: Mapping[int, int | str | Sequence[int | str]] | None = None,
+        ignore_value: int | None = None,
         encoding: str = "auto",
         threshold: float | None = None,
         annotated_classes: str | Sequence[int | str] | None = None,
@@ -3536,6 +3539,11 @@ class SampleWriter:
         classes, so it is refused (E404), as a transcode to it is.  Masks
         stored as `instances` are one object per class, each minted an id
         above every id the sample holds (§7.4).
+
+        `labelmap` is the masks as one integer volume, borrowed rather than
+        copied: each nonzero value the class of that id, or the classes
+        `label_values` gives it, and `ignore_value` the ignore region.  What it
+        writes is what the masks it implies write, byte for byte.
         """
         ...
     def add_timepoint(self, timepoint_id: str, **fields: Any) -> Timepoint:

@@ -36,7 +36,7 @@ from medh5.annotations.voxel import (
 from medh5.errors import MEDH5ValidationError
 from medh5.labels import LabelClass, LabelSet
 from medh5.validate import validate_file
-from tests.helpers import attested_as_written, block
+from tests.helpers import attested_as_written, block, group_contents
 from tests.kits import Framed, Numbered
 
 SHAPE = (12, 16, 16)
@@ -758,6 +758,128 @@ class TestTranscodingRefusesWhatItCannotCarry:
             pytest.raises(MEDH5ValidationError, match="no object identity"),
         ):
             writer.transcode_annotation("seg", "instances")
+
+
+class TestLabelmapInput:
+    """``add_segmentation(labelmap=...)``: one integer volume and what its
+    values stand for, written as the masks it implies are (§7.1-§7.6)."""
+
+    @staticmethod
+    def volume() -> np.ndarray:
+        """Values 0-2, an ignore value 9, as a flipped Fortran-order view."""
+        rng = np.random.default_rng(7)
+        values = rng.integers(0, 3, Numbered.SHAPE[::-1]).astype(np.int16)
+        values[0] = 9
+        return np.asfortranarray(values).T[:, ::-1]
+
+    @staticmethod
+    def masks(volume: np.ndarray) -> dict[int, np.ndarray]:
+        """Class 3 is a region over values 1 and 2."""
+        return {1: volume == 1, 2: volume == 2, 3: (volume == 1) | (volume == 2)}
+
+    @pytest.mark.parametrize("encoding", ["auto", *DENSE[1:]])
+    def test_S7_labelmap_input_writes_the_masks_bytes(self, tmp_path, encoding):
+        volume = self.volume()
+        assert not volume.flags.c_contiguous
+        written = {}
+        for route in ("masks", "labelmap"):
+            path = tmp_path / f"{route}.medh5"
+            with Numbered.writer(path) as w:
+                given = (
+                    {"masks": self.masks(volume), "ignore": volume == 9}
+                    if route == "masks"
+                    else {
+                        "labelmap": volume,
+                        "label_values": {1: ["c1", "c3"], 2: [2, 3]},
+                        "ignore_value": 9,
+                    }
+                )
+                kind, stats = w.add_segmentation(
+                    "m", grid="g", encoding=encoding, **given
+                )
+            written[route] = (
+                kind,
+                stats.summary(),
+                group_contents(path, "annotations"),
+            )
+        assert written["masks"] == written["labelmap"]
+        with medh5.open(tmp_path / "labelmap.medh5") as sample:
+            ann = sample.annotations["m"]
+            assert np.array_equal(ann.dense([3])[0], self.masks(volume)[3])
+            assert np.array_equal(sample.ignore_region("m"), volume == 9)
+
+    def test_S7_1_a_value_of_two_classes_is_no_labelmap(self, tmp_path):
+        volume = self.volume()
+        with Numbered.writer(tmp_path / "s.medh5") as w:
+            for given in (
+                {"masks": self.masks(volume), "ignore": volume == 9},
+                {
+                    "labelmap": volume,
+                    "label_values": {1: [1, 3], 2: [2, 3]},
+                    "ignore_value": 9,
+                },
+            ):
+                with pytest.raises(MEDH5ValidationError, match="mutually exclusive"):
+                    w.add_segmentation("m", grid="g", encoding="labelmap", **given)
+
+    def test_S7_each_value_is_its_own_class_without_label_values(self, tmp_path):
+        volume = np.zeros(Numbered.SHAPE, np.uint8)
+        volume[1:3, 2:5, 2:5] = 2
+        with Numbered.writer(tmp_path / "s.medh5") as w:
+            kind, stats = w.add_segmentation(
+                "m", grid="g", labelmap=volume, annotated_classes=[1, 2]
+            )
+        assert kind == "labelmap"
+        assert tuple(stats.class_ids) == (1, 2)
+        with medh5.open(tmp_path / "s.medh5") as sample:
+            ann = sample.annotations["m"]
+            assert tuple(ann.annotated_class_ids) == (1, 2)
+            assert np.array_equal(ann.dense([2])[0], volume == 2)
+
+    @staticmethod
+    def full(value: object) -> np.ndarray:
+        return np.full(Numbered.SHAPE, value)
+
+    @pytest.mark.parametrize(
+        ("given", "error", "match"),
+        [
+            (
+                lambda f: {"labelmap": f(1), "masks": {1: f(True)}},
+                MEDH5ValidationError,
+                "not masks and labelmap",
+            ),
+            (
+                lambda f: {"masks": {1: f(True)}, "ignore_value": 9},
+                MEDH5ValidationError,
+                "labelmap= only",
+            ),
+            (
+                lambda f: {"masks": {1: f(True)}, "label_values": {1: 1}},
+                MEDH5ValidationError,
+                "labelmap= only",
+            ),
+            (lambda f: {"labelmap": f(1.0)}, TypeError, "not of dtype float64"),
+            (lambda f: {"labelmap": f(True)}, TypeError, "pass masks= for boolean"),
+            (
+                lambda f: {"labelmap": f(2), "label_values": {1: 1}},
+                MEDH5ValidationError,
+                "holds 2 at voxel",
+            ),
+            (
+                lambda f: {"labelmap": f(1), "ignore": f(False)},
+                MEDH5ValidationError,
+                "ignore_value=",
+            ),
+        ],
+    )
+    def test_S7_what_a_labelmap_cannot_say_is_refused(
+        self, tmp_path, given, error, match
+    ):
+        with (
+            Numbered.writer(tmp_path / "s.medh5") as w,
+            pytest.raises(error, match=match),
+        ):
+            w.add_segmentation("m", grid="g", **given(self.full))
 
 
 class TestCostModel:

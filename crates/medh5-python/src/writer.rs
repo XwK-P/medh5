@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use numpy::{PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFrozenSet, PyString, PyTuple};
@@ -14,16 +15,19 @@ use serde_json::Value;
 
 use medh5::annotations::encode::InstanceInput;
 use medh5::annotations::encode_geometric::{Assertions, Polygon};
+use medh5::annotations::select::OverlapStats;
+use medh5::annotations::LabelValue;
 use medh5::labels::ClassKey;
 use medh5::sample::writer::{
     Annotated, GridOptions, ImageEdit, ImageOptions, QualityArg, SampleWriter as EngineWriter,
 };
 use medh5::sample::writer_annotations::{
-    AnnotationOptions, FieldDtype, ObjectFields, Placement, SegmentationOptions, SegmentationSource, TransformSpec,
+    AnnotationOptions, FieldDtype, LabelmapSource, ObjectFields, Placement, SegmentationOptions, SegmentationSource,
+    TransformSpec,
 };
 
 use crate::convert::{
-    bool_array, class_key, class_keys, detach_if, f64_array, f64_vec, i64_array, i64_vec, kwargs_to_map,
+    asarray, bool_array, class_key, class_keys, detach_if, f64_array, f64_vec, i64_array, i64_vec, kwargs_to_map,
     matrix as to_matrix, opt_strings, py_to_json, py_to_nd, strings, DETACH_ROWS,
 };
 use crate::curation::{Activity, Agent, Cohort, Deidentification, Identity, QualityRecord, SplitClaim, Timepoint};
@@ -164,6 +168,75 @@ fn opt_keys(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<ClassKey>>> {
 }
 
 /// `{class: array}` items, in the mapping's order.
+/// `label_values=`: each value's class, or classes (an nnU-Net region is a
+/// union of values, so a value is in every region holding it).
+fn label_values_arg(obj: &Bound<'_, PyAny>) -> PyResult<Vec<(i64, Vec<ClassKey>)>> {
+    let mut out = Vec::new();
+    for (value, classes) in items_of(obj)? {
+        let classes = match class_key(&classes) {
+            Ok(key) => vec![key],
+            Err(_) => class_keys(&classes)?,
+        };
+        out.push((value.extract::<i64>()?, classes));
+    }
+    Ok(out)
+}
+
+/// `add_segmentation(labelmap=...)`, the volume borrowed from NumPy for the
+/// whole write, which runs with the GIL released.
+#[allow(clippy::too_many_arguments)]
+fn add_labelmap(
+    writer: &mut EngineWriter,
+    ann_id: &str,
+    grid: &str,
+    labelmap: &Bound<'_, PyAny>,
+    values: Option<Vec<(i64, Vec<ClassKey>)>>,
+    ignore_value: Option<i64>,
+    options: SegmentationOptions,
+) -> R<(String, Option<OverlapStats>)> {
+    fn write<T: numpy::Element + LabelValue>(
+        writer: &mut EngineWriter,
+        ann_id: &str,
+        grid: &str,
+        array: &Bound<'_, PyUntypedArray>,
+        values: Option<Vec<(i64, Vec<ClassKey>)>>,
+        ignore_value: Option<i64>,
+        options: SegmentationOptions,
+    ) -> R<(String, Option<OverlapStats>)> {
+        let typed = array.cast::<PyArrayDyn<T>>().map_err(PyErr::from)?;
+        let guard = typed.readonly();
+        let view = guard.as_array();
+        Ok(array.py().detach(move || {
+            let mut source = LabelmapSource::new(view);
+            if let Some(values) = values {
+                source = source.values(values);
+            }
+            if let Some(value) = ignore_value {
+                source = source.ignore_value(value);
+            }
+            writer.add_segmentation_labelmap(ann_id, grid, source, options)
+        })?)
+    }
+    let array = asarray(labelmap, None)?;
+    let dtype = array.dtype();
+    let (a, v, i) = (&array, values, ignore_value);
+    match (dtype.kind() as char, dtype.itemsize()) {
+        ('u', 1) => write::<u8>(writer, ann_id, grid, a, v, i, options),
+        ('u', 2) => write::<u16>(writer, ann_id, grid, a, v, i, options),
+        ('u', 4) => write::<u32>(writer, ann_id, grid, a, v, i, options),
+        ('u', 8) => write::<u64>(writer, ann_id, grid, a, v, i, options),
+        ('i', 1) => write::<i8>(writer, ann_id, grid, a, v, i, options),
+        ('i', 2) => write::<i16>(writer, ann_id, grid, a, v, i, options),
+        ('i', 4) => write::<i32>(writer, ann_id, grid, a, v, i, options),
+        ('i', 8) => write::<i64>(writer, ann_id, grid, a, v, i, options),
+        _ => Err(PyTypeError::new_err(format!(
+            "labelmap= is an integer volume, not of dtype {}; pass masks= for boolean masks",
+            dtype.str()?
+        ))
+        .into()),
+    }
+}
+
 fn items_of<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<(Bound<'py, PyAny>, Bound<'py, PyAny>)>> {
     let mut out = Vec::new();
     for item in obj.call_method0("items")?.try_iter()? {
@@ -792,9 +865,15 @@ impl SampleWriter {
     /// classes, so it is refused (E404), as a transcode to it is.  Masks
     /// stored as `instances` are one object per class, each minted an id
     /// above every id the sample holds (§7.4).
-    #[pyo3(signature = (ann_id, *, grid, masks=None, probabilities=None, instances=None, encoding="auto",
-        threshold=None, annotated_classes=None, closure="explicit", ignore=None, ignore_mask=None, timepoints=None,
-        prov=None, quality=None, derived_from=None, task="segmentation", codec=None))]
+    ///
+    /// `labelmap` is the masks as one integer volume, borrowed rather than
+    /// copied: each nonzero value the class of that id, or the classes
+    /// `label_values` gives it, and `ignore_value` the ignore region.  What it
+    /// writes is what the masks it implies write, byte for byte.
+    #[pyo3(signature = (ann_id, *, grid, masks=None, probabilities=None, instances=None, labelmap=None,
+        label_values=None, ignore_value=None, encoding="auto", threshold=None, annotated_classes=None,
+        closure="explicit", ignore=None, ignore_mask=None, timepoints=None, prov=None, quality=None, derived_from=None,
+        task="segmentation", codec=None))]
     #[allow(clippy::too_many_arguments)]
     fn add_segmentation<'py>(
         &mut self,
@@ -804,6 +883,9 @@ impl SampleWriter {
         masks: Option<&Bound<'py, PyAny>>,
         probabilities: Option<&Bound<'py, PyAny>>,
         instances: Option<&Bound<'py, PyAny>>,
+        labelmap: Option<&Bound<'py, PyAny>>,
+        label_values: Option<&Bound<'py, PyAny>>,
+        ignore_value: Option<i64>,
         encoding: &str,
         threshold: Option<f64>,
         annotated_classes: Option<&Bound<'py, PyAny>>,
@@ -819,41 +901,54 @@ impl SampleWriter {
     ) -> R<Bound<'py, PyTuple>> {
         let writer = self.writer()?;
         writer.grid_ref(grid)?;
-        let given: Vec<&str> = [("masks", masks), ("probabilities", probabilities), ("instances", instances)]
-            .into_iter()
-            .filter(|(_, v)| is_given(*v).is_some())
-            .map(|(n, _)| n)
-            .collect();
+        let sources =
+            [("masks", masks), ("probabilities", probabilities), ("instances", instances), ("labelmap", labelmap)];
+        let given: Vec<&str> = sources.into_iter().filter(|(_, v)| is_given(*v).is_some()).map(|(n, _)| n).collect();
         if given.len() > 1 {
             return Err(medh5::Error::coded(
                 "E404",
                 format!(
-                    "annotation {}: pass one of masks=, probabilities= or instances=, not {}",
+                    "annotation {}: pass one of masks=, probabilities=, instances= or labelmap=, not {}",
                     medh5::json::repr_str(ann_id),
                     given.join(" and ")
                 ),
             )
             .into());
         }
-        let source = if let Some(m) = is_given(masks) {
+        let labelmap = is_given(labelmap);
+        let values = is_given(label_values).map(|v| label_values_arg(&v)).transpose()?;
+        if labelmap.is_none() && (values.is_some() || ignore_value.is_some()) {
+            return Err(medh5::Error::coded(
+                "E404",
+                format!(
+                    "annotation {}: label_values= and ignore_value= apply to labelmap= only",
+                    medh5::json::repr_str(ann_id)
+                ),
+            )
+            .into());
+        }
+        let source = if labelmap.is_some() {
+            None
+        } else if let Some(m) = is_given(masks) {
             let mut out = Vec::new();
             for (k, v) in items_of(&m)? {
                 let what = format!("annotation {}: the mask of class {}", medh5::json::repr_str(ann_id), k.repr()?);
                 out.push((class_key(&k)?, mask_arg(&v, &what)?));
             }
-            SegmentationSource::Masks(out)
+            Some(SegmentationSource::Masks(out))
         } else if let Some(p) = is_given(probabilities) {
             let mut out = Vec::new();
             for (k, v) in items_of(&p)? {
                 out.push((class_key(&k)?, f64_array(&v)?));
             }
-            SegmentationSource::Probabilities(out)
+            Some(SegmentationSource::Probabilities(out))
         } else if let Some(i) = is_given(instances) {
-            SegmentationSource::Instances(instance_inputs(writer, &i)?)
+            Some(SegmentationSource::Instances(instance_inputs(writer, &i)?))
         } else {
-            return Err(
-                medh5::Error::invalid("add_segmentation needs one of masks=, probabilities= or instances=").into()
-            );
+            return Err(medh5::Error::invalid(
+                "add_segmentation needs one of masks=, probabilities=, instances= or labelmap=",
+            )
+            .into());
         };
         let options = SegmentationOptions {
             encoding: Some(encoding.to_string()),
@@ -864,8 +959,11 @@ impl SampleWriter {
             ignore_mask,
             common: common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?,
         };
-        let (id, grid) = (ann_id.to_string(), grid.to_string());
-        let (kind, stats) = py.detach(move || writer.add_segmentation(&id, &grid, source, options))?;
+        let (kind, stats) = match (source, labelmap) {
+            (Some(source), _) => py.detach(move || writer.add_segmentation(ann_id, grid, source, options))?,
+            (None, Some(labelmap)) => add_labelmap(writer, ann_id, grid, &labelmap, values, ignore_value, options)?,
+            (None, None) => unreachable!("one source is given"),
+        };
         let stats = match stats {
             Some(s) => Bound::new(py, crate::annotations::OverlapStats::wrap(s))?.into_any(),
             None => py.None().into_bound(py),

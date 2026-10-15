@@ -193,6 +193,7 @@ def from_nnunetv2(
     image_ids = _image_ids(channels)
     restore = _recorded_ids(document)
     label_set, regions, ignore_value = _label_set(document, log)
+    label_values = _label_values(label_set, regions)
     declared = _declared_values(document)
     ending = str(document["file_ending"])
     training = set(cases(source, document))
@@ -287,7 +288,10 @@ def from_nnunetv2(
         assert geometry is not None
         label_path = source / labels_folder / f"{case}{ending}"
         masks: dict[int, npt.NDArray[np.bool_]] | None = None
+        labelmap: npt.NDArray[Any] | None = None
+        marker: int | None = None
         ignored: npt.NDArray[np.bool_] | None = None
+        ignored_voxels = 0
         if label_path.exists():
             volume, label_geo = read_nifti(label_path, coord_system=coord_system)
             _replay_geometry(log, f"case {case}: labels", label_geo, unitless)
@@ -297,14 +301,23 @@ def from_nnunetv2(
             _same_grid(geometry, label_geo, f"{case} labels", log)
             ids = _label_ids(volume, label_geo["rescale"], case)
             _require_declared(ids, declared, case)
-            if ignore_value is not None and np.any(ids == ignore_value):
+            if ignore_value is not None:
                 ignored = np.asarray(ids == ignore_value)
-                # Out of the values before they are restored: the ignore label
-                # is one above the written values, which can be a class id
-                # once they are restored, and its voxels became that class.
-                ids = np.where(ignored, BACKGROUND, ids)
-            ids = _restored(ids, restore)
-            masks = _masks_from(ids, label_set, regions)
+                ignored_voxels = int(np.count_nonzero(ignored))
+                if not ignored_voxels:
+                    ignored = None
+            if label_values is None:
+                if ignored is not None:
+                    # Out of the values before they are restored: the ignore
+                    # label is one above the written values, which can be a
+                    # class id once they are restored, and its voxels became
+                    # that class.
+                    ids = np.where(ignored, BACKGROUND, ids)
+                masks = _masks_from(_restored(ids, restore), label_set, regions)
+            else:
+                labelmap, marker = _marked(
+                    ids, ignored, ignore_value, restore, label_values
+                )
 
         target = directory / f"{case}.medh5"
         with medh5.create(
@@ -357,22 +370,35 @@ def from_nnunetv2(
                     rescale_intercept=None if rescale is None else rescale[1],
                     prov=activity,
                 )
-            if masks:
-                kind, _ = writer.add_segmentation(
-                    "seg",
-                    grid="ref",
-                    masks=masks,
-                    annotated_classes="all",
-                    ignore=ignored,
-                    prov=activity,
-                )
+            if masks or labelmap is not None:
+                # The label volume as it is, each value the classes it is in:
+                # one mask per class held the volume once per class.
+                if labelmap is not None:
+                    kind, _ = writer.add_segmentation(
+                        "seg",
+                        grid="ref",
+                        labelmap=labelmap,
+                        label_values=label_values,
+                        ignore_value=marker,
+                        annotated_classes="all",
+                        prov=activity,
+                    )
+                else:
+                    kind, _ = writer.add_segmentation(
+                        "seg",
+                        grid="ref",
+                        masks=masks,
+                        annotated_classes="all",
+                        ignore=ignored,
+                        prov=activity,
+                    )
                 if ignored is not None:
                     log.decision(
                         "ignore",
-                        f"case {case}: {int(ignored.sum())} voxel(s) of nnU-Net's "
+                        f"case {case}: {ignored_voxels} voxel(s) of nnU-Net's "
                         f"ignore label {ignore_value} became the annotation's "
                         "ignore region (§7.7), unexamined rather than background",
-                        {"case": case, "voxels": int(ignored.sum())},
+                        {"case": case, "voxels": ignored_voxels},
                     )
                 log.decision(
                     "encoding",
@@ -590,6 +616,50 @@ def _label_ids(
             "holds class ids"
         )
     return ids.astype(np.int64)
+
+
+def _label_values(
+    label_set: Any, regions: Mapping[int, Sequence[int]]
+) -> dict[int, list[int]] | None:
+    """Each label value's classes: its own, and every region holding it.
+
+    ``None`` when the label set has no class, or a region holds background
+    0, which is no value of a labelmap: those cases are written as masks.
+    """
+    values: dict[int, list[int]] = {}
+    for entry in label_set:
+        if entry.id not in regions:
+            values.setdefault(entry.id, []).append(entry.id)
+    for region, components in regions.items():
+        for component in components:
+            if component == BACKGROUND:
+                return None
+            values.setdefault(int(component), []).append(region)
+    return {value: sorted(set(ids)) for value, ids in values.items()} or None
+
+
+def _marked(
+    ids: npt.NDArray[Any],
+    ignored: npt.NDArray[np.bool_] | None,
+    ignore_value: int | None,
+    restore: Mapping[int, int],
+    label_values: Mapping[int, Sequence[int]],
+) -> tuple[npt.NDArray[Any], int | None]:
+    """The label volume restored to its class ids, and the value that marks
+    its ignore region there (``None`` when nothing is ignored).
+
+    The ignore label is one above the written values, so a class id once they
+    are restored can be the ignore label: restored, its voxels are marked -1,
+    which no label value is.
+    """
+    if ignored is None:
+        return _restored(ids, restore), None
+    if not restore and ignore_value not in label_values:
+        return ids, ignore_value
+    # Restored, the volume is already a copy of its own.
+    out = _restored(ids, restore) if restore else np.array(ids, dtype=np.int64)
+    out[ignored] = -1
+    return out, -1
 
 
 def _masks_from(

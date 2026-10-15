@@ -536,7 +536,10 @@ is a class whose components name it as a parent, which is exactly what the
 hierarchy is for. **nnU-Net's `ignore` label is the annotation's ignore
 region** (§7.7), both ways: never a class, and never background. **A label
 volume holds only what `labels` declares**: a value it does not is refused, as
-nnU-Net refuses it, rather than read as background for every class.
+nnU-Net refuses it, rather than read as background for every class. **A label
+volume is written as it is**, through `add_segmentation(labelmap=...)`, each
+value naming its class and every region holding it: no mask per class is
+built, so a case of 104 classes costs its label volume, not 104 copies of it.
 
 The parsed `dataset.json` is stashed in `extra["nnunetv2"]`, so `to-nnunet`
 reproduces the original dataset definition rather than inventing one: its
