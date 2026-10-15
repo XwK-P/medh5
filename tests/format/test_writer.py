@@ -211,6 +211,118 @@ class TestWriterSideRefusals:
         assert exc.value.code == "E109"
 
 
+class TestImageAndGridEdits:
+    """Images and grids are removed, and an image's attributes edited, as
+    annotations and transforms are: what still names them, and the last one
+    going, are the commit's to refuse."""
+
+    @staticmethod
+    def _two_images(path: Path) -> Path:
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            w.add_timepoint("tp0", series_uids={"CT": "1.2.3.1", "PT": "1.2.3.2"})
+            w.add_grid("g", shape=Flat.SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0")
+            w.add_grid("p", shape=(4, 5, 5), spacing=(2.0, 2.0, 2.0), timepoint="tp0")
+            w.add_image("CT", Flat.image(), grid="g", modality="CT")
+            w.add_image(
+                "PT",
+                np.zeros((4, 5, 5), np.float32),
+                grid="p",
+                modality="PT",
+                value_units="marker-units-7d1c",
+            )
+            w.acquisition("PT", tracer="FDG")
+        return path
+
+    def test_S14_4_remove_image_leaves_no_bytes_behind(self, tmp_path: Path):
+        path = self._two_images(tmp_path / "s.medh5")
+        assert b"marker-units-7d1c" in path.read_bytes(), "the control"
+        with medh5.amend(path) as w:
+            w.remove_image("PT")
+            w.remove_grid("p")
+        assert b"marker-units-7d1c" not in path.read_bytes()
+        with medh5.open(path) as sample:
+            assert sorted(sample.images) == ["CT"]
+            assert sorted(sample.grids) == ["g"]
+            assert "PT" not in sample.document.acquisition
+            assert dict(sample.timepoints["tp0"].series_uids) == {"CT": "1.2.3.1"}
+        assert validate_file(path, level="integrity").ok
+
+    def test_S14_4_removals_may_come_in_any_order(self, tmp_path: Path):
+        """The grid goes before the image that names it, and the last image
+        goes before its replacement arrives: only the commit judges."""
+        path = self._two_images(tmp_path / "s.medh5")
+        with medh5.amend(path) as w:
+            w.remove_grid("p")
+            w.remove_image("PT")
+            w.remove_image("CT")
+            w.add_image("CT", Flat.image(), grid="g", modality="MR")
+        with medh5.open(path) as sample:
+            assert [(i, sample.images[i].modality) for i in sample.images] == [
+                ("CT", "MR")
+            ]
+        for remove, missing in (("remove_image", "PT"), ("remove_grid", "q")):
+            with (
+                pytest.raises(MEDH5ValidationError, match=missing),
+                medh5.amend(path) as w,
+            ):
+                getattr(w, remove)(missing)
+
+    def test_S3_2_remove_grid_is_refused_at_commit_while_named(self, tmp_path: Path):
+        path = self._two_images(tmp_path / "s.medh5")
+        before = path.read_bytes()
+        with pytest.raises(MEDH5ValidationError) as exc, medh5.amend(path) as w:
+            w.remove_grid("p")
+        assert exc.value.code == "E101"
+        assert path.read_bytes() == before
+        with pytest.raises(MEDH5ValidationError) as exc, medh5.amend(path) as w:
+            w.remove_image("CT")
+            w.remove_image("PT")
+        assert exc.value.code == "E201"
+        assert path.read_bytes() == before
+
+    def test_S4_1_set_image_attrs_edits_and_refuses_grid(self, tmp_path: Path):
+        path = self._two_images(tmp_path / "s.medh5")
+        with medh5.amend(path) as w:
+            w.set_image_attrs(
+                "PT", modality="NM", value_units=None, window_center=[1.0]
+            )
+            w.set_image_attrs("CT", window_width=[400.0])
+        assert b"marker-units-7d1c" not in path.read_bytes()
+        with h5py.File(path, "r") as handle:
+            pt = handle["images/PT"].attrs
+            assert pt["modality"] in ("NM", b"NM")
+            assert "value_units" not in pt
+            assert list(pt["window_center"]) == [1.0]
+        with medh5.open(path) as sample:
+            assert sample.images["PT"].modality == "NM"
+            assert sample.verify().ok
+        refusals = [
+            ({"grid": "g"}, None, "grid"),
+            ({"digest": "sha256:" + "0" * 64}, None, "digest"),
+            ({"levels": 2}, None, "levels"),
+            ({"colour": "red"}, None, "colour"),
+            ({"modality": None}, "E205", "modality"),
+            ({"value_type": "loudness"}, "E203", "loudness"),
+            ({"channel_names": ["a", "b"]}, "E204", "channel_names"),
+            ({"rescale_slope": float("inf")}, None, "rescale_slope"),
+        ]
+        for attrs, code, named in refusals:
+            with (
+                pytest.raises(MEDH5ValidationError, match=named) as exc,
+                medh5.amend(path) as w,
+            ):
+                w.set_image_attrs("PT", **attrs)
+            assert exc.value.code == code, attrs
+        with pytest.raises(MEDH5ValidationError, match="XR"), medh5.amend(path) as w:
+            w.set_image_attrs("XR", modality="DX")
+
+    def test_S6_3_add_mask_returns_its_group(self, tmp_path: Path):
+        with Flat.open_writer(tmp_path / "m.medh5") as w:
+            group = w.add_mask("fov", Flat.mask(), grid="g")
+            assert group.name == "/annotations/fov"
+            assert group.attrs["kind"] in ("mask", b"mask")
+
+
 class TestWriterContracts:
     """What the writer is handed reaches the file, or is refused."""
 

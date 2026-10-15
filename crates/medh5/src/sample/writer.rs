@@ -132,6 +132,24 @@ pub struct ImageOptions {
     pub codec: Option<String>,
 }
 
+/// The attributes [`SampleWriter::set_image_attrs`] changes.  For each
+/// field, `None` leaves the attribute as it is, `Some(None)` removes it and
+/// `Some(Some(value))` sets it.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct ImageEdit {
+    pub modality: Option<Option<String>>,
+    pub value_type: Option<Option<String>>,
+    pub value_units: Option<Option<String>>,
+    pub channel_names: Option<Option<Vec<String>>>,
+    pub rescale_slope: Option<Option<f64>>,
+    pub rescale_intercept: Option<Option<f64>>,
+    pub window_center: Option<Option<Vec<f64>>>,
+    pub window_width: Option<Option<Vec<f64>>>,
+    pub valid_mask: Option<Option<String>>,
+    pub prov: Option<Option<String>>,
+}
+
 /// Options for [`SampleWriter::add_grid`].
 #[derive(Debug, Clone, Default)]
 pub struct GridOptions {
@@ -1158,6 +1176,126 @@ impl SampleWriter {
         self.images.insert(image_id.to_string(), (grid.to_string(), modality.to_string()));
         self.image_multiscale.insert(image_id.to_string(), false);
         Ok(node)
+    }
+
+    /// Drop an image, its `/meta` `acquisition` entry and its `series_uids`
+    /// mention in every timepoint.  What still names it --- a `valid_mask`,
+    /// an annotation's `derived_from` --- and the last image going (E201) are
+    /// checked at commit, so removals and additions may come in any order.
+    pub fn remove_image(&mut self, image_id: &str) -> Result<()> {
+        let node = self.group("images")?;
+        if !self.images.contains_key(image_id) || !ops::exists(&node, image_id) {
+            return Err(Error::invalid(format!("no image {} to remove", repr_str(image_id))));
+        }
+        ops::unlink(&node, image_id)?;
+        // Its bytes stay in the file being built until commit rewrites it.
+        self.compact = true;
+        self.images.shift_remove(image_id);
+        self.image_multiscale.remove(image_id);
+        self.document.acquisition.remove(image_id);
+        if self.document.timepoints.iter().any(|t| t.series_uids.contains_key(image_id)) {
+            let points = self
+                .document
+                .timepoints
+                .iter()
+                .cloned()
+                .map(|mut t| {
+                    t.series_uids.remove(image_id);
+                    t
+                })
+                .collect();
+            self.document.timepoints = Timeline::new(points)?;
+        }
+        Ok(())
+    }
+
+    /// Drop a grid.  What still names it --- an image, an annotation, a
+    /// transform's field (E101, E503) --- and the last grid going (E111) are
+    /// checked at commit.
+    pub fn remove_grid(&mut self, grid_id: &str) -> Result<()> {
+        let node = self.group("grids")?;
+        if !self.grids.contains_key(grid_id) || !ops::exists(&node, grid_id) {
+            return Err(Error::invalid(format!("no grid {} to remove", repr_str(grid_id))));
+        }
+        ops::unlink(&node, grid_id)?;
+        self.compact = true;
+        self.grids.shift_remove(grid_id);
+        Ok(())
+    }
+
+    /// Change an image's attributes without rewriting its samples (§4.1).
+    ///
+    /// The values are checked as [`add_image`](Self::add_image) checks them:
+    /// an unknown `value_type` (E203), `channel_names` that do not match the
+    /// grid's channel extent (E204), a rescale that is not finite, and a
+    /// required attribute removed (E205).  `grid`, `digest` and the pyramid
+    /// attributes are not attributes it edits.
+    pub fn set_image_attrs(&mut self, image_id: &str, edit: ImageEdit) -> Result<()> {
+        let images = self.group("images")?;
+        let Some((grid_id, _)) = self.images.get(image_id).cloned().filter(|_| ops::exists(&images, image_id)) else {
+            return Err(Error::invalid(format!("no image {} to edit", repr_str(image_id))));
+        };
+        let at = |name: &str| format!("image {}: {name}", repr_str(image_id));
+        for (name, removed) in
+            [("modality", matches!(edit.modality, Some(None))), ("value_type", matches!(edit.value_type, Some(None)))]
+        {
+            if removed {
+                return Err(Error::coded("E205", format!("{} is required (§4.1) and cannot be removed", at(name))));
+            }
+        }
+        if let Some(Some(value_type)) = &edit.value_type {
+            super::image::check_value_type(value_type)?;
+        }
+        if let Some(Some(names)) = &edit.channel_names {
+            let grid = self.grid_ref(&grid_id)?;
+            if !grid.channel_axis().is_some_and(|axis| names.len() as i64 == grid.shape[axis]) {
+                return Err(Error::coded("E204", format!("{} does not match the channel axis", at("channel_names"))));
+            }
+        }
+        for (name, value) in [("rescale_slope", edit.rescale_slope), ("rescale_intercept", edit.rescale_intercept)] {
+            if let Some(Some(v)) = value {
+                if !v.is_finite() {
+                    return Err(Error::invalid(format!("{} must be finite, not {v}", at(name))));
+                }
+            }
+        }
+        let strs = |v: Option<Option<String>>| v.map(|v| v.map(AttrValue::Str));
+        let floats = |v: Option<Option<Vec<f64>>>| v.map(|v| v.map(|v| AttrValue::floats(&v)));
+        let changes: Vec<(&str, Option<Option<AttrValue>>)> = vec![
+            ("modality", strs(edit.modality.clone())),
+            ("value_type", strs(edit.value_type)),
+            ("value_units", strs(edit.value_units)),
+            ("channel_names", edit.channel_names.map(|v| v.map(|v| AttrValue::strs(&v)))),
+            ("rescale_slope", edit.rescale_slope.map(|v| v.map(AttrValue::Float))),
+            ("rescale_intercept", edit.rescale_intercept.map(|v| v.map(AttrValue::Float))),
+            ("window_center", floats(edit.window_center)),
+            ("window_width", floats(edit.window_width)),
+            ("valid_mask", strs(edit.valid_mask)),
+            ("prov", strs(edit.prov)),
+        ];
+        let node: hdf5::Location = if ops::is_group(&images, image_id) {
+            (*images.group(image_id)?).clone()
+        } else {
+            (**images.dataset(image_id)?).clone()
+        };
+        for (name, change) in changes {
+            match change {
+                None => {}
+                Some(None) => {
+                    if attrs::has(&node, name) {
+                        attrs::delete(&node, name)?;
+                    }
+                }
+                Some(Some(value)) => attrs::write(&node, name, &value)?,
+            }
+        }
+        // An overwritten attribute's old value stays in the file's free
+        // space until the commit rewrites it.
+        self.compact = true;
+        if let Some(Some(modality)) = edit.modality {
+            self.images.insert(image_id.to_string(), (grid_id, modality));
+        }
+        Ok(())
     }
 
     /// Write a multiscale image (§4.3); the level geometry is checked here.

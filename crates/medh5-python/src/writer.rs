@@ -15,7 +15,9 @@ use serde_json::Value;
 use medh5::annotations::encode::InstanceInput;
 use medh5::annotations::encode_geometric::{Assertions, Polygon};
 use medh5::labels::ClassKey;
-use medh5::sample::writer::{Annotated, GridOptions, ImageOptions, QualityArg, SampleWriter as EngineWriter};
+use medh5::sample::writer::{
+    Annotated, GridOptions, ImageEdit, ImageOptions, QualityArg, SampleWriter as EngineWriter,
+};
 use medh5::sample::writer_annotations::{
     AnnotationOptions, ObjectFields, Placement, SegmentationOptions, SegmentationSource, TransformSpec,
 };
@@ -871,11 +873,15 @@ impl SampleWriter {
         task: &str,
         prov: Option<&Bound<'_, PyAny>>,
         codec: Option<&str>,
-    ) -> R<()> {
+    ) -> R<Group> {
         let mask = mask_arg(mask, &format!("mask {}", medh5::json::repr_str(ann_id)))?;
         let prov = prov_arg(prov)?;
         let writer = self.writer()?;
-        Ok(py.detach(move || writer.add_mask(ann_id, mask, grid, task, prov.as_deref(), codec))?)
+        let group = py.detach(move || -> medh5::Result<_> {
+            writer.add_mask(ann_id, mask, grid, task, prov.as_deref(), codec)?;
+            writer.root()?.group("annotations")?.group(ann_id).map_err(Into::into)
+        })?;
+        Ok(Group::wrap(group))
     }
 
     /// Drop an annotation, and any index entry derived from it.
@@ -886,6 +892,59 @@ impl SampleWriter {
     /// Drop a transform; what still names it is checked at commit.
     fn remove_transform(&mut self, transform_id: &str) -> R<()> {
         Ok(self.writer()?.remove_transform(transform_id)?)
+    }
+
+    /// Drop an image, its `acquisition` entry and its `series_uids`
+    /// mentions; what still names it, and the last image going (E201), are
+    /// checked at commit.
+    fn remove_image(&mut self, image_id: &str) -> R<()> {
+        Ok(self.writer()?.remove_image(image_id)?)
+    }
+
+    /// Drop a grid; what still names it (E101, E503), and the last grid
+    /// going (E111), are checked at commit.
+    fn remove_grid(&mut self, grid_id: &str) -> R<()> {
+        Ok(self.writer()?.remove_grid(grid_id)?)
+    }
+
+    /// Change an image's attributes without rewriting its samples (§4.1):
+    /// `None` removes one.  Checked as `add_image` checks them.
+    #[pyo3(signature = (image_id, **attrs))]
+    fn set_image_attrs(&mut self, image_id: &str, attrs: Option<&Bound<'_, PyDict>>) -> R<()> {
+        let mut edit = ImageEdit::default();
+        for (key, value) in attrs.into_iter().flat_map(|d| d.iter()) {
+            let key: String = key.extract()?;
+            let given = (!value.is_none()).then_some(&value);
+            let text = |v: Option<&Bound<'_, PyAny>>| v.map(|v| v.extract::<String>()).transpose();
+            match key.as_str() {
+                "modality" => edit.modality = Some(text(given)?),
+                "value_type" => edit.value_type = Some(text(given)?),
+                "value_units" => edit.value_units = Some(text(given)?),
+                "valid_mask" => edit.valid_mask = Some(text(given)?),
+                "prov" => edit.prov = Some(prov_arg(given)?),
+                "channel_names" => edit.channel_names = Some(opt_strings(given)?),
+                "rescale_slope" => edit.rescale_slope = Some(given.map(|v| v.extract::<f64>()).transpose()?),
+                "rescale_intercept" => edit.rescale_intercept = Some(given.map(|v| v.extract::<f64>()).transpose()?),
+                "window_center" => edit.window_center = Some(given.map(f64_vec).transpose()?),
+                "window_width" => edit.window_width = Some(given.map(f64_vec).transpose()?),
+                _ => {
+                    let why = match key.as_str() {
+                        "grid" => "an image's grid is its geometry; write the image again on the other grid",
+                        "digest" => "a digest is the commit's to stamp",
+                        "levels" | "downsample_factors" | "downsample_method" | "grid_levels" => {
+                            "a pyramid's levels are written by add_pyramid"
+                        }
+                        _ => "the specification defines no such image attribute (§4.1)",
+                    };
+                    return Err(medh5::Error::invalid(format!(
+                        "set_image_attrs does not edit {}: {why}",
+                        medh5::json::repr_str(&key)
+                    ))
+                    .into());
+                }
+            }
+        }
+        Ok(self.writer()?.set_image_attrs(image_id, edit)?)
     }
 
     /// Re-encode a voxel annotation in place, preserving its header (§7.6).

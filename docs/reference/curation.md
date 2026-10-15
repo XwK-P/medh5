@@ -228,6 +228,12 @@ record read before its member changed another way (`w.identity(...)` again,
 say) raises `RuntimeError` rather than undoing that change; read it again and
 edit that.
 
+An image's own attributes are corrected the same way, without rewriting its
+samples: `w.set_image_attrs("CT_tp0", modality="CT")` in an amendment, with
+`None` to remove one. An image or grid that should not be there is removed
+with `w.remove_image` and `w.remove_grid`, and the commit refuses what would
+leave a reference dangling ([Writing](python-api.md#derived-data)).
+
 A record added to an existing file goes through `medh5.amend`, which writes
 the new version beside the file and renames it over the old
 ([Amending](python-api.md#amending)). Through a symbolic link, the file the

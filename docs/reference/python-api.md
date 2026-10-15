@@ -426,10 +426,23 @@ w.build_index()                          # sampling indices for every voxel anno
 w.build_index(["organs_tp0"], max_coords=8192)
 w.transcode_annotation("organs_tp0", "bitmask")
 w.remove_annotation("old_seg")           # takes its index with it
+w.remove_image("PT_tp1")                 # and its acquisition entry and series UID
+w.remove_grid("pt_tp1")
+w.set_image_attrs("CT_tp0", modality="CT", window_center=[40.0], value_units=None)
 w.remap_frame_uids({"old-frame": "new-frame"})   # grids, transforms, world-space
                                                  # annotations — all at once
 w.infer_profiles()                       # the profiles the content satisfies
 ```
+
+`remove_image` and `remove_grid` refuse an id the file does not hold, and
+leave the rest to the commit, so removals and additions may come in any order:
+it refuses a grid something still names (`E101`, `E503`), and the last image
+(`E201`) or grid (`E111`) going. `set_image_attrs` changes an image's
+attributes without rewriting its samples; `None` removes one. It checks
+values as `add_image` does (`E203`, `E204`, a finite rescale), refuses to
+remove `modality` or `value_type` (`E205`), and does not edit `grid`, `digest`
+or a pyramid's attributes. `add_mask` returns its group, as every other
+`add_*` does.
 
 ## Amending
 
