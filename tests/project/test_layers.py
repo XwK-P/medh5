@@ -31,7 +31,6 @@ ALLOWED = {
     ("medh5/io/nnunetv2.py", "to_nnunetv2"),  # W21-13 PR 9
     ("medh5/io/dicom_seg.py", "to_dicom_seg"),  # W21-13 PR 9
     ("medh5/io/rtstruct.py", "to_rtstruct"),  # W21-13 PR 9
-    ("medh5/torch/clinical.py", "ConceptVocabulary.save"),  # W21-14 PR 4
 }
 
 _REPLACING = {("os", "replace"), ("os", "rename"), ("os", "open"), ("shutil", "move")}
