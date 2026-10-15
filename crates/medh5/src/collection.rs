@@ -308,7 +308,7 @@ pub fn pack(sources: &[&Path], out: &Path, keys: Option<&[String]>) -> Result<Pa
     let result = (|| -> Result<()> {
         let handle = file.handle();
         attrs::write(handle, "medh5_kind", &AttrValue::Str("collection".into()))?;
-        let group = handle.create_group(SAMPLES_GROUP)?;
+        let group = ops::new_group(handle, SAMPLES_GROUP)?;
         // The outer root declares the highest version of what it holds
         // (1.1 §8); each member keeps its own.
         let mut outer = crate::version::BASE_VERSION.to_string();
@@ -330,7 +330,7 @@ pub fn pack(sources: &[&Path], out: &Path, keys: Option<&[String]>) -> Result<Pa
                     format!("{} is already a collection; pack takes sample files", source.to_string_lossy()),
                 ));
             }
-            let member = group.create_group(key)?;
+            let member = ops::new_group(&group, key)?;
             copy_root(&src.as_group()?, &member)?;
         }
         attrs::write(handle, "medh5_version", &AttrValue::Str(outer))?;

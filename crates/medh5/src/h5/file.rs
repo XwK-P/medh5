@@ -153,12 +153,15 @@ fn os_reason(err: &std::io::Error) -> String {
 ///
 /// The lower bound is HDF5 1.10, the oldest container the specification
 /// promises to be readable by; the upper bound is the library's latest, so
-/// features newer than 1.10 are used only where an object needs them.
+/// features newer than 1.10 are used only where an object needs them.  The
+/// root group is untimed, so the same content is the same bytes.
 pub fn create_truncate(path: &Path) -> Result<hdf5::File> {
     super::init();
     marked(|| {
         hdf5::File::with_options()
             .with_fapl(|p| p.libver_bounds(LibraryVersion::V110, LibraryVersion::latest()))
+            // The root group untimed, as `ops::new_group` makes every other.
+            .with_fcpl(|p| p.obj_track_times(false))
             .create(path)
     })
     .map_err(|e| Error::File(format!("failed to create {}: {}", repr_str(&path.to_string_lossy()), e)))

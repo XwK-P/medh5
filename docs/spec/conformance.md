@@ -50,12 +50,19 @@ wrote the suite to suite/: 171 cases, see suite/README.md
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |
 | `medh5-clinical-1.schema.json` | the JSON Schema for `clinical/meta` and clinical records (1.1) |
 | `medh5-task-1.schema.json`, `medh5-cache-1.schema.json` | the [task and cache contract](task-cache-1.md)'s schemas — published here for convenience, not scored by the corpus |
-| `companion/` | the task-and-cache fixtures: task manifests over the suite's clinical samples, and `expected.json` (below) |
+| `companion/` | the task-and-cache fixtures: task manifests over the suite's clinical samples, feature caches under `caches/`, and `expected.json` (below) |
 | `SHA256SUMS` | over every file above |
 | `README.md` | the contract, generated with the suite |
 
 Everything an implementer needs is in that directory. Being measured against
 the spec does not require installing this package.
+
+**The suite is reproducible.** Built twice, by the same release, it is the
+same bytes: no file records when it was written. Every sample's `created` is
+`2000-01-01T00:00:00Z`, and no group carries HDF5's creation and
+modification times. So a mirror checks a copy of the suite by publishing it
+again with the release that made it and comparing the two `SHA256SUMS`, with
+no need to trust the copy.
 
 ## The task-and-cache fixtures
 
@@ -74,6 +81,29 @@ compared on more than their error codes.
 
 ```
 $ medh5 task preflight suite/companion/valid-two-subjects.task.json --json
+```
+
+`companion/caches/` holds nine feature caches over the same samples: a valid
+cache of each level, event and patient, and one for each code from `T401` to
+`T407`. Each is listed in `companion/expected.json` at the level `cache`, with
+the findings validating it must report, and with the task it is validated
+against where a finding is about the task or the cache is patient-level. A
+cache validated with its task resolves its sources against the task's
+directory, and one validated alone against its own (task-cache-1 §7.1).
+
+```
+$ medh5 cache validate suite/companion/caches/T406-whole-history.medh5cache --task suite/companion/valid-two-subjects.task.json --json
+```
+
+Hand back what checking every fixture reported, one report per fixture naming
+it by `file` (or `path`, as `cache validate` prints it), and score it with
+`--companion`. A report's `findings` must equal the fixture's, its `ok` must
+agree with them, and for a fixture that states its rows, each row must match
+— a row reported that the fixture does not state fails it, as a row left out
+does.
+
+```
+$ medh5 conformance score suite/ reports.json --companion
 ```
 
 ## Running it against your implementation
@@ -132,6 +162,29 @@ A case you report nothing about fails too — silence about a file you were
 handed is not a pass.
 
 Diagnostic *messages* are yours to write. Only the codes are normative.
+
+## Scoring an implementation of an earlier version
+
+Every case in `expected.json` states the format version it is addressed to,
+as `format_version`: the latest version among the codes it expects, and `1.1`
+for a clause of 1.1. That is not always what its file declares — the `E009`
+and `E011` cases declare 1.0 and expect 1.1's answers. The manifest's
+top-level `codes_revision` is the revision of the code table (1.0 §15.2) the
+suite was built against.
+
+An implementation of 1.0, or one written against an earlier revision of the
+table, has no answer to a case it was never told about. Two bounds hold it to
+what it was:
+
+```
+$ medh5 conformance score suite/ results.json --format-version 1.0
+$ medh5 conformance score suite/ results.json --codes-revision 1
+```
+
+A case addressed to a later version, or expecting a code a later revision
+allocated, is not scored, and the summary counts it under `skipped`. A code of
+a later revision that you report anyway is ignored rather than held against
+you. Without a bound, every case is scored.
 
 ## Three things to know before you start
 

@@ -502,7 +502,7 @@ impl SampleWriter {
         // corrected retry would collide with, or a commit would refuse (E412)
         // or keep without the attributes it failed to write.
         let profile = resolve_profile(Some(codec.unwrap_or(&self.codec)))?;
-        let group = node.create_group(ann_id)?;
+        let group = ops::new_group(&node, ann_id)?;
         let written = (|| -> Result<()> {
             for (name, dataset) in &payload.datasets {
                 match dataset {
@@ -1006,10 +1006,10 @@ impl SampleWriter {
         let made = existing.is_none();
         let node = match existing {
             Some(g) => g,
-            None => root.create_group("transforms")?,
+            None => ops::new_group(&root, "transforms")?,
         };
         let written = (|| -> Result<hdf5::Group> {
-            let group = node.create_group(transform_id)?;
+            let group = ops::new_group(&node, transform_id)?;
             for (name, dataset) in &payload.datasets {
                 let PayloadData::Array(array) = dataset else { continue };
                 let mut chunks = None;
