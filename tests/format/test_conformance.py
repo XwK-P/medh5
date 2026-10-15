@@ -383,6 +383,38 @@ class TestCodeRevisions:
         assert report.ok, report.codes
 
 
+class TestVerifyAgreesWithTheValidator:
+    """D6: `verify` fails exactly when the validator, at the integrity level,
+    reports an attestation code.  At 2.0 an undigested dataset under a
+    `content_id` failed `verify` and passed `--level strict`."""
+
+    ATTESTATION = {"E701", "E702", "E703", "E704", "E818", "W915"}
+
+    def test_S13_2_verify_fails_exactly_when_an_attestation_code_is_reported(
+        self, corpus, corpus_root
+    ):
+        disagree = []
+        for case in load_manifest(corpus_root)["cases"]:
+            path = corpus_root / case["file"]
+            try:
+                with medh5.open(path) as sample:
+                    verified = sample.verify().ok
+            except (MEDH5Error, OSError, ValueError, KeyError):
+                continue  # a case that does not open has nothing to verify
+            report = validate_file(path, level="integrity")
+            attested = {
+                d.code
+                for d in report.diagnostics
+                if d.code in self.ATTESTATION
+                or (
+                    d.code == "W913" and d.location == "/" and "content_id" in d.message
+                )
+            }
+            if verified is bool(attested):
+                disagree.append((case["name"], verified, sorted(attested)))
+        assert disagree == []
+
+
 class TestSpecSync:
     """The spec's code table and the implementation must not drift apart."""
 

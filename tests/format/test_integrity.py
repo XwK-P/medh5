@@ -874,6 +874,79 @@ class TestVerify:
             assert s.verify().unattested == ()
 
 
+class TestUndigestedDatasets:
+    """D6, §13.1: a dataset without a `digest`, inside an object a declared
+    `content_id` covers, is W915 --- `--level strict` passed the file `verify`
+    failed as unattested."""
+
+    def _boxes(self, path: Path) -> Path:
+        with Framed.writer(path) as w:
+            w.add_boxes(
+                "det", np.array([Framed.box(1, 3)], np.float32), ["c1"], grid="g"
+            )
+        return path
+
+    def _plant(self, path: Path) -> None:
+        with h5py.File(path, "r+") as handle:
+            handle["annotations/det"].create_dataset(
+                "instance_ids", data=np.array([7], np.uint32)
+            )
+
+    def test_S13_1_an_undigested_dataset_under_a_content_id_is_W915(
+        self, tmp_path: Path
+    ):
+        path = self._boxes(tmp_path / "det.medh5")
+        self._plant(path)
+        integrity = validate_file(path, level="integrity")
+        assert [
+            (d.code, d.location) for d in integrity.diagnostics if d.code == "W915"
+        ] == [("W915", "/annotations/det/instance_ids")]
+        assert "W915" not in validate_file(path, level="semantic").codes
+        assert "W915" in validate_file(path, level="strict").codes
+        # Pinned to revision 1, 2.0's verdict.
+        assert "W915" not in validate_file(path, level="strict", codes_revision=1).codes
+        with medh5.open(path) as sample:
+            assert not sample.verify().ok
+
+    def test_S13_1_W915_is_not_reported_without_a_content_id(self, tmp_path: Path):
+        path = self._boxes(tmp_path / "det.medh5")
+        with h5py.File(path, "r+") as handle:
+            del handle.attrs["content_id"]
+        self._plant(path)
+        assert "W915" not in validate_file(path, level="integrity").codes
+
+    def test_S13_1_a_file_with_no_digests_is_W901_not_W915(self, tmp_path: Path):
+        path = self._boxes(tmp_path / "det.medh5")
+        with h5py.File(path, "r+") as handle:
+            for name in list(_datasets(handle)):
+                handle[name].attrs.pop("digest", None)
+        codes = validate_file(path, level="integrity").codes
+        assert "W901" in codes and "W915" not in codes
+
+    def test_S13_1_an_undigested_clinical_dataset_is_E818_not_W915(
+        self, tmp_path: Path
+    ):
+        from tests.kits import History
+
+        path = tmp_path / "history.medh5"
+        History.write(path)
+        with h5py.File(path, "r+") as handle:
+            events = handle["clinical/events"]
+            events.create_dataset(
+                "x_note", data=np.zeros(events["available_lo_us"].shape, "u1")
+            )
+        codes = validate_file(path, level="integrity").codes
+        assert "E818" in codes and "W915" not in codes
+
+
+def _datasets(handle: h5py.File) -> list[str]:
+    found: list[str] = []
+    handle.visititems(
+        lambda name, obj: found.append(name) if isinstance(obj, h5py.Dataset) else None
+    )
+    return found
+
+
 class TestCyclicCompare:
     """Comparing a tree that links back to an
     ancestor recursed without end, and a self-cycle overflowed the stack ---

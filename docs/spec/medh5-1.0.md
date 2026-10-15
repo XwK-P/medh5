@@ -1348,7 +1348,9 @@ opaque type) hashes as `|V<n>`, `<n>` the element size in bytes, over its elemen
 Variable-length data other than strings, and references, have no canonical byte stream and so no
 digest: a writer stamps none, and one found on such a dataset cannot be verified. `shape_csv` is the
 dimensions in decimal joined by `,` (`64,96,96`; empty for a scalar). The digest covers
-**decompressed** content, so recompression does not invalidate it.
+**decompressed** content, so recompression does not invalidate it. A dataset without a `digest`,
+inside an object a declared `content_id` covers, is reported W915: the root does not attest its
+bytes, so an edit to them changes no line of §13.2.
 
 Datasets under `index/` (§14.3) are **excluded**: they carry no `digest`, and writers **MUST NOT**
 stamp one. An index is derived, regenerable, and already bound to its source by `source_digest`
@@ -1632,7 +1634,8 @@ is a *revision* of the table, recorded in Appendix C.1: revision 1 is every code
 revisions were numbered, and each later allocation is the next number. `codes.json` gives each code
 the version whose rules it reports (`since`) and the revision that allocated it (`revision`). A
 validator states the revision it implements, and the conformance suite scores it against that
-revision. The table below is complete for 1.0 at revision 1.
+revision. The table below is complete for 1.0 at revision 2; a code marked (r2) was allocated in
+revision 2, and every other in revision 1.
 
 | Range | Domain | Examples |
 |---|---|---|
@@ -1644,7 +1647,7 @@ revision. The table below is complete for 1.0 at revision 1.
 | `E5xx` | transforms | `E501` composite frame chain broken; `E502` missing or unknown transform `kind`, or a transform lacking the frames or parameters its kind requires, mapping a frame to itself, or naming an unknown `vector_space`; `E503` a displacement field or B-spline control points not fitting their grid: `field_grid`/`cp_grid` missing or not in `from_frame`, a `field` not `(S, *spatial)` on its grid, or `control_points` not `(S, *cp_shape)` on the grid's spatial axes with at least `order + 1` points on each (§10.4, §10.5); `E504` affine `matrix` not `(S+1, S+1)` for the spatial axes of the grids it relates (§10.3), holding an entry that is not finite, or its last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent; `E506` `units` missing or not the units of the grids in its frames |
 | `E6xx` | curation | `E601` dangling `prov` reference; `E602` unknown `quality` key; `E603` unknown agent or activity type; `E604` non-RFC3339 timestamp; `E605` activity names an undeclared agent |
 | `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch, or a `digest` on a dataset that no line of `content_id` covers (§13.2); `E703` malformed digest string; `E704` an object `content_id` covers reached at a path that is not its own |
-| `W9xx` | warnings | `W901` no digests; `W902` uncompressed or unchunked bulk dataset; `W903` no `deidentification`; `W904` partial coverage without an ignore region; `W905` stale `index/` entry; `W906` conflicting split claims; `W907` `float32` storage where `int16 + rescale` is lossless; `W908` `layers` count far from the greedy-colouring optimum; `W909` one `instance_id` carrying two class ids; `W910` grids in different timepoints sharing a `frame_uid`; `W911` multi-timepoint sample with no transform relating any two timepoints; `W912` a class used by an annotation carries no ontology binding |
+| `W9xx` | warnings | `W901` no digests; `W902` uncompressed or unchunked bulk dataset; `W903` no `deidentification`; `W904` partial coverage without an ignore region; `W905` stale `index/` entry; `W906` conflicting split claims; `W907` `float32` storage where `int16 + rescale` is lossless; `W908` `layers` count far from the greedy-colouring optimum; `W909` one `instance_id` carrying two class ids; `W910` grids in different timepoints sharing a `frame_uid`; `W911` multi-timepoint sample with no transform relating any two timepoints; `W912` a class used by an annotation carries no ontology binding; `W915` (r2) a dataset inside an object `content_id` covers carries no `digest` (§13.1) |
 
 ---
 
@@ -1793,10 +1796,10 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 2.3 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.04 ms at 63
 classes), a metadata-only read 0.13 ms, and `open()` → first patch 1.6 ms.
 
-Eighty clauses have been corrected — ten during implementation, eleven in the 1.x package
+Eighty-one clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
 package, one when it implemented 1.1, twenty-eight in the audits of 2.0 before its release,
-twenty-three in the audit of 2.0.1, and three in the development of 2.1 — each because
+twenty-three in the audit of 2.0.1, and four in the development of 2.1 — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1882,6 +1885,7 @@ implementation could honestly promise, as written:
 | §15.1, §15.2, §16 | Codes are allocated in numbered *revisions* of the table, by a minor version for what it adds or by an erratum for a rule a published version already states, and an allocation changes no file's version; `codes.json` names each code's version (`since`) and revision. §15.2 and §16 said only a minor version adds codes, yet 2.0.0 allocated `E506` and `E704` by erratum, as conditions 1.0 files already have needed: an allocation that holds a code back for the next minor reports it only on files that declare that minor, and one made ad hoc silently moves a third-party validator's conformance score and a `strict` verdict. Numbered revisions let both be pinned. |
 | §14.4 | An amendment refuses a file whose declared `content_id` does not recompute from what it stores (**E702**), or that holds a digest, or declares a `digest_algo`, it cannot read (**E703**), before it writes anything; re-attesting one is a repair, recorded as an activity (§11.1). The clause asked an amend to preserve what it did not interpret, and said nothing of what it could not verify: a commit recomputes `content_id` from whatever is stored, so a no-op amendment (a scrub, a split claim, an added annotation) of a file edited outside the writer made it validate, with no record of the edit. |
 | §2.1 | The `digest_algo` row: an amendment refuses a file declaring an algorithm outside the list (**E703**), and only a recorded re-attestation restamps it, in `sha256`. "An amendment keeps the algorithm the file declares" could not hold for one it cannot compute, and the reference wrote `sha256` in its place: a root declaring `sha256` over digests made with the other, valid, with no record. |
+| §13.1, §15.2 | Revision 2 of the code table allocates **W915**: a dataset without a `digest`, inside an object a declared `content_id` covers. The SHOULD of §13.1 had no code, so `validate --level strict` passed a file that `verify` failed as unattested, and a CI gating on the validator missed an edit to that dataset that nothing could detect. A warning, as for any recommendation (§15.2): content the text allows stays valid. |
 
 ### C.2 Prototype checks
 

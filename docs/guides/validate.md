@@ -8,7 +8,14 @@ the geometry consistent, do the class ids exist, does the coverage make sense.
 **`medh5 verify` asks whether the bytes are the bytes** — does every object still
 match the digest stamped on it.
 
-A file can pass one and fail the other, which is why they are separate.
+A file can pass `validate` at its default level and fail `verify`, which is
+why they are separate. From `--level integrity` up they agree on the bytes:
+`verify` fails a file exactly when that level reports an attestation finding
+— a digest that does not match (E701), a `content_id` that does not (E702), a
+digest that does not parse (E703), a path the root does not bind (E704), an
+undigested clinical dataset (E818), or a dataset under a `content_id` that
+carries no digest at all (W915, a warning since 2.1: §13.1 asks for the digest
+but does not require it, so `strict` fails the file and `integrity` does not).
 
 ```bash
 medh5 validate case.medh5

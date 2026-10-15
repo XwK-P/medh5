@@ -1440,7 +1440,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(163);
+    let mut cases = Vec::with_capacity(164);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -1454,6 +1454,8 @@ pub(super) fn registry() -> Vec<Case> {
     cases.extend(super::clinical::cases());
     sixth_batch(&mut cases);
     seventh_batch(&mut cases);
+    // 2.1: revision 2 of the code table.
+    revision_2_cases(&mut cases);
     cases
 }
 
@@ -2424,6 +2426,24 @@ fn alias_before_images(path: &Path) -> Result<()> {
 }
 
 /// 1.4.0: §7.7's separate-mask form of an ignore region, as the writer emits it.
+/// The codes revision 2 of the table allocates (1.0 §15.2), one case each.
+fn revision_2_cases(cases: &mut Vec<Case>) {
+    cases.extend([invalid_seg(
+        "W915-undigested-attested-dataset",
+        "A dataset added to an annotation with no `digest`, in a file whose `content_id` still matches: the root \
+         does not attest its bytes, so an edit to them would change no line.",
+        "§13.1",
+        &[],
+        |f| {
+            let organs = f.group("annotations/organs")?;
+            organs.new_dataset_builder().with_data(&[7u32]).create("x_note")?;
+            Ok(())
+        },
+    )
+    .level("integrity")
+    .warnings(&["W915", "W912"])]);
+}
+
 fn fifth_batch(cases: &mut Vec<Case>) {
     cases.push(
         case(
@@ -2443,11 +2463,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 163);
+        assert_eq!(cases.len(), 164);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 163);
+        assert_eq!(names.len(), 164);
     }
 
     #[test]
