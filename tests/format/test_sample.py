@@ -9,6 +9,7 @@ import json
 import os
 import pickle
 import stat
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -1403,8 +1404,11 @@ class TestOpen:
         with pytest.raises(FileNotFoundError) as raised:
             conformance.check_checksums(tmp_path / "no-suite")
         assert raised.value.errno == errno.ENOENT
-        assert raised.value.filename == str(tmp_path / "no-suite" / "SHA256SUMS")
-        assert str(raised.value).startswith("[Errno 2] ")
+        assert Path(raised.value.filename) == tmp_path / "no-suite" / "SHA256SUMS"
+        # Python's own words: Windows numbers the error as it does (a missing
+        # directory is its error 3), and Python maps it to ENOENT.
+        expected = "[WinError 3] " if sys.platform == "win32" else "[Errno 2] "
+        assert str(raised.value).startswith(expected)
 
     def test_a_directory_is_an_is_a_directory_error(self, tmp_path):
         with pytest.raises(IsADirectoryError) as raised:

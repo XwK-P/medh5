@@ -124,7 +124,8 @@ pub fn engine_error(err: medh5::Error) -> PyErr {
 }
 
 /// An engine `Io` error as Python would have raised it: an `OSError` with its
-/// `errno` (and `filename`), which Python makes the subclass of that errno,
+/// `errno` (and `filename`; on Windows, its `winerror`), which Python makes
+/// the subclass of that errno,
 /// where the message is the engine's `[Errno N] reason: 'path'` or the
 /// system's `reason (os error N)`; otherwise a failure of HDF5's,
 /// `MEDH5IOError`.
@@ -134,7 +135,12 @@ fn io_error(message: String) -> PyErr {
             let filename = filename.and_then(|literal| {
                 py.import("ast").and_then(|ast| ast.call_method1("literal_eval", (literal,))).ok().map(Bound::unbind)
             });
+            // Windows numbers its errors otherwise: the code is a Win32
+            // error, which Python maps to its errno (and subclass) when it is
+            // given as `winerror`, as Python's own `OSError` there carries it.
             match filename {
+                Some(f) if cfg!(windows) => PyOSError::new_err((errno, reason, f, errno)),
+                None if cfg!(windows) => PyOSError::new_err((errno, reason, py.None(), errno)),
                 Some(f) => PyOSError::new_err((errno, reason, f)),
                 None => PyOSError::new_err((errno, reason)),
             }
