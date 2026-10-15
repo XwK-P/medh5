@@ -236,6 +236,21 @@ pub enum Body {
     Chain(Vec<Transform>),
 }
 
+/// The cubic coefficients of the transforms one sample opened, by transform
+/// id: a composite's component, or an `inverse_id` target, opened again at
+/// each evaluation reuses the coefficients of the transform it names rather
+/// than reading and prefiltering its field again.  Each entry is held within
+/// the process-wide budget as any transform's are.
+#[derive(Debug, Default)]
+pub(crate) struct KeptCaches(std::sync::Mutex<HashMap<String, Arc<CubicCache>>>);
+
+impl KeptCaches {
+    fn cache(&self, transform_id: &str) -> Arc<CubicCache> {
+        let mut kept = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        kept.entry(transform_id.to_string()).or_default().clone()
+    }
+}
+
 /// A mapping between two frames of reference (§10).
 #[derive(Debug, Clone)]
 pub struct Transform {
@@ -250,6 +265,9 @@ pub struct Transform {
     /// handle reads a file that cannot change under it (an amendment
     /// replaces the inode).
     cubic: Arc<CubicCache>,
+    /// The caches of the sample's other transforms, which a component or a
+    /// named inverse opens through ([`Transform::open_kept`]).
+    kept: Arc<KeptCaches>,
 }
 
 fn points_of(points: &ArrayD<f64>, dim: usize) -> Result<Array2<f64>> {
@@ -261,12 +279,25 @@ fn reshape_like(values: Array2<f64>, like: &ArrayD<f64>) -> Result<ArrayD<f64>> 
 }
 
 impl Transform {
-    /// Open a stored transform group.
+    /// Open a stored transform group, with a cache of its own.
     pub fn open(
         transform_id: &str,
         group: hdf5::Group,
         grids: Arc<IndexMap<String, Grid>>,
         siblings: Arc<Siblings>,
+    ) -> Result<Transform> {
+        Transform::open_kept(transform_id, group, grids, siblings, Arc::default())
+    }
+
+    /// Open a stored transform group with the cache `kept` holds for its id,
+    /// so that every opening of one transform of a sample shares one set of
+    /// cubic coefficients.
+    pub(crate) fn open_kept(
+        transform_id: &str,
+        group: hdf5::Group,
+        grids: Arc<IndexMap<String, Grid>>,
+        siblings: Arc<Siblings>,
+        kept: Arc<KeptCaches>,
     ) -> Result<Transform> {
         let header = TransformHeader::read(&group)?;
         Ok(Transform {
@@ -276,8 +307,14 @@ impl Transform {
             grids,
             siblings,
             body: Body::Stored,
-            cubic: Arc::default(),
+            cubic: kept.cache(transform_id),
+            kept,
         })
+    }
+
+    /// Open the sibling `name`, through this transform's kept caches.
+    fn open_sibling(&self, name: &str, group: &hdf5::Group) -> Result<Transform> {
+        Transform::open_kept(name, group.clone(), self.grids.clone(), self.siblings.clone(), self.kept.clone())
     }
 
     /// `T⁻¹` of `inner`, which the caller has checked [`can_invert`].
@@ -301,6 +338,7 @@ impl Transform {
             header,
             grids: inner.grids.clone(),
             siblings: inner.siblings.clone(),
+            kept: inner.kept.clone(),
             body: Body::Inverse(Box::new(inner)),
             cubic: Arc::default(),
         }
@@ -364,6 +402,7 @@ impl Transform {
             header,
             grids: first.grids.clone(),
             siblings: first.siblings.clone(),
+            kept: first.kept.clone(),
             body: Body::Chain(steps),
             cubic: Arc::default(),
         })
@@ -527,7 +566,7 @@ impl Transform {
         }
         match self.siblings.get(target) {
             None => Ok(None),
-            Some(group) => Ok(Some(Transform::open(target, group.clone(), self.grids.clone(), self.siblings.clone())?)),
+            Some(group) => Ok(Some(self.open_sibling(target, group)?)),
         }
     }
 
@@ -1077,7 +1116,7 @@ impl Transform {
                         repr_str(name)
                     ),
                 )),
-                Some(group) => Transform::open(name, group.clone(), self.grids.clone(), self.siblings.clone()),
+                Some(group) => self.open_sibling(name, group),
             })
             .collect()
     }
@@ -1575,12 +1614,17 @@ pub fn transform_groups(root: &hdf5::Group) -> Result<Siblings> {
 }
 
 /// Open each of `groups` as a transform: an `inverse_id` or a composite's
-/// component resolves among them alone.
+/// component resolves among them alone, and shares the cubic coefficients of
+/// the transform of that id.
 pub fn open_transforms(groups: Siblings, grids: Arc<IndexMap<String, Grid>>) -> Result<IndexMap<String, Transform>> {
     let siblings = Arc::new(groups);
+    let kept = Arc::new(KeptCaches::default());
     siblings
         .iter()
-        .map(|(name, group)| Ok((name.clone(), Transform::open(name, group.clone(), grids.clone(), siblings.clone())?)))
+        .map(|(name, group)| {
+            let opened = Transform::open_kept(name, group.clone(), grids.clone(), siblings.clone(), kept.clone())?;
+            Ok((name.clone(), opened))
+        })
         .collect()
 }
 
@@ -1624,6 +1668,52 @@ mod tests {
         for shape in [&[5, 2][..], &[4, 3], &[0, 0], &[1, 1], &[2, 2], &[5, 5], &[16], &[]] {
             assert_eq!(affine_dimension(shape).unwrap_err().code(), Some("E504"), "{shape:?}");
         }
+    }
+
+    /// A composite opened its components with `Transform::open` at every
+    /// evaluation, each with a cache of its own, so a cubic field inside one
+    /// was read and prefiltered per call.  Opened through the sample, every
+    /// opening of one transform shares one cache: the transform of that id,
+    /// the composite's component, and that component opened again.
+    #[test]
+    fn s10_5_a_composite_shares_its_components_coefficients() {
+        use crate::sample::writer_annotations::TransformSpec;
+
+        let dir = tempfile::tempdir().unwrap();
+        let shape = [8usize, 12, 10];
+        let pair = crate::bench::synthetic_pair(dir.path(), &shape, "portable", 7).unwrap();
+        let mut writer = crate::sample::amend(&pair, None).unwrap();
+        let n: usize = 3 * shape.iter().product::<usize>();
+        let values: Vec<f32> = (0..n).map(|i| ((i % 17) as f32 - 8.0) / 16.0).collect();
+        let cubic = TransformSpec {
+            field: Some(NdArray::from_vec(&[3, 8, 12, 10], values).unwrap()),
+            field_grid: Some("g_tp0".into()),
+            interpolation: Some("cubic".into()),
+            ..Default::default()
+        };
+        writer.add_transform("cwarp", "displacement", "bench:frame-0", "bench:mid", cubic).unwrap();
+        let lift = TransformSpec { matrix: Some(Array2::<f64>::eye(4).into_dyn()), ..Default::default() };
+        writer.add_transform("lift", "affine", "bench:mid", "bench:frame-2", lift).unwrap();
+        let both = TransformSpec { components: Some(vec!["cwarp".into(), "lift".into()]), ..Default::default() };
+        writer.add_transform("both", "composite", "bench:frame-0", "bench:frame-2", both).unwrap();
+        writer.commit(true).unwrap();
+
+        let sample = crate::sample::open_sample(&pair).unwrap();
+        let (both, cwarp) = (sample.transform("both").unwrap(), sample.transform("cwarp").unwrap());
+        let (once, again) = (both.components().unwrap(), both.components().unwrap());
+        assert_eq!(once[0].transform_id, "cwarp");
+        assert!(Arc::ptr_eq(&once[0].cubic, &cwarp.cubic), "the component is the sample's cwarp");
+        assert!(Arc::ptr_eq(&once[0].cubic, &again[0].cubic), "and stays it");
+        assert!(!Arc::ptr_eq(&once[0].cubic, &once[1].cubic), "each id has its own");
+        let points = ndarray::arr2(&[[2.0, 3.0, 4.0], [5.5, 6.0, 1.5]]).into_dyn();
+        let first = both.transform_points(&points).unwrap();
+        assert_eq!(both.transform_points(&points).unwrap(), first);
+        assert_eq!(cwarp.transform_points(&points).unwrap(), first);
+        // A transform opened alone, outside a sample, keeps a cache of its own.
+        let alone = Transform::open("cwarp", cwarp.group.clone(), cwarp.grids.clone(), cwarp.siblings.clone()).unwrap();
+        assert!(!Arc::ptr_eq(&alone.cubic, &cwarp.cubic));
+        let inverse = Transform::inverse_of(both.clone());
+        assert!(Arc::ptr_eq(&inverse.kept, &both.kept), "an inverse opens through the sample's caches");
     }
 
     fn graph(edges: &[(&str, &[&str])]) -> IndexMap<String, Vec<String>> {

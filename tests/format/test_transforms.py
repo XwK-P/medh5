@@ -1010,6 +1010,51 @@ class TestComposite:
             assert gap in sample.transforms["chain"].check_chain()
             assert gap in str(exc.value)
 
+    def test_S10_5_a_composite_prefilters_a_cubic_component_once(self, tmp_path):
+        """A composite opened its components afresh at every evaluation, so a
+        cubic field inside one was read whole and prefiltered per call --- per
+        training item.  Its components keep their coefficients, shared with
+        the component opened by its own id."""
+        from medh5 import _core
+
+        rng = np.random.default_rng(5)
+        shape = (10, 12, 14)
+        field = rng.normal(0.0, 1.0, (3, *shape)).astype(np.float32)
+        path = tmp_path / "cubic-composite.medh5"
+        with medh5.create(path, sample_id="c") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0), frame_uid="F0")
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="F0",
+                to_frame="F1",
+                field=field,
+                field_grid="g",
+                interpolation="cubic",
+            )
+            w.add_transform("lift", kind="identity", from_frame="F1", to_frame="F2")
+            w.add_transform(
+                "both",
+                kind="composite",
+                from_frame="F0",
+                to_frame="F2",
+                components=["warp", "lift"],
+            )
+        points = rng.uniform(1.0, 8.0, size=(20, 3))
+        with medh5.open(path) as sample:
+            both = sample.transforms["both"]
+            _core._read_stats()
+            first = both.transform_points(points)
+            assert _core._read_stats()["whole"] >= 1, "the field is read once"
+            for _ in range(3):
+                assert np.array_equal(both.transform_points(points), first)
+            assert _core._read_stats()["whole"] == 0
+            assert np.array_equal(
+                sample.transforms["warp"].transform_points(points), first
+            )
+            assert _core._read_stats()["whole"] == 0, "the component is warp"
+
     def test_composite_needs_at_least_two_declared_components(self, tmp_path):
         with pytest.raises(MEDH5ValidationError) as exc:
             encode_composite(["only-one"])
