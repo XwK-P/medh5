@@ -1002,7 +1002,13 @@ def create(
     codec: str = "balanced",
     profiles: Sequence[str] | None = None,
 ) -> SampleWriter:
-    """Create a new sample; use as a context manager, or call `commit()`."""
+    """Create a new sample; use as a context manager, or call `commit()`.
+
+    Without `sample_id`, the sample id is the file name up to its first dot,
+    and `subject_id` defaults to the sample id.  Where that is not the file's
+    stem (`case.v2.medh5`) it warns (`FutureWarning`): medh5 3.0 takes the
+    stem.  A name with nothing before its first dot is refused.
+    """
     ...
 
 def cubic_sample(

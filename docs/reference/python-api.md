@@ -279,6 +279,13 @@ with medh5.create("out.medh5", sample_id="c1", subject_id="s1",
     ...
 ```
 
+Without `sample_id`, the sample id is the file name up to its first dot, and
+`subject_id` defaults to it. Where that is not the file's stem, as for
+`case.v2.medh5`, `create` warns (`FutureWarning`): medh5 3.0 names that sample
+`case.v2`. Pass `sample_id` (and `subject_id`) to keep the name you want, and
+to keep `P001.ct.medh5` and `P001.mr.medh5` one subject. A name with nothing
+before its first dot, such as `.hidden.medh5`, gives no id and is refused.
+
 `create` and `amend` both return a `SampleWriter`. It builds a temporary file
 beside the target and, on a clean exit, fsyncs it, renames it over the target
 and fsyncs the directory, so the file appears complete or not at all; an
@@ -556,7 +563,7 @@ walk-through is [Train on clinical tasks](../guides/clinical-training.md).
 ## Collections
 
 ```python
-medh5.pack(["case.medh5", "case2.medh5"], "pair.medh5c")    # keys default to file stems
+medh5.pack(["case.medh5", "case2.medh5"], "pair.medh5c")    # keys: names up to the first dot
 medh5.unpack("pair.medh5c", "restored/", keys=["case"])       # -> restored/case.medh5
 ```
 

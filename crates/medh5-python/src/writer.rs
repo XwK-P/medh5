@@ -411,6 +411,20 @@ impl SampleWriter {
         profiles: Option<&Bound<'_, PyAny>>,
     ) -> R<Self> {
         let profiles = opt_strings(profiles)?.unwrap_or_default();
+        if sample_id.is_none() {
+            let ids = medh5::sample::writer::default_ids(&path)?;
+            if ids.current != ids.stem {
+                let (stem, current) = (medh5::json::repr_str(&ids.stem), medh5::json::repr_str(&ids.current));
+                crate::deprecation::warn(
+                    py,
+                    &format!(
+                        "medh5 3.0 names this sample {stem} (the file stem), not {current}: pass sample_id= (and \
+                         subject_id=) to keep {current}"
+                    ),
+                    true,
+                )?;
+            }
+        }
         let codec = codec.to_string();
         let inner = py.detach(move || {
             medh5::sample::writer::create(&path, sample_id.as_deref(), subject_id.as_deref(), &codec, &profiles)

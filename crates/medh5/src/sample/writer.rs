@@ -503,6 +503,33 @@ fn meta_aliases(root: &hdf5::Group, without: &[&str]) -> Result<Vec<String>> {
     Ok(found)
 }
 
+/// The id a file gets when none is given: what 2.x takes, and what 3.0 will.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultIds {
+    /// The file name up to its first dot: the 2.x `sample_id` and pack key.
+    pub current: String,
+    /// The file stem, the name less its last suffix: 3.0's.
+    pub stem: String,
+}
+
+/// The default `sample_id` and pack key of `path` (the file name up to its
+/// first dot), and the stem 3.0 takes instead.  A name with nothing before
+/// its first dot gives no id, and is refused naming the file.
+#[doc(hidden)]
+pub fn default_ids(path: &Path) -> Result<DefaultIds> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let current = name.split('.').next().unwrap_or("").to_string();
+    if current.is_empty() {
+        return Err(Error::invalid(format!(
+            "{} gives no sample id: its name has nothing before its first dot; pass sample_id (and subject_id)",
+            repr_str(&path.to_string_lossy())
+        )));
+    }
+    let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok(DefaultIds { current, stem })
+}
+
 impl SampleWriter {
     /// A writer for `path`; `source` copies an existing sample in (amend),
     /// but for the top-level members it names.
@@ -516,9 +543,13 @@ impl SampleWriter {
     ) -> Result<SampleWriter> {
         let codec = resolve_profile(Some(codec))?.name.to_string();
         let file = AtomicFile::create(path)?;
-        let stem = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let default_id =
-            sample_id.map(str::to_string).unwrap_or_else(|| stem.split('.').next().unwrap_or("").to_string());
+        // An amendment takes its identity from the source; a placeholder
+        // stands until it does.
+        let default_id = match (sample_id, &source) {
+            (Some(id), _) => id.to_string(),
+            (None, Some(_)) => "amended".to_string(),
+            (None, None) => default_ids(path)?.current,
+        };
         let identity =
             Identity::new(default_id.clone(), subject_id.map(str::to_string).unwrap_or_else(|| default_id.clone()));
         let mut writer = SampleWriter {

@@ -326,7 +326,9 @@ medh5 pack PATH... -o SHARD.medh5c [--key K ...] [--json]
 
 Bundle samples into one `.medh5c`. Chunks move as raw bytes, so packing is
 byte-identical and `content_id` is preserved. Each member's key is its file
-stem unless `--key` is repeated once per source, in order. An output that is
+name up to its first dot unless `--key` is repeated once per source, in order.
+Where that differs from the file stem (`case.v2.medh5` is keyed `case`), a note
+says so: medh5 3.0 keys it by the stem, `case.v2`. An output that is
 one of the samples being packed is refused, as is a directory.
 
 ### `medh5 unpack`
