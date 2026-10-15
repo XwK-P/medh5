@@ -23,16 +23,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
-
-try:
-    import resource
-except ImportError:  # Windows, which bounds no child's memory here
-    resource = None  # type: ignore[assignment]
 
 # What a structural file may take: well past what reporting it needs, and far
 # short of what each bug took (a 64 KiB frame decoded to 2 GiB).
@@ -69,35 +66,70 @@ def outcome(medh5: str, path: Path) -> str | None:
     return None
 
 
-def peak_rss() -> int | None:
-    """The most memory any child waited for reached, in bytes: kibibytes on
-    Linux, bytes on macOS; None where nothing measures it."""
-    if resource is None:
-        return None
-    peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-    return peak if sys.platform == "darwin" else peak * 1024
+def measured(
+    command: list[str], timeout: float
+) -> tuple[int | None, str, str, int | None]:
+    """Run `command`: its exit code (None when it timed out), its output and
+    its error output, and the most memory it reached, in bytes (None where
+    nothing measures it, as on Windows).
+
+    The peak is the child's own, from `wait4`.  `RUSAGE_CHILDREN` is the peak
+    of every child the process ever waited for, so run inside a test suite it
+    reported whatever an earlier test's child had reached.
+    """
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        child = subprocess.Popen(command, stdout=out, stderr=err)
+        peak: int | None = None
+        code: int | None
+        if hasattr(os, "wait4"):
+            deadline = time.monotonic() + timeout
+            timed_out = False
+            while True:
+                pid, status, usage = os.wait4(child.pid, os.WNOHANG)
+                if pid:
+                    break
+                if time.monotonic() > deadline:
+                    child.kill()
+                    _, status, usage = os.wait4(child.pid, 0)
+                    timed_out = True
+                    break
+                time.sleep(0.05)
+            # Reaped here, so Popen must not wait for it again.
+            child.returncode = os.waitstatus_to_exitcode(status)
+            code = None if timed_out else child.returncode
+            # Kibibytes on Linux, bytes on macOS.
+            peak = usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024)
+        else:
+            try:
+                code = child.wait(timeout)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+                code = None
+        out.seek(0)
+        err.seek(0)
+        return (
+            code,
+            out.read().decode("utf-8", "replace"),
+            err.read().decode("utf-8", "replace"),
+            peak,
+        )
 
 
 def structural(medh5: str, path: Path) -> str | None:
     """None when the binary reported `path` as an error within the bounds,
     else what went wrong."""
-    try:
-        run = subprocess.run(
-            [medh5, "validate", str(path), "--level", "strict", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=STRUCTURAL_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
+    command = [medh5, "validate", str(path), "--level", "strict", "--json"]
+    code, stdout, stderr, peak = measured(command, STRUCTURAL_SECONDS)
+    if code is None:
         return f"did not finish in {STRUCTURAL_SECONDS} s"
-    peak = peak_rss()
     if peak is not None and peak > STRUCTURAL_RSS_BYTES:
         return f"reached {peak >> 20} MiB, more than {STRUCTURAL_RSS_BYTES >> 20} MiB"
-    if run.returncode != 1:
-        tail = run.stderr.strip().splitlines()[-3:]
-        return f"exit {run.returncode}, not 1: {' | '.join(tail)}"
+    if code != 1:
+        tail = stderr.strip().splitlines()[-3:]
+        return f"exit {code}, not 1: {' | '.join(tail)}"
     try:
-        reports = json.loads(run.stdout)
+        reports = json.loads(stdout)
     except json.JSONDecodeError:
         return "no JSON report"
     if not any(report.get("errors") for report in reports):
@@ -130,7 +162,6 @@ def main(argv: list[str] | None = None) -> int:
     if not sources:
         parser.error(f"no .medh5 files under {args.corpus}")
     failures = []
-    # First, while the children's peak is theirs alone.
     if args.structural is not None:
         hostile = sorted(args.structural.glob("*.medh5"))
         if not hostile:
