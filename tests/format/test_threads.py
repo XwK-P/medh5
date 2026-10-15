@@ -151,6 +151,24 @@ class TestMasks:
             assert np.array_equal(s.annotations["seg"].dense(), mask[np.newaxis])
 
 
+class TestHandles:
+    def test_closing_a_written_dataset_releases_the_gil(self, tmp_path: Path):
+        """The last handle to a dataset just written flushes its chunk cache
+        when it goes: compression and writes, with the GIL released."""
+        shape = (192, 256, 256)
+        ct = np.random.default_rng(4).integers(-1000, 1000, shape, dtype=np.int16)
+        runs = []
+        for k in range(3):
+            with medh5.create(tmp_path / f"c{k}.medh5", sample_id="c") as w:
+                w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+                held = [w.add_image("CT", ct, grid="g", modality="CT")]
+                runs.append(watched(held.clear))
+        took, longest, idle = min(runs, key=lambda r: (r[1] - r[2]) / r[0])
+        assert longest < 0.25 * took + idle, (
+            f"no tick for {longest:.3f} of {took:.3f} s"
+        )
+
+
 class TestGeometric:
     def test_encode_contours_releases_while_packing(self):
         rng = np.random.default_rng(1)

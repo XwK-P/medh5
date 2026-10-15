@@ -73,7 +73,7 @@ impl ImageHandle {
     }
     #[getter]
     fn dataset(&self) -> R<Dataset> {
-        Ok(Dataset { ds: self.inner.dataset()? })
+        Ok(Dataset::wrap(self.inner.dataset()?))
     }
     #[getter]
     fn attrs<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
@@ -410,7 +410,7 @@ impl AnnotationHandle {
     /// A stored dataset of the annotation group.
     fn dataset(&self, name: &str) -> R<Dataset> {
         self.live()?;
-        Ok(Dataset { ds: self.inner.dataset(name)? })
+        Ok(Dataset::wrap(self.inner.dataset(name)?))
     }
     fn has_dataset(&self, name: &str) -> R<bool> {
         self.live()?;
@@ -1070,7 +1070,7 @@ impl TransformHandle {
     #[getter]
     fn field(&self) -> R<Dataset> {
         self.live()?;
-        Ok(Dataset { ds: self.inner.field()? })
+        Ok(Dataset::wrap(self.inner.field()?))
     }
     #[getter]
     fn field_grid_id(&self) -> R<String> {
