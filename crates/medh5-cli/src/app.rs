@@ -703,7 +703,14 @@ fn conformance() -> Command {
             Command::new("build")
                 .about("write the corpus and its manifest")
                 .arg(positional("outdir", "directory to write the corpus into"))
-                .arg(append("names", "case", "only build these cases; repeatable").value_name("CASE")),
+                .arg(append("names", "case", "only build these cases; repeatable").value_name("CASE"))
+                // The hostile files `damaged.py --structural` reports on:
+                // regression fixtures, not cases, so not documented.
+                .arg(
+                    flag("robustness", "robustness", "write the robustness fixtures instead of the corpus")
+                        .hide(true)
+                        .conflicts_with("names"),
+                ),
         )
         .subcommand(
             Command::new("run")

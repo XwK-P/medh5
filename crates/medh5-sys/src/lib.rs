@@ -140,6 +140,73 @@ pub unsafe fn register_zstd_filter() -> bool {
 #[cfg(test)]
 static HDF5_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// The Blosc2 filter run as HDF5 runs it --- `data` in a buffer of `buf_size`
+/// bytes, or of `data`'s own size if larger --- forward or `reverse`, with the
+/// filter values `values`: what it hands back, if anything.  What the tests
+/// and the fuzz target (`fuzz/`) filter through; the caller holds HDF5's lock
+/// where other threads may call into HDF5.
+#[cfg(any(test, fuzzing))]
+fn run_blosc2_filter(reverse: bool, values: &[std::os::raw::c_uint], data: &[u8], buf_size: usize) -> Option<Vec<u8>> {
+    use std::os::raw::c_uint;
+    unsafe extern "C" {
+        fn blosc2_filter_function(
+            flags: c_uint,
+            cd_nelmts: usize,
+            cd_values: *const c_uint,
+            nbytes: usize,
+            buf_size: *mut usize,
+            buf: *mut *mut c_void,
+        ) -> usize;
+        fn malloc(size: usize) -> *mut c_void;
+        fn free(ptr: *mut c_void);
+    }
+    let flags = if reverse { hdf5_sys::h5z::H5Z_FLAG_REVERSE } else { 0 };
+    let mut size = buf_size.max(data.len()).max(1);
+    // SAFETY: the buffer is allocated as the filter frees it, and holds
+    // `data`; the filter frees or keeps it, and what it holds after is freed
+    // here.
+    unsafe {
+        let mut buf = malloc(size);
+        assert!(!buf.is_null());
+        std::ptr::copy_nonoverlapping(data.as_ptr(), buf.cast::<u8>(), data.len());
+        let n = blosc2_filter_function(flags, values.len(), values.as_ptr(), data.len(), &mut size, &mut buf);
+        let out = (n > 0).then(|| std::slice::from_raw_parts(buf.cast::<u8>(), n).to_vec());
+        free(buf);
+        out
+    }
+}
+
+/// The filters run backwards on bytes a fuzzer chose, as HDF5 runs them
+/// (`fuzz/`, through `cargo fuzz`, which sets `cfg(fuzzing)`).  Not part of
+/// the crate's API: nothing else compiles it.
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzzing {
+    /// The Zstandard filter (32015) decoding `frame` for a chunk buffer of
+    /// `buf_size` bytes.
+    pub fn zstd_decode(frame: &[u8], buf_size: usize) -> Option<Vec<u8>> {
+        cleared(|| crate::zstd_filter::run_backwards(frame, buf_size))
+    }
+
+    /// The Blosc2 filter (32026) decoding `chunk` with the filter values
+    /// `values`, for a chunk buffer of `buf_size` bytes.
+    pub fn blosc2_decode(values: &[u32], chunk: &[u8], buf_size: usize) -> Option<Vec<u8>> {
+        // SAFETY: C-Blosc2's own initialisation, which a second call skips.
+        unsafe { super::blosc2_init() };
+        cleared(|| super::run_blosc2_filter(true, values, chunk, buf_size))
+    }
+
+    /// A filter that fails pushes its error onto HDF5's error stack, which
+    /// HDF5 clears as the next API call enters.  Called directly, nothing
+    /// would: once the stack is full, each push's copies of its names leak.
+    fn cleared<T>(decode: impl FnOnce() -> T) -> T {
+        let out = decode();
+        // SAFETY: clears the calling thread's default error stack.
+        unsafe { crate::hdf5_sys::h5e::H5Eclear2(crate::hdf5_sys::h5e::H5E_DEFAULT) };
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,19 +250,9 @@ mod tests {
         ) -> c_int;
         fn blosc2_decompress(src: *const c_void, srcsize: i32, dest: *mut c_void, destsize: i32) -> c_int;
         fn blosclz_decompress(input: *const c_void, length: c_int, output: *mut c_void, maxout: c_int) -> c_int;
-        fn blosc2_filter_function(
-            flags: c_uint,
-            cd_nelmts: usize,
-            cd_values: *const c_uint,
-            nbytes: usize,
-            buf_size: *mut usize,
-            buf: *mut *mut c_void,
-        ) -> usize;
         fn blosc2_schunk_new(storage: *mut Blosc2Storage) -> *mut c_void;
         fn blosc2_schunk_to_buffer(schunk: *mut c_void, cframe: *mut *mut u8, needs_free: *mut bool) -> i64;
         fn blosc2_schunk_free(schunk: *mut c_void) -> c_int;
-        fn malloc(size: usize) -> *mut c_void;
-        fn free(ptr: *mut c_void);
     }
 
     #[test]
@@ -291,26 +348,11 @@ mod tests {
         std::hint::black_box(&mut junk);
     }
 
-    /// The Blosc2 filter run as HDF5 runs it --- `data` in a buffer of
-    /// `buf_size` bytes, or of `data`'s own size if larger --- forward or
-    /// `reverse`: what it hands back, if anything.
+    /// [`run_blosc2_filter`] on a stack left dirty.
     fn blosc2_filter(reverse: bool, values: &[c_uint], data: &[u8], buf_size: usize) -> Option<Vec<u8>> {
         let _held = HDF5_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let flags = if reverse { hdf5_sys::h5z::H5Z_FLAG_REVERSE } else { 0 };
-        let mut size = buf_size.max(data.len()).max(1);
-        // SAFETY: the buffer is allocated as the filter frees it, and holds
-        // `data`; the filter frees or keeps it, and what it holds after is
-        // freed here.
-        unsafe {
-            let mut buf = malloc(size);
-            assert!(!buf.is_null());
-            std::ptr::copy_nonoverlapping(data.as_ptr(), buf.cast::<u8>(), data.len());
-            dirty_stack();
-            let n = blosc2_filter_function(flags, values.len(), values.as_ptr(), data.len(), &mut size, &mut buf);
-            let out = (n > 0).then(|| std::slice::from_raw_parts(buf.cast::<u8>(), n).to_vec());
-            free(buf);
-            out
-        }
+        dirty_stack();
+        run_blosc2_filter(reverse, values, data, buf_size)
     }
 
     /// Filter values: revision, block size, type size, chunk bytes, level,

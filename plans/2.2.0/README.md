@@ -46,7 +46,7 @@ workstream.
 | [W22-02](w22-02-native-nifti.md) | A native NIfTI converter | L | 6 | W21-13 PRs 1, 5, 6 (helpers, float64 qform, `--plane-as-volume`, `import-seg-nifti`) |
 | [W22-03](w22-03-enhanced-dicom.md) | Enhanced multi-frame DICOM import | L | 3 | W21-13 PRs 1, 5 (`_frames.py`, per-slice rescale) |
 | [W22-04](w22-04-free-threading.md) | Free-threading | L | 4 | W21-01 PR 3 (cp314t wheels), W21-15 PR 1 (GIL) |
-| [W22-05](w22-05-platforms.md) | Platforms: Python 3.11, musllinux, macOS x86_64, `abi3t` | L | 6 | W21-00 PR 7 (`build.yml`) |
+| [W22-05](w22-05-platforms.md) | Platforms: Python 3.11, musllinux, macOS x86_64, `abi3t` | L | 5 | W21-00 PR 7 (`build.yml`) |
 | [W22-06](w22-06-fuzzing.md) | Fuzzing the C libraries | M | 1 | W21-01 PR 1 |
 | [W22-07](w22-07-deidentification.md) | De-identification: collections, clinical text | L | 2 | W21-10 |
 | [W22-08](w22-08-registration.md) | Registration I/O: ITK HDF5 files, B-splines | M | 2 | W21-07 PR 4 |

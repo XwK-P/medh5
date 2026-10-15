@@ -38,3 +38,10 @@ target/
 # The compiled engine, as `maturin develop` leaves it next to the sources.
 medh5/_core*.so
 medh5/_core*.pyd
+
+# What `cargo fuzz` writes in `fuzz/` (its own workspace, so its own lock).
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
+fuzz/Cargo.lock
