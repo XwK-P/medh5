@@ -674,6 +674,35 @@ def test_the_rust_example_on_the_docs_page_is_the_tested_one() -> None:
     ).read_text(encoding="utf-8")
 
 
+def _module_column(text: str) -> list[list[str]]:
+    """The first column of the "Where things are" table, one list per row."""
+    import re
+
+    section = text.split("## Where things are", 1)[1]
+    rows = re.findall(r"^\| (.+?) \|", section, re.M)
+    return [re.findall(r"`([a-z0-9_]+)`", row) for row in rows if "`" in row]
+
+
+def test_the_module_tables_name_the_same_modules() -> None:
+    """The crate's README and the docs page each carry the module table."""
+    readme = (ROOT / "crates/medh5/README.md").read_text(encoding="utf-8")
+    page = (ROOT / "docs/reference/rust.md").read_text(encoding="utf-8")
+    assert _module_column(readme) == _module_column(page)
+
+
+def test_every_public_module_is_documented_or_hidden() -> None:
+    """A `pub mod` of the engine is in rust.md's table or `#[doc(hidden)]`."""
+    import re
+
+    lib = (ROOT / "crates/medh5/src/lib.rs").read_text(encoding="utf-8")
+    page = (ROOT / "docs/reference/rust.md").read_text(encoding="utf-8")
+    tabled = {name for row in _module_column(page) for name in row}
+    public = re.findall(r"^(#\[doc\(hidden\)\]\n)?pub mod (\w+);", lib, re.M)
+    assert len(public) > 20
+    missing = [name for hidden, name in public if not hidden and name not in tabled]
+    assert not missing, f"public modules missing from rust.md's table: {missing}"
+
+
 def test_the_torch_docstring_agrees_with_the_docs() -> None:
     import medh5.torch as torch_pkg
 
