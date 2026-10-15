@@ -23,6 +23,9 @@ use crate::Result;
 /// Extra layers beyond the greedy optimum before W908 fires.
 pub const W908_TOLERANCE: usize = 2;
 
+/// The voxel kinds whose reads `closure = "implicit"` widens (§5.4, W918).
+const IMPLICIT_VOXEL_KINDS: [&str; 5] = ["labelmap", "layers", "bitmask", "instances", "probmap"];
+
 /// Datasets each kind requires.
 pub fn required_datasets(kind: &str) -> &'static [&'static str] {
     match kind {
@@ -149,6 +152,20 @@ fn check_annotation(ctx: &Context, name: &str, group: &Node, sample: &Sample<'_>
     if let Some(closure) = str_attr(a, "closure")? {
         if !CLOSURES.contains(&closure.as_str()) {
             out.push(ctx.unknown("E412", location.clone(), format!("unknown closure {}", repr_str(&closure))));
+        }
+        // §5.4: writers SHOULD use `explicit` for voxel annotations, and under
+        // `implicit` every read of an ancestor includes its descendants' voxels.
+        if closure == "implicit"
+            && IMPLICIT_VOXEL_KINDS.contains(&kind.as_str())
+            && !ctx.errors_only
+            && ctx.level != "structural"
+        {
+            out.push(ctx.err(
+                "W918",
+                location.clone(),
+                "a voxel annotation declares closure='implicit': readers include every `is_a` descendant's voxels \
+                 in each ancestor's reads (§5.4); writers SHOULD use 'explicit' for voxel annotations",
+            ));
         }
     }
     if !attrs::has(a, "annotated_class_ids") && kind != "mask" {

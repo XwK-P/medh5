@@ -450,11 +450,19 @@ fn base(path: &Path, shape: &[usize]) -> Result<()> {
 
 /// A valid sample carrying one voxel annotation, `organs`.
 fn seg_base(path: &Path, encoding: &str, classes: &[(i64, [usize; 3])], index: bool) -> Result<()> {
-    seg_base_in(path, crate::digest::DEFAULT_ALGO, encoding, classes, index)
+    seg_base_in(path, crate::digest::DEFAULT_ALGO, None, encoding, classes, index)
 }
 
-/// [`seg_base`], every digest and the root in `algo`.
-fn seg_base_in(path: &Path, algo: &str, encoding: &str, classes: &[(i64, [usize; 3])], index: bool) -> Result<()> {
+/// [`seg_base`], every digest and the root in `algo`, the annotation
+/// declaring `closure` (the writer's default when `None`).
+fn seg_base_in(
+    path: &Path,
+    algo: &str,
+    closure: Option<&str>,
+    encoding: &str,
+    classes: &[(i64, [usize; 3])],
+    index: bool,
+) -> Result<()> {
     let mut rng = Rng::new(SEED);
     write(path, Some("subj-A"), |w| {
         w.set_digest_algo(algo);
@@ -486,6 +494,7 @@ fn seg_base_in(path: &Path, algo: &str, encoding: &str, classes: &[(i64, [usize;
                 encoding: Some(encoding.into()),
                 common: AnnotationOptions {
                     annotated_classes: Annotated::AllGiven,
+                    closure: closure.map(str::to_string),
                     prov: Some(ann.id),
                     quality: Some(QualityArg::Record(fields(json!({"status": "approved", "confidence": 0.9})))),
                     ..Default::default()
@@ -1446,7 +1455,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(166);
+    let mut cases = Vec::with_capacity(169);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -2472,7 +2481,7 @@ fn cases_2_1(cases: &mut Vec<Case>) {
              current.",
             "§13.3",
             |p| {
-                seg_base_in(p, "sha512", "auto", &ORGANS, true)?;
+                seg_base_in(p, "sha512", None, "auto", &ORGANS, true)?;
                 mutate(p, |f| {
                     let pin = group_digest(&f.group("annotations/organs")?, f, "sha512")?;
                     set_str(f, "index/organs", "source_digest", &pin)
@@ -2482,6 +2491,82 @@ fn cases_2_1(cases: &mut Vec<Case>) {
         .level("integrity")
         .warnings(&["W912"]),
     );
+    cases.extend([
+        case(
+            "W916-implicit-negative-ancestor",
+            "Under `closure = \"implicit\"`, `liver` asserted absent (0.0) beside its `is_a` descendant `lesion` \
+             asserted present: readers answer `liver` positive, and the stored value says otherwise.",
+            "§5.4, §9",
+            implicit_negative_ancestor,
+        )
+        .warnings(&["W916", "W912"]),
+        case(
+            "W917-plane-and-volume-share-a-frame",
+            "A 2-D key image tagged with the CT's frame of reference: §3.3 compares neither grid with the other, \
+             so the shared identifier places the plane nowhere.",
+            "§3.3",
+            plane_in_a_volumes_frame,
+        )
+        .warnings(&["W917"]),
+        case(
+            "W918-implicit-voxel-annotation",
+            "A labelmap declaring `closure = \"implicit\"`: every read of `liver` includes the voxels of `lesion`, \
+             its `is_a` descendant.",
+            "§5.4",
+            |p| seg_base_in(p, crate::digest::DEFAULT_ALGO, Some("implicit"), "auto", &ORGANS, false),
+        )
+        .warnings(&["W918", "W912"]),
+    ]);
+}
+
+/// One CT and a classification under implicit closure asserting `liver` 0.0
+/// and its descendant `lesion` 1.0 in one scope unit.
+fn implicit_negative_ancestor(path: &Path) -> Result<()> {
+    let mut rng = Rng::new(SEED);
+    write(path, None, |w| {
+        w.add_timepoint("tp0", Map::new())?;
+        w.label_set(label_set()?);
+        w.add_grid("ct", &dims(&SHAPE), &SPACING, on_timepoint("tp0"))?;
+        w.add_image("CT", &ct_volume(&mut rng, &SHAPE)?, "ct", "CT", quantitative(None))?;
+        w.add_classification(
+            "findings",
+            Assertions {
+                class_ids: vec![1, 3],
+                values: vec![0.0, 1.0],
+                scope_ids: None,
+                schemes: None,
+                scheme_values: None,
+            },
+            "sample",
+            true,
+            None,
+            AnnotationOptions { closure: Some("implicit".into()), ..Default::default() },
+        )?;
+        w.deidentification(psi())?;
+        Ok(())
+    })
+}
+
+/// A CT volume and a 2-D key image naming the CT's frame.
+fn plane_in_a_volumes_frame(path: &Path) -> Result<()> {
+    let mut rng = Rng::new(SEED);
+    write(path, None, |w| {
+        w.add_timepoint("tp0", Map::new())?;
+        let in_frame =
+            || GridOptions { timepoint: Some("tp0".into()), frame_uid: Some(FRAME0.into()), ..Default::default() };
+        w.add_grid("ct", &dims(&SHAPE), &SPACING, in_frame())?;
+        w.add_image("CT", &ct_volume(&mut rng, &SHAPE)?, "ct", "CT", quantitative(None))?;
+        w.add_grid("key", &[16, 16], &[1.0, 1.0], in_frame())?;
+        w.add_image(
+            "KEY",
+            &integers(&mut rng, 0, 255, &[16, 16], DType::U8)?,
+            "key",
+            "OT",
+            ImageOptions { value_type: Some("intensity".into()), ..Default::default() },
+        )?;
+        w.deidentification(psi())?;
+        Ok(())
+    })
 }
 
 fn fifth_batch(cases: &mut Vec<Case>) {
@@ -2503,11 +2588,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 166);
+        assert_eq!(cases.len(), 169);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 166);
+        assert_eq!(names.len(), 169);
     }
 
     #[test]

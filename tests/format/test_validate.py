@@ -273,6 +273,35 @@ class TestRules:
             handle["grids/ct_tp1"].attrs["frame_uid"] = encode_attr("pseudo:frame-tp0")
         assert "W910" in codes(longitudinal_path)
 
+    def test_S3_3_a_plane_and_a_volume_naming_one_frame_are_W917(self, tmp_path):
+        """A converter that tags a 2-D key image with the CT's frame: rule 4
+        compares neither with the other, so the identifier places nothing."""
+        path = one_frame(
+            tmp_path / "f.medh5", ("ct", (4, 6, 6), "LPS"), ("key", (6, 6), "LPS")
+        )
+        found = [d for d in validate_file(path).diagnostics if d.code == "W917"]
+        assert [(d.location, d.severity) for d in found] == [("/grids", "warning")]
+        assert "'ct' (3-D, LPS) and 'key' (2-D, LPS)" in found[0].message
+        assert "one-slice 3-D grid" in found[0].message
+
+    def test_S3_3_two_coord_systems_in_one_frame_are_W917(self, tmp_path):
+        path = one_frame(
+            tmp_path / "f.medh5",
+            ("lps", (4, 6, 6), "LPS"),
+            ("ras", (4, 6, 6), "RAS"),
+            ("ras2", (4, 6, 6), "RAS"),
+        )
+        found = [d for d in validate_file(path).diagnostics if d.code == "W917"]
+        # Once per pair the rule keeps apart: lps with each RAS grid.
+        assert len(found) == 2
+        assert all("'lps' (3-D, LPS)" in d.message for d in found)
+
+    def test_S3_3_comparable_grids_in_one_frame_are_not_W917(self, tmp_path):
+        path = one_frame(
+            tmp_path / "f.medh5", ("ct", (4, 6, 6), "LPS"), ("pet", (2, 3, 3), "LPS")
+        )
+        assert "W917" not in codes(path)
+
     def test_S3_7_a_transform_to_an_atlas_relates_no_two_timepoints(self, tmp_path):
         """One end in a frame no grid is in counted as another timepoint, so a
         lone registration to an atlas silenced W911 for visits nothing
@@ -1180,6 +1209,26 @@ def core_sample(path: Path, **grid: Any) -> Path:
     with medh5.create(path, codec="portable") as w:
         w.add_grid("g", shape=(4, 6, 6), spacing=(1.0, 1.0, 1.0), **grid)
         w.add_image("CT", np.zeros((4, 6, 6), np.int16), grid="g", modality="CT")
+    return path
+
+
+def one_frame(path: Path, *grids: tuple[str, tuple[int, ...], str]) -> Path:
+    """One timepoint whose grids, each `(id, shape, coord_system)` with an
+    image, all name frame F0."""
+    with medh5.create(path, codec="portable") as w:
+        w.add_timepoint("tp0")
+        for name, shape, system in grids:
+            w.add_grid(
+                name,
+                shape=shape,
+                spacing=(1.0,) * len(shape),
+                coord_system=system,
+                timepoint="tp0",
+                frame_uid="F0",
+            )
+            w.add_image(
+                name.upper(), np.zeros(shape, np.int16), grid=name, modality="CT"
+            )
     return path
 
 

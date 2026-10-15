@@ -276,7 +276,9 @@ Consequences that readers and writers **MUST** honour:
    `spacing` or `direction`. A grid without a `frame_uid` shares a frame with nothing — including
    another grid without one: two absent frames are not one frame, and nothing says their world
    coordinates agree. Nor does a 2-D grid share a world with a 3-D one, whatever frame both name: a
-   plane's world coordinates are two numbers (§3.6), a volume's three.
+   plane's world coordinates are two numbers (§3.6), a volume's three. Two grids that name one
+   `frame_uid` but that this rule still keeps apart (a different S or `coord_system`) are reported
+   W917; a converter that was given the identifier keeps it.
 
 ### 3.4 Frames of reference
 
@@ -607,7 +609,9 @@ every state and membership query then answers a class as present wherever a clas
 ancestor of is present — `contains` (§7.6), a dense read, counts and bounds, and a classification's
 state in each scope unit (§9). What is stored stays literal: the closure is applied when an
 annotation is read, never written into it. Writers **SHOULD** use `implicit` for hierarchical
-classification and `explicit` for voxel annotations.
+classification and `explicit` for voxel annotations (a voxel annotation declaring `implicit` is
+reported W918). An assertion that a class is absent (a value of 0 or less) in a scope unit where an
+`is_a` descendant is asserted present contradicts the inference readers make, and is reported W916.
 
 ### 5.5 Skeletons
 
@@ -1027,7 +1031,8 @@ Semantics:
   `class_ids` entry for the corresponding vocabulary class. Numeric comparison of `scheme_values` is a
   reader concern; the file records the assessment verbatim.
 * Hierarchical classification uses `closure = "implicit"` and asserts only the most specific class;
-  ancestors follow from the label-set DAG (§5.4).
+  ancestors follow from the label-set DAG (§5.4): an ancestor examined and left unasserted, not
+  asserted `0.0`, which contradicts the inference (W916).
 
 Longitudinal classification uses two scopes:
 
@@ -1654,7 +1659,7 @@ revision 2, and every other in revision 1.
 | `E5xx` | transforms | `E501` composite frame chain broken; `E502` missing or unknown transform `kind`, or a transform lacking the frames or parameters its kind requires, mapping a frame to itself, or naming an unknown `vector_space`; `E503` a displacement field or B-spline control points not fitting their grid: `field_grid`/`cp_grid` missing or not in `from_frame`, a `field` not `(S, *spatial)` on its grid, or `control_points` not `(S, *cp_shape)` on the grid's spatial axes with at least `order + 1` points on each (§10.4, §10.5); `E504` affine `matrix` not `(S+1, S+1)` for the spatial axes of the grids it relates (§10.3), holding an entry that is not finite, or its last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent; `E506` `units` missing or not the units of the grids in its frames |
 | `E6xx` | curation | `E601` dangling `prov` reference; `E602` unknown `quality` key; `E603` unknown agent or activity type; `E604` non-RFC3339 timestamp; `E605` activity names an undeclared agent |
 | `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch, or a `digest` on a dataset that no line of `content_id` covers (§13.2); `E703` malformed digest string; `E704` an object `content_id` covers reached at a path that is not its own |
-| `W9xx` | warnings | `W901` no digests; `W902` uncompressed or unchunked bulk dataset; `W903` no `deidentification`; `W904` partial coverage without an ignore region; `W905` stale `index/` entry; `W906` conflicting split claims; `W907` `float32` storage where `int16 + rescale` is lossless; `W908` `layers` count far from the greedy-colouring optimum; `W909` one `instance_id` carrying two class ids; `W910` grids in different timepoints sharing a `frame_uid`; `W911` multi-timepoint sample with no transform relating any two timepoints; `W912` a class used by an annotation carries no ontology binding; `W915` (r2) a dataset inside an object `content_id` covers carries no `digest` (§13.1) |
+| `W9xx` | warnings | `W901` no digests; `W902` uncompressed or unchunked bulk dataset; `W903` no `deidentification`; `W904` partial coverage without an ignore region; `W905` stale `index/` entry; `W906` conflicting split claims; `W907` `float32` storage where `int16 + rescale` is lossless; `W908` `layers` count far from the greedy-colouring optimum; `W909` one `instance_id` carrying two class ids; `W910` grids in different timepoints sharing a `frame_uid`; `W911` multi-timepoint sample with no transform relating any two timepoints; `W912` a class used by an annotation carries no ontology binding; `W915` (r2) a dataset inside an object `content_id` covers carries no `digest` (§13.1); `W916` (r2) under `implicit` closure, a class asserted absent where an `is_a` descendant is asserted present (§5.4); `W917` (r2) two grids name one `frame_uid` but differ in S or `coord_system` (§3.3); `W918` (r2) a voxel annotation declares `closure = "implicit"` (§5.4) |
 
 ---
 

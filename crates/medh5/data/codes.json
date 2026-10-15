@@ -769,6 +769,30 @@
       "summary": "a dataset inside an object `content_id` covers carries no `digest`",
       "since": "1.0",
       "revision": 2
+    },
+    {
+      "code": "W916",
+      "severity": "warning",
+      "domain": "annotations",
+      "summary": "under `implicit` closure, a class asserted absent where an `is_a` descendant is asserted present",
+      "since": "1.0",
+      "revision": 2
+    },
+    {
+      "code": "W917",
+      "severity": "warning",
+      "domain": "geometry",
+      "summary": "two grids name one `frame_uid` but differ in dimensionality or `coord_system`",
+      "since": "1.0",
+      "revision": 2
+    },
+    {
+      "code": "W918",
+      "severity": "warning",
+      "domain": "annotations",
+      "summary": "a voxel annotation declares `closure = \"implicit\"`",
+      "since": "1.0",
+      "revision": 2
     }
   ]
 }
