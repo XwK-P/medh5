@@ -7,10 +7,14 @@
 //! seeds ([`rng_arg`]).  The result types (`Patch`, `TimepointPair`) stay the
 //! 1.x dataclasses; this module hands back their fields.
 
+use std::sync::Arc;
+
 use indexmap::IndexMap;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySlice, PyString, PyTuple};
 
+use medh5::rng::Rng;
+use medh5::sample::Sample as EngineSample;
 use medh5::sampling::{self as engine, ClassWeights, PatchSize};
 
 use crate::convert::class_keys;
@@ -119,7 +123,7 @@ impl PatchSamplerHandle {
     }
 
     /// `n` draws from one generator: the fields of each `Patch`.
-    #[pyo3(signature = (sample, annotation=None, n=1, rng=None))]
+    #[pyo3(signature = (sample, annotation=None, n=1, rng=None, *, grid=None))]
     fn draws<'py>(
         &self,
         py: Python<'py>,
@@ -127,11 +131,35 @@ impl PatchSamplerHandle {
         annotation: Option<String>,
         n: usize,
         rng: Option<Bound<'py, PyAny>>,
+        grid: Option<String>,
     ) -> R<Vec<Bound<'py, PyDict>>> {
         let sample = sample_arg(sample)?;
         let mut rng = rng_arg(rng.as_ref())?;
-        let patches = py.detach(|| self.inner.draws(&sample, annotation.as_deref(), n, &mut rng))?;
+        let patches =
+            py.detach(|| self.inner.draws_in(&sample, annotation.as_deref(), n, &mut rng, grid.as_deref()))?;
         Ok(patches.iter().map(|p| patch_fields(py, p)).collect::<PyResult<Vec<_>>>()?)
+    }
+
+    /// The draws of [`draws`](Self::draws), one per `next()`.  The annotation
+    /// and the grid are checked here, before the first patch.
+    #[pyo3(signature = (sample, annotation=None, n=1, rng=None, *, grid=None))]
+    fn iter_draws<'py>(
+        &self,
+        py: Python<'py>,
+        sample: &Bound<'py, PyAny>,
+        annotation: Option<String>,
+        n: usize,
+        rng: Option<Bound<'py, PyAny>>,
+        grid: Option<String>,
+    ) -> R<PatchDraws> {
+        let sample = sample_arg(sample)?;
+        let rng = rng_arg(rng.as_ref())?;
+        py.detach(|| {
+            let found = self.inner.annotation(&sample, annotation.as_deref(), grid.as_deref())?;
+            let grid_id = self.inner.window_grid(&sample, found.as_deref(), grid.as_deref())?;
+            sample.grid(&grid_id).map(|_| ())
+        })?;
+        Ok(PatchDraws { sampler: self.inner.clone(), sample, annotation, grid, rng, remaining: n })
     }
 
     /// The annotation a draw takes foreground from, auto-selected if `None`.
@@ -164,6 +192,44 @@ impl PatchSamplerHandle {
         }
         let mut rng = rng_arg(rng.as_ref())?;
         Ok(self.inner.pick_class(&map, &mut rng)?)
+    }
+}
+
+/// `n` patch draws from one generator, drawn one per `next()`: nothing is
+/// held but the generator and the count, so a long run costs one patch at a
+/// time.
+#[pyclass(module = "medh5._core", name = "PatchDraws")]
+pub struct PatchDraws {
+    sampler: engine::PatchSampler,
+    sample: Arc<EngineSample>,
+    annotation: Option<String>,
+    grid: Option<String>,
+    rng: Rng,
+    remaining: usize,
+}
+
+#[pymethods]
+impl PatchDraws {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// The next draw: the fields of a `Patch`.
+    fn __next__<'py>(mut slf: PyRefMut<'py, Self>, py: Python<'py>) -> R<Option<Bound<'py, PyDict>>> {
+        if slf.remaining == 0 {
+            return Ok(None);
+        }
+        let this = &mut *slf;
+        let patch = py.detach(|| {
+            this.sampler.draw(&this.sample, this.annotation.as_deref(), &mut this.rng, this.grid.as_deref())
+        })?;
+        this.remaining -= 1;
+        Ok(Some(patch_fields(py, &patch)?))
+    }
+
+    /// The draws still to come.
+    fn __length_hint__(&self) -> usize {
+        self.remaining
     }
 }
 
@@ -261,6 +327,7 @@ fn sampling_pairs<'py>(py: Python<'py>, mode: &str, sample: &Bound<'py, PyAny>) 
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PatchSamplerHandle>()?;
+    m.add_class::<PatchDraws>()?;
     for f in [
         wrap_pyfunction!(sampling_coerce_patch_size, m)?,
         wrap_pyfunction!(sampling_window_around, m)?,

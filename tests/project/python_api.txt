@@ -241,8 +241,12 @@ medh5.LabelSet.to_json	method	(*, form=None)
 medh5.LabelSet.uri	property
 medh5.LabelSet.version	property
 medh5.MEDH5Error	class	(?) bases=Exception
-medh5.MEDH5FileError	class	(?) bases=medh5.errors.MEDH5Error,OSError
+medh5.MEDH5FileError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5Error,OSError
+medh5.MEDH5FileNotFoundError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,FileNotFoundError
+medh5.MEDH5IOError	class	(?) bases=OSError
 medh5.MEDH5IntegrityError	class	(?) bases=medh5.errors.MEDH5Error
+medh5.MEDH5IsADirectoryError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,IsADirectoryError
+medh5.MEDH5PermissionError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,PermissionError
 medh5.MEDH5SchemaError	class	(?) bases=medh5.errors.MEDH5Error
 medh5.MEDH5ValidationError	class	(message, code=None) bases=medh5.errors.MEDH5Error,ValueError
 medh5.MEDH5VersionError	class	(?) bases=medh5.errors.MEDH5Error
@@ -280,7 +284,7 @@ medh5.Patch.used_index	field
 medh5.PatchSampler	class	(patch_size, *, strategy='balanced', foreground_prob=0.5, foreground_classes=None, class_weights='uniform') bases=
 medh5.PatchSampler.class_weights	property
 medh5.PatchSampler.draw	method	(sample, annotation=None, rng=None, *, grid=None)
-medh5.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None)
+medh5.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None, *, grid=None)
 medh5.PatchSampler.foreground_classes	property
 medh5.PatchSampler.foreground_prob	property
 medh5.PatchSampler.patch_size	property
@@ -2813,8 +2817,12 @@ medh5.errors.Code.since	field
 medh5.errors.Code.summary	field
 medh5.errors.Domain	alias
 medh5.errors.MEDH5Error	class	(?) bases=Exception
-medh5.errors.MEDH5FileError	class	(?) bases=medh5.errors.MEDH5Error,OSError
+medh5.errors.MEDH5FileError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5Error,OSError
+medh5.errors.MEDH5FileNotFoundError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,FileNotFoundError
+medh5.errors.MEDH5IOError	class	(?) bases=OSError
 medh5.errors.MEDH5IntegrityError	class	(?) bases=medh5.errors.MEDH5Error
+medh5.errors.MEDH5IsADirectoryError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,IsADirectoryError
+medh5.errors.MEDH5PermissionError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,PermissionError
 medh5.errors.MEDH5SchemaError	class	(?) bases=medh5.errors.MEDH5Error
 medh5.errors.MEDH5ValidationError	class	(message, code=None) bases=medh5.errors.MEDH5Error,ValueError
 medh5.errors.MEDH5VersionError	class	(?) bases=medh5.errors.MEDH5Error
@@ -2823,6 +2831,7 @@ medh5.errors.code	function	(name)
 medh5.errors.codes_for	function	(domain)
 medh5.geometry	module
 medh5.geometry.AXIS_KINDS	constant	tuple
+medh5.geometry.COORD_SYSTEMS	constant	tuple
 medh5.geometry.DOWNSAMPLE_METHODS	constant	tuple
 medh5.geometry.GEOMETRY_RTOL	constant	float
 medh5.geometry.Grid	class	(grid_id, shape, axis_names, axis_kinds, spacing, origin, direction, coord_system='LPS', units='mm', timepoint=None, frame_uid=None, time_values=None, time_units=None, chunk_hint=None, patch_hint=None, extra=None) bases=
@@ -3524,7 +3533,7 @@ medh5.sampling.PatchAggregator.spatial_shape	property
 medh5.sampling.PatchSampler	class	(patch_size, *, strategy='balanced', foreground_prob=0.5, foreground_classes=None, class_weights='uniform') bases=
 medh5.sampling.PatchSampler.class_weights	property
 medh5.sampling.PatchSampler.draw	method	(sample, annotation=None, rng=None, *, grid=None)
-medh5.sampling.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None)
+medh5.sampling.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None, *, grid=None)
 medh5.sampling.PatchSampler.foreground_classes	property
 medh5.sampling.PatchSampler.foreground_prob	property
 medh5.sampling.PatchSampler.patch_size	property
@@ -3543,7 +3552,7 @@ medh5.sampling.TimepointPairSampler.pairs	method	(sample)
 medh5.sampling.blend_weights	function	(patch_size, *, mode='gaussian', sigma_scale=0.125)
 medh5.sampling.coerce_patch_size	function	(patch_size, ndim)
 medh5.sampling.grid_patches	function	(shape, patch_size, *, overlap=0, grid_id=None)
-medh5.sampling.iter_patches	function	(sample, sampler, *, annotation=None, n=1, rng=None)
+medh5.sampling.iter_patches	function	(sample, sampler, *, annotation=None, n=1, rng=None, grid=None)
 medh5.sampling.window_around	function	(center, patch, shape)
 medh5.storage	module
 medh5.storage.BLOSC2_FILTER_ID	constant	int
@@ -3621,7 +3630,8 @@ medh5.storage.SamplingIndex.summary	method	()
 medh5.storage.SamplingIndex.voxel_counts	property
 medh5.storage.build_index	function	(annotation, *, classes=None, max_coords=<value>, occupancy=<value>, seed=0, source_digest=None)
 medh5.storage.chunk_report	function	(shape, chunks, itemsize)
-medh5.storage.dataset_kwargs	function	(shape, dtype, *, profile=None, role='image', chunks=None)
+medh5.storage.dataset_kwargs	deprecated
+medh5.storage.dataset_layout	function	(shape, dtype, *, profile=None, role='image', chunks=None)
 medh5.storage.describe_filters	function	(dataset)
 medh5.storage.detect_l3_bytes	function	()
 medh5.storage.field_chunks	function	(grid, shape, itemsize)
@@ -3926,7 +3936,7 @@ medh5.torch.PatchDataset.set_epoch	method	(epoch)
 medh5.torch.PatchSampler	class	(patch_size, *, strategy='balanced', foreground_prob=0.5, foreground_classes=None, class_weights='uniform') bases=
 medh5.torch.PatchSampler.class_weights	property
 medh5.torch.PatchSampler.draw	method	(sample, annotation=None, rng=None, *, grid=None)
-medh5.torch.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None)
+medh5.torch.PatchSampler.draws	method	(sample, annotation=None, n=1, rng=None, *, grid=None)
 medh5.torch.PatchSampler.foreground_classes	property
 medh5.torch.PatchSampler.foreground_prob	property
 medh5.torch.PatchSampler.patch_size	property

@@ -111,6 +111,8 @@ img.dataset                               # the stored dataset (a view, below)
 
 `physical=True` applies `slope` and `intercept`. When an image declares
 neither, the stored values are already physical and the flag changes nothing.
+A physical read is float32 only where a rescale applies; pass `dtype` for one
+type across a cohort (`img.read(physical=True, dtype=np.float32)`).
 
 ### Annotations
 
@@ -250,6 +252,27 @@ s.fresh_indices               # the ids whose source_digest still matches (§13.
 
 A stale entry is ignored by the samplers and the statistics, never trusted; see
 [Storage](storage.md#the-sampling-index).
+
+### Sampling patches
+
+```python
+from medh5.sampling import PatchSampler, iter_patches
+
+sampler = PatchSampler(8, strategy="balanced")
+sampler.draw(s, "organs_tp0", rng=0)               # one Patch
+sampler.draws(s, "organs_tp0", n=4, rng=0)         # a list, from one generator
+sampler.draws(s, None, n=4, rng=0, grid="ct_tp1")  # every window in ct_tp1
+for patch in iter_patches(s, sampler, annotation="organs_tp0", n=10_000, rng=0):
+    break                                          # drawn one per next()
+```
+
+`iter_patches` yields exactly what `draws` returns for the same seed, but
+draws each patch when it is asked for, so a long run holds one patch rather
+than all of them. It checks the annotation and the grid when it is called,
+before the first patch: a misspelt name fails where it was written, not inside
+the loop. `rng` is a seed or a `numpy.random.Generator` (`Seed`); a loop
+calling `draw` with the same integer seed draws the same patch every time, so
+draw a run from one call.
 
 ### Stored objects
 
@@ -608,7 +631,10 @@ returns one report per file, which is what `medh5 validate` prints.
 
 ```
 MEDH5Error
-├── MEDH5FileError        (also OSError)
+├── MEDH5FileError        (also OSError) — carries .errno, .filename
+│   ├── MEDH5FileNotFoundError   (also FileNotFoundError)
+│   ├── MEDH5PermissionError     (also PermissionError)
+│   └── MEDH5IsADirectoryError   (also IsADirectoryError)
 ├── MEDH5VersionError
 ├── MEDH5SchemaError
 ├── MEDH5ValidationError  (also ValueError) — carries .code
@@ -618,13 +644,18 @@ MEDH5Error
 `MEDH5ValidationError.code` is the §15.2 diagnostic code where one applies,
 so a caller can branch on the defect rather than on the message text.
 
+A file that is missing, a directory or unreadable raises the subclass that
+says so, with the system's `errno` and the `filename`, so `except
+FileNotFoundError` catches a missing sample; `str()` is the message alone, as
+before.
+
 `MEDH5Error` is the base of the errors this package defines, not of every
 error it raises. HDF5 failing to read a file's bytes — a damaged chunk, say —
-raises a plain `OSError`; a missing file or a directory is `MEDH5FileError`, an
-`OSError` with no `errno`, so `except FileNotFoundError` does not catch it; and
-lookups and arguments raise the built-in `KeyError`, `IndexError`, `TypeError`
-and `ValueError`. Where a damaged file must not stop a loop, catch `OSError`
-beside `MEDH5Error`.
+raises `MEDH5IOError`, an `OSError` that is not yet a `MEDH5Error` (in 3.0 it
+derives from `MEDH5FileError`); another system call that fails raises the
+`OSError` subclass of its `errno`; and lookups and arguments raise the built-in
+`KeyError`, `IndexError`, `TypeError` and `ValueError`. Where a damaged file
+must not stop a loop, catch `OSError` beside `MEDH5Error`.
 
 ## Sub-packages
 

@@ -22,7 +22,7 @@ from medh5.storage import (
     PROFILES,
     build_index,
     chunk_report,
-    dataset_kwargs,
+    dataset_layout,
     is_bulk,
     optimize_chunks,
     read_indices,
@@ -212,18 +212,18 @@ class TestChunking:
 class TestCodecs:
     def test_every_profile_builds_kwargs(self):
         for name in PROFILES:
-            kwargs = dataset_kwargs(
+            kwargs = dataset_layout(
                 (256, 256, 8), np.dtype(np.int16), profile=name, role="image"
             )
             assert "chunks" in kwargs
 
     def test_small_datasets_stay_contiguous(self):
-        assert dataset_kwargs((4,), np.dtype(np.uint16)) == {}
+        assert dataset_layout((4,), np.dtype(np.uint16)) == {}
         big = (COMPRESS_MIN_BYTES // 2 + 16,)
-        assert dataset_kwargs(big, np.dtype(np.uint16)) != {}
+        assert dataset_layout(big, np.dtype(np.uint16)) != {}
 
     def test_empty_datasets_stay_contiguous(self):
-        assert dataset_kwargs((0, 3), np.dtype(np.float32)) == {}
+        assert dataset_layout((0, 3), np.dtype(np.float32)) == {}
 
     def test_unknown_profile_is_refused(self):
         with pytest.raises(MEDH5ValidationError):
@@ -246,21 +246,47 @@ class TestCodecs:
             description="ours",
         )
         big, small = (64, 64, 64), (4,)
-        named = dataset_kwargs(big, np.int16, profile="portable")
-        assert dataset_kwargs(big, np.int16, profile=mine) == {
+        named = dataset_layout(big, np.int16, profile="portable")
+        assert dataset_layout(big, np.int16, profile=mine) == {
             **named,
             "codec": "gzip:9",
         }
         assert (
-            dataset_kwargs(big, np.int16, profile=mine, role="label")["codec"]
+            dataset_layout(big, np.int16, profile=mine, role="label")["codec"]
             == "gzip:1"
         )
-        assert dataset_kwargs(small, np.int16, profile=mine) == {}
+        assert dataset_layout(small, np.int16, profile=mine) == {}
         for name, profile in PROFILES.items():
             for role in ("image", "label"):
-                found = dataset_kwargs(big, np.int16, profile=profile, role=role)
-                assert found == dataset_kwargs(big, np.int16, profile=name, role=role)
+                found = dataset_layout(big, np.int16, profile=profile, role=role)
+                assert found == dataset_layout(big, np.int16, profile=name, role=role)
                 assert found["codec"] == profile.codec(role).name
+
+    def test_S14_2_dataset_layout_is_dataset_kwargs_renamed(self):
+        """2.1 renames ``dataset_kwargs``, whose result stopped being ``h5py``
+        keywords in 2.0; the old name is the same function."""
+        import medh5.storage
+
+        with pytest.warns(DeprecationWarning):
+            old = medh5.storage.dataset_kwargs
+        assert old is dataset_layout
+        for shape, dtype in (((4,), np.uint16), ((0, 3), np.float32)):
+            assert old(shape, dtype) == dataset_layout(shape, dtype) == {}
+        for name in PROFILES:
+            for role in ("image", "label"):
+                assert old((64, 64, 64), np.int16, profile=name, role=role) == (
+                    dataset_layout((64, 64, 64), np.int16, profile=name, role=role)
+                )
+
+    def test_S14_2_dataset_kwargs_warns(self):
+        import medh5.storage
+
+        with pytest.warns(
+            DeprecationWarning, match="^medh5 3.0 removes dataset_kwargs"
+        ):
+            from medh5.storage import dataset_kwargs  # noqa: F401
+        assert "dataset_kwargs" not in medh5.storage.__all__
+        assert "dataset_layout" in medh5.storage.__all__
 
     def test_S14_2_portable_needs_no_plugin(self, tmp_path):
         """A `portable` file must open with stock h5py filters only."""

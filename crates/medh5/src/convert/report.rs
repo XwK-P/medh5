@@ -138,3 +138,19 @@ pub fn merge_reports(reports: &[ConversionReport], converter: &str) -> Conversio
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn of_kind_is_the_notes_of_one_kind_in_order() {
+        let mut report = ConversionReport::new("nifti", "ct.nii.gz");
+        report.guess("orientation", "assumed RAS", json!({}));
+        report.warn("spacing", "rounded", json!({}));
+        report.warn("orientation", "flipped", json!({}));
+        let found: Vec<&str> = report.of_kind("orientation").iter().map(|n| n.message.as_str()).collect();
+        assert_eq!(found, ["assumed RAS", "flipped"]);
+        assert!(report.of_kind("nothing").is_empty());
+    }
+}

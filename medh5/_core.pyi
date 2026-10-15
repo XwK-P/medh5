@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Any, ClassVar, final
+from typing import Any, ClassVar, Literal, final
 
 import numpy as np
 import numpy.typing as npt
@@ -60,6 +60,7 @@ __all__ = [
     "CLINICAL_SCHEMA",
     "CLOCK_REFERENCES",
     "CLOSURES",
+    "CODE_DOMAINS",
     "COLLECTION_SUFFIX",
     "COMPANION_CODES",
     "COMPARATORS",
@@ -68,6 +69,7 @@ __all__ = [
     "CONFORMANCE_SCHEMA",
     "CONFORMANCE_SEED",
     "CONTOUR_ROLES",
+    "COORD_SYSTEMS",
     "CacheWriterHandle",
     "ClinicalHandle",
     "Cohort",
@@ -143,6 +145,7 @@ __all__ = [
     "PRESENT",
     "PROFILES",
     "PSEUDONYM_SOURCE",
+    "PatchDraws",
     "PatchSamplerHandle",
     "Provenance",
     "Pyramid",
@@ -262,6 +265,7 @@ __all__ = [
     "bench_benchmark_file",
     "bench_line",
     "bench_many_class_measurement",
+    "bench_measurement_json",
     "bench_report",
     "bench_synthetic_many_class_sample",
     "bench_synthetic_pair",
@@ -299,6 +303,7 @@ __all__ = [
     "cli_command_tree",
     "cli_lookup_message",
     "cli_main",
+    "cli_sample_file_refusal",
     "clinical_augment",
     "clinical_day_containing",
     "clinical_records",
@@ -306,19 +311,24 @@ __all__ = [
     "clinical_schema_text",
     "clinical_select",
     "clinical_strip",
+    "code_lookup",
     "codec_profiles",
+    "codes_for_domain",
     "codes_table",
     "collect_digests",
     "compute_content_id",
     "conformance_build_case",
     "conformance_build_corpus",
+    "conformance_case_json",
     "conformance_cases",
     "conformance_check_checksums",
     "conformance_load_manifest",
     "conformance_publish",
+    "conformance_result_json",
     "conformance_run_corpus",
     "conformance_score",
     "conformance_score_companion",
+    "conformance_summary",
     "contains_at",
     "cost_model",
     "create",
@@ -416,6 +426,9 @@ __all__ = [
     "inside_extent",
     "instance_id_dtype",
     "instances_from_masks",
+    "integrity_diagnosis_json",
+    "integrity_repair_json",
+    "integrity_verify_json",
     "io_contradictions",
     "io_days_from_baseline",
     "io_group_by_subject",
@@ -515,6 +528,8 @@ __all__ = [
     "stage_file",
     "stale_index_entries",
     "storage_dtype",
+    "storage_recompress_json",
+    "storage_recompress_line",
     "subtrees_identical",
     "target_registration_error",
     "task_fingerprints",
@@ -538,7 +553,11 @@ __all__ = [
     "unpack",
     "validate_against_schema",
     "validate_file",
+    "validate_merge",
     "validate_paths",
+    "validate_report_format",
+    "validate_report_json",
+    "validate_report_positions",
     "validate_root",
     "validate_sample_key",
     "verify_object",
@@ -578,6 +597,7 @@ CLINICAL_PROFILE: str
 CLINICAL_SCHEMA: str
 CLOCK_REFERENCES: tuple[str, ...]
 CLOSURES: tuple[str, ...]
+CODE_DOMAINS: tuple[str, ...]
 COLLECTION_SUFFIX: str
 COMPANION_CODES: dict[str, str]
 COMPARATORS: tuple[str, ...]
@@ -586,6 +606,7 @@ CONFORMANCE_CHECKSUMS: str
 CONFORMANCE_SCHEMA: str
 CONFORMANCE_SEED: int
 CONTOUR_ROLES: tuple[str, ...]
+COORD_SYSTEMS: tuple[str, ...]
 DATE_REGEX: str
 DEFAULT_ALGO: str
 DEFAULT_L3_BYTES: int
@@ -627,7 +648,7 @@ LEGACY_BOX_SHIFT: float
 LEGACY_SCHEMA_VERSION: str
 LESION_PRESENCE: str
 LESION_VALUES: tuple[str, ...]
-LEVELS: tuple[str, ...]
+LEVELS: tuple[Literal["structural", "semantic", "integrity", "strict"], ...]
 LOCALIZED_BBOX_FRACTION: float
 MANAGED_ROOT_ATTRS: tuple[str, ...]
 MANIFEST_SCHEMA: str
@@ -832,14 +853,22 @@ def bench_benchmark_file(
     repeats: int = 20,
 ) -> list[Any]: ...
 def bench_line(measurement: Any) -> str:
-    """One measurement's report line (`str(measurement)`)."""
+    """One measurement's report line (`str(measurement)`), given as a
+    `Measurement` or its JSON form.
+    """
     ...
 
 def bench_many_class_measurement(
     path: str | os.PathLike[str], *, patch: int = 64, repeats: int = 20
 ) -> Any: ...
+def bench_measurement_json(measurement: Any) -> Any:
+    """A measurement as `bench --json` prints it: a NaN as `null`."""
+    ...
+
 def bench_report(measurements: Any) -> str:
-    """The text report of measurements given as their JSON form."""
+    """The text report of measurements, given as `Measurement`s or their JSON
+    form.
+    """
     ...
 
 def bench_synthetic_many_class_sample(
@@ -987,6 +1016,12 @@ def cli_main(argv: Sequence[str], host: Any) -> int:
     """Run the command line on `argv` (without the program name); the exit code."""
     ...
 
+def cli_sample_file_refusal(path: str) -> str | None:
+    """Why `path` is not worked on as one sample file, as every native command
+    words it (a collection, with the way to its members); `None` otherwise.
+    """
+    ...
+
 def clinical_augment(
     path: str | os.PathLike[str],
     records: Any,
@@ -1014,10 +1049,18 @@ def clinical_select(
 def clinical_strip(
     path: str | os.PathLike[str], out: str | os.PathLike[str]
 ) -> dict[str, Any]: ...
+def code_lookup(name: str) -> str:
+    """A code's name, or the engine's `KeyError` for one the table lacks."""
+    ...
+
 def codec_profiles() -> list[Any]:
     """The codec profiles, as plain data (`medh5.storage` builds its
     `CodecProfile` values from this).
     """
+    ...
+
+def codes_for_domain(domain: str) -> list[str]:
+    """The codes of one domain, in table order."""
     ...
 
 def codes_table() -> str:
@@ -1044,6 +1087,10 @@ def conformance_build_case(name: str, path: str | os.PathLike[str]) -> None:
 def conformance_build_corpus(
     outdir: str | os.PathLike[str], *, names: Sequence[str] | None = None
 ) -> str: ...
+def conformance_case_json(case: Any) -> Any:
+    """A case's entry in `expected.json`."""
+    ...
+
 def conformance_cases() -> list[Any]:
     """Every case, as its manifest record, in corpus order."""
     ...
@@ -1053,6 +1100,10 @@ def conformance_load_manifest(root: str | os.PathLike[str]) -> Any: ...
 def conformance_publish(
     outdir: str | os.PathLike[str], *, names: Sequence[str] | None = None
 ) -> str: ...
+def conformance_result_json(result: Any) -> Any:
+    """A result as `conformance run --json` prints it."""
+    ...
+
 def conformance_run_corpus(
     outdir: str | os.PathLike[str], *, names: Sequence[str] | None = None
 ) -> list[Any]: ...
@@ -1066,6 +1117,10 @@ def conformance_score(
 def conformance_score_companion(
     root: str | os.PathLike[str], submitted: Any
 ) -> list[Any]: ...
+def conformance_summary(results: Any) -> Any:
+    """The `--json` summary of a run or a score."""
+    ...
+
 def contains_at(values: npt.NDArray[Any], threshold: float) -> npt.NDArray[np.bool_]:
     """`values >= threshold`, decided in the stored precision (§7.5)."""
     ...
@@ -1494,6 +1549,18 @@ def instances_from_masks(masks: Any, *, start_id: int = 1) -> list[Any]:
     """
     ...
 
+def integrity_diagnosis_json(diagnosis: Any) -> Any:
+    """A diagnosis as `diagnose --json` prints it."""
+    ...
+
+def integrity_repair_json(repair: Any) -> Any:
+    """A repair as `fix --json` prints it."""
+    ...
+
+def integrity_verify_json(result: Any) -> Any:
+    """A verification's summary: its verdict, and what failed."""
+    ...
+
 def io_contradictions(occasions: Any) -> dict[Any, Any]:
     """Subject keys the sources contradict -> the facts that disagree."""
     ...
@@ -1911,6 +1978,14 @@ def stage_file(path: str | os.PathLike[str]) -> StagedFileHandle:
 
 def stale_index_entries(root: Group) -> tuple[str, ...]: ...
 def storage_dtype(planes: Any, threshold: float, requested: Any = None) -> Any: ...
+def storage_recompress_json(result: Any) -> Any:
+    """A re-encoding's result as `recompress --json` prints it."""
+    ...
+
+def storage_recompress_line(result: Any) -> str:
+    """A re-encoding's result in one line (`str(result)`)."""
+    ...
+
 def subtrees_identical(a: Group, b: Group) -> tuple[str, ...]: ...
 def target_registration_error(
     transform: Any,
@@ -2059,6 +2134,12 @@ def validate_file(
     profiles: Any = None,
     codes_revision: int | None = None,
 ) -> Any: ...
+def validate_merge(reports: Any, path: str = "<multiple>") -> Any:
+    """Several reports as one, each location prefixed with its file: the
+    merged report's JSON.
+    """
+    ...
+
 def validate_paths(
     paths: Sequence[str | os.PathLike[str]],
     *,
@@ -2066,6 +2147,20 @@ def validate_paths(
     profiles: Any = None,
     codes_revision: int | None = None,
 ) -> list[Any]: ...
+def validate_report_format(report: Any, *, verbose: bool = False) -> str:
+    """A report as `validate` prints it."""
+    ...
+
+def validate_report_json(report: Any) -> Any:
+    """A report as `validate --json` prints it."""
+    ...
+
+def validate_report_positions(report: Any) -> tuple[list[int], list[int], list[int]]:
+    """The positions in `report.diagnostics` of its errors, its warnings and
+    the warnings it promotes, at its level.
+    """
+    ...
+
 def validate_root(
     sample: Any,
     *,
@@ -2979,6 +3074,20 @@ class OverlapStats:
     def total_foreground(self) -> int: ...
 
 @final
+class PatchDraws:
+    """`n` patch draws from one generator, drawn one per `next()`: nothing is
+    held but the generator and the count, so a long run costs one patch at a
+    time.
+    """
+    def __iter__(self) -> Self: ...
+    def __length_hint__(self) -> int:
+        """The draws still to come."""
+        ...
+    def __next__(self) -> dict[str, Any]:
+        """The next draw: the fields of a `Patch`."""
+        ...
+
+@final
 class PatchSamplerHandle:
     """The engine half of `PatchSampler`: its configuration, validated, and the
     draws.
@@ -3013,8 +3122,23 @@ class PatchSamplerHandle:
         annotation: str | None = None,
         n: int = 1,
         rng: int | Sequence[int] | np.random.Generator | None = None,
+        *,
+        grid: str | None = None,
     ) -> list[dict[str, Any]]:
         """`n` draws from one generator: the fields of each `Patch`."""
+        ...
+    def iter_draws(
+        self,
+        sample: Any,
+        annotation: str | None = None,
+        n: int = 1,
+        rng: int | Sequence[int] | np.random.Generator | None = None,
+        *,
+        grid: str | None = None,
+    ) -> PatchDraws:
+        """The draws of [`draws`](Self::draws), one per `next()`.  The annotation
+        and the grid are checked here, before the first patch.
+        """
         ...
     def pick_class(
         self,

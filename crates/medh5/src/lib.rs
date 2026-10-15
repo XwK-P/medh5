@@ -31,6 +31,10 @@ pub mod validate;
 pub mod version;
 
 pub use error::{Error, Result};
+/// One HDF5 attribute value, as the documented `extra` and `attrs` fields hold
+/// it (`Grid.extra`, `TransformHeader.extra`, `AnnotationHeader.extra`,
+/// `AnnotationPayload.attrs`) and [`sample::Image::attr`] returns it.
+pub use h5::attrs::AttrValue;
 /// The HDF5 bindings the engine is built on, for frontends that need a handle.
 pub use hdf5;
 /// The array crate the engine's arrays convert to and from ([`array::NdArray`]).

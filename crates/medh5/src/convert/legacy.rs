@@ -620,24 +620,24 @@ fn write_group(
     // An order by mtime is reported where the grouping chose it.
     note_instance_ids(group, log);
     let days = group.days_from_baseline();
+    let timepoints = group.timepoint_ids();
     let mut writer = create(target, Some(sample_id), Some(&group.subject_id), codec, &[])?;
     let result = (|| -> Result<()> {
         writer.label_set(label_set.clone());
         let tool = writer.software("medh5", Some(VERSION), Map::new())?;
-        for (index, d) in days.iter().enumerate() {
+        for (index, (timepoint, d)) in timepoints.iter().zip(&days).enumerate() {
             let mut fields = Map::new();
             fields.insert("index".into(), json!(index));
             fields.insert("days_from_baseline".into(), json!(d));
-            writer.add_timepoint(&format!("tp{index}"), fields)?;
+            writer.add_timepoint(timepoint, fields)?;
         }
         let single = group.occasions.len() == 1;
         let mut extra = LegacyExtra::default();
-        for (index, occasion) in group.occasions.iter().enumerate() {
+        for (occasion, timepoint) in group.occasions.iter().zip(&timepoints) {
             let source = &sources[occasion.payload];
             let sample = read_sample(source)?;
-            let timepoint = format!("tp{index}");
-            migrate_one(&mut writer, &sample, &source.to_string_lossy(), &timepoint, label_set, &tool.id, log, single)?;
-            extra.add(&sample.meta.extra, &timepoint, &source.to_string_lossy(), log);
+            migrate_one(&mut writer, &sample, &source.to_string_lossy(), timepoint, label_set, &tool.id, log, single)?;
+            extra.add(&sample.meta.extra, timepoint, &source.to_string_lossy(), log);
         }
         extra.write(&mut writer);
         writer.commit(true)?;

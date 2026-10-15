@@ -85,15 +85,25 @@ home; the [API documentation](https://docs.rs/medh5) has every item.
 | `array` | `NdArray`, the array every reader returns and every writer takes |
 | `dataset`, `sampling` | cohort manifests, splits and statistics; patch sampling |
 | `bench` | reproducing the performance targets |
+| `rng` | the generator behind sampling, the same stream in every frontend |
+| `error` | the one `medh5::Error` type, and the code each error carries |
 | `conformance` | the conformance corpus |
 | `version` | [1.1](../spec/medh5-1.1.md) §2 — which versions are read fully, read as a projection, or refused |
 | `clinical` | [1.1](../spec/medh5-1.1.md) §3–§10 — the clinical profile: records, columns, checks, selection, augmentation |
 | `companion` | [task-cache-1](../spec/task-cache-1.md) — task manifests, source pins, preflight row views, feature caches |
+| `h5`, `json`, `numeric`, `pyval` | plumbing, outside semver (below) |
 
-`h5`, `json`, `numeric`, `pyval` and `rng` are public too, and are the engine's
-plumbing rather than the format: HDF5 access below the high-level API, the
-format's exact JSON serialisations, NumPy-compatible reductions, the 1.x value
-coercions, and the generator behind sampling.
+`h5`, `json`, `numeric` and `pyval` are the engine's plumbing rather than the
+format, and from 2.1 they are outside semver: a minor release may change them.
+They are HDF5 access below the high-level API, the format's exact JSON
+serialisations, NumPy-compatible reductions and the 1.x value coercions. The
+documented way to the canonical JSON of §5.1 is `labels::canonical_json`; an attribute value is
+`AttrValue`, re-exported at the crate root.
+
+The crate's public signatures take and return types from three other crates,
+so they are public dependencies: **hdf5-metno 0.15** (re-exported as `hdf5`),
+**ndarray 0.17** (re-exported as `ndarray`) and **IndexMap 2**. A bump of any of
+them is a major medh5 release.
 
 Errors are one `medh5::Error` (the `error` module); when a defect has a §15.2
 code, the error carries the code the validator reports for the same defect.

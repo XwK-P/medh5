@@ -33,6 +33,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5._optional import require
+from medh5.annotations.voxel import TRANSCODABLE
 from medh5.errors import MEDH5ValidationError
 from medh5.io import _codes
 from medh5.io._codes import same_concept
@@ -1301,8 +1302,9 @@ def _examined(
     return ids
 
 
-#: The kinds a SEG export writes: those with classes, one segment each.
-_SEGMENT_KINDS = ("labelmap", "layers", "bitmask", "instances", "probmap")
+#: The kinds a SEG export writes: those with classes, one segment each ---
+#: the kinds the engine transcodes between.
+_SEGMENT_KINDS: tuple[str, ...] = TRANSCODABLE
 
 
 def _require_segments(annotation: Any, ann_id: str) -> None:

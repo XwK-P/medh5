@@ -98,6 +98,7 @@ impl OverlapStats {
 }
 
 /// Bounding-box volume of a mask (0 for an empty mask).
+#[deprecated(since = "2.1.0", note = "medh5 3.0 removes bbox_volume: multiply the extents bbox(mask) returns")]
 pub fn bbox_volume(mask: &ndarray::ArrayD<bool>) -> u64 {
     match bbox(mask) {
         Some(bounds) => bounds.iter().map(|(lo, hi)| (hi - lo) as u64).product(),

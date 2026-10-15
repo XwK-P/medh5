@@ -169,7 +169,7 @@ impl ImageHandle {
             _ => None,
         };
         let grid = self.inner.grid()?;
-        let index = match crate::convert::region(roi)? {
+        let index = match crate::convert::region_for(roi, grid.ndim())? {
             None => vec![Index::Slice(Slice::full()); grid.ndim()],
             Some(items) if items.len() == grid.ndim() => items,
             Some(items) if items.len() == grid.n_spatial() => {
@@ -1588,7 +1588,8 @@ impl SampleHandle {
 /// Open a `.medh5` sample read-only.
 #[pyfunction]
 pub fn open_sample(py: Python<'_>, path: std::path::PathBuf) -> R<SampleHandle> {
-    let sample = py.detach(move || medh5::sample::open_sample(&path))?;
+    let at = path.clone();
+    let sample = py.detach(move || medh5::sample::open_sample(&path)).map_err(|e| crate::errors::path_error(e, &at))?;
     Ok(SampleHandle::wrap(sample))
 }
 

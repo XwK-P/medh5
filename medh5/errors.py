@@ -22,17 +22,25 @@ table's own.  A validator pinned to a revision
 
 The package's own exceptions derive from :class:`MEDH5Error`, and two of them
 from a built-in as well: :class:`MEDH5FileError` is an ``OSError`` and
-:class:`MEDH5ValidationError` a ``ValueError``.  Not every error raised is one
-of them.  An argument of the wrong type or value raises the built-in of that
-meaning (``TypeError``, ``ValueError``, ``KeyError``, ``IndexError``), and a
-read or write that HDF5 fails --- a damaged chunk, say --- a plain
-``OSError``: catch ``OSError`` as well as :class:`MEDH5Error` to catch both.
+:class:`MEDH5ValidationError` a ``ValueError``.  A file that is missing, a
+directory or unreadable is the matching subclass of both
+(:class:`MEDH5FileNotFoundError`, :class:`MEDH5IsADirectoryError`,
+:class:`MEDH5PermissionError`), with its ``errno`` and ``filename``.
+
+Not every error raised is one of them.  An argument of the wrong type or value
+raises the built-in of that meaning (``TypeError``, ``ValueError``,
+``KeyError``, ``IndexError``); a system call that fails, the ``OSError`` subclass
+of its ``errno``; and a read or write that HDF5 fails --- a damaged chunk, say
+--- :class:`MEDH5IOError`, an ``OSError`` that is not yet a
+:class:`MEDH5Error`: catch ``OSError`` as well as :class:`MEDH5Error` to catch
+both.  (In medh5 3.0 :class:`MEDH5IOError` derives from
+:class:`MEDH5FileError`.)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 Severity = Literal["error", "warning"]
 """A diagnostic code's severity: an error fails validation, a warning does not."""
@@ -62,7 +70,48 @@ class MEDH5Error(Exception):
 
 
 class MEDH5FileError(MEDH5Error, OSError):
-    """A file cannot be opened, is not HDF5, or is structurally unreadable."""
+    """A file cannot be opened, is not HDF5, or is structurally unreadable.
+
+    ``errno`` and ``filename`` are set where the system said why (a missing
+    file, a directory, no permission: then it is the matching subclass), and
+    ``str()`` is the message alone, whatever they hold.
+    """
+
+    def __init__(
+        self, message: str, errno: int | None = None, filename: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.errno = errno
+        self.filename = filename
+
+    def __str__(self) -> str:
+        return self.message
+
+    def __reduce__(self) -> tuple[type[MEDH5FileError], tuple[Any, ...]]:
+        return (type(self), (self.message, self.errno, self.filename))
+
+
+class MEDH5FileNotFoundError(MEDH5FileError, FileNotFoundError):
+    """The file does not exist."""
+
+
+class MEDH5PermissionError(MEDH5FileError, PermissionError):
+    """The file exists but may not be read (or written)."""
+
+
+class MEDH5IsADirectoryError(MEDH5FileError, IsADirectoryError):
+    """The path names a directory, not a file."""
+
+
+class MEDH5IOError(OSError):
+    """A read or write the engine could not complete: HDF5 failing a damaged
+    chunk, say.
+
+    An ``OSError``, and not yet a :class:`MEDH5Error`, so code catching either
+    catches what it caught before.  In medh5 3.0 it derives from
+    :class:`MEDH5FileError`.
+    """
 
 
 class MEDH5VersionError(MEDH5Error):
@@ -146,15 +195,16 @@ CODES: dict[str, Code] = {c.code: c for c in _TABLE}
 
 def code(name: str) -> Code:
     """Look up a diagnostic code, raising :class:`KeyError` for unknown codes."""
-    try:
-        return CODES[name]
-    except KeyError:  # pragma: no cover - guards typos in rule definitions
-        raise KeyError(f"unknown diagnostic code {name!r}") from None
+    from medh5._core import code_lookup
+
+    return CODES[code_lookup(name)]
 
 
 def codes_for(domain: Domain) -> tuple[Code, ...]:
     """Every code in one domain, in table order."""
-    return tuple(c for c in _TABLE if c.domain == domain)
+    from medh5._core import codes_for_domain
+
+    return tuple(CODES[name] for name in codes_for_domain(domain))
 
 
 __all__ = [
@@ -164,7 +214,11 @@ __all__ = [
     "Domain",
     "MEDH5Error",
     "MEDH5FileError",
+    "MEDH5FileNotFoundError",
+    "MEDH5IOError",
     "MEDH5IntegrityError",
+    "MEDH5IsADirectoryError",
+    "MEDH5PermissionError",
     "MEDH5SchemaError",
     "MEDH5ValidationError",
     "MEDH5VersionError",

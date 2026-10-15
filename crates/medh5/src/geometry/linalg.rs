@@ -7,6 +7,7 @@ use ndarray::Array2;
 use crate::{Error, Result};
 
 /// `a @ b`.
+#[deprecated(since = "2.1.0", note = "medh5 3.0 removes matmul: use a.dot(b)")]
 pub fn matmul(a: &Array2<f64>, b: &Array2<f64>) -> Array2<f64> {
     a.dot(b)
 }
@@ -184,7 +185,7 @@ mod tests {
         let m = from_rows(3, 3, &[2.0, 0.0, 1.0, 0.0, 3.0, 0.0, 1.0, 0.0, 1.0]).unwrap();
         assert!((det(&m) - 3.0).abs() < 1e-12);
         let i = inv(&m).unwrap();
-        let p = matmul(&m, &i);
+        let p = m.dot(&i);
         assert!(allclose(p.as_slice().unwrap(), eye(3).as_slice().unwrap(), 1e-12, 0.0));
         assert!(inv(&from_rows(2, 2, &[1.0, 2.0, 2.0, 4.0]).unwrap()).is_err());
     }

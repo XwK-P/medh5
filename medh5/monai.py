@@ -31,14 +31,14 @@ import numpy.typing as npt
 from medh5._optional import require
 from medh5.annotations.base import VoxelAnnotation
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry import Grid
+from medh5.geometry import COORD_SYSTEMS, Grid
 from medh5.labels import IGNORE_ID
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5._monai_readers import LoadMedH5d, MedH5Reader
     from medh5.sample import Sample
 
-SPACES = ("LPS", "RAS")
+SPACES = COORD_SYSTEMS
 
 _LPS_TO_RAS = np.diag([-1.0, -1.0, 1.0, 1.0])
 """World-axis sign flip; ``RAS = _LPS_TO_RAS @ LPS`` for 3-D affines."""

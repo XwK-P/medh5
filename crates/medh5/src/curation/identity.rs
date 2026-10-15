@@ -261,9 +261,17 @@ pub struct Deidentification {
     pub performed_by: Option<String>,
     pub date: Option<String>,
     pub burned_in_annotation_checked: Option<bool>,
+    /// Members the schema does not define.  The schema's `deidentification`
+    /// object allows no others, so anything here makes the document invalid.
+    #[deprecated(
+        since = "2.1.0",
+        note = "medh5 3.0 removes Deidentification.extra: the schema allows no other member, so anything it holds \
+                makes the document invalid"
+    )]
     pub extra: Map<String, Value>,
 }
 
+#[allow(deprecated)]
 impl Deidentification {
     const KNOWN: [&'static str; 7] =
         ["method", "profile", "date_shift_days", "id_mapping", "performed_by", "date", "burned_in_annotation_checked"];

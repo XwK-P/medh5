@@ -17,7 +17,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry import MM_PER_UNIT
+from medh5.geometry import COORD_SYSTEMS, MM_PER_UNIT
 
 
 def patient_mapping(grid: Any, what: str) -> tuple[npt.NDArray[np.float64], float]:
@@ -30,7 +30,7 @@ def patient_mapping(grid: Any, what: str) -> tuple[npt.NDArray[np.float64], floa
     and is refused (E414); *what* names what is in patient coordinates, for
     the message.
     """
-    if grid.coord_system not in ("LPS", "RAS"):
+    if grid.coord_system not in COORD_SYSTEMS:
         raise MEDH5ValidationError(
             f"grid {grid.grid_id!r} is in {grid.coord_system!r}; {what} are "
             "patient coordinates (LPS), which only an LPS or RAS grid relates to",

@@ -39,6 +39,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
+from medh5._deprecation import module_getattr
 from medh5._optional import require
 
 # -- chunking (§14.1) -----------------------------------------------------------
@@ -154,7 +155,7 @@ def resolve_profile(profile: str | CodecProfile | None) -> CodecProfile:
     return PROFILES[_core.resolve_profile_name(profile)]
 
 
-def dataset_kwargs(
+def dataset_layout(
     shape: tuple[int, ...],
     dtype: npt.DTypeLike,
     *,
@@ -167,9 +168,10 @@ def dataset_kwargs(
     codec being *profile*'s for *role* --- a :class:`CodecProfile` of your own
     as much as a named one.
 
-    Since 2.0 this is the writer's layout, not the ``h5py`` keywords 1.x
-    returned; for those, pass ``resolve_profile(profile).codec(role).kwargs()``
-    and the ``chunks`` to ``create_dataset``.
+    These are not ``h5py`` keywords; for those, pass
+    ``resolve_profile(profile).codec(role).kwargs()`` and the ``chunks`` to
+    ``create_dataset``.  (``dataset_kwargs``, its name until 2.1, is
+    deprecated.)
     """
     # Only the codec depends on the profile, and a profile of one's own has
     # a name the engine does not know: it was refused as one.
@@ -273,37 +275,19 @@ class RecompressResult:
 
     @property
     def ratio(self) -> float:
-        return self.bytes_after / self.bytes_before if self.bytes_before else 1.0
+        return float(self.to_json()["ratio"])
 
     @property
     def ok(self) -> bool:
-        return self.verified and self.content_id_preserved
+        return bool(self.to_json()["ok"])
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "path": self.path,
-            "profile": self.profile,
-            "datasets": self.datasets,
-            "bytes_before": self.bytes_before,
-            "bytes_after": self.bytes_after,
-            "ratio": self.ratio,
-            "content_id": self.content_id,
-            "content_id_preserved": self.content_id_preserved,
-            "verified": self.verified,
-            "mismatched": list(self.mismatched),
-            "unattested": list(self.unattested),
-            "ok": self.ok,
-            "changed": [list(c) for c in self.changed],
-            "kept": list(self.kept),
-            "unverified": list(self.unverified),
-        }
+        """The result as ``recompress --json`` prints it."""
+        found: dict[str, Any] = _core.storage_recompress_json(self)
+        return found
 
     def __str__(self) -> str:
-        return (
-            f"{self.path}: {self.profile}, {self.datasets} datasets, "
-            f"{self.bytes_before} -> {self.bytes_after} bytes "
-            f"({self.ratio:.2f}×)"
-        )
+        return str(_core.storage_recompress_line(self))
 
 
 def recompress(
@@ -364,7 +348,7 @@ __all__ = [
     "SamplingIndex",
     "build_index",
     "chunk_report",
-    "dataset_kwargs",
+    "dataset_layout",
     "describe_filters",
     "detect_l3_bytes",
     "field_chunks",
@@ -380,3 +364,12 @@ __all__ = [
     "resolve_profile",
     "spatial_chunk_for",
 ]
+
+_DEPRECATED = {
+    "dataset_kwargs": (
+        dataset_layout,
+        "medh5 3.0 removes dataset_kwargs: use dataset_layout; for h5py "
+        "keywords, resolve_profile(p).codec(role).kwargs()",
+    ),
+}
+__getattr__ = module_getattr(__name__, _DEPRECATED)

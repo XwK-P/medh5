@@ -8,6 +8,7 @@ engine, which reads the file directly.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from types import EllipsisType
 from typing import Any
 
 import numpy as np
@@ -152,7 +153,7 @@ class Image:
 
     def read(
         self,
-        roi: Sequence[slice | int] | None = None,
+        roi: Sequence[slice | int | EllipsisType] | EllipsisType | None = None,
         *,
         physical: bool = False,
         dtype: npt.DTypeLike | None = None,
@@ -160,7 +161,8 @@ class Image:
         """Read the image or a region of it.
 
         *roi* covers every axis, or only the spatial axes (leading channel or
-        time axes are then read whole).  ``physical=True`` applies
+        time axes are then read whole); one ``...`` stands for the whole axes
+        the other items leave, as in NumPy.  ``physical=True`` applies
         ``rescale_slope``/``rescale_intercept`` to an image that declares a
         rescale (:attr:`is_rescaled`), into ``float32`` unless *dtype* says
         otherwise.  Any other image already holds physical values and is read

@@ -473,10 +473,10 @@ def _world_to_itk(grid: Any, what: str) -> npt.NDArray[np.float64]:
     """``H``: a point of *grid*'s world (its coordinate system and units) as
     ITK's LPS millimetres, homogeneous.  A grid in ``px`` or another
     convention has no LPS millimetres to give."""
-    from medh5.geometry import MM_PER_UNIT
+    from medh5.geometry import COORD_SYSTEMS, MM_PER_UNIT
 
     n = len(grid.spacing)
-    if grid.coord_system not in ("LPS", "RAS"):
+    if grid.coord_system not in COORD_SYSTEMS:
         raise MEDH5ValidationError(
             f"{what} grid {grid.grid_id!r} is in {grid.coord_system!r}, which "
             "ITK's LPS cannot be converted to"

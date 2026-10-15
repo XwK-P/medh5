@@ -80,17 +80,18 @@ read is one seek. (`W902` warns only from 1 MiB, so the policy never trips its
 own warning.)
 
 ```python
-from medh5.storage import PROFILES, resolve_profile, dataset_kwargs
+from medh5.storage import PROFILES, resolve_profile, dataset_layout
 PROFILES["archive"].description
 ```
 
-`dataset_kwargs(shape, dtype, profile=..., role=...)` is the layout the writer
+`dataset_layout(shape, dtype, profile=..., role=...)` is the layout the writer
 gives one dataset — `{}` when it is stored contiguous, else `{"chunks": ...,
 "codec": ...}` with the codec named by the profile, a `CodecProfile` of your
 own included. Since 2.0 it is not the `h5py` keywords 1.x returned: to write a
 dataset with `h5py` in a profile's codec, pass
 `resolve_profile(profile).codec(role).kwargs()` and the chunks to
-`create_dataset`.
+`create_dataset`. Until 2.1 the function was named `dataset_kwargs`; that
+name still works and warns, and 3.0 removes it.
 
 ## Chunking
 

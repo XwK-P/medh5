@@ -84,31 +84,16 @@ class VerifyResult:
     def content_id_ok(self) -> bool | None:
         """Whether the root ``content_id`` matches, or ``None`` when unjudged:
         a file that declares none, or a *partial* pass."""
-        if self.content_id_declared is None or self.content_id_computed is None:
-            return None
-        return self.content_id_declared == self.content_id_computed
+        found: bool | None = self.summary()["content_id_ok"]
+        return found
 
     @property
     def ok(self) -> bool:
-        return (
-            not self.mismatched
-            and not self.malformed
-            and not self.unattested
-            and self.content_id_ok is not False
-        )
+        return bool(self.summary()["ok"])
 
     def summary(self) -> dict[str, Any]:
-        return {
-            "ok": self.ok,
-            "checked": len(self.checked),
-            "mismatched": list(self.mismatched),
-            "undigested": list(self.undigested),
-            "unattested": list(self.unattested),
-            "malformed": list(self.malformed),
-            "content_id_ok": self.content_id_ok,
-            "stale_index": list(self.stale_index),
-            "unverifiable": list(self.unverifiable),
-        }
+        found: dict[str, Any] = _core.integrity_verify_json(self)
+        return found
 
 
 verify_object = _core.verify_object
@@ -168,37 +153,24 @@ class Diagnosis:
     @property
     def needs_index(self) -> bool:
         """A *stale* index is a defect.  An absent one is a choice (§14.3)."""
-        return bool(self.stale_index)
+        return bool(self.to_json()["needs_index"])
 
     @property
     def needs_digests(self) -> bool:
         """Whether the digests no longer attest the bytes: a mismatch, a
         digest that does not parse, a path no line of ``content_id`` covers,
         or a stale ``content_id``."""
-        return (
-            bool(self.mismatched)
-            or bool(self.malformed)
-            or bool(self.unattested)
-            or self.content_id_ok is False
-        )
+        return bool(self.to_json()["needs_digests"])
 
     @property
     def clean(self) -> bool:
-        return not self.needs_index and not self.needs_digests
+        found = self.to_json()
+        return not found["needs_index"] and not found["needs_digests"]
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "path": self.path,
-            "mismatched": list(self.mismatched),
-            "malformed": list(self.malformed),
-            "undigested": list(self.undigested),
-            "unattested": list(self.unattested),
-            "stale_index": list(self.stale_index),
-            "missing_index": list(self.missing_index),
-            "content_id_ok": self.content_id_ok,
-            "needs_index": self.needs_index,
-            "needs_digests": self.needs_digests,
-        }
+        """The diagnosis as ``diagnose --json`` prints it."""
+        found: dict[str, Any] = _core.integrity_diagnosis_json(self)
+        return found
 
 
 @dataclass(slots=True)
@@ -225,18 +197,12 @@ class Repair:
 
     @property
     def changed(self) -> bool:
-        return bool(self.rebuilt_index) or self.rewrote_digests
+        return bool(self.to_json()["changed"])
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "path": self.path,
-            "diagnosis": self.diagnosis.to_json(),
-            "rebuilt_index": list(self.rebuilt_index),
-            "rewrote_digests": self.rewrote_digests,
-            "content_id": self.content_id,
-            "changed": self.changed,
-            "notes": list(self.notes),
-        }
+        """The repair as ``fix --json`` prints it."""
+        found: dict[str, Any] = _core.integrity_repair_json(self)
+        return found
 
 
 def diagnose(path: str | os.PathLike[str]) -> Diagnosis:
