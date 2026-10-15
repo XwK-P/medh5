@@ -203,6 +203,29 @@ fn s2_a_changed_source_fails_its_pin_and_a_repin_keeps_the_view() {
     assert_ne!(after.fingerprint, before.fingerprint, "the row pins the new version");
 }
 
+/// `repin` pins what is there, once, and names the rows it stales.
+#[test]
+fn s2_repin_pins_what_is_there() {
+    use medh5::companion::SourceAccess;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut task, path) = worked_task(dir.path());
+    let access = SourceAccess::new(None);
+    let unchanged = task.repin(&access, None).unwrap();
+    assert!(unchanged.changed.is_empty() && unchanged.rows.is_empty());
+    assert_eq!(unchanged.unchanged, ["s0"]);
+    let before = task.subjects[0].sources[0].content_id.clone();
+    add_event(&path, observation("lab_late", "lab_late", 5000 * HOUR, Some(5001 * HOUR)), Vec::new());
+    let report = task.repin(&access, None).unwrap();
+    assert_eq!(report.changed.len(), 1);
+    assert_eq!((report.changed[0].source_id.as_str(), &report.changed[0].before), ("s0", &before));
+    assert_eq!(report.changed[0].after, open_sample(&path).unwrap().content_id().unwrap().unwrap());
+    assert_eq!(report.rows, ["r0", "r24", "r2200"]);
+    assert!(preflight(&task, None, false).unwrap().ok());
+    assert!(task.repin(&access, None).unwrap().changed.is_empty(), "once");
+    let only: std::collections::BTreeSet<String> = ["nope".to_string()].into();
+    assert!(task.repin(&access, Some(&only)).is_err());
+}
+
 #[test]
 fn s4_an_uncertain_revision_makes_its_rows_uncertifiable() {
     let dir = tempfile::tempdir().unwrap();
@@ -353,6 +376,79 @@ fn s3_3_splits_are_by_subject_and_never_share_a_sample() {
     task.subjects[0].partition = Some("holdout".into());
     assert_eq!(task.validate()[0].code, "T202");
     let _ = path;
+}
+
+#[test]
+fn s3_3_a_task_from_a_cohort_takes_its_split() {
+    use medh5::companion::{CohortTask, Partitions};
+    use medh5::dataset::{scan, Assignment, Split};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("data")).unwrap();
+    fragment(&dir.path().join("data/a.medh5"), "P-01", "clock-01", 1.0);
+    fragment(&dir.path().join("data/b.medh5"), "P-02", "clock-02", 2.0);
+    let (cohort, failed) = scan(&dir.path().join("data"), true).unwrap();
+    assert!(failed.is_empty());
+    let assign = |group: &str, partition: &str, fold: Option<i64>, entries: Vec<String>| Assignment {
+        group: group.into(),
+        partition: partition.into(),
+        fold,
+        stratum: None,
+        entries,
+    };
+    let path_of = |subject: &str| cohort.entries.iter().find(|e| e.subject_id == subject).unwrap().path.clone();
+    let mut split = Split {
+        set_id: "s1".into(),
+        manifest_sha256: cohort.sha256(),
+        assignments: vec![
+            assign("P-02", "test", None, vec![path_of("P-02")]),
+            assign("P-01", "train", None, vec![path_of("P-01")]),
+        ],
+        group_by: "subject_id".into(),
+        stratify_by: None,
+        seed: 0,
+        k_folds: None,
+        ratios: Default::default(),
+    };
+    let named = CohortTask::new("t", "1", "ns").with_base(Some(dir.path()));
+    let task = TaskManifest::from_cohort(&cohort, Partitions::Split { split: &split, fold: None }, &named).unwrap();
+    assert_eq!(task.split, Some(("s1".into(), vec!["train".into(), "test".into()])));
+    let placed: Vec<(&str, Option<&str>, &str)> = task
+        .subjects
+        .iter()
+        .map(|s| (s.subject_id.as_str(), s.partition.as_deref(), s.sources[0].uri.as_str()))
+        .collect();
+    assert_eq!(placed, [("P-01", Some("train"), "data/a.medh5"), ("P-02", Some("test"), "data/b.medh5")]);
+    assert!(task.rows.is_empty() && task.validate().is_empty(), "{:?}", task.validate());
+    assert!(preflight(&task, Some(dir.path()), false).unwrap().ok());
+
+    // Without a base the URIs are absolute.
+    let unbased = CohortTask::new("t", "1", "ns");
+    let task = TaskManifest::from_cohort(&cohort, Partitions::Split { split: &split, fold: None }, &unbased).unwrap();
+    assert!(Path::new(&task.subjects[0].sources[0].uri).is_absolute());
+
+    // A k-fold split needs its fold; fold 1 is val, the rest train.
+    split.k_folds = Some(2);
+    split.assignments = vec![
+        assign("P-01", "holdout", Some(0), vec![path_of("P-01")]),
+        assign("P-02", "holdout", Some(1), vec![path_of("P-02")]),
+    ];
+    let err = TaskManifest::from_cohort(&cohort, Partitions::Split { split: &split, fold: None }, &named).unwrap_err();
+    assert!(err.to_string().contains("needs a fold"), "{err}");
+    let task = TaskManifest::from_cohort(&cohort, Partitions::Split { split: &split, fold: Some(1) }, &named).unwrap();
+    let parts: Vec<Option<&str>> = task.subjects.iter().map(|s| s.partition.as_deref()).collect();
+    assert_eq!(parts, [Some("train"), Some("val")]);
+
+    // An entry the split does not place, or whose recorded pin is stale.
+    split.assignments.pop();
+    let err =
+        TaskManifest::from_cohort(&cohort, Partitions::Split { split: &split, fold: Some(0) }, &named).unwrap_err();
+    assert!(err.to_string().contains("has no partition"), "{err}");
+    split.assignments.push(assign("P-02", "holdout", Some(1), vec![path_of("P-02")]));
+    let mut stale = cohort.clone();
+    stale.entries[0].content_id = Some("0".repeat(64));
+    let err =
+        TaskManifest::from_cohort(&stale, Partitions::Split { split: &split, fold: Some(0) }, &named).unwrap_err();
+    assert!(err.to_string().contains("the cohort manifest is stale"), "{err}");
 }
 
 fn feature(value: f32) -> NdArray {

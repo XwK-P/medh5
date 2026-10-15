@@ -23,6 +23,7 @@ import pytest
 import medh5
 from medh5 import _core
 from medh5.cache import (
+    CacheEntry,
     CacheWriter,
     FeatureCache,
     HashingTextEncoder,
@@ -40,6 +41,7 @@ from medh5.task import (
     CODES,
     Finding,
     Packed,
+    RepinReport,
     Slot,
     SourceRef,
     Target,
@@ -173,6 +175,111 @@ class TestManifest:
         capsys.readouterr()
         assert [p.name for p in path.parent.glob(".*")] == []
 
+    @pytest.mark.parametrize("alias", ["exact", "relative", "symlink", "hardlink"])
+    def test_S3_3_save_never_writes_over_a_source(
+        self, setup, tmp_path: Path, alias: str
+    ):
+        """Only the command line refused an output that is a source:
+        ``TaskManifest.load(m).reconcile().save("ct.medh5")`` replaced a
+        patient's sample with JSON.  Both now refuse, by any path or link."""
+        task, paths = setup
+        source = paths["P-02"]
+        if alias == "exact":
+            out = source
+        elif alias == "relative":
+            (tmp_path / "sub").mkdir()
+            out = tmp_path / "sub" / ".." / "cohort" / source.name
+        else:
+            out = tmp_path / "alias.medh5"
+            try:
+                (out.symlink_to if alias == "symlink" else out.hardlink_to)(source)
+            except OSError as exc:  # pragma: no cover - no links on this file system
+                pytest.skip(str(exc))
+        before = source.read_bytes()
+        loaded = TaskManifest.load(task.save(tmp_path / "cohort" / "t.task.json"))
+        for unsaved in (task, loaded):
+            with pytest.raises(
+                MEDH5ValidationError, match="a source of subject 'P-02'"
+            ):
+                unsaved.save(out)
+        assert source.read_bytes() == before
+
+    def test_S3_3_save_without_a_base_guards_the_working_directory(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Without a base, a source resolves against the working directory;
+        the guard looked only beside the output, so ``save("data/p.medh5")``
+        replaced the source ``data/p.medh5`` it pinned."""
+        (tmp_path / "data").mkdir()
+        source = tmp_path / "data" / "p.medh5"
+        History.write(source, subject_id="P-01")
+        monkeypatch.chdir(tmp_path)
+        task = TaskManifest.new("t", "1", identity_namespace="n")
+        task.add_subject("P-01", [SourceRef.pin(source, uri="data/p.medh5")])
+        before = source.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="a source of subject 'P-01'"):
+            task.save(Path("data") / "p.medh5")
+        assert source.read_bytes() == before
+
+    def test_S3_3_both_frontends_reconcile_alike(self, tmp_path: Path):
+        """The reconcile loop was written twice: the binding kept the declared
+        fingerprint the command line dropped.  Both are now the engine's."""
+        root = tmp_path / "f"
+        root.mkdir()
+        a, b = root / "a.medh5", root / "b.medh5"
+        History.write(a, subject_id="P-01")
+        History.write(b, subject_id="P-01")
+        task = TaskManifest.new("t", "1", identity_namespace="n", base=root)
+        task.add_subject(
+            "P-01", [SourceRef.pin(a, uri="a.medh5"), SourceRef.pin(b, uri="b.medh5")]
+        )
+        task.add_row("r", "P-01", 24 * HOUR)
+        manifest = task.save(root / "t.task.json")
+        assert (
+            main(["task", "reconcile", str(manifest), "-o", str(root / "c.json")]) == 0
+        )
+        python = TaskManifest.load(manifest).reconcile()
+        assert len(python.subjects[0].reconciled) == 6
+        assert python.validate() == [], "no stale declared fingerprint (T103)"
+        python.save(root / "p.json")
+        cli = json.loads((root / "c.json").read_text(encoding="utf-8"))
+        assert json.loads((root / "p.json").read_text(encoding="utf-8")) == cli
+        assert (root / "p.json").read_bytes() == (root / "c.json").read_bytes()
+
+    def test_S3_1_both_frontends_save_one_byte_form(self, setup, tmp_path: Path):
+        """The engine wrote ``"M\\u00fcller"``, Python ``"Müller"``: one
+        document, two files.  Python now writes the engine's bytes."""
+        task, _ = setup
+        doc = task.to_json()
+        doc["task"]["description"] = "Müller's cohort, 東京"
+        doc["identity_namespace"] = "hôpital"
+        root = tmp_path / "cohort"
+        python = TaskManifest(doc, base=root).save(root / "p.json")
+        native = root / "n.json"
+        assert main(["task", "reconcile", str(python), "-o", str(native)]) == 0
+        assert python.read_bytes() == native.read_bytes()
+        assert TaskManifest.load(python).identity_namespace == "hôpital"
+
+    @pytest.mark.parametrize("spelling", ["NaN", "Infinity", "-Infinity"])
+    def test_S3_1_a_manifest_holding_nan_is_not_json(
+        self, setup, tmp_path: Path, capsys, spelling: str
+    ):
+        """Python's ``json.loads`` read ``NaN``; the engine refused it.  JSON
+        has none, so both refuse: T101."""
+        task, _ = setup
+        path = task.save(tmp_path / "cohort" / "t.task.json")
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace('"version": "1"', f'"x": {spelling}, "version": "1"', 1),
+            encoding="utf-8",
+        )
+        with pytest.raises(MEDH5ValidationError) as caught:
+            TaskManifest.load(path)
+        assert caught.value.code == "T101"
+        capsys.readouterr()
+        assert main(["task", "validate", str(path)]) == EXIT_ERROR
+        assert "T101" in capsys.readouterr().out
+
     def test_S3_2_fingerprints_follow_the_manifest(self, setup):
         """Computed once until the manifest changes --- each access parsed the
         whole manifest, a row's twice --- and the same values."""
@@ -211,6 +318,80 @@ class TestManifest:
         task.add_subject("P-01", [SourceRef("", refs[0].content_id)])
         (finding,) = task.validate()
         assert finding.code == "T101"
+
+    def test_S2_colliding_default_ids_are_widened(self):
+        """``a/site-a/P-01.medh5`` and ``b/site-a/P-01.medh5`` both derived
+        ``site-a_P-01``: T204, from ids nobody wrote."""
+        task = TaskManifest.new("t", "1", identity_namespace="n")
+        pin = "sha256:" + "0" * 64
+        refs = [SourceRef(f"{d}/site-a/P-01.medh5", pin) for d in ("a", "b")]
+        task.add_subject("P-09", refs)
+        ids = [s.source_id for s in task.subjects[-1].sources]
+        assert ids == ["site-a_P-01", "b_site-a_P-01"]
+        assert task.validate() == []
+
+    def test_S2_default_ids_widen_then_number(self, setup):
+        task, _ = setup
+        pin = task.subjects[0].sources[0].content_id
+        refs = [SourceRef(f"site-a/P-01.{ext}", pin) for ext in ("medh5", "h5")]
+        task.add_subject("P-09", refs[:1], partition="train")
+        task.add_subject("P-10", refs[1:], partition="train")
+        ids = [s.sources[0].source_id for s in task.subjects[-2:]]
+        assert ids == ["site-a_P-01", "site-a_P-01@2"]
+        # The cut at 128 characters collides too, and is numbered within it.
+        long = [SourceRef(f"{'n' * 200}.{e}", pin) for e in ("medh5", "h5")]
+        task.add_subject("P-11", long, partition="train")
+        assert [s.source_id for s in task.subjects[-1].sources] == [
+            "n" * 128,
+            "n" * 126 + "@2",
+        ]
+
+    def test_S2_every_widened_id_is_taken(self):
+        """A widened id was not added to those taken: the third source
+        sharing a derived id was widened to the second's, T204 again."""
+        task = TaskManifest.new("t", "1", identity_namespace="n")
+        pin = "sha256:" + "0" * 64
+        exts = ("medh5", "h5", "hdf5")
+        task.add_subject("P-09", [SourceRef(f"site-a/P-01.{e}", pin) for e in exts])
+        ids = [s.source_id for s in task.subjects[-1].sources]
+        assert ids == ["site-a_P-01", "site-a_P-01@2", "site-a_P-01@3"]
+        assert task.validate() == []
+
+    def test_S2_an_explicit_colliding_id_is_still_T204(self, setup):
+        task, _ = setup
+        pin = task.subjects[0].sources[0].content_id
+        taken = task.subjects[0].sources[0].source_id
+        task.add_subject(
+            "P-09",
+            [SourceRef("elsewhere.medh5", pin, source_id=taken)],
+            partition="train",
+        )
+        assert "T204" in found(task.validate())
+
+    @pytest.mark.parametrize(
+        ("uri", "key", "expected"),
+        [
+            ("P-01.medh5", None, "P-01"),
+            ("site-a/P-01.medh5", None, "site-a_P-01"),
+            ("data/site-a/P-01.medh5", None, "site-a_P-01"),
+            ("../data/P-01.medh5", None, "data_P-01"),
+            ("../P-01.medh5", None, ".._P-01"),
+            ("/abs/P 01.medh5", None, "abs_P_01"),
+            ("file:///data/site%20b/P-01.medh5", None, "site_b_P-01"),
+            ("file:///C:/data/P-01.medh5", None, "data_P-01"),
+            ("s3://b/x.medh5", None, "b_x"),
+            ("..\\x\\y.medh5c", None, ".._x_y"),
+            ("shard.medh5c", "P-01", "shard:P-01"),
+            ("n" * 200, None, "n" * 128),
+            ("", "k", ":k"),
+        ],
+    )
+    def test_S2_uncolliding_default_ids_are_unchanged(
+        self, uri: str, key: str | None, expected: str
+    ):
+        """What 2.0.2 derived on POSIX, now on every platform: a backslash is
+        no separator, so one script's ids, and fingerprints, are one."""
+        assert SourceRef(uri, "sha256:" + "0" * 64, key).source_id == expected
 
     def test_S3_2_the_task_fingerprint_is_the_definition(self, setup):
         task, _ = setup
@@ -253,7 +434,14 @@ class TestManifest:
 
     def test_S3_4_an_inconsistent_definition_is_T102(self, tmp_path: Path):
         bad = Target(
-            "t", "1", "s", "c", positive=("PD",), negative=("PD",), horizon_us=1
+            "t",
+            "1",
+            "s",
+            "c",
+            positive=("PD",),
+            negative=("PD",),
+            horizon_us=1,
+            min_follow_up_us=1,
         )
         task = TaskManifest.new(
             "t",
@@ -274,8 +462,87 @@ class TestManifest:
         refuses, so a target built without it failed every manifest (T101)."""
         with pytest.raises(TypeError, match="horizon_us"):
             Target("t", "1", "s", "c", ("PD",))
-        target = Target("t", "1", "s", "c", ("PD",), ("SD",), horizon_us=DAY)
+        target = Target(
+            "t", "1", "s", "c", ("PD",), ("SD",), horizon_us=DAY, min_follow_up_us=DAY
+        )
         assert Target.from_json(target.to_json()) == target
+
+    def test_S5_a_target_with_negatives_states_its_follow_up(self, setup, tmp_path):
+        """The default follow-up, the horizon, leaves a negative only an
+        observation at exactly ``c + h``, so nearly every row without a
+        positive is censored.  It cannot change under ``/1``, so a target
+        built without it warns, and a manifest written without it is noted."""
+        with pytest.warns(DeprecationWarning, match="min_follow_up_us: state it"):
+            bare = Target("t", "1", "s", "c", ("PD",), ("SD",), horizon_us=DAY)
+        stated = Target(
+            "t", "1", "s", "c", ("PD",), ("SD",), horizon_us=DAY, min_follow_up_us=1
+        )
+        positives_only = Target("t", "1", "s", "c", ("PD",), horizon_us=DAY)
+        assert Target.from_json(bare.to_json()) == bare, "a document is not warned"
+        built = TaskManifest.new("t", "1", identity_namespace="n", target=bare)
+        assert [str(n) for n in built.notes] == [
+            f"note /target/min_follow_up_us: {built.notes[0].message}"
+        ]
+        assert "nearly every row" in built.notes[0].message
+        assert built.validate() == [], "a note is no finding"
+        for target in (stated, positives_only, None):
+            task = TaskManifest.new("t", "1", identity_namespace="n", target=target)
+            assert task.notes == ()
+        task, _ = setup
+        doc = task.to_json()
+        del doc["target"]["min_follow_up_us"]
+        path = tmp_path / "cohort" / "noted.task.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        loaded = TaskManifest.load(path)
+        assert [n.location for n in loaded.notes] == ["/target/min_follow_up_us"]
+        assert [n.location for n in loaded.reconcile().notes] == [
+            "/target/min_follow_up_us"
+        ], "the document as written, after a reconcile too"
+        assert TaskManifest(loaded.to_json()).notes == (), "the normal form states it"
+
+    def test_S3_2_the_default_follow_up_is_in_the_fingerprint(self, setup):
+        """Leaving ``min_follow_up_us`` out is the task that states the
+        horizon, and not the task that states half of it: the default is in
+        every task fingerprint, which is why ``/1`` cannot move it."""
+        task, _ = setup
+        doc = task.to_json()
+        horizon = doc["target"]["horizon_us"]
+        fingerprints = []
+        for follow_up in (None, horizon, horizon // 2):
+            if follow_up is None:
+                del doc["target"]["min_follow_up_us"]
+            else:
+                doc["target"]["min_follow_up_us"] = follow_up
+            fingerprints.append(TaskManifest(doc).task_fingerprint)
+        omitted, explicit, half = fingerprints
+        assert omitted == explicit != half
+
+    def test_S3_1_python_defaults_are_the_engines(self):
+        """``SelectionPolicy()``, ``Slot()`` and ``Target()`` keep their
+        Python defaults: each is what the engine fills into a document that
+        states only what is required."""
+        from medh5.clinical import SelectionPolicy
+
+        bare = {
+            "schema": "medh5.task/1",
+            "task": {"id": "t", "version": "1"},
+            "identity_namespace": "n",
+            "slots": [{"name": "ct", "modality": "CT"}],
+            "target": {
+                "id": "t",
+                "version": "1",
+                "event": {"code_system": "s", "code": "c"},
+                "positive": ["PD"],
+                "horizon_us": DAY,
+            },
+            "subjects": [],
+            "rows": [],
+        }
+        normal = TaskManifest(bare).to_json()
+        assert normal["policy"] == SelectionPolicy().to_json()
+        assert normal["slots"] == [Slot("ct", "CT").to_json()]
+        target = Target("t", "1", "s", "c", ("PD",), horizon_us=DAY).to_json()
+        assert normal["target"] == {**target, "min_follow_up_us": DAY}
 
     def test_S5_a_target_without_negatives_is_the_default(self, setup):
         """`negative` defaults to none: a target that leaves it out is the task
@@ -306,6 +573,45 @@ class TestManifest:
         back = pickle.loads(pickle.dumps(task))
         assert back.manifest_fingerprint == task.manifest_fingerprint
         assert back.base == task.base
+
+
+class TestVocabularies:
+    def test_constants_are_the_engines(self):
+        """The preflight vocabularies were spelled in the binding while the
+        engine wrote literals, and five more in Python: each is now the
+        engine's table, bound as is."""
+        import medh5.cache
+        import medh5.clinical
+        import medh5.task
+
+        for module, name, core in [
+            (medh5.task, "ROW_STATUSES", "ROW_STATUSES"),
+            (medh5.task, "SELECTION_STATUSES", "SELECTION_STATUSES"),
+            (medh5.task, "TARGET_STATUSES", "TARGET_STATUSES"),
+            (medh5.task, "ROIS", "ROIS"),
+            (medh5.task, "ROI", "TASK_ROI"),
+            (medh5.task, "CENSORING", "TASK_CENSORING"),
+            (medh5.cache, "LEVELS", "CACHE_LEVELS"),
+            (medh5.cache, "SUFFIX", "CACHE_SUFFIX"),
+            (medh5.clinical, "ASSESSMENT_SYSTEM", "ASSESSMENT_SYSTEM"),
+            (medh5.clinical, "LESION_PRESENCE", "LESION_PRESENCE"),
+        ]:
+            assert getattr(module, name) is getattr(_core, core), name
+        # Two ROI vocabularies: what a slot may ask for, and what a fill reports.
+        assert set(medh5.task.ROI) < set(medh5.task.ROIS)
+        assert "center_fallback" in medh5.task.ROIS
+
+    @pytest.mark.parametrize(
+        ("name", "now"), [("STATUSES", "ROW_STATUSES"), ("LABELS", "TARGET_STATUSES")]
+    )
+    def test_the_old_names_warn(self, name: str, now: str):
+        """``task.STATUSES`` and ``clinical.STATUSES`` named two vocabularies."""
+        import medh5.task
+
+        assert name not in medh5.task.__all__
+        with pytest.warns(DeprecationWarning, match=f"use {now}"):
+            old = getattr(medh5.task, name)
+        assert old is getattr(medh5.task, now)
 
 
 class TestConceptToken:
@@ -630,6 +936,64 @@ def hostile_task(root: Path) -> tuple[TaskManifest, str]:
     task.add_subject("S-01", [hostile, good])
     task.add_row("S-01@0h", "S-01", 0)
     return task, secret
+
+
+def outside_task(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
+    """A manifest in ``tmp_path/tasks`` whose sources are in ``../cohort``:
+    outside its directory, as most manifests' are."""
+    paths = cohort(tmp_path / "cohort")
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    refs = {s: SourceRef.pin(p, uri=f"../cohort/{p.name}") for s, p in paths.items()}
+    task = task_for(tmp_path / "cohort", paths, refs=refs)
+    return task.save(tasks / "t.task.json"), paths
+
+
+class TestConfinement:
+    """Contract §2: whoever runs a manifest chooses what may be opened."""
+
+    def test_S2_confine_refuses_a_path_outside_the_root(self, tmp_path: Path):
+        manifest, _ = outside_task(tmp_path)
+        task = TaskManifest.load(manifest)
+        report = task.preflight(confine=True)
+        assert found(report.findings) == ["T301"]
+        assert all("outside the directory" in f.message for f in report.findings)
+        # Absent or present, one message: confinement answers nothing about
+        # a path it refuses.
+        doc = task.to_json()
+        doc["subjects"][0]["sources"][0]["uri"] = "../cohort/absent.medh5"
+        doc.pop("fingerprint")
+        absent = TaskManifest(doc, base=manifest.parent).preflight(confine=True)
+        first = [f.message for f in absent.findings][0]
+        present = [f.message for f in report.findings][0]
+        assert first.replace("absent", "P-01") == present
+        # A root wide enough admits them; so does lifting it.
+        assert task.preflight(confine=tmp_path).ok
+        assert task.preflight(confine=False).ok
+        source = task.subjects[0].sources[0]
+        with pytest.raises(MEDH5ValidationError, match="outside the directory"):
+            source.open(manifest.parent, root=manifest.parent)
+        inside = source.resolve(manifest.parent, root=tmp_path)
+        assert inside == (tmp_path / "cohort" / "P-01.medh5").resolve()
+        with pytest.raises(MEDH5ValidationError) as refused:
+            task.reconcile(confine=True)
+        assert refused.value.code == "T301"
+
+    def test_S2_an_outside_source_warns_until_3_0(self, tmp_path: Path):
+        manifest, paths = outside_task(tmp_path)
+        task = TaskManifest.load(manifest)
+        with pytest.warns(FutureWarning, match="^medh5 3.0 confines") as caught:
+            assert task.preflight().ok
+        assert caught[0].filename == __file__
+        with pytest.warns(FutureWarning, match="^medh5 3.0 confines"):
+            preflight(manifest)
+        # Said which way, it is silent; so is a manifest built in memory.
+        assert task.preflight(confine=False).ok
+        assert task_for(tmp_path / "cohort", paths).preflight().ok
+        inside = task_for(tmp_path / "cohort", paths).save(
+            tmp_path / "cohort" / "t.json"
+        )
+        assert TaskManifest.load(inside).preflight().ok
 
 
 class TestSources:
@@ -1361,6 +1725,77 @@ class TestPreflight:
             assert any(why in str(f) for f in findings), (why, findings)
 
 
+class TestRepin:
+    def test_S2_repin_pins_what_is_there(self, setup):
+        """Re-pinning was by hand (``SourceRef.pin`` per source, then
+        reconcile): ``repin`` pins each source to the whole version it names
+        now, and names the rows it stales."""
+        task, paths = setup
+        assert task.repin() == RepinReport((), ("P-01", "P-02", "P-03"), False, ())
+        before = task.subjects[1].sources[0].content_id
+        with medh5.amend(paths["P-02"]) as w:
+            w.add_event(
+                Event("late", "late", "other", "static", "final", available_us=0)
+            )
+        assert not task.preflight().ok
+        report = task.repin()
+        assert [(r.source_id, r.before) for r in report.changed] == [("P-02", before)]
+        after = report.changed[0].after
+        assert after == task.subjects[1].sources[0].content_id != before
+        assert report.rows == ("P-02@24h", "P-02@d95")
+        assert task.preflight().ok and task.validate() == []
+        assert task.repin().changed == ()
+
+    def test_S2_repin_dry_run_writes_nothing(self, setup, tmp_path: Path, capsys):
+        task, paths = setup
+        manifest = task.save(tmp_path / "cohort" / "t.task.json")
+        with medh5.amend(paths["P-01"]) as w:
+            w.add_event(
+                Event("late", "late", "other", "static", "final", available_us=0)
+            )
+        before = manifest.read_bytes()
+        loaded = TaskManifest.load(manifest)
+        report = loaded.repin(dry_run=True)
+        assert [r.source_id for r in report.changed] == ["P-01"]
+        assert loaded.to_json() == TaskManifest.load(manifest).to_json()
+        capsys.readouterr()
+        assert main(["task", "repin", str(manifest), "--dry-run", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["dry_run"] is True
+        assert manifest.read_bytes() == before
+        assert main(["task", "repin", str(manifest), "--source", "P-02"]) == 0
+        assert "repinned 0, 1 unchanged" in capsys.readouterr().out
+        assert manifest.read_bytes() == before
+        assert main(["task", "repin", str(manifest)]) == EXIT_OK
+        out = capsys.readouterr().out
+        assert "repinned P-01: " in out and "2 row fingerprint(s) change" in out
+        assert TaskManifest.load(manifest).preflight().ok
+
+    def test_S2_repin_refuses_another_subject(self, setup):
+        task, paths = setup
+        pinned = task.to_json()
+        History.write(paths["P-02"], subject_id="P-99", response="SD")
+        with pytest.raises(MEDH5ValidationError) as caught:
+            task.repin()
+        assert caught.value.code == "T303"
+        assert task.to_json() == pinned, "refused, nothing changes"
+
+    def test_S2_repin_refuses_a_corrupt_source(self, setup):
+        task, paths = setup
+        with medh5.amend(paths["P-02"]) as w:
+            w.add_event(
+                Event("late", "late", "other", "static", "final", available_us=0)
+            )
+        with h5py.File(paths["P-02"], "a") as f:
+            damage(f["clinical/events/event_id"], "data")
+        pinned = task.to_json()
+        with pytest.raises(MEDH5ValidationError) as caught:
+            task.repin()
+        assert caught.value.code == "T302"
+        assert task.to_json() == pinned
+        with pytest.raises(MEDH5ValidationError):
+            task.repin(sources=["nope"])
+
+
 class TestInstanceCentres:
     """§3.5 and §4: an ``eligible_instances`` slot centres on its first eligible
     instance, in voxels of the image's own grid, from the object table alone."""
@@ -1409,6 +1844,41 @@ class TestInstanceCentres:
         assert report.ok, report.findings
         fill = report.row("P-01@24h").slots["ct"]
         assert (fill.roi, fill.center) == ("eligible_instances", (2, 3, 4))
+
+    def test_S3_5_a_self_asserted_mask_centres_the_crop(self, tmp_path: Path):
+        """The procedure that drew the mask asserts it from itself, as both
+        shipped examples do.  Of unknown time, it is never selected under
+        effective ordering, and the asserter had to be selected when it was
+        also the endpoint: the crop fell back to the image's centre."""
+        root = tmp_path / "w"
+        root.mkdir()
+        path = root / "P-01.medh5"
+        History.write(
+            path,
+            events=[
+                Event(
+                    "seg0",
+                    "seg0",
+                    "procedure",
+                    "unknown",
+                    "completed",
+                    available_us=2 * HOUR,
+                )
+            ],
+            links=[
+                Link.between(
+                    ("event", "seg0"),
+                    "describes",
+                    ("annotation", "lesions_tp0"),
+                    asserted_by="seg0",
+                )
+            ],
+        )
+        report = instance_task(root, {"P-01": path}).preflight()
+        assert report.ok, report.findings
+        fill = report.row("P-01@24h").slots["ct"]
+        assert (fill.roi, fill.center) == ("eligible_instances", (3, 2, 7))
+        assert fill.annotations == ("lesions_tp0",)
 
     def test_S4_preflight_reads_no_mask(self, tmp_path: Path):
         """A crop is centred from the object table: a mask whose chunk no
@@ -1900,6 +2370,87 @@ class TestCaches:
             FeatureCache.open(path)
         assert caught.value.code == "T401"
 
+    def test_S7_1_a_moved_cache_validates_through_its_task(self, setup, tmp_path: Path):
+        """An entry copies its task's URI.  Once the samples moved and the
+        task's URIs followed them, every entry was stale (T403) though no
+        content changed: a validator given the task now opens each entry
+        source through the task's reference pinning it."""
+        task, paths = setup
+        cache = tmp_path / "cohort" / "docs.medh5cache"
+        assert build_document_cache(task, cache, HashingTextEncoder(dim=4)).ok
+        moved = tmp_path / "moved"
+        moved.mkdir()
+        for path in paths.values():
+            path.rename(moved / path.name)
+        doc = task.to_json()
+        for subject in doc["subjects"]:
+            for source in subject["sources"]:
+                source["uri"] = f"../moved/{source['uri']}"
+        repointed = TaskManifest(doc, base=tmp_path / "cohort")
+        report = validate_cache(cache, task=repointed, check_rows=False, confine=False)
+        assert report.ok, report.findings
+        alone = validate_cache(cache)
+        assert len(alone.stale) == alone.entries == 6, "without the task: by URI"
+
+    def test_S7_1_an_entry_without_sources_is_T401(self, tmp_path: Path):
+        """The schema requires a source, and a writer refuses an entry that
+        would fail its schema (T401): it was refused as stale (T403)."""
+        with CacheWriter(
+            tmp_path / "x.medh5cache",
+            level="event",
+            encoder={"name": "fixture", "revision": "1"},
+            output={"dtype": "float32", "shape": [2]},
+        ) as writer:
+            with pytest.raises(MEDH5ValidationError) as caught:
+                writer.add("x", np.zeros(2, np.float32), sources=[], event_id="e")
+            assert caught.value.code == "T401"
+            writer.abort()
+
+    def test_S7_1_an_entry_reads_as_the_engine_reads_it(self, setup):
+        """``CacheEntry.from_json`` read leniently what the engine refuses: a
+        float cutoff, a source list that is not a list."""
+        task, _ = setup
+        source = task.subjects[0].sources[0]
+        doc = {
+            "entry_id": "e",
+            "sources": [
+                {"uri": source.uri, "sample_key": None, "content_id": source.content_id}
+            ],
+            "event_id": None,
+            "document_id": None,
+            "row_id": "P-01@24h",
+            "cutoff_us": 24 * HOUR,
+            "event_versions": ["rep_v1"],
+            "row_fingerprint": "sha256:" + "0" * 64,
+            "digest": "sha256:" + "1" * 64,
+        }
+        entry = CacheEntry.from_json(doc)
+        assert entry.sources == (SourceRef(source.uri, source.content_id),)
+        assert _core.cache_entry_json(doc) == doc, "round-trips unchanged"
+        for member, wrong in [("cutoff_us", 1.5), ("sources", "ct.medh5")]:
+            with pytest.raises(MEDH5ValidationError) as caught:
+                CacheEntry.from_json({**doc, member: wrong})
+            assert caught.value.code == "T401", member
+
+    def test_S8_a_report_says_what_the_engine_says(self):
+        """``ok``, ``stale`` and ``corrupt`` re-computed the engine's verdict."""
+        from medh5.cache import CacheReport
+
+        report = CacheReport(
+            "c.medh5cache",
+            3,
+            (
+                Finding("T403", "b", "gone"),
+                Finding("T403", "a", "gone"),
+                Finding("T402", "manifest", "bytes"),
+                Finding("T406", "c", "inadmissible"),
+            ),
+        )
+        assert not report.ok
+        assert report.stale == ("a", "b") and report.corrupt == ("manifest",)
+        assert report.to_json()["findings"][0]["summary"] == CODES["T403"]
+        assert CacheReport("c", 0, ()).ok
+
     def test_S7_entries_match_the_declared_output(self, tmp_path: Path, setup):
         task, _ = setup
         source = task.subjects[0].sources[0]
@@ -1913,9 +2464,6 @@ class TestCaches:
         with pytest.raises(MEDH5ValidationError) as caught:
             writer.add_event(source, "rep_v1", np.zeros(3, np.float32))
         assert caught.value.code == "T402"
-        with pytest.raises(MEDH5ValidationError) as caught:
-            writer.add("x", np.zeros(2, np.float32), sources=[])
-        assert caught.value.code == "T403"
         writer.abort()
         assert not path.exists()
         with pytest.raises(MEDH5ValidationError) as caught:
@@ -2308,6 +2856,132 @@ class TestCommandLine:
         assert "'s.medh5c::P-01', a source" in capsys.readouterr().err
         assert shard.read_bytes() == before
 
+    def test_task_validate_notes_a_defaulted_follow_up(
+        self, setup, tmp_path: Path, capsys
+    ):
+        """``task validate`` and ``task preflight`` print the note after the
+        findings, and ``--json`` carries it; neither ``ok`` nor the exit
+        status changes."""
+        task, _ = setup
+        doc = task.to_json()
+        del doc["target"]["min_follow_up_us"]
+        path = tmp_path / "cohort" / "noted.task.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        capsys.readouterr()
+        note = "note /target/min_follow_up_us: "
+        for command in ("validate", "preflight"):
+            assert main(["task", command, str(path)]) == EXIT_OK
+            out = capsys.readouterr().out
+            assert ": OK (" in out and f"  {note}" in out
+            assert main(["task", command, str(path), "--json"]) == EXIT_OK
+            report = json.loads(capsys.readouterr().out)
+            assert report["ok"] is True
+            expected = TaskManifest.load(path).notes[0]
+            assert report["notes"] == [
+                {"location": expected.location, "message": expected.message}
+            ]
+        stated = task.save(tmp_path / "cohort" / "stated.task.json")
+        assert main(["task", "validate", str(stated), "--json"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["notes"] == []
+
+    def test_cutoff_hours_rounds_as_hours_does(self, setup, capsys):
+        """1.25e-09 hours is 4.5 us: ``hours`` gives 4 (half to even), and the
+        command line gave 5 (half away from zero)."""
+        from medh5.clinical import hours
+
+        _, paths = setup
+        argv = ["clinical", "select", str(paths["P-01"]), "--json"]
+        assert main([*argv, "--cutoff-hours=1.25e-09"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["cutoff_us"] == hours(1.25e-09) == 4
+
+    def test_cache_ls_and_info(self, setup, tmp_path: Path, capsys):
+        task, _ = setup
+        cache = tmp_path / "cohort" / "docs.medh5cache"
+        build_document_cache(task, cache, HashingTextEncoder(dim=4))
+        source = task.subjects[0].sources[0]
+        capsys.readouterr()
+        assert main(["cache", "info", str(cache), "--json"]) == EXIT_OK
+        info = json.loads(capsys.readouterr().out)
+        assert (info["level"], info["entries"], info["sources"]) == ("event", 6, 3)
+        assert info["encoder"]["name"] == HashingTextEncoder.NAME
+        assert info["output"]["shape"] == [4]
+        assert main(["cache", "info", str(cache)]) == EXIT_OK
+        out = capsys.readouterr().out
+        assert "event-level, 6 entries over 3 source versions" in out
+        assert main(["cache", "ls", str(cache), "--json"]) == EXIT_OK
+        assert len(json.loads(capsys.readouterr().out)) == 6
+        argv = ["cache", "ls", str(cache), "--source", source.content_id, "--json"]
+        assert main(argv) == EXIT_OK
+        listed = json.loads(capsys.readouterr().out)
+        assert len(listed) == 2
+        assert {e["sources"][0]["content_id"] for e in listed} == {source.content_id}
+        with open_cache(cache) as opened:
+            assert [CacheEntry.from_json(e) for e in listed] == [
+                e
+                for e in opened.entries
+                if e.sources[0].content_id == source.content_id
+            ], "the entries the reader holds"
+        assert main(["cache", "ls", str(cache)]) == EXIT_OK
+        out = capsys.readouterr().out
+        assert "event document" in out and "rep_v1" in out
+        assert main(["cache", "ls", str(cache), "--row", "P-01@24h", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out) == []
+
+    def test_cache_validate_task_base(self, setup, tmp_path: Path, capsys):
+        """``--task-base`` locates the task's sources when the manifest is
+        kept away from them, as ``task preflight --base`` does."""
+        task, _ = setup
+        cohort = tmp_path / "cohort"
+        cache = cohort / "docs.medh5cache"
+        build_document_cache(task, cache, HashingTextEncoder(dim=4))
+        elsewhere = tmp_path / "tasks"
+        elsewhere.mkdir()
+        manifest = task.save(elsewhere / "t.task.json")
+        argv = ["cache", "validate", str(cache), "--task", str(manifest), "--json"]
+        capsys.readouterr()
+        assert main(argv) == EXIT_ERROR, "the sources are not beside the manifest"
+        capsys.readouterr()
+        assert main([*argv, "--task-base", str(cohort)]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["ok"] is True
+        assert main(["cache", "validate", str(cache), "--task-base", str(cohort)]) == (
+            EXIT_USAGE
+        ), "--task-base without --task"
+
+    def test_cutoff_hours_takes_a_negative_exponent_after_equals(self, setup, capsys):
+        """``--cutoff-hours -5.5e-07`` reads as a flag; the documented
+        ``--cutoff-hours=-5.5e-07`` is the cutoff."""
+        from medh5.clinical import hours
+
+        _, paths = setup
+        argv = ["clinical", "select", str(paths["P-01"]), "--json"]
+        assert main([*argv, "--cutoff-hours=-5.5e-07"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["cutoff_us"] == hours(-5.5e-07)
+        assert main([*argv, "--cutoff-hours", "-2"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["cutoff_us"] == hours(-2)
+
+    def test_task_preflight_source_root_and_any_source_path(
+        self, tmp_path: Path, capsys
+    ):
+        manifest, _ = outside_task(tmp_path)
+        argv = ["task", "preflight", str(manifest)]
+        assert main(argv) == EXIT_OK
+        assert "note: 3 source(s) lie outside" in capsys.readouterr().err
+        assert main([*argv, "--any-source-path"]) == EXIT_OK
+        assert capsys.readouterr().err == ""
+        assert main([*argv, "--source-root", str(tmp_path)]) == EXIT_OK
+        assert capsys.readouterr().err == ""
+        assert main([*argv, "--source-root", str(manifest.parent), "--json"]) == (
+            EXIT_ERROR
+        )
+        report = json.loads(capsys.readouterr().out)
+        assert {f["code"] for f in report["findings"]} == {"T301"}
+        both = [*argv, "--source-root", str(tmp_path), "--any-source-path"]
+        assert main(both) == EXIT_USAGE
+        capsys.readouterr()
+        reconcile = ["task", "reconcile", str(manifest)]
+        assert main([*reconcile, "--source-root", str(manifest.parent)]) == (EXIT_ERROR)
+        assert "outside the directory" in capsys.readouterr().err
+
     def test_clinical_commands(self, setup, tmp_path: Path, capsys):
         _, paths = setup
         path = str(paths["P-01"])
@@ -2339,3 +3013,237 @@ class TestCommandLine:
             assert s.clinical is not None and len(s.clinical.events) == 6
         assert main(["clinical", "show", str(stripped)]) == EXIT_ERROR
         assert "does not declare the clinical profile" in capsys.readouterr().err
+
+
+def placed(task: TaskManifest) -> list[tuple[str, str | None]]:
+    return [(s.subject_id, s.partition) for s in task.subjects]
+
+
+class TestFromCohort:
+    """A task drawn from a cohort manifest and its split, or its claims."""
+
+    @pytest.fixture
+    def scanned(self, tmp_path: Path) -> tuple[Any, Path]:
+        from medh5.dataset import scan
+
+        root = tmp_path / "cohort"
+        cohort(root, {"P-01": "PD", "P-02": "SD", "P-03": "SD", "P-04": "PR"})
+        manifest, failed = scan(root)
+        assert failed == ()
+        return manifest, root
+
+    @staticmethod
+    def split_of(manifest: Any, places: dict[str, tuple[str, int | None]]) -> Any:
+        from medh5.dataset import Assignment, Split
+
+        return Split(
+            "s1",
+            manifest.sha256(),
+            [
+                Assignment(e.subject_id, *places[e.subject_id], entries=(e.path,))
+                for e in manifest
+            ],
+            group_by="subject_id",
+            k_folds=2 if any(f is not None for _, f in places.values()) else None,
+        )
+
+    def build(self, manifest: Any, split: Any, root: Path, **kw: Any) -> TaskManifest:
+        return TaskManifest.from_cohort(
+            manifest,
+            split,
+            task_id="progression",
+            version="1",
+            identity_namespace="site",
+            base=root,
+            **kw,
+        )
+
+    def test_S3_3_partitions_come_from_the_split(self, scanned):
+        manifest, root = scanned
+        places = {
+            "P-01": ("train", None),
+            "P-02": ("train", None),
+            "P-03": ("val", None),
+            "P-04": ("test", None),
+        }
+        task = self.build(
+            manifest,
+            self.split_of(manifest, places),
+            root,
+            slots=[Slot("ct", "CT", required=True, patch=(4, 8, 8), classes=(3,))],
+            target=TARGET,
+            description="from a cohort",
+        )
+        assert placed(task) == [(s, p) for s, (p, _) in places.items()]
+        assert task.split == ("s1", ("train", "val", "test"))
+        assert [s.sources[0].uri for s in task.subjects] == [
+            f"{s}.medh5" for s in places
+        ]
+        assert task.rows == () and task.validate() == []
+        assert task.target == TARGET
+        assert task.to_json()["task"]["description"] == "from a cohort"
+        task.add_row("P-01@24h", "P-01", 24 * HOUR)
+        assert task.preflight().ok
+
+    def test_S3_3_partitions_come_from_this_manifests_claims(self, scanned):
+        from medh5.dataset import make_splits, scan, write_claims
+
+        manifest, root = scanned
+        split = make_splits(
+            manifest, set_id="claimed", group_by="subject_id", algorithm="medh5.split/2"
+        )
+        write_claims(split, manifest)
+        claimed, _ = scan(root)
+        task = self.build(claimed, "claimed", root)
+        assert placed(task) == [(e.subject_id, split.partition_of(e)) for e in claimed]
+        assert task.split is not None and task.split[0] == "claimed"
+        # The pins are of the files as claimed, not as first scanned.
+        assert [s.sources[0].content_id for s in task.subjects] == [
+            e.content_id for e in claimed
+        ]
+
+    def test_S3_3_a_claim_of_another_manifest_is_refused(self, scanned):
+        from medh5.dataset import make_splits, scan, write_claims
+
+        manifest, root = scanned
+        write_claims(
+            make_splits(manifest, set_id="claimed", algorithm="medh5.split/2"),
+            manifest,
+        )
+        claimed, _ = scan(root)
+        fewer = claimed.filter(lambda e: e.subject_id != "P-04")
+        with pytest.raises(MEDH5ValidationError, match="against another manifest"):
+            self.build(fewer, "claimed", root)
+        with pytest.raises(MEDH5ValidationError, match="has no partition"):
+            self.build(claimed, "another-set", root)
+
+    def test_S3_3_a_split_of_another_cohort_is_refused(self, scanned):
+        manifest, root = scanned
+        places = {e.subject_id: ("train", None) for e in manifest}
+        split = self.split_of(manifest, places)
+        fewer = manifest.filter(lambda e: e.subject_id != "P-04")
+        with pytest.raises(MEDH5ValidationError, match="another cohort manifest"):
+            self.build(fewer, split, root)
+
+    def test_S3_3_a_subject_in_two_partitions_is_refused(self, scanned):
+        from medh5.dataset import Assignment, scan
+
+        _, root = scanned
+        History.write(root / "P-01-b.medh5", subject_id="P-01", response="PD")
+        manifest, _ = scan(root)
+        split = self.split_of(
+            manifest, {e.subject_id: ("train", None) for e in manifest}
+        )
+        split.group_by = "sample_id"
+        split.assignments = [
+            Assignment(
+                e.sample_id,
+                "test" if e.path.endswith("-b.medh5") else "train",
+                entries=(e.path,),
+            )
+            for e in manifest
+        ]
+        with pytest.raises(MEDH5ValidationError, match="in two partitions"):
+            self.build(manifest, split, root)
+        for a in split.assignments:
+            a.partition = "unassigned" if a.entries[0].endswith("-b.medh5") else "train"
+        with pytest.raises(MEDH5ValidationError, match="unassigned"):
+            self.build(manifest, split, root)
+
+    def test_S3_3_fold_n_is_val(self, scanned):
+        manifest, root = scanned
+        places = {
+            "P-01": ("holdout", 0),
+            "P-02": ("holdout", 1),
+            "P-03": ("holdout", 0),
+            "P-04": ("holdout", 1),
+        }
+        split = self.split_of(manifest, places)
+        with pytest.raises(MEDH5ValidationError, match="needs a fold"):
+            self.build(manifest, split, root)
+        task = self.build(manifest, split, root, fold=1)
+        assert placed(task) == [
+            ("P-01", "train"),
+            ("P-02", "val"),
+            ("P-03", "train"),
+            ("P-04", "val"),
+        ]
+        with pytest.raises(MEDH5ValidationError, match="not a fold"):
+            self.build(manifest, split, root, fold=2)
+
+    def test_S3_3_the_training_partition_comes_first(self, scanned):
+        manifest, root = scanned
+        places = {
+            "P-01": ("train", None),
+            "P-02": ("val", None),
+            "P-03": ("test", None),
+            "P-04": ("test", None),
+        }
+        split = self.split_of(manifest, places)
+        task = self.build(manifest, split, root, training_partition="val")
+        assert task.split == ("s1", ("val", "train", "test"))
+        absolute = TaskManifest.from_cohort(
+            manifest, split, task_id="t", version="1", identity_namespace="ns"
+        )
+        assert all(Path(s.sources[0].uri).is_absolute() for s in absolute.subjects)
+        assert absolute.preflight().ok
+
+
+def test_task_new_from_a_split(tmp_path: Path, capsys):
+    """``medh5 task new``: a task drawn from a cohort and its split, its
+    definition from a file and its rows from a CSV."""
+    from medh5.dataset import make_splits, scan
+
+    root = tmp_path / "cohort"
+    cohort(root)
+    manifest, _ = scan(root)
+    manifest.save(root / "cohort.json")
+    split = make_splits(
+        manifest,
+        set_id="s1",
+        group_by="subject_id",
+        k_folds=3,
+        algorithm="medh5.split/2",
+    )
+    (root / "split.json").write_text(json.dumps(split.to_json()))
+    definition = TaskManifest.new(
+        "progression",
+        "1",
+        identity_namespace="site",
+        slots=[Slot("ct", "CT", required=True, patch=(4, 8, 8), classes=(3,))],
+        target=TARGET,
+    ).to_json()
+    del definition["target"]["min_follow_up_us"]
+    (root / "definition.json").write_text(json.dumps(definition))
+    (root / "rows.csv").write_text(
+        "row_id,subject_id,cutoff_us\nP-01@24h,P-01,86400000000\n"
+    )
+    out = root / "t.task.json"
+    args = [
+        "task", "new", str(out),
+        "--cohort", str(root / "cohort.json"),
+        "--split", str(root / "split.json"),
+        "--definition", str(root / "definition.json"),
+        "--rows", str(root / "rows.csv"),
+    ]  # fmt: skip
+    assert main([*args, "--fold", "0"]) == EXIT_ERROR
+    assert "min-follow-up-us" in capsys.readouterr().err and not out.exists()
+    assert main([*args]) == EXIT_ERROR
+    assert "needs a fold" in capsys.readouterr().err
+    follow = ["--min-follow-up-us", str(60 * DAY), "--fold", "0", "--json"]
+    assert main([*args, *follow]) == EXIT_OK
+    report = json.loads(capsys.readouterr().out)
+    task = TaskManifest.load(out)
+    assert report["task_fingerprint"] == task.task_fingerprint
+    assert report["rows"] == 1 and sum(report["subjects"].values()) == 3
+    assert task.split is not None and task.split[1][0] == "train"
+    assert [s.sources[0].uri for s in task.subjects] == [
+        "P-01.medh5",
+        "P-02.medh5",
+        "P-03.medh5",
+    ]
+    assert task.target is not None and task.target.min_follow_up_us == 60 * DAY
+    assert task.validate() == [] and task.preflight().ok
+    (root / "rows.csv").write_text("row_id,subject_id,cutoff_us\nr,P-99,0\n")
+    assert main([*args, *follow]) == EXIT_ERROR
+    assert "T201" in capsys.readouterr().err

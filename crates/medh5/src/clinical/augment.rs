@@ -14,7 +14,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-use super::model::{Bounds, ClinicalRecords, Clock, Event, Link, DAY, GROUP, PROFILE};
+use super::model::{round_micros, Bounds, ClinicalRecords, Clock, Event, Link, DAY, GROUP, PROFILE};
 use crate::json::repr_str;
 use crate::sample::{amend, open_sample};
 use crate::{Error, Result};
@@ -179,11 +179,8 @@ pub fn imaging_events_from_timepoints(path: &Path) -> Result<(Vec<Event>, Vec<Li
 /// flooring it moved a visit 1.75 days after baseline to `[1, 2)` days,
 /// which may not contain it.
 fn day_after(days: f64) -> Option<Bounds> {
-    let lo = (days * DAY as f64).round();
-    if !lo.is_finite() || lo.abs() >= i64::MAX as f64 {
-        return None;
-    }
-    let lo = lo as i64;
+    // Half to even, as every time given in days is rounded (D32).
+    let lo = round_micros(days, DAY).ok()?;
     Some(Bounds::new(lo, lo.checked_add(DAY - 1)?))
 }
 

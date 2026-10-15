@@ -605,7 +605,11 @@ versions, the payloads they attest, the records a later revision of unknown
 availability makes uncertifiable, and how many events each rule excluded.
 `--policy latest_provable` names the one alternative; `--policy-file` takes a
 whole policy (contract §3.4). A later minor version, read as a projection, is
-refused (1.1 §2.2).
+refused (1.1 §2.2). `--cutoff-hours` is rounded to the microsecond half to
+even, as `medh5.clinical.hours` rounds it, so a cutoff given in hours is one
+instant from a script and from the command line. A negative cutoff with an
+exponent is read as a flag when it follows a space: write it after `=`, as
+`--cutoff-hours=-5.5e-07`.
 
 ### `medh5 clinical export`
 
@@ -645,6 +649,32 @@ The [task and cache contract](../spec/task-cache-1.md): task manifests
 (`medh5.task/1`) and feature caches (`medh5.cache/1`). See
 [Train on clinical tasks](../guides/clinical-training.md).
 
+### `medh5 task new`
+
+```
+medh5 task new OUT --cohort C.json (--split S.json [--fold N] | --claims SET_ID)
+               [--definition TASK.json] [--id ID] [--version V] [--namespace NS]
+               [--description TEXT] [--training-partition P] [--rows ROWS.csv]
+               [--min-follow-up-us N] [--json]
+```
+
+Draw a task from a cohort manifest: one subject per cohort `subject_id`, its
+entries as its sources, each pinned to what its file holds now, each subject
+in the partition the split gives it — or the claims its samples carry for
+`SET_ID`, each made against this cohort manifest. A k-fold split needs
+`--fold`: that fold is `val`, every other `train`. Refused: a split or a
+claim made from another cohort manifest, an entry the split does not place or
+places `unassigned`, a subject placed in two partitions, and an entry whose
+recorded `content_id` is not its file's.
+
+`--definition` supplies `task`, `policy`, `slots` and `target` (a manifest
+holding them will do); `--id`, `--version`, `--namespace` and `--description`
+override it. `--rows` is a CSV with the header `row_id,subject_id,cutoff_us`.
+`OUT`'s directory is the base: source URIs beneath it are written relative to
+it. A target with negatives and no `--min-follow-up-us` (or
+`min_follow_up_us` in the definition) is refused, as is a task that fails
+`task validate`.
+
 ### `medh5 task validate`
 
 ```
@@ -655,10 +685,17 @@ Everything wrong with a manifest that opening no file can find: its schema,
 its policy, slots and target, its fingerprint, and its subjects, partitions,
 rows and source ids (T1xx, T2xx). Prints the task and manifest fingerprints.
 
+After the findings come the manifest's notes, `note LOCATION: …`: what it
+should state and does not, such as a target with negatives and no
+`min_follow_up_us` (contract §5). A note changes neither `ok` nor the exit
+status; `--json` lists them under `notes`, and `task preflight` prints them
+too.
+
 ### `medh5 task preflight`
 
 ```
 medh5 task preflight MANIFEST [--base DIR] [--deep] [--json]
+                     [--source-root DIR | --any-source-path]
 ```
 
 Open and check every source — pins, identities, clocks, duplicated events
@@ -666,6 +703,13 @@ Open and check every source — pins, identities, clocks, duplicated events
 with the reason, the event count, the image filling each slot and the target
 label. Exits 1 when anything was found. `--deep` re-verifies every dataset of
 every source, not only the clinical ones.
+
+`--source-root DIR` confines the sources to `DIR`: a URI naming a path outside
+it, once its `.` and `..` are resolved as text, is `T301`, without the path
+being examined (contract §2). `--any-source-path` opens wherever the URIs
+point. With neither, sources open wherever they point and a note on stderr
+names those outside the manifest's directory, which 3.0 confines to by
+default. The same two flags apply to `task reconcile` and `cache validate`.
 
 With `--json`, each subject's merged history is listed once, under
 `subjects` (its sources, event versions, links and owned documents), and each
@@ -684,6 +728,7 @@ rows, not the cohort.
 
 ```
 medh5 task reconcile MANIFEST [--base DIR] [--out OUT]
+                     [--source-root DIR | --any-source-path]
 ```
 
 Record, per subject, the event versions several of its fragments hold and the
@@ -691,10 +736,51 @@ digest they share — what preflight checks duplicates against. The manifest is
 replaced whole, in place or at `--out`; an `--out` that is one of the task's
 sources, by any path or link, is refused before anything is written.
 
+### `medh5 task repin`
+
+```
+medh5 task repin MANIFEST [--base DIR] [--source ID]... [--dry-run] [--out OUT] [--json]
+                 [--source-root DIR | --any-source-path]
+```
+
+Pin each source to the sample its URI names now, after the data was
+re-exported or amended on purpose: the `content_id` its reference records
+becomes the one the file holds. A source is repinned only when it is whole —
+its own integrity passes (else T302) — and its new version still belongs to
+the subject and reads as its rows need (T301–T304, T306): a file that changed
+into another subject is refused, not pinned. The manifest is then reconciled,
+its fingerprint cleared, and it is replaced whole, in place or at `--out`.
+Prints each source whose pin changed, with the old and new `content_id`, and
+the rows whose selection may have moved; `--dry-run` prints the same and
+writes nothing. `--source` repins only the named sources.
+
+### `medh5 cache info`
+
+```
+medh5 cache info CACHE [--json]
+```
+
+What a cache holds, from its manifest: its level, encoder, preprocessing and
+output, the task fingerprint and selection it was built for, `fitted_on`, its
+manifest checksum, and how many entries it has over how many distinct source
+versions. Nothing is decoded or checked; `cache validate` checks.
+
+### `medh5 cache ls`
+
+```
+medh5 cache ls CACHE [--source CONTENT_ID] [--row ROW_ID] [--json]
+```
+
+Each entry as the manifest records it: its id, the source versions it pins,
+its event and document (event level) or row and cutoff (patient level), and
+its digest. `--source` keeps the entries reading one source version, by its
+`content_id`; `--row` the entry of one row.
+
 ### `medh5 cache validate`
 
 ```
-medh5 cache validate CACHE [--task MANIFEST] [--base DIR] [--json]
+medh5 cache validate CACHE [--task MANIFEST [--task-base DIR]] [--base DIR] [--json]
+                     [--source-root DIR | --any-source-path]
 ```
 
 Check a feature cache's checksums and every source pin it records: *stale*
@@ -704,9 +790,13 @@ version owns (T407). With `--task`,
 also that it was built for this task and its cutoffs (T404), fitted on its
 training partition (T405), and encodes only versions its rows admit (T406) —
 the task is preflighted a subject at a time, keeping only each row's cutoff
-and admitted versions. Entries copy their task's source references, so their
-relative URIs resolve against `--base`, by default the task manifest's
-directory with `--task` and the cache's directory without.
+and admitted versions. `--task-base` resolves the task's relative URIs, by
+default against the task manifest's directory. With a task, an entry source
+the task pins (the same `content_id` and `sample_key`) is opened where the
+task's reference says, so a cache whose samples moved validates once the
+task's URIs follow them (contract §7.1). Other entry sources resolve by their
+own URIs against `--base`, by default the task's base with `--task` and the
+cache's directory without.
 
 ## Conformance
 

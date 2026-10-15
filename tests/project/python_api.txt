@@ -446,14 +446,17 @@ medh5.TaskManifest.add_row	method	(row_id, subject_id, cutoff_us)
 medh5.TaskManifest.add_subject	method	(subject_id, sources, *, partition=None, clock_id=None)
 medh5.TaskManifest.base	property
 medh5.TaskManifest.declared_fingerprint	property
+medh5.TaskManifest.from_cohort	classmethod	(cohort, split, *, task_id, version, identity_namespace, base=None, fold=None, training_partition='train', policy=None, slots=(), target=None, description=None)
 medh5.TaskManifest.identity_namespace	property
 medh5.TaskManifest.load	classmethod	(path)
 medh5.TaskManifest.manifest_fingerprint	property
 medh5.TaskManifest.new	classmethod	(task_id, version, *, identity_namespace, policy=None, slots=(), target=None, split=None, description=None, base=None)
+medh5.TaskManifest.notes	property
 medh5.TaskManifest.partition_of	method	(subject_id)
 medh5.TaskManifest.policy	property
-medh5.TaskManifest.preflight	method	(base=None, *, deep=False)
-medh5.TaskManifest.reconcile	method	(base=None)
+medh5.TaskManifest.preflight	method	(base=None, *, deep=False, confine=None)
+medh5.TaskManifest.reconcile	method	(base=None, *, confine=None)
+medh5.TaskManifest.repin	method	(base=None, *, sources=None, dry_run=False, confine=None)
 medh5.TaskManifest.row_fingerprint	method	(row_id)
 medh5.TaskManifest.rows	property
 medh5.TaskManifest.save	method	(path)
@@ -1842,6 +1845,7 @@ medh5.cache.CacheReport.manifest_digest	field
 medh5.cache.CacheReport.ok	property
 medh5.cache.CacheReport.path	field
 medh5.cache.CacheReport.stale	property
+medh5.cache.CacheReport.to_json	method	()
 medh5.cache.CacheWriter	class	(path, *, level, encoder, output, preprocessing=None, task=None, selection=None, fitted_on=None) bases=
 medh5.cache.CacheWriter.__enter__	method	()
 medh5.cache.CacheWriter.__exit__	method	(exc_type, exc, tb)
@@ -1877,13 +1881,13 @@ medh5.cache.HashingTextEncoder.header	method	()
 medh5.cache.LEVELS	constant	tuple
 medh5.cache.SCHEMA	constant	str
 medh5.cache.SUFFIX	constant	str
-medh5.cache.build_document_cache	function	(task, path, encoder, *, base=None)
+medh5.cache.build_document_cache	function	(task, path, encoder, *, base=None, confine=None)
 medh5.cache.event_entry_id	function	(content_id, event_id)
 medh5.cache.fitted_on	function	(task, partition=None)
 medh5.cache.fitted_on_mismatches	function	(task, fitted)
 medh5.cache.open_cache	function	(path)
 medh5.cache.schema_text	function	()
-medh5.cache.validate_cache	function	(path, *, base=None, task=None, task_base=None, check_rows=True)
+medh5.cache.validate_cache	function	(path, *, base=None, task=None, task_base=None, check_rows=True, confine=None)
 medh5.cli	module
 medh5.cli.EXIT_ERROR	constant	int
 medh5.cli.EXIT_OK	constant	int
@@ -1921,8 +1925,10 @@ medh5.clinical.Clock.id	field
 medh5.clinical.Clock.origin_description	field
 medh5.clinical.Clock.reference	field
 medh5.clinical.Clock.relative	classmethod	(clock_id, origin_description)
+medh5.clinical.Clock.shifted_utc	classmethod	(clock_id)
 medh5.clinical.Clock.to_json	method	()
 medh5.clinical.Clock.unit	field
+medh5.clinical.Clock.utc	classmethod	(clock_id)
 medh5.clinical.DAY	constant	int
 medh5.clinical.Document	class	(document_id, text, media_type='text/plain', language=None, source_type=None) bases=
 medh5.clinical.Document.document_id	field
@@ -1995,6 +2001,7 @@ medh5.clinical.SelectedEvent.record_id	field
 medh5.clinical.SelectedEvent.tie_group	field
 medh5.clinical.Selection	class	(cutoff_us, policy, status, events, links, payloads, uncertain_records, excluded=<factory>) bases=
 medh5.clinical.Selection.admits	method	(kind, object_id, fragment=0)
+medh5.clinical.Selection.admits_any	method	(kind, object_id)
 medh5.clinical.Selection.certified	property
 medh5.clinical.Selection.cutoff_us	field
 medh5.clinical.Selection.event_ids	property
@@ -2023,6 +2030,8 @@ medh5.clinical.SelectionPolicy.uncertainty	field
 medh5.clinical.TEMPORAL_TYPES	constant	tuple
 medh5.clinical.augment	function	(path, records, *, out=None)
 medh5.clinical.baseline_day_clock	function	(clock_id)
+medh5.clinical.clock_day	function	(t_us)
+medh5.clinical.day_bounds	function	(day, tz=None)
 medh5.clinical.days	function	(value)
 medh5.clinical.hours	function	(value)
 medh5.clinical.imaging_events_from_timepoints	function	(path)
@@ -2030,6 +2039,7 @@ medh5.clinical.records_from	function	(clock, events=(), documents=(), links=())
 medh5.clinical.schema_text	function	()
 medh5.clinical.select	function	(events, links, cutoff_us, policy=None)
 medh5.clinical.strip	function	(path, out)
+medh5.clinical.utc_us	function	(moment)
 medh5.collection	module
 medh5.collection.Collection	class	(handle) bases=
 medh5.collection.Collection.__contains__	method	(key)
@@ -3580,6 +3590,7 @@ medh5.storage.spatial_chunk_for	function	(spatial_shape, patch=None, *, itemsize
 medh5.task	module
 medh5.task.CENSORING	constant	tuple
 medh5.task.CODES	constant	dict
+medh5.task.Confine	alias
 medh5.task.EventTable	class	(columns) bases=
 medh5.task.EventTable.__getitem__	method	(i)
 medh5.task.EventTable.__iter__	method	()
@@ -3593,13 +3604,17 @@ medh5.task.Finding.from_json	classmethod	(doc)
 medh5.task.Finding.location	field
 medh5.task.Finding.message	field
 medh5.task.Finding.summary	property
-medh5.task.LABELS	constant	tuple
+medh5.task.LABELS	deprecated
 medh5.task.LinkTable	class	(columns) bases=
 medh5.task.LinkTable.__getitem__	method	(i)
 medh5.task.LinkTable.__iter__	method	()
 medh5.task.LinkTable.__len__	method	()
 medh5.task.LinkTable.column	method	(name)
 medh5.task.LinkTable.fragment	method	(i)
+medh5.task.Note	class	(location, message) bases=
+medh5.task.Note.from_json	classmethod	(doc)
+medh5.task.Note.location	field
+medh5.task.Note.message	field
 medh5.task.Packed	class	(data, offsets, valid=None) bases=
 medh5.task.Packed.__getitem__	method	(i)
 medh5.task.Packed.__iter__	method	()
@@ -3627,6 +3642,16 @@ medh5.task.Reconciled	class	(event_id, digest, sources) bases=
 medh5.task.Reconciled.digest	field
 medh5.task.Reconciled.event_id	field
 medh5.task.Reconciled.sources	field
+medh5.task.RepinReport	class	(changed, unchanged, reconciled, rows) bases=
+medh5.task.RepinReport.changed	field
+medh5.task.RepinReport.from_json	classmethod	(doc)
+medh5.task.RepinReport.reconciled	field
+medh5.task.RepinReport.rows	field
+medh5.task.RepinReport.unchanged	field
+medh5.task.Repinned	class	(source_id, before, after) bases=
+medh5.task.Repinned.after	field
+medh5.task.Repinned.before	field
+medh5.task.Repinned.source_id	field
 medh5.task.Row	class	(row_id, subject_id, cutoff_us) bases=
 medh5.task.Row.cutoff_us	field
 medh5.task.Row.row_id	field
@@ -3655,7 +3680,7 @@ medh5.task.RowView.target	property
 medh5.task.RowView.tie_group	property
 medh5.task.SCHEMA	constant	str
 medh5.task.SELECTION_STATUSES	constant	tuple
-medh5.task.STATUSES	constant	tuple
+medh5.task.STATUSES	deprecated
 medh5.task.Slot	class	(name, modality, required=False, patch=None, roi='center', classes=()) bases=
 medh5.task.Slot.classes	field
 medh5.task.Slot.from_json	classmethod	(doc)
@@ -3677,14 +3702,14 @@ medh5.task.SlotFill.label_annotations	field
 medh5.task.SlotFill.roi	field
 medh5.task.SlotFill.slot	field
 medh5.task.SourceRef	class	(uri, content_id, sample_key=None, source_id='', local_subject_id=None) bases=
-medh5.task.SourceRef.check	method	(base=None, *, deep=False)
+medh5.task.SourceRef.check	method	(base=None, *, deep=False, root=None)
 medh5.task.SourceRef.content_id	field
 medh5.task.SourceRef.from_json	classmethod	(doc)
 medh5.task.SourceRef.local_subject_id	field
 medh5.task.SourceRef.locator	property
-medh5.task.SourceRef.open	method	(base=None)
+medh5.task.SourceRef.open	method	(base=None, *, root=None)
 medh5.task.SourceRef.pin	classmethod	(path, *, sample_key=None, source_id=None, uri=None)
-medh5.task.SourceRef.resolve	method	(base=None)
+medh5.task.SourceRef.resolve	method	(base=None, *, root=None)
 medh5.task.SourceRef.sample_key	field
 medh5.task.SourceRef.source_id	field
 medh5.task.SourceRef.to_json	method	()
@@ -3737,14 +3762,17 @@ medh5.task.TaskManifest.add_row	method	(row_id, subject_id, cutoff_us)
 medh5.task.TaskManifest.add_subject	method	(subject_id, sources, *, partition=None, clock_id=None)
 medh5.task.TaskManifest.base	property
 medh5.task.TaskManifest.declared_fingerprint	property
+medh5.task.TaskManifest.from_cohort	classmethod	(cohort, split, *, task_id, version, identity_namespace, base=None, fold=None, training_partition='train', policy=None, slots=(), target=None, description=None)
 medh5.task.TaskManifest.identity_namespace	property
 medh5.task.TaskManifest.load	classmethod	(path)
 medh5.task.TaskManifest.manifest_fingerprint	property
 medh5.task.TaskManifest.new	classmethod	(task_id, version, *, identity_namespace, policy=None, slots=(), target=None, split=None, description=None, base=None)
+medh5.task.TaskManifest.notes	property
 medh5.task.TaskManifest.partition_of	method	(subject_id)
 medh5.task.TaskManifest.policy	property
-medh5.task.TaskManifest.preflight	method	(base=None, *, deep=False)
-medh5.task.TaskManifest.reconcile	method	(base=None)
+medh5.task.TaskManifest.preflight	method	(base=None, *, deep=False, confine=None)
+medh5.task.TaskManifest.reconcile	method	(base=None, *, confine=None)
+medh5.task.TaskManifest.repin	method	(base=None, *, sources=None, dry_run=False, confine=None)
 medh5.task.TaskManifest.row_fingerprint	method	(row_id)
 medh5.task.TaskManifest.rows	property
 medh5.task.TaskManifest.save	method	(path)
@@ -3760,13 +3788,13 @@ medh5.task.TaskManifest.to_json	method	()
 medh5.task.TaskManifest.training_partition	property
 medh5.task.TaskManifest.validate	method	()
 medh5.task.concept_token	function	(kind, code_system, code)
-medh5.task.preflight	function	(task, base=None, *, deep=False)
+medh5.task.preflight	function	(task, base=None, *, deep=False, confine=None)
 medh5.task.schema_text	function	()
 medh5.torch	module
 medh5.torch.ALIGNMENTS	constant	tuple
 medh5.torch.AVAILABLE	constant	bool
 medh5.torch.CACHE	constant	medh5.torch.handles.HandleCache
-medh5.torch.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, class_ignore=False) bases=
+medh5.torch.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, confine=None, class_ignore=False) bases=
 medh5.torch.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.ClinicalTaskDataset.__len__	method	()
 medh5.torch.ClinicalTaskDataset.file_groups	method	()
@@ -3868,7 +3896,7 @@ medh5.torch.VolumeDataset.__getitem__	method	(index)
 medh5.torch.VolumeDataset.__len__	method	()
 medh5.torch.VolumeDataset.file_groups	method	()
 medh5.torch.clinical	module
-medh5.torch.clinical.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, class_ignore=False) bases=
+medh5.torch.clinical.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, confine=None, class_ignore=False) bases=
 medh5.torch.clinical.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.clinical.ClinicalTaskDataset.__len__	method	()
 medh5.torch.clinical.ClinicalTaskDataset.file_groups	method	()
@@ -4196,4 +4224,4 @@ medh5.validate.rules_for	function	(level)
 medh5.validate.validate_file	function	(path, *, level='semantic', profiles=None, codes_revision=None)
 medh5.validate.validate_paths	function	(paths, *, level='semantic', profiles=None, codes_revision=None)
 medh5.validate.validate_root	function	(sample, *, path=None, level='semantic', profiles=None, errors_only=False)
-medh5.validate_cache	function	(path, *, base=None, task=None, task_base=None, check_rows=True)
+medh5.validate_cache	function	(path, *, base=None, task=None, task_base=None, check_rows=True, confine=None)

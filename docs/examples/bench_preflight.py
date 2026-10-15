@@ -54,7 +54,7 @@ from typing import Any
 import numpy as np
 
 import medh5
-from medh5.clinical import DAY, HOUR
+from medh5.clinical import DAY, HOUR, clock_day
 from medh5.task import Slot, SourceRef, Target, TaskManifest
 
 try:  # not on Windows; the peak resident size is then not reported
@@ -144,9 +144,9 @@ def subject_history(rng: np.random.Generator, args: argparse.Namespace, n_sites:
                                  end=(t + length, t + length + DAY), status="completed",
                                  code_system="org.example.rx", code=drug))
     for i, t in enumerate(np.sort(rng.integers(origin, origin + span, n_dx))):
-        day = int(t) // DAY * DAY
-        site = site_of(day)
-        site[0].append(event(f"dx{i}", "diagnosis", (day, day + DAY - 1), (day + DAY, day + 2 * DAY),
+        day = clock_day(int(t))
+        site = site_of(day[0])
+        site[0].append(event(f"dx{i}", "diagnosis", day, (day[1] + 1, day[1] + 1 + DAY),
                              code_system="http://hl7.org/fhir/sid/icd-10", code=ICD[i % len(ICD)]))
     for i, t in enumerate(np.sort(rng.integers(origin, origin + span, n_docs))):
         t = int(t)

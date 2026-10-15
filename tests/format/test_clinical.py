@@ -297,6 +297,20 @@ class TestRecords:
             assert s.clinical.events == (event,)
             w.abort()
 
+    def test_S3_hours_and_days_are_the_engines(self):
+        """One rounding of hours and days, half to even: the command line and
+        augment rounded half away from zero, so ``1.25e-09`` hours was 4 us
+        here and 5 there, and admission is a closed bound."""
+        from medh5 import _core
+
+        ties = [k + 0.5 for k in range(-40, 40)]
+        for x in [*(t / HOUR for t in ties), *(t / DAY for t in ties), 1.25e-09]:
+            assert clinical.hours(x) == _core.clinical_round_micros(x, HOUR), x
+            assert clinical.days(x) == _core.clinical_round_micros(x, DAY), x
+        assert clinical.hours(1.25e-09) == 4
+        with pytest.raises(ValueError, match="no time on the subject clock"):
+            _core.clinical_round_micros(float("nan"), HOUR)
+
     def test_S3_the_clock_is_fixed_once(self, tmp_path: Path):
         with History.writer_for(tmp_path / "w.medh5") as w:
             w.set_clock(Clock.relative("other", "a different origin"))
@@ -1128,6 +1142,71 @@ class TestDocumentText:
         assert "E806" in codes(path)
 
 
+class TestClocks:
+    def test_S3_utc_clocks(self, tmp_path: Path):
+        """Only relative clocks could be built; 1.1 §3 has three."""
+        import datetime
+
+        from medh5.clinical import clock_day, utc_us
+
+        assert Clock.utc("c").to_json() == {"id": "c", "unit": "us", "reference": "utc"}
+        assert Clock.from_json(Clock.shifted_utc("c").to_json()) == Clock.shifted_utc(
+            "c"
+        )
+        path = tmp_path / "utc.medh5"
+        History.write(path, subject_id="P-01", clock=Clock.utc("subject-utc"))
+        assert validate_file(path).ok
+        moment = datetime.datetime(2024, 3, 1, 9, 30, tzinfo=datetime.timezone.utc)
+        assert utc_us(moment) == int(moment.timestamp()) * 1_000_000
+        assert (
+            utc_us(
+                datetime.datetime(
+                    1969, 12, 31, 23, 59, 59, 999_999, tzinfo=datetime.timezone.utc
+                )
+            )
+            == -1
+        )
+        with pytest.raises(ValueError, match="no time zone"):
+            utc_us(datetime.datetime(2024, 3, 1, 9, 30))
+        assert clock_day(utc_us(moment)) == (
+            utc_us(datetime.datetime(2024, 3, 1, tzinfo=datetime.timezone.utc)),
+            utc_us(datetime.datetime(2024, 3, 2, tzinfo=datetime.timezone.utc)) - 1,
+        )
+        assert clock_day(-1) == (-DAY, -1)
+
+    def test_S5_2_day_bounds_span_the_possible_instants(self):
+        """Day-only information spans the day's possible instants after clock
+        conversion and never implies midnight: with no zone, from the day's
+        start at UTC+14 to its end at UTC-12."""
+        import datetime
+        import zoneinfo
+
+        from medh5.clinical import day_bounds, utc_us
+
+        day = datetime.date(2024, 3, 1)
+        utc = datetime.timezone.utc
+        midnight = utc_us(datetime.datetime(2024, 3, 1, tzinfo=utc))
+        lo, hi = day_bounds(day)
+        assert (lo, hi) == (midnight - 14 * HOUR, midnight + DAY + 12 * HOUR - 1)
+        assert hi - lo + 1 == 50 * HOUR
+        assert day_bounds(day, utc) == (midnight, midnight + DAY - 1)
+        plus_two = datetime.timezone(datetime.timedelta(hours=2))
+        assert day_bounds(day, plus_two) == (
+            midnight - 2 * HOUR,
+            midnight + DAY - 2 * HOUR - 1,
+        )
+        for zone in (utc, plus_two):
+            zlo, zhi = day_bounds(day, zone)
+            assert lo <= zlo and zhi <= hi, "a known zone narrows the unknown one"
+        try:
+            spring = day_bounds(datetime.date(2024, 3, 31), "Europe/Berlin")
+        except zoneinfo.ZoneInfoNotFoundError:  # pragma: no cover - no tzdata
+            pytest.skip("no IANA zone database")
+        assert spring[1] - spring[0] + 1 == 23 * HOUR, "the day the clocks go forward"
+        with pytest.raises(TypeError):
+            day_bounds(datetime.datetime(2024, 3, 1, tzinfo=utc))
+
+
 class TestSelection:
     def test_S9_1_the_worked_example_at_hour_24(self, history: Path):
         with medh5.open(history) as s:
@@ -1140,6 +1219,28 @@ class TestSelection:
         assert chosen.admits("image", "CT_tp0") and not chosen.admits("image", "CT_tp1")
         assert chosen.excluded == {"after_cutoff": 2}
         assert chosen.events[1].order_us == (0, 0)
+
+    def test_S9_1_admits_any_looks_in_every_fragment(self):
+        """``admits`` answers for fragment 0 unless told otherwise, so a
+        payload of a subject's second fragment read as not admitted."""
+        from medh5.clinical import Selection
+
+        chosen = Selection.from_json(
+            {
+                "cutoff_us": 0,
+                "policy": "strict_prospective",
+                "status": "certified",
+                "events": [],
+                "links": [],
+                "payloads": [[1, "image", "CT_tp1"]],
+                "uncertain_records": [],
+            }
+        )
+        assert not chosen.admits("image", "CT_tp1")
+        assert chosen.admits("image", "CT_tp1", fragment=1)
+        assert chosen.admits_any("image", "CT_tp1")
+        assert not chosen.admits_any("image", "CT_tp0")
+        assert not chosen.admits_any("annotation", "CT_tp1")
 
     def test_S9_1_an_uncertain_revision_is_uncertifiable(self, tmp_path: Path):
         path = tmp_path / "uncertain.medh5"
@@ -1229,6 +1330,38 @@ class TestSelection:
         # The relationship still needs its event endpoint read.
         assert not documents.admits("annotation", "lesions_tp0")
         assert SelectionPolicy.from_json(SelectionPolicy(kinds=("imaging",)).to_json())
+
+    @pytest.mark.parametrize("order_by", ["effective", "available"])
+    def test_S7_3_an_asserter_is_its_own_endpoint(self, tmp_path: Path, order_by: str):
+        """The worked example asserts ``seg0 describes lesions_tp0`` from
+        ``seg0`` itself.  Under effective ordering a procedure of unknown time
+        is never admitted, and the asserter had to be admitted when it was also
+        the endpoint: the mask was not attested, while the same evidence
+        phrased from ``ct0`` attested it."""
+        seg0 = Event(
+            "seg0", "seg0", "procedure", "unknown", "completed", available_us=2 * HOUR
+        )
+        chosen = {}
+        for source in ("seg0", "ct0"):
+            path = tmp_path / f"{source}.medh5"
+            History.write(
+                path,
+                events=[seg0],
+                links=[
+                    Link.between(
+                        ("event", source),
+                        "describes",
+                        ("annotation", "lesions_tp0"),
+                        asserted_by="seg0",
+                    )
+                ],
+            )
+            with medh5.open(path) as s:
+                assert s.clinical is not None
+                chosen[source] = s.clinical.select(24 * HOUR, {"order_by": order_by})
+        for selection in chosen.values():
+            assert selection.admits("annotation", "lesions_tp0")
+        assert chosen["seg0"].event_ids == chosen["ct0"].event_ids
 
     def test_S9_1_a_window_bounds_plans_from_below(self):
         """A seven-day window at day +1 excluded a

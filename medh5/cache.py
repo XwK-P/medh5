@@ -42,14 +42,14 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
-from medh5.task import Finding, SourceRef
+from medh5.task import Confine, Finding, SourceRef, _root
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5.task import RowView, TaskManifest
 
 SCHEMA: str = _core.CACHE_SCHEMA
-SUFFIX = ".medh5cache"
-LEVELS = ("event", "patient")
+SUFFIX: str = _core.CACHE_SUFFIX
+LEVELS: tuple[str, ...] = _core.CACHE_LEVELS
 
 PathLike = str | os.PathLike[str]
 
@@ -104,13 +104,13 @@ class CacheEntry:
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> CacheEntry:
+        """An entry as the engine reads it: a member of the wrong type is
+        refused (T401), never read as absent."""
+        doc = _core.cache_entry_json(doc)
         versions = doc.get("event_versions")
         return cls(
             str(doc["entry_id"]),
-            tuple(
-                SourceRef(str(s["uri"]), str(s["content_id"]), s.get("sample_key"))
-                for s in doc["sources"]
-            ),
+            tuple(SourceRef.from_json(s) for s in doc["sources"]),
             str(doc["digest"]),
             doc.get("event_id"),
             doc.get("document_id"),
@@ -127,7 +127,7 @@ class CacheWriter:
     As a context manager it commits when the block succeeds --- unless the
     block committed or aborted it itself --- and leaves nothing behind when
     it raises.  Every entry must match the declared output dtype
-    and shape (T402), name the source versions it read (T403), and --- at the
+    and shape (T402), name the source versions it read (T401), and --- at the
     patient level --- pin its row (by id and fingerprint), cutoff and selected
     versions (T404); an event-level entry names no row.
     """
@@ -366,20 +366,22 @@ class CacheReport:
 
     @property
     def ok(self) -> bool:
-        return not self.findings
-
-    def _with(self, codes: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(sorted({f.location for f in self.findings if f.code in codes}))
+        return bool(self.to_json()["ok"])
 
     @property
     def stale(self) -> tuple[str, ...]:
         """Entries whose sources changed or vanished (T403)."""
-        return self._with(("T403",))
+        return tuple(self.to_json()["stale"])
 
     @property
     def corrupt(self) -> tuple[str, ...]:
         """Entries (or ``"manifest"``) whose own bytes are wrong (T401, T402)."""
-        return self._with(("T401", "T402"))
+        return tuple(self.to_json()["corrupt"])
+
+    def to_json(self) -> dict[str, Any]:
+        """The report as ``medh5 cache validate --json`` writes it: the
+        engine's verdict, stale and corrupt entries."""
+        return dict(_core.cache_report_json(self))
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> CacheReport:
@@ -399,28 +401,40 @@ def validate_cache(
     task: TaskManifest | None = None,
     task_base: PathLike | None = None,
     check_rows: bool = True,
+    confine: Confine = None,
 ) -> CacheReport:
     """Validate a cache: its checksums, every source pin, and --- given a task
     --- that it was built for this task, fitted on this task's training
     partition, and (``check_rows``) that each row's entry was built at its
     cutoff, from versions it admits, of its own subject's sources.
 
-    ``base`` resolves the entries' relative source URIs; ``task_base`` the
-    task's (default: the manifest's).  Entries copy their task's references,
-    so with a task ``base`` defaults to ``task_base`` (contract §7.1), and to
-    the cache's directory without one.  The row checks run the task's
-    preflight; an event-level cache has no row entries, so
-    ``check_rows=False`` spares it that.  A path naming no file raises
+    ``task_base`` resolves the task's relative source URIs (default: the
+    manifest's).  With a task, an entry source the task pins --- the same
+    ``content_id`` and ``sample_key`` --- is opened where the task's reference
+    says, so a cache whose samples moved validates once the task is repinned
+    or its URIs updated (contract §7.1).  ``base`` resolves the entry
+    sources the task does not pin, by their own URIs: by default
+    ``task_base`` with a task, the cache's directory without.  The row
+    checks run the task's preflight; an event-level cache has no row
+    entries, so ``check_rows=False`` spares it that.  A path naming no file raises
     :class:`~medh5.errors.MEDH5FileError`: there is no cache to report on.
+    ``confine`` says where the task's and the entries' sources may be opened
+    (:data:`medh5.task.Confine`): ``True`` the task's base, or without a task
+    the entries'.
     """
     if task is not None and task_base is None:
         task_base = task.base
+    if task is not None:
+        root = task._confined(task_base, confine)
+    else:
+        root = _root(confine, base if base is not None else Path(path).parent)
     found = _core.cache_validate(
         os.fspath(path),
         None if base is None else os.fspath(base),
         None if task is None else task.to_json(),
         None if task_base is None else os.fspath(task_base),
         check_rows,
+        root,
     )
     return CacheReport.from_json(found)
 
@@ -482,6 +496,7 @@ def build_document_cache(
     encoder: HashingTextEncoder | Any,
     *,
     base: PathLike | None = None,
+    confine: Confine = None,
 ) -> CacheReport:
     """An event-level cache of every document event of the task's sources.
 
@@ -490,43 +505,47 @@ def build_document_cache(
     is immutable, so its feature is reused by every row --- and each row's
     selection decides which of them it may read.  Returns the new cache's
     validation report.  A source that is no longer the version the task
-    pins is refused (T302) and nothing is written.
+    pins is refused (T302) and nothing is written.  ``confine`` says where
+    sources may be opened (:data:`medh5.task.Confine`).
     """
     from medh5.errors import MEDH5ValidationError
 
-    root = base if base is not None else task.base
+    where = base if base is not None else task.base
+    confined = task._confined(where, confine)
     with CacheWriter(path, level="event", **encoder.header()) as writer:
         for subject in task.subjects:
             for source in subject.sources:
-                with source.open(root) as sample:
+                with source.open(where, root=confined) as sample:
                     # What is encoded is filed under the pin: a source changed
                     # since gave its new text the old version's entries.
                     if sample.content_id != source.content_id:
                         raise MEDH5ValidationError(
                             f"{source.locator} is not the version the task pins "
-                            f"({source.content_id}) --- repin it explicitly if "
-                            "the change is meant",
+                            f"({source.content_id}) --- if the change is meant, "
+                            "repin it (`medh5 task repin`, `TaskManifest.repin`)",
                             "T302",
                         )
                     clinical = sample.clinical
                     if clinical is None:
                         continue
-                    kinds = {e.event_id: e.kind for e in clinical.events}
-                    for link in clinical.links:
-                        if (
-                            link.relation == "describes"
-                            and link.source_type == "event"
-                            and link.target_type == "document"
-                            and kinds.get(link.source_id) == "document"
-                        ):
-                            text = clinical.text(link.target_id)
+                    # What each version owns, by the rule validation holds
+                    # entries to: the engine's.
+                    owned = _core.cache_owned_documents(
+                        source.to_json(),
+                        None if where is None else os.fspath(where),
+                        confined,
+                    )
+                    for event_id, documents in owned.items():
+                        for document_id in documents:
                             writer.add_event(
                                 source,
-                                link.source_id,
-                                encoder.encode(text),
-                                document_id=link.target_id,
+                                event_id,
+                                encoder.encode(clinical.text(document_id)),
+                                document_id=document_id,
                             )
-    return validate_cache(path, base=root)
+    return validate_cache(
+        path, base=where, confine=False if confined is None else confined
+    )
 
 
 __all__ = [

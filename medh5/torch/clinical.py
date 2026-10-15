@@ -91,6 +91,7 @@ from medh5.errors import MEDH5ValidationError
 from medh5.sample import Sample
 from medh5.sampling import window_around
 from medh5.task import (
+    Confine,
     Packed,
     Preflight,
     RowView,
@@ -464,6 +465,8 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
     ``encode(text) -> array`` that reads the admitted text when the item is
     built.  ``row_features`` is a patient-level cache built for this task; it
     is validated against the task (T404--T406) before any row reads it.
+    ``confine`` says where the task's sources may be opened, for the
+    preflight, the caches and every item alike (:data:`medh5.task.Confine`).
 
     ``class_ignore=True`` adds ``class_ignore[slot]`` beside ``ignore[slot]``
     for every slot with classes: one channel per class, in the slot's class
@@ -483,13 +486,22 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
         base: PathLike | None = None,
         strict: bool = True,
         preflight: Preflight | None = None,
+        confine: Confine = None,
         class_ignore: bool = False,
     ) -> None:
         require_torch()
         self.class_ignore = bool(class_ignore)
         self.task = task if isinstance(task, TaskManifest) else TaskManifest.load(task)
         self.base = Path(base) if base is not None else self.task.base
-        report = preflight if preflight is not None else self.task.preflight(self.base)
+        # Where sources may be opened (contract §2): every read below, the
+        # preflight's, the caches' and the items', is confined alike.
+        self._root = self.task._confined(self.base, confine)
+        confined: Confine = False if self._root is None else self._root
+        report = (
+            preflight
+            if preflight is not None
+            else self.task.preflight(self.base, confine=confined)
+        )
         _require_preflight_of(self.task, report)
         if strict and not report.ok:
             listed = "; ".join(str(f) for f in report.findings[:5])
@@ -531,6 +543,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                     task=self.task,
                     task_base=self.base,
                     check_rows=False,
+                    confine=confined,
                 )
                 self._documents = _admitted_cache(
                     documents, checked, "event", "documents", "document"
@@ -552,7 +565,11 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             # resolve where this dataset's do --- not the manifest's own base,
             # which a task built in memory does not have.
             checked = validate_cache(
-                row_features, base=self.base, task=self.task, task_base=self.base
+                row_features,
+                base=self.base,
+                task=self.task,
+                task_base=self.base,
+                confine=confined,
             )
             self._rows_cache = _admitted_cache(
                 row_features, checked, "patient", "row_features", "row-feature"
@@ -625,7 +642,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
 
     def _source(self, row: RowView, fragment: int) -> tuple[str, str | None]:
         source = row.sources[fragment]
-        return os.fspath(source.resolve(self.base)), source.sample_key
+        return os.fspath(source.resolve(self.base, root=self._root)), source.sample_key
 
     def _slot(self, sample: Sample | None, slot: Slot, row: RowView) -> dict[str, Any]:
         fill = row.slots[slot.name]
