@@ -772,6 +772,33 @@ fn convert() -> Vec<Command> {
                 )),
         ))
         .subcommand(report_args(
+            Command::new("from-itk-transform")
+                .about("an ITK or ANTs transform -> a transform between two grids")
+                .arg(positional("transform", "the .tfm, .txt or ANTs .mat transform to import"))
+                .arg(positional("sample", "the sample to add the transform to"))
+                .arg(opt("transform_id", "id", "id for the new transform").required(true))
+                .arg(opt("fixed", "fixed", "the grid of ITK's fixed image: the transform starts in its frame").required(true))
+                .arg(opt("moving", "moving", "the grid of ITK's moving image: the transform ends in its frame").required(true))
+                .arg(opt("warp", "warp", "a displacement field (NIfTI) applied before the transform, as ANTs pairs them"))
+                .arg(
+                    opt("vectors", "vectors", "the convention of the field's vectors, which its file does not say")
+                        .value_parser(["lps", "ras"]),
+                )
+                .arg(opt("inverse_warp", "inverse-warp", "the warp's inverse field (NIfTI), stored and linked")),
+        ))
+        .subcommand(report_args(
+            Command::new("to-itk-transform")
+                .about("a transform -> an ITK transform (and a displacement field)")
+                .arg(positional("sample", "the sample to read"))
+                .arg(positional("out", "the .tfm, .txt or .mat file to write"))
+                .arg(opt("transform_id", "id", "the transform to export").required(true))
+                .arg(opt("warp_out", "warp-out", "where to write its displacement field (NIfTI)"))
+                .arg(
+                    opt("vectors", "vectors", "the convention to write the field's vectors in")
+                        .value_parser(["lps", "ras"]),
+                ),
+        ))
+        .subcommand(report_args(
             Command::new("from-nnunet")
                 .about("an nnU-Net v2 dataset -> samples")
                 .arg(positional("root", "the nnU-Net v2 dataset directory"))

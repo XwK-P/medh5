@@ -236,6 +236,33 @@ w.add_transform("warp", kind="displacement", field=field, field_grid="ct_tp0",
 Only a displacement field has a field to store, so another kind given a
 `field_dtype` other than `"float32"` is refused.
 
+## From ITK and ANTs
+
+A registration computed with ITK, SimpleITK or ANTs need not be written by
+hand. ITK's convention is the format's — a transform maps fixed points to
+moving points — so the file is stored as it is, from the frame of the grid you
+name as fixed to that of the grid you name as moving:
+
+<!-- illustrative -->
+```python
+from medh5.io.itk import from_itk_transform, to_itk_transform
+
+from_itk_transform("out0GenericAffine.mat", "case.medh5", transform_id="syn",
+                   fixed="ct_tp0", moving="ct_tp1",
+                   warp="out1Warp.nii.gz", vectors="lps")
+to_itk_transform("case.medh5", "back.tfm", transform_id="syn",
+                 warp_out="back_warp.nii.gz", vectors="ras")
+```
+
+ITK's LPS millimetres are re-expressed in each grid's coordinate system and
+units. A composite's components are stored in reverse (ITK applies the last
+first). An ANTs affine and warp become the warp into an intermediate frame,
+the affine out of it, and a `composite` between the two grids' frames, which
+earns `reg`. `vectors` is required with a field, because the field's file does
+not say whether its vectors are LPS or RAS. See
+[Converters](../reference/converters.md#itk-transforms) for what is read and
+what is refused.
+
 ## Related
 
 - **[Longitudinal studies](longitudinal.md)** — the task this fits into.

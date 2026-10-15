@@ -19,8 +19,8 @@ use crate::app;
 use crate::common::*;
 
 /// What `--help` cannot say for a converter the standalone binary cannot run.
-const NO_PYTHON: &str = "the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net) are part of the Python \
-                         package: install it (`pip install 'medh5[nifti,dicom]'`) and run `medh5 convert` from it, \
+const NO_PYTHON: &str = "the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, ITK, nnU-Net) are part of the \
+                         Python package: install it (`pip install 'medh5[nifti,dicom]'`) and run `medh5 convert` from it, \
                          or point MEDH5_PYTHON at an interpreter that has it";
 
 /// The parsed arguments of one subcommand, keyed as the 1.x parser named
