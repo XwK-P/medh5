@@ -184,6 +184,12 @@ fn validate_merge<'py>(py: Python<'py>, reports: &Bound<'py, PyAny>, path: &str)
     json_to_py(py, &engine::merge(&all, path).to_json())
 }
 
+/// A code's name, or the engine's `KeyError` for one the table lacks.
+#[pyfunction]
+fn code_lookup(name: &str) -> R<&'static str> {
+    Ok(medh5::codes::code(name)?.code.as_str())
+}
+
 /// The codes of one domain, in table order.
 #[pyfunction]
 fn codes_for_domain(domain: &str) -> Vec<&'static str> {
@@ -192,6 +198,7 @@ fn codes_for_domain(domain: &str) -> Vec<&'static str> {
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(codes_for_domain, m)?)?;
+    m.add_function(wrap_pyfunction!(code_lookup, m)?)?;
     m.add("CODE_DOMAINS", pyo3::types::PyTuple::new(m.py(), medh5::codes::DOMAINS)?)?;
     m.add_function(wrap_pyfunction!(validate_report_positions, m)?)?;
     m.add_function(wrap_pyfunction!(validate_report_json, m)?)?;

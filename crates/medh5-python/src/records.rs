@@ -72,15 +72,24 @@ pub struct Field {
     pub kind: Kind,
     /// A dataclass field without a default: the constructor needs it.
     pub required: bool,
+    /// What reading the field warns, when 3.0 removes it.
+    pub deprecated: Option<&'static str>,
 }
 
 pub const fn field(name: &'static str, kind: Kind) -> Field {
-    Field { name, key: name, kind, required: false }
+    Field { name, key: name, kind, required: false, deprecated: None }
 }
 
 /// A field the constructor cannot do without.
 pub const fn required(name: &'static str, kind: Kind) -> Field {
-    Field { name, key: name, kind, required: true }
+    Field { name, key: name, kind, required: true, deprecated: None }
+}
+
+impl Field {
+    /// The field, warning `message` (which starts "medh5 3.0 ") when read.
+    pub const fn deprecated(self, message: &'static str) -> Field {
+        Field { deprecated: Some(message), ..self }
+    }
 }
 
 /// The constructor's `inspect.Signature`: each field a parameter, positional
@@ -638,7 +647,12 @@ macro_rules! record_class {
 
             fn __getattr__<'py>(slf: &Bound<'py, Self>, name: &str) -> PyResult<Bound<'py, PyAny>> {
                 match Self::FIELDS.iter().position(|f| f.name == name) {
-                    Some(i) => Self::field_value(slf, i),
+                    Some(i) => {
+                        if let Some(message) = Self::FIELDS[i].deprecated {
+                            $crate::deprecation::warn(slf.py(), message, false)?;
+                        }
+                        Self::field_value(slf, i)
+                    }
                     None => Err($crate::records::missing_attribute($py, name)),
                 }
             }
@@ -665,6 +679,11 @@ macro_rules! record_class {
                 slf: &Bound<'_, Self>,
                 changes: Option<&Bound<'_, pyo3::types::PyDict>>,
             ) -> PyResult<Py<PyAny>> {
+                // A replacement reads every field; a deprecated one warns only
+                // when the caller reads it.
+                if Self::FIELDS.iter().any(|f| f.deprecated.is_some()) {
+                    return $crate::values::quietly(slf.py(), || $crate::values::dataclass_replace(slf.as_any(), changes));
+                }
                 $crate::values::dataclass_replace(slf.as_any(), changes)
             }
 

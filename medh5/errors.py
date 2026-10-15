@@ -193,10 +193,9 @@ CODES: dict[str, Code] = {c.code: c for c in _TABLE}
 
 def code(name: str) -> Code:
     """Look up a diagnostic code, raising :class:`KeyError` for unknown codes."""
-    try:
-        return CODES[name]
-    except KeyError:  # pragma: no cover - guards typos in rule definitions
-        raise KeyError(f"unknown diagnostic code {name!r}") from None
+    from medh5._core import code_lookup
+
+    return CODES[code_lookup(name)]
 
 
 def codes_for(domain: Domain) -> tuple[Code, ...]:

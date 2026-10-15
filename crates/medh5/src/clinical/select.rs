@@ -729,6 +729,24 @@ mod tests {
     }
 
     #[test]
+    fn s5_chains_read_every_record_s_versions_oldest_first() {
+        let events = vec![
+            version("r_v3", "r", 0, None),
+            version("r_v1", "r", 0, None),
+            version("r_v2", "r", 0, None),
+            version("q_v1", "q", 0, None),
+        ];
+        let links = [sup("r_v2", "r_v1"), sup("r_v3", "r_v2")];
+        let chains = Chains::build(&events, &links).unwrap();
+        assert_eq!(chains.versions("r"), ["r_v1", "r_v2", "r_v3"]);
+        assert_eq!(chains.versions("q"), ["q_v1"]);
+        assert!(chains.versions("absent").is_empty());
+        assert_eq!(chains.latest().collect::<Vec<_>>(), ["q_v1", "r_v3"]);
+        let branching = [sup("r_v2", "r_v1"), sup("r_v3", "r_v1")];
+        assert_eq!(Chains::build(&events, &branching).unwrap_err().code(), Some("E816"));
+    }
+
+    #[test]
     fn s9_1_a_definitely_later_revision_leaves_the_earlier_usable() {
         let events = vec![
             version("r_v1", "r", 0, Some((4 * HOUR, 4 * HOUR))),

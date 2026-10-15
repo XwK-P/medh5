@@ -276,6 +276,16 @@ def test_S15_2_the_code_domains_are_the_engines():
     assert codes_for("nowhere") == ()  # type: ignore[arg-type]
 
 
+def test_S15_2_a_code_is_looked_up_by_the_engine():
+    """``codes::code`` quoted an unknown name as Rust does (``"X"``) where
+    ``errors.code`` quoted it as Python does (``'X'``)."""
+    from medh5.errors import CODES, code
+
+    assert code("E101") is CODES["E101"]
+    with pytest.raises(KeyError, match="unknown diagnostic code 'X999'"):
+        code("X999")
+
+
 def test_S3_1_the_coordinate_systems_are_the_engines():
     """The systems a converter maps are the engine's, and the specification's
     ``coord_system`` row names each of them."""

@@ -299,6 +299,7 @@ __all__ = [
     "clinical_schema_text",
     "clinical_select",
     "clinical_strip",
+    "code_lookup",
     "codec_profiles",
     "codes_for_domain",
     "codes_table",
@@ -989,6 +990,10 @@ def clinical_select(
 def clinical_strip(
     path: str | os.PathLike[str], out: str | os.PathLike[str]
 ) -> dict[str, Any]: ...
+def code_lookup(name: str) -> str:
+    """A code's name, or the engine's `KeyError` for one the table lacks."""
+    ...
+
 def codec_profiles() -> list[Any]:
     """The codec profiles, as plain data (`medh5.storage` builds its
     `CodecProfile` values from this).

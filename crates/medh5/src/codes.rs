@@ -107,7 +107,7 @@ pub fn get(code: &str) -> Option<&'static Code> {
 
 /// Look up one code, as an error naming the unknown code.
 pub fn code(name: &str) -> crate::Result<&'static Code> {
-    get(name).ok_or_else(|| crate::Error::Key(format!("unknown diagnostic code {name:?}")))
+    get(name).ok_or_else(|| crate::Error::Key(format!("unknown diagnostic code {}", crate::json::repr_str(name))))
 }
 
 /// Every code in one domain, in table order.
@@ -123,6 +123,13 @@ pub fn table_json() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unknown_code_is_quoted_as_python_quotes_it() {
+        assert_eq!(code("E101").unwrap().code, "E101");
+        assert_eq!(code("X999").unwrap_err().message(), "unknown diagnostic code 'X999'");
+        assert_eq!(code("it's").unwrap_err().message(), "unknown diagnostic code \"it's\"");
+    }
 
     #[test]
     fn table_is_complete_and_well_formed() {

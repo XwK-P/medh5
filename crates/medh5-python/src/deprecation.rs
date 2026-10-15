@@ -17,9 +17,6 @@ pub(crate) const PREFIX: &str = "medh5 3.0 ";
 /// Warn about something 3.0 removes (`future: false`) or changes the result
 /// of (`future: true`), pointing at the Python code that called the binding.
 /// Under `-W error` the warning is the returned error.
-// The first deprecation of something `_core` binds directly is its first
-// caller; until then nothing does.
-#[allow(dead_code)]
 pub(crate) fn warn(py: Python<'_>, message: &str, future: bool) -> PyResult<()> {
     if !message.starts_with(PREFIX) {
         return Err(PyValueError::new_err(format!("a deprecation message starts with {PREFIX:?}: {message:?}")));

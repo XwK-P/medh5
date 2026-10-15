@@ -476,7 +476,6 @@ pub fn validate_file_with(path: &Path, options: &ValidateOptions) -> Result<Repo
     })();
     let mut report = match result {
         Ok(r) => r,
-        Err(e @ Error::Value(_)) if e.message().starts_with("unknown validation level") => return Err(e),
         Err(e) => read_failure(&text, level, format!("the file could not be read: {}", e.python_line())),
     };
     pin_revision(&mut report, options.codes_revision);

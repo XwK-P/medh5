@@ -64,6 +64,19 @@ pub fn match_args(py: Python<'_>, names: &[&str]) -> PyResult<Py<PyTuple>> {
 }
 
 /// `copy.replace(obj, **changes)`: what `dataclasses.replace` builds.
+/// `f()` with `DeprecationWarning`s ignored: for a reading of every field
+/// that the caller did not ask for field by field.
+pub fn quietly<T>(py: Python<'_>, f: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
+    let warnings = py.import("warnings")?;
+    let guard = warnings.getattr("catch_warnings")?.call0()?;
+    guard.call_method0("__enter__")?;
+    let ignored =
+        warnings.call_method1("simplefilter", ("ignore", py.get_type::<pyo3::exceptions::PyDeprecationWarning>()));
+    let result = ignored.and_then(|_| f());
+    guard.call_method1("__exit__", (py.None(), py.None(), py.None()))?;
+    result
+}
+
 pub fn dataclass_replace(obj: &Bound<'_, PyAny>, changes: Option<&Bound<'_, PyDict>>) -> PyResult<Py<PyAny>> {
     let replace = obj.py().import("dataclasses")?.getattr("replace")?;
     Ok(replace.call((obj,), changes)?.unbind())
