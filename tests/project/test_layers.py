@@ -13,10 +13,13 @@ from __future__ import annotations
 import ast
 import textwrap
 from collections.abc import Iterator
+from pathlib import Path
 
-from tests.helpers import ROOT
+import medh5
 
-PACKAGE = ROOT / "medh5"
+# The package under test, wherever it is installed: CI tests the built wheel,
+# with no `medh5/` beside the tests.
+PACKAGE = Path(medh5.__file__).parent
 
 # The write sites other workstreams still own, by file and function: each
 # moves to the engine in its owner's pull request and leaves this list, which
@@ -128,7 +131,10 @@ def _writes_in(source: str) -> list[tuple[str, int, str]]:
 
 def _sources() -> Iterator[tuple[str, str]]:
     for path in sorted(PACKAGE.rglob("*.py")):
-        yield path.relative_to(ROOT).as_posix(), path.read_text(encoding="utf-8")
+        yield (
+            path.relative_to(PACKAGE.parent).as_posix(),
+            path.read_text(encoding="utf-8"),
+        )
 
 
 def test_only_the_engine_replaces_files() -> None:
@@ -137,6 +143,7 @@ def test_only_the_engine_replaces_files() -> None:
         for file, source in _sources()
         for scope, line, what in _writes_in(source)
     ]
+    assert any(file == "medh5/_files.py" for file, _ in _sources()), PACKAGE
     outside = [f for f in found if (f[0], f[1]) not in ALLOWED]
     assert outside == [], (
         "write files through the engine (medh5._core.write_atomic, "
