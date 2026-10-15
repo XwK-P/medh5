@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import h5py
 import numpy as np
@@ -16,7 +17,9 @@ from medh5.integrity import (
     array_digest,
     canonical_attrs,
     dataset_digest,
+    diagnose,
     digest_bytes,
+    fix,
     group_digest,
     parse_digest,
     relative_path,
@@ -945,6 +948,72 @@ def _datasets(handle: h5py.File) -> list[str]:
         lambda name, obj: found.append(name) if isinstance(obj, h5py.Dataset) else None
     )
     return found
+
+
+_SPELLINGS = {
+    "sign": lambda hex_: f"+{hex_}",
+    "0x": lambda hex_: f"0x{hex_}",
+    "underscore": lambda hex_: f"{hex_[:32]}_{hex_[32:]}",
+    "whitespace": lambda hex_: f" {hex_}",
+    "uppercase": str.upper,
+    "short": lambda hex_: hex_[:-2],
+}
+
+
+class TestCanonicalDigests:
+    """D4, §13.1: `<hex>` is lowercase hex of the algorithm's length.  Read as
+    Python's `int(hex, 16)` reads a number, an uppercase digest of unchanged
+    bytes was a mismatch (E701) and its root tampered with (E702)."""
+
+    def _respell(self, path: Path, spell: Any, at: str = "images/CT_tp0") -> None:
+        with h5py.File(path, "r+") as handle:
+            algo, hex_ = str(handle[at].attrs["digest"]).split(":")
+            handle[at].attrs["digest"] = f"{algo}:{spell(hex_)}"
+
+    @pytest.mark.parametrize("spell", _SPELLINGS.values(), ids=list(_SPELLINGS))
+    def test_S13_1_a_digest_not_in_canonical_hex_is_E703(
+        self, tmp_path: Path, spell: Any
+    ):
+        path = write_sample(tmp_path / "s.medh5")
+        self._respell(path, spell)
+        report = validate_file(path, level="integrity")
+        assert ("E703", "/images/CT_tp0") in {
+            (d.code, d.location) for d in report.diagnostics
+        }
+        assert "E701" not in report.codes
+        with medh5.open(path) as sample:
+            result = sample.verify()
+        assert "images/CT_tp0" in result.malformed and not result.mismatched
+
+    def test_S13_1_fix_restamps_a_non_canonical_digest(self, tmp_path: Path):
+        path = write_sample(tmp_path / "s.medh5")
+        self._respell(path, str.upper)
+        assert "images/CT_tp0" in diagnose(path).malformed
+        fix(
+            path,
+            rewrite_digests=True,
+            reason="digests from a tool spelling hex in capitals",
+        )
+        with medh5.open(path) as sample:
+            assert sample.verify().ok
+        assert validate_file(path, level="integrity").ok
+
+    def test_S13_1_a_content_id_not_in_canonical_hex_is_E703_not_E702(
+        self, tmp_path: Path
+    ):
+        path = write_sample(tmp_path / "s.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["content_id"] = str(handle.attrs["content_id"]).upper()
+        report = validate_file(path, level="integrity")
+        root = {d.code for d in report.diagnostics if d.location == "/"}
+        assert root == {"E703"}
+        with medh5.open(path) as sample:
+            assert not sample.verify().ok
+        with (
+            pytest.raises(MEDH5ValidationError, match="not a digest"),
+            medh5.amend(path),
+        ):
+            pass
 
 
 class TestCyclicCompare:

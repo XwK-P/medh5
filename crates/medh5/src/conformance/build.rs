@@ -1440,7 +1440,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(164);
+    let mut cases = Vec::with_capacity(165);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -1454,8 +1454,8 @@ pub(super) fn registry() -> Vec<Case> {
     cases.extend(super::clinical::cases());
     sixth_batch(&mut cases);
     seventh_batch(&mut cases);
-    // 2.1: revision 2 of the code table.
-    revision_2_cases(&mut cases);
+    // 2.1: revision 2 of the code table, and the clauses its errata settle.
+    cases_2_1(&mut cases);
     cases
 }
 
@@ -2426,8 +2426,9 @@ fn alias_before_images(path: &Path) -> Result<()> {
 }
 
 /// 1.4.0: §7.7's separate-mask form of an ignore region, as the writer emits it.
-/// The codes revision 2 of the table allocates (1.0 §15.2), one case each.
-fn revision_2_cases(cases: &mut Vec<Case>) {
+/// The cases 2.1 adds: one for each code revision 2 of the table allocates
+/// (1.0 §15.2), and one for each clause its errata settle (Appendix C.1).
+fn cases_2_1(cases: &mut Vec<Case>) {
     cases.extend([invalid_seg(
         "W915-undigested-attested-dataset",
         "A dataset added to an annotation with no `digest`, in a file whose `content_id` still matches: the root \
@@ -2442,6 +2443,22 @@ fn revision_2_cases(cases: &mut Vec<Case>) {
     )
     .level("integrity")
     .warnings(&["W915", "W912"])]);
+    cases.push(
+        invalid_seg(
+            "E703-digest-not-canonical",
+            "A dataset digest spelled in uppercase over unchanged bytes: malformed, not a mismatch. The root, a \
+             Merkle root over the digests as stored, no longer recomputes.",
+            "§13.1",
+            &["E702", "E703"],
+            |f| {
+                let ds = f.dataset("annotations/organs/data")?;
+                let digest = attrs::get_str(&ds, "digest")?.unwrap_or_default();
+                let (algo, hex) = digest.split_once(':').unwrap_or_default();
+                set_str(f, "annotations/organs/data", "digest", &format!("{algo}:{}", hex.to_uppercase()))
+            },
+        )
+        .level("integrity"),
+    );
 }
 
 fn fifth_batch(cases: &mut Vec<Case>) {
@@ -2463,11 +2480,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 164);
+        assert_eq!(cases.len(), 165);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 164);
+        assert_eq!(names.len(), 165);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use super::digest::{
     AttrNameMap, Inspect, STREAM_BYTES,
 };
 use crate::array::NdArray;
-use crate::digest::{parse_digest, DEFAULT_ALGO};
+use crate::digest::{parse_canonical_digest, DEFAULT_ALGO};
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::ops::{self, LinkKind, Node, NodeKind};
 use crate::json::repr_str;
@@ -229,7 +229,7 @@ pub fn verify_object(root: &hdf5::Group, path: &str) -> Result<bool> {
     let Some(stored) = attrs::get_str(&ds, "digest")? else {
         return Ok(false);
     };
-    let (algo, _) = parse_digest(&stored)?;
+    let (algo, _) = parse_canonical_digest(&stored)?;
     Ok(dataset_digest(&ds, path, &algo)? == stored)
 }
 
@@ -242,7 +242,7 @@ pub fn failing_digests(root: &hdf5::Group, paths: &[String]) -> Result<Vec<Strin
     for path in paths {
         let Some(ds) = ops::resolve_dataset(root, path) else { continue };
         let Some(stored) = attrs::get_str(&ds, "digest")? else { continue };
-        let holds = match parse_digest(&stored) {
+        let holds = match parse_canonical_digest(&stored) {
             Ok((algo, _)) => dataset_digest(&ds, path, &algo)? == stored,
             Err(_) => false,
         };
@@ -383,7 +383,7 @@ fn verify(
             result.malformed.push(path);
             continue;
         };
-        let Ok((algo, _)) = parse_digest(value) else {
+        let Ok((algo, _)) = parse_canonical_digest(value) else {
             result.malformed.push(path);
             continue;
         };

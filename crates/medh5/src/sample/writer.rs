@@ -330,7 +330,7 @@ pub(crate) fn refuse_unattestable(root: &hdf5::Group, shown: &str) -> Result<()>
     let stored = collect_digests(root, &["index"])?;
     let unreadable: Vec<String> = stored
         .iter()
-        .filter(|(_, value)| crate::digest::parse_digest(value).is_err())
+        .filter(|(_, value)| !crate::digest::is_canonical_digest(value))
         .map(|(path, _)| path.clone())
         .collect();
     if !unreadable.is_empty() {
@@ -346,6 +346,16 @@ pub(crate) fn refuse_unattestable(root: &hdf5::Group, shown: &str) -> Result<()>
         Some(AttrValue::Str(s)) => s,
         Some(other) => attrs::stringify_value(&other),
     };
+    if !crate::digest::is_canonical_digest(&declared) {
+        return Err(Error::coded(
+            "E703",
+            format!(
+                "refusing to amend {shown}: its `content_id` {} is not a digest as §13.1 spells it, so nothing \
+                 attests what it stores; {REATTEST}",
+                repr_str(&declared)
+            ),
+        ));
+    }
     let algo = crate::integrity::digest::root_algo(root)?;
     let computed = compute_content_id(root, &attr_name_map_of(root)?, &algo, Some(&stored))?;
     if computed == declared {
@@ -1693,7 +1703,7 @@ impl SampleWriter {
         let unreadable = failed.iter().any(|path| {
             ops::resolve_dataset(&root, path)
                 .and_then(|ds| attrs::get_str(&ds, "digest").ok().flatten())
-                .is_some_and(|value| crate::digest::parse_digest(&value).is_err())
+                .is_some_and(|value| !crate::digest::is_canonical_digest(&value))
         });
         drop(root);
         drop(file);

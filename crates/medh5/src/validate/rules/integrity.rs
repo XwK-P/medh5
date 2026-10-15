@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use super::{grid_spatial, loc, str_attr, sub_dataset, Context};
 use crate::annotations::encode::normalization_tolerance;
 use crate::array::{DType, NdArray};
-use crate::digest::{parse_digest, DEFAULT_ALGO};
+use crate::digest::{is_canonical_digest, parse_digest, DEFAULT_ALGO};
 use crate::h5::attrs;
 use crate::h5::data::{self, Kind};
 use crate::h5::ops::{self, Node};
@@ -102,6 +102,18 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
                 "`content_id` does not recompute under the rules of MEDH5 {}: the root's integrity is unsupported in \
                  this projection, not verified (per-dataset digests were checked)",
                 crate::FORMAT_VERSION
+            ),
+        ));
+    } else if result.content_id_declared.as_deref().is_some_and(|d| !is_canonical_digest(d)) {
+        // A spelling, not a mismatch (§13.1): reported as tampering, it sent
+        // people looking for corruption that was not there.
+        out.push(ctx.err(
+            "E703",
+            "/",
+            format!(
+                "malformed `content_id` {}: §13.1 spells a digest `<algo>:` and lowercase hex of the algorithm's \
+                 length",
+                repr_str(result.content_id_declared.as_deref().unwrap_or_default())
             ),
         ));
     } else if result.content_id_ok() == Some(false) {

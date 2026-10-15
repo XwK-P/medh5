@@ -1335,7 +1335,9 @@ canonical byte stream:
 H( object_path ‖ 0x00 ‖ dtype_str ‖ 0x00 ‖ shape_csv ‖ 0x00 ‖ raw C-order little-endian bytes )
 ```
 
-`H` is the algorithm `<algo>` names (§2.1). `object_path` is the dataset's path relative to the sample
+`H` is the algorithm `<algo>` names (§2.1). `<hex>` is the digest in lowercase hexadecimal, two
+characters per byte (64 for `sha256`, 128 for `sha512` and `blake2b`); any other spelling is
+malformed (E703). `object_path` is the dataset's path relative to the sample
 root, in UTF-8 and with no leading `/` (`images/CT`, `annotations/organs/data`), so a sample extracted
 from a collection digests as it did inside it (§2.2).
 `dtype_str` is the NumPy dtype string with explicit byte order normalised to little-endian: `|b1`
@@ -1796,10 +1798,10 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 2.3 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.04 ms at 63
 classes), a metadata-only read 0.13 ms, and `open()` → first patch 1.6 ms.
 
-Eighty-one clauses have been corrected — ten during implementation, eleven in the 1.x package
+Eighty-two clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
 package, one when it implemented 1.1, twenty-eight in the audits of 2.0 before its release,
-twenty-three in the audit of 2.0.1, and four in the development of 2.1 — each because
+twenty-three in the audit of 2.0.1, and five in the development of 2.1 — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1886,6 +1888,7 @@ implementation could honestly promise, as written:
 | §14.4 | An amendment refuses a file whose declared `content_id` does not recompute from what it stores (**E702**), or that holds a digest, or declares a `digest_algo`, it cannot read (**E703**), before it writes anything; re-attesting one is a repair, recorded as an activity (§11.1). The clause asked an amend to preserve what it did not interpret, and said nothing of what it could not verify: a commit recomputes `content_id` from whatever is stored, so a no-op amendment (a scrub, a split claim, an added annotation) of a file edited outside the writer made it validate, with no record of the edit. |
 | §2.1 | The `digest_algo` row: an amendment refuses a file declaring an algorithm outside the list (**E703**), and only a recorded re-attestation restamps it, in `sha256`. "An amendment keeps the algorithm the file declares" could not hold for one it cannot compute, and the reference wrote `sha256` in its place: a root declaring `sha256` over digests made with the other, valid, with no record. |
 | §13.1, §15.2 | Revision 2 of the code table allocates **W915**: a dataset without a `digest`, inside an object a declared `content_id` covers. The SHOULD of §13.1 had no code, so `validate --level strict` passed a file that `verify` failed as unattested, and a CI gating on the validator missed an edit to that dataset that nothing could detect. A warning, as for any recommendation (§15.2): content the text allows stays valid. |
+| §13.1 | `<hex>` is lowercase hexadecimal of the algorithm's length, and any other spelling is malformed (**E703**). The clause said nothing of the spelling, and the reference read a digest as Python's `int(hex, 16)` reads a number, accepting a sign, `0x`, `_`, whitespace, uppercase and short hex: an uppercase digest of unchanged bytes was reported as a mismatch (**E701**) and its root as tampered with (**E702**), sending people looking for corruption that was not there. A `content_id` spelled otherwise is E703 too, and `fix --rewrite-digests` restamps either. |
 
 ### C.2 Prototype checks
 
