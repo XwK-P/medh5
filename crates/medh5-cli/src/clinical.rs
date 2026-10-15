@@ -26,12 +26,12 @@ use medh5::Error;
 
 use crate::common::*;
 
-pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+pub fn dispatch(argv: &[String], name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let result = match (name, m.subcommand()) {
         ("clinical", Some(("show", sub))) => show(sub, ctx),
         ("clinical", Some(("select", sub))) => select_cmd(sub, ctx),
         ("clinical", Some(("export", sub))) => export(sub, ctx),
-        ("clinical", Some(("augment", sub))) => augment(sub, ctx),
+        ("clinical", Some(("augment", sub))) => augment(argv, sub, ctx),
         ("clinical", Some(("strip", sub))) => strip(sub, ctx),
         ("task", Some(("new", sub))) => task_new(sub, ctx),
         ("task", Some(("validate", sub))) => task_validate(sub, ctx),
@@ -262,7 +262,28 @@ fn export(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     Ok(EXIT_OK)
 }
 
-fn augment(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+/// What `clinical augment --from-meds/--from-fhir` says when no Python
+/// package can import.
+const NO_IMPORTER: &str = "--from-meds and --from-fhir import in the Python package: install it (`pip install \
+                           'medh5[meds]'` for MEDS) and run `medh5 clinical augment` from it, or point MEDH5_PYTHON at \
+                           an interpreter that has it";
+
+fn augment(argv: &[String], m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    if get_str(m, "from_meds").is_some() || get_str(m, "from_fhir").is_some() {
+        // The importers are Python's, as the format converters are.
+        let root = crate::app::command();
+        let command = root
+            .find_subcommand("clinical")
+            .and_then(|c| c.find_subcommand("augment"))
+            .expect("the grammar defines clinical augment");
+        let parsed = crate::convert::parsed_args(command, m);
+        let host = ctx.host;
+        let (out, err) = ctx.streams();
+        return match host.convert(argv, "clinical-augment", &parsed, out, err) {
+            Some(code) => Ok(code),
+            None => Ok(ctx.fail(NO_IMPORTER)),
+        };
+    }
     let path = PathBuf::from(req_str(m, "path"));
     let file = req_str(m, "records");
     let text = std::fs::read_to_string(file).map_err(|e| medh5::error::os_error(&e, file))?;

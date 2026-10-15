@@ -1,8 +1,8 @@
 """Converters.
 
-Every converter is lazy: ``import medh5`` never pulls in nibabel, pydicom or
-highdicom, and a missing one produces a message naming the extra to install
-rather than an ``ImportError`` from three frames down.
+Every converter is lazy: ``import medh5`` never pulls in nibabel, pydicom,
+highdicom or pyarrow, and a missing one produces a message naming the extra to
+install rather than an ``ImportError`` from three frames down.
 
 Each returns a :class:`~medh5.io.report.ConversionReport` recording what the
 source did not determine --- the encoding chosen, the class ids minted, the
@@ -43,6 +43,10 @@ _LAZY: dict[str, str] = {
     "migrate": "medh5.io.legacy",
     "migrate_paths": "medh5.io.legacy",
     "build_label_set": "medh5.io.legacy",
+    "read_meds": "medh5.io.meds",
+    "augment_from_meds": "medh5.io.meds",
+    "read_fhir": "medh5.io.fhir",
+    "augment_from_fhir": "medh5.io.fhir",
     "group_by_subject": "medh5.io.grouping",
     "SubjectGroup": "medh5.io.grouping",
 }

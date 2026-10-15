@@ -683,6 +683,25 @@ half a voxel, the encoding is chosen by measurement, and grouping by subject is
 opt-in because a 0.x file carries no subject key — each reported per file. The
 procedure is [Migrate from 0.x](../guides/migrate-0x.md).
 
+### MEDS and FHIR R4
+
+```
+$ medh5 clinical augment case.medh5 --from-meds meds/ --meds-subject 1001 --clock-id ehr --clock utc --timezone UTC
+$ medh5 clinical augment case.medh5 --from-fhir bundle.json --fhir-subject Patient/p1
+```
+
+```python
+from medh5.io.fhir import augment_from_fhir, read_fhir
+from medh5.io.meds import augment_from_meds, read_meds
+```
+
+One subject's clinical history, added to a sample's clinical profile (format
+1.1): MEDS rows (`pip install "medh5[meds]"`) or FHIR R4 Observations and
+DiagnosticReports. No zone, origin, unit, code or availability is invented,
+so the report holds no guess; free text and birth instants are imported only
+when asked. The mapping tables and refusals are in
+[Import from MEDS or FHIR](../guides/clinical-import.md).
+
 ### COCO
 
 Not supported, deliberately —
@@ -694,4 +713,5 @@ Not supported, deliberately —
 - **[Import from NIfTI and nnU-Net](../guides/import-nifti.md)** — volumes and masks as separate files.
 - **[Export to other formats](../guides/export.md)** — getting data back out.
 - **[Migrate from 0.x](../guides/migrate-0x.md)** — the one-way door.
+- **[Import from MEDS or FHIR](../guides/clinical-import.md)** — a clinical history beside the images.
 - **[What the converters refuse, and why](../explanation/refusals.md)** — every refusal, with the reasoning.

@@ -54,6 +54,7 @@ Add an extra for each tool you connect medh5 to:
 | import or export NIfTI and nnU-Net | `pip install "medh5[nifti]"` |
 | import DICOM series, SEG and RTSTRUCT | `pip install "medh5[dicom]"` |
 | export DICOM SEG | `pip install "medh5[dicomseg]"` |
+| import a clinical history from MEDS | `pip install "medh5[meds]"` |
 | open files directly with `h5py` | `pip install "medh5[h5py]"` |
 
 Extras combine: `pip install "medh5[torch,nifti,dicom]"`.

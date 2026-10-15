@@ -595,6 +595,7 @@ class TestRepositoryGates:
         ):
             assert f"name: ci-dist-{target}\n" in jobs[name], name
         assert "-rs" in jobs["test-monai"]
+        assert "tests/integrations/test_meds.py -v -rs" in jobs["test-meds"]
         # SimpleITK, which the ITK cross-check needs, is installed where it runs
         itk = jobs["test-itk"]
         assert "SimpleITK" in itk and '-k "Itk or itk"' in itk and "-rs" in itk
@@ -738,7 +739,7 @@ class TestRepositoryGates:
             floors.update(found)
         assert set(floors) == {
             "numpy", "torch", "monai", "nibabel", "pydicom", "highdicom", "h5py",
-            "hdf5plugin",
+            "hdf5plugin", "pyarrow",
         }  # fmt: skip
         job = _jobs(CI.read_text(encoding="utf-8"))["test-min-deps"]
         for name, floor in floors.items():
@@ -749,7 +750,10 @@ class TestRepositoryGates:
             assert f'"{name}=={series}.*"' in job, name
         oldest = re.search(r'^requires-python = ">=(3\.\d+)"$', text, re.M)
         assert oldest and f'python-version: "{oldest[1]}"' in job
-        assert 'python -c "import torch, monai, nibabel, pydicom, highdicom"' in job
+        assert (
+            'python -c "import torch, monai, nibabel, pydicom, highdicom, pyarrow"'
+            in job
+        )
 
     def test_the_commit_hooks_run_in_ci_at_the_gates_versions(self):
         """CI never ran the commit hooks, so a commit made without them
@@ -993,7 +997,7 @@ class TestDistribution:
             if targets:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
-        assert downloading == 15
+        assert downloading == 16
 
     def test_every_shipped_target_is_built_released_and_noticed(self):
         """The targets were listed four times --- the build jobs, the

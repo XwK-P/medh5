@@ -255,6 +255,11 @@ def _files(
                     out / str(args["dataset_name"]),
                 )
             )
+    elif command == "clinical-augment":
+        read("the sample this command amends", "path")
+        read("the FHIR Bundle this command imports", "from_fhir")
+        if (root := given("from_meds")) is not None:
+            trees.append(("the MEDS dataset this command reads", root))
     if out is not None:
         writes.append(("the output this command writes", out))
     return reads, writes, trees
@@ -625,7 +630,82 @@ def _to_nnunet(args: Any) -> int:
     return _finish(report, args)
 
 
+_MEDS_ONLY = ("code_system", "kind", "day_precision", "document_code", "both_values")
+"""``clinical augment`` options only a MEDS import reads."""
+
+
+def _clinical_augment(args: Any) -> int:
+    """``medh5 clinical augment SAMPLE --from-meds DIR | --from-fhir FILE``."""
+    if args.from_fhir:
+        given = [f"--{o.replace('_', '-')}" for o in _MEDS_ONLY if getattr(args, o)]
+        if given:
+            return _fail(
+                f"{', '.join(given)}: MEDS options, which --from-fhir does not take"
+            )
+    sample = _sample_file(args.path)
+    common = {
+        "clock": _import_clock(args, sample),
+        "timezone": args.timezone,
+        "origin": args.origin,
+        "texts": args.with_text,
+        "out": args.out,
+    }
+    if args.from_meds:
+        from medh5.io.meds import augment_from_meds
+
+        result, report = augment_from_meds(
+            sample,
+            args.from_meds,
+            subject_id=args.meds_subject,
+            code_systems=_pairs(args.code_system, "code-system"),
+            kinds=_pairs(args.kind, "kind"),
+            day_precision=args.day_precision or (),
+            document_codes=args.document_code or (),
+            both_values=args.both_values or "refuse",
+            **common,
+        )
+    else:
+        from medh5.io.fhir import augment_from_fhir
+
+        result, report = augment_from_fhir(
+            sample, args.from_fhir, subject=args.fhir_subject, **common
+        )
+    if args.report:
+        _write_report(Path(args.report), json.dumps(report.to_json(), indent=2) + "\n")
+    if args.json:
+        print(json.dumps({"augment": result, "report": report.to_json()}, indent=2))
+    else:
+        print(
+            f"{result['path']}: MEDH5 {result['version_before']} -> "
+            f"{result['version_after']}; {result['events']} events, "
+            f"{result['documents']} documents, {result['links']} links"
+        )
+        print(report.format(verbose=True))
+    return EXIT_OK if report.ok else EXIT_ERROR
+
+
+def _import_clock(args: Any, sample: str) -> Any:
+    """The clock ``--clock-id`` and ``--clock`` name, else the sample's."""
+    from medh5.clinical import Clock
+    from medh5.sample import open_sample
+
+    if args.clock_id:
+        if args.clock == "relative":
+            origin = args.origin or "an origin not given"
+            return Clock.relative(args.clock_id, f"{origin}, as given at import")
+        return Clock(args.clock_id, args.clock)
+    with open_sample(sample) as found:
+        clinical = found.clinical
+        if clinical is None:
+            raise MEDH5Error(
+                f"{sample} has no clinical clock to import onto: give --clock-id "
+                "and --clock"
+            )
+        return clinical.clock
+
+
 _HANDLERS: dict[str, Callable[[Any], int]] = {
+    "clinical-augment": _clinical_augment,
     "from-nifti": _from_nifti,
     "import-seg-nifti": _import_seg_nifti,
     "to-nifti": _to_nifti,

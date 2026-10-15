@@ -122,6 +122,13 @@ jobs:
           cat missing.log
           [[ $status == 1 ]]
           grep -F "MEDH5_PYTHON" missing.log
+          # The clinical importers too (W21-12): the refusal is the package's.
+          status=0
+          MEDH5_PYTHON=python "$exe" clinical augment x.medh5 --from-fhir b.json \
+            --fhir-subject Patient/1 --kind X=other 2> imported.log || status=$?
+          cat imported.log
+          [[ $status == 1 ]]
+          grep -F "MEDS options, which --from-fhir does not take" imported.log
       # Not `dist`: when `release.yml` calls this workflow, the release's own
       # job uploads that name in the same run, and artifact names are unique.
       # A pull request's artifacts are kept 3 days, which is all anyone reads
