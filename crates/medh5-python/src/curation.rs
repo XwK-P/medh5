@@ -99,7 +99,10 @@ record_class!(
         field("performed_by", Kind::Plain),
         field("date", Kind::Plain),
         field("burned_in_annotation_checked", Kind::Plain),
-        field("extra", Kind::Extra),
+        field("extra", Kind::Extra).deprecated(
+            "medh5 3.0 removes Deidentification.extra: the schema allows no other member, so anything it holds \
+             makes the document invalid"
+        ),
     ]
 );
 

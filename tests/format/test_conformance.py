@@ -201,6 +201,17 @@ class TestPublishedSchema:
         assert schema()["$schema"].endswith("2020-12/schema")
         assert set(schema()["required"]) == {"identity", "timepoints"}
 
+    def test_each_caller_gets_its_own_schema(self):
+        """``schema()`` was cached, so every caller shared one mutable dict:
+        one caller's edit was every later caller's schema."""
+        from medh5 import _core
+        from medh5.document import schema
+
+        mine = schema()
+        assert mine is not schema() and mine == _core.schema()
+        mine["required"].append("everything")
+        assert "everything" not in schema()["required"]
+
 
 # The codes revision 1 of the table holds, with their severities, frozen: a
 # later revision only adds (1.0 §15.2), so no change may alter this list.

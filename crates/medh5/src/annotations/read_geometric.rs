@@ -910,3 +910,16 @@ fn corners_array(bbox: &[f64]) -> Result<Array2<f64>> {
     let flat: Vec<f64> = corners.into_iter().flatten().collect();
     Ok(Array2::from_shape_vec((flat.len() / s.max(1), s), flat)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s9_an_assertion_is_positive_above_zero_and_negative_at_zero() {
+        let at = |value: f64| Assertion { class_id: 1, value, scope_id: None, scheme: None, scheme_value: None };
+        assert!(at(1.0).is_positive() && !at(1.0).is_negative());
+        assert!(at(0.25).is_positive());
+        assert!(at(0.0).is_negative() && !at(0.0).is_positive());
+    }
+}

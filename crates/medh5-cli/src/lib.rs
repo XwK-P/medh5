@@ -31,7 +31,7 @@ mod seg;
 mod workers;
 
 use common::Ctx;
-pub use common::{top_level_message, Host, EXIT_ERROR, EXIT_OK, EXIT_USAGE};
+pub use common::{sample_file_refusal, top_level_message, Host, EXIT_ERROR, EXIT_OK, EXIT_USAGE};
 
 /// The host of the standalone binary: hands the converters and the dataloader
 /// benchmark to a Python interpreter that has the `medh5` package, when there

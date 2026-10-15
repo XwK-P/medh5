@@ -243,6 +243,18 @@ class TestIdentity:
         assert back == record
         assert Deidentification.from_json(None) is None
 
+    def test_S11_4_deidentification_extra_is_deprecated(self):
+        """The schema's ``deidentification`` object allows no member it does
+        not define, so whatever ``extra`` holds makes the document invalid."""
+        record = Deidentification("dicom-psi", extra={"x_tool": "ctp"})
+        with pytest.warns(
+            DeprecationWarning, match="^medh5 3.0 removes Deidentification.extra"
+        ):
+            assert record.extra == {"x_tool": "ctp"}
+        # Reading every field for `copy.replace` is not a read of `extra`.
+        assert record.__replace__(method="other").method == "other"
+        assert "extra" in repr(record)
+
     def test_S11_4_a_deidentification_record_without_a_method_is_refused(
         self, tmp_path: Path
     ):
@@ -410,7 +422,6 @@ class TestRecordEdits:
         [
             (lambda: Identity("s", "p"), "extra", "consent", "research-only"),
             (lambda: Cohort(site_id="a"), "extra", "batch", 7),
-            (lambda: Deidentification("dicom-psi"), "extra", "tool", "scrub"),
             (lambda: Activity("a", "review"), "params", "window", [-150, 250]),
             (lambda: Agreement("dice", 0.9, against="r2"), "per_class", "1", 0.5),
             (lambda: Timepoint("tp0", 0), "series_uids", "CT", "1.2.840.99"),

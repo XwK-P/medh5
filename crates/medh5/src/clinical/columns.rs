@@ -132,7 +132,13 @@ pub const LINK_COLUMNS: [ColumnSpec; 9] = [
     col("asserted_by_event_id", Utf8, false),
 ];
 
-/// The columns of a table, by its name under `clinical/`.
+/// The columns of a table, by its name under `clinical/`.  An unknown name
+/// answers with the link columns.
+#[deprecated(
+    since = "2.1.0",
+    note = "medh5 3.0 removes columns_of, which answers an unknown table name with the link columns: use \
+            EVENT_COLUMNS, DOCUMENT_COLUMNS or LINK_COLUMNS"
+)]
 pub fn columns_of(table: &str) -> &'static [ColumnSpec] {
     match table {
         super::model::EVENTS => &EVENT_COLUMNS,

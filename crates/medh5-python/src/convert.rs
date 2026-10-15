@@ -540,6 +540,37 @@ pub fn region(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<Index>>> {
     Ok(Some(out))
 }
 
+/// [`region`] over an array of `ndim` axes, where a single Ellipsis stands for
+/// as many whole axes as the other items leave, as NumPy reads it; two are an
+/// `IndexError`.
+pub fn region_for(obj: Option<&Bound<'_, PyAny>>, ndim: usize) -> PyResult<Option<Vec<Index>>> {
+    let Some(obj) = obj else { return Ok(None) };
+    let ellipsis = pyo3::types::PyEllipsis::get(obj.py());
+    if obj.is(ellipsis) {
+        return Ok(Some(vec![Index::Slice(Slice::full()); ndim]));
+    }
+    if obj.is_none() || obj.is_instance_of::<PySlice>() {
+        return region(Some(obj));
+    }
+    let items: Vec<Bound<'_, PyAny>> = obj.try_iter()?.collect::<PyResult<_>>()?;
+    match items.iter().filter(|i| i.is(ellipsis)).count() {
+        0 => region(Some(obj)),
+        1 => {
+            let fill = (ndim + 1).saturating_sub(items.len());
+            let mut out = Vec::with_capacity(ndim);
+            for item in &items {
+                if item.is(ellipsis) {
+                    out.extend(std::iter::repeat_n(Index::Slice(Slice::full()), fill));
+                } else {
+                    out.push(index_item(item)?);
+                }
+            }
+            Ok(Some(out))
+        }
+        _ => Err(pyo3::exceptions::PyIndexError::new_err("an index can only have a single ellipsis ('...')")),
+    }
+}
+
 /// A region made of slices only (the engine APIs that crop), every axis kept.
 ///
 /// An integer position is refused rather than read as a one-wide slice: NumPy

@@ -11,8 +11,8 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 
 use medh5::integrity::{digest, repair, verify};
 
-use crate::convert::{json_to_py, py_to_nd};
-use crate::errors::R;
+use crate::convert::{json_to_py, py_to_nd, strings};
+use crate::errors::{path_error, R};
 
 /// A verification result as the keyword arguments of `VerifyResult`.
 pub fn verify_result_to_py<'py>(py: Python<'py>, r: &verify::VerifyResult) -> PyResult<Bound<'py, PyAny>> {
@@ -50,7 +50,8 @@ fn parse_digest(value: &str) -> R<(String, String)> {
 
 #[pyfunction]
 fn diagnose<'py>(py: Python<'py>, path: PathBuf) -> R<Bound<'py, PyAny>> {
-    let found = py.detach(move || repair::diagnose(&path))?;
+    let at = path.clone();
+    let found = py.detach(move || repair::diagnose(&path)).map_err(|e| path_error(e, &at))?;
     Ok(json_to_py(py, &found.to_json())?)
 }
 
@@ -66,7 +67,8 @@ fn fix<'py>(
     max_coords: Option<usize>,
 ) -> R<Bound<'py, PyAny>> {
     let options = repair::FixOptions { rebuild_index, rewrite_digests, reason, performed_by, max_coords };
-    let done = py.detach(move || repair::fix(&path, &options))?;
+    let at = path.clone();
+    let done = py.detach(move || repair::fix(&path, &options)).map_err(|e| path_error(e, &at))?;
     Ok(json_to_py(py, &done.to_json())?)
 }
 
@@ -285,8 +287,78 @@ fn collect_digests<'py>(py: Python<'py>, root: &Bound<'py, PyAny>, skip: Vec<Str
     Ok(out)
 }
 
+// -- what the result types say of themselves ------------------------------------------
+
+fn opt_text(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<String>> {
+    obj.getattr(name)?.extract()
+}
+
+/// The engine value of a `VerifyResult` dataclass.
+fn verify_result_arg(obj: &Bound<'_, PyAny>) -> PyResult<verify::VerifyResult> {
+    let list = |name: &str| strings(&obj.getattr(name)?);
+    Ok(verify::VerifyResult {
+        checked: list("checked")?,
+        mismatched: list("mismatched")?,
+        undigested: list("undigested")?,
+        malformed: list("malformed")?,
+        content_id_declared: opt_text(obj, "content_id_declared")?,
+        content_id_computed: opt_text(obj, "content_id_computed")?,
+        stale_index: list("stale_index")?,
+        unattested: list("unattested")?,
+        unverifiable: list("unverifiable")?,
+    })
+}
+
+/// The engine value of a `Diagnosis` dataclass.
+fn diagnosis_arg(obj: &Bound<'_, PyAny>) -> PyResult<repair::Diagnosis> {
+    let list = |name: &str| strings(&obj.getattr(name)?);
+    Ok(repair::Diagnosis {
+        path: obj.getattr("path")?.extract()?,
+        mismatched: list("mismatched")?,
+        malformed: list("malformed")?,
+        undigested: list("undigested")?,
+        unattested: list("unattested")?,
+        stale_index: list("stale_index")?,
+        missing_index: list("missing_index")?,
+        content_id_ok: obj.getattr("content_id_ok")?.extract()?,
+    })
+}
+
+/// The engine value of a `Repair` dataclass.
+fn repair_arg(obj: &Bound<'_, PyAny>) -> PyResult<repair::Repair> {
+    Ok(repair::Repair {
+        path: obj.getattr("path")?.extract()?,
+        diagnosis: diagnosis_arg(&obj.getattr("diagnosis")?)?,
+        rebuilt_index: strings(&obj.getattr("rebuilt_index")?)?,
+        rewrote_digests: obj.getattr("rewrote_digests")?.is_truthy()?,
+        content_id: opt_text(obj, "content_id")?,
+        notes: strings(&obj.getattr("notes")?)?,
+    })
+}
+
+/// A verification's summary: its verdict, and what failed.
+#[pyfunction]
+fn integrity_verify_json<'py>(py: Python<'py>, result: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    json_to_py(py, &verify_result_arg(result)?.summary())
+}
+
+/// A diagnosis as `diagnose --json` prints it.
+#[pyfunction]
+fn integrity_diagnosis_json<'py>(py: Python<'py>, diagnosis: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    json_to_py(py, &diagnosis_arg(diagnosis)?.to_json())
+}
+
+/// A repair as `fix --json` prints it.
+#[pyfunction]
+fn integrity_repair_json<'py>(py: Python<'py>, repair: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    json_to_py(py, &repair_arg(repair)?.to_json())
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(collect_digests, m)?)?;
+    m.add_function(wrap_pyfunction!(integrity_verify_json, m)?)?;
+    m.add_function(wrap_pyfunction!(integrity_diagnosis_json, m)?)?;
+    m.add_function(wrap_pyfunction!(integrity_repair_json, m)?)?;
     for f in [
         wrap_pyfunction!(array_digest, m)?,
         wrap_pyfunction!(digest_bytes, m)?,

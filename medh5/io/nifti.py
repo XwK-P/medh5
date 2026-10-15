@@ -37,6 +37,7 @@ from medh5._files import write_text
 from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry import (
+    COORD_SYSTEMS,
     MM_PER_UNIT,
     ORTHONORMAL_TOL,
     build_affine,
@@ -58,8 +59,6 @@ A 2-D grid's two world axes are the first two of the frame it was reduced
 from --- :func:`_reduce_plane` keeps a plane only when it lies in the x-y
 plane at z = 0 --- and those are exactly the two axes RAS↔LPS flips.
 """
-
-COORD_SYSTEMS = ("LPS", "RAS")
 
 
 def require_nibabel() -> Any:

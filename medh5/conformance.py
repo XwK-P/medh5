@@ -77,25 +77,19 @@ class Case:
 
     @property
     def valid(self) -> bool:
-        return not self.errors
+        """Whether the file conforms: it expects no error."""
+        return bool(self.to_json()["valid"])
 
     def build(self, path: str | os.PathLike[str]) -> None:
         """Write this case's file to *path*."""
         _core.conformance_build_case(self.name, os.fspath(path))
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "clause": self.clause,
-            "level": self.level,
-            "file_suffix": self.suffix,
-            "valid": self.valid,
-            "mutated": self.mutated,
-            "expect_errors": sorted(self.errors),
-            "expect_warnings": sorted(self.warnings),
-            "format_version": self.format_version,
-        }
+        """The case's entry in ``expected.json``."""
+        found: dict[str, Any] = _core.conformance_case_json(self)
+        # The version is the case's own: a newer suite's record states it.
+        found["format_version"] = self.format_version
+        return found
 
 
 @dataclass(slots=True)
@@ -128,20 +122,13 @@ class CaseResult:
 
     @property
     def ok(self) -> bool:
-        return not self.missing and not self.unexpected and self.error is None
+        """Whether the validator reported exactly the expected codes."""
+        return bool(self.to_json()["ok"])
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "name": self.case.name,
-            "ok": self.ok,
-            "expect_errors": sorted(self.case.errors),
-            "got_errors": sorted(self.got_errors),
-            "expect_warnings": sorted(self.case.warnings),
-            "got_warnings": sorted(self.got_warnings),
-            "missing": sorted(self.missing),
-            "unexpected": sorted(self.unexpected),
-            "error": self.error,
-        }
+        """The result as ``conformance run --json`` prints it."""
+        found: dict[str, Any] = _core.conformance_result_json(self)
+        return found
 
 
 CASES: tuple[Case, ...] = tuple(
@@ -261,14 +248,8 @@ def score_companion(
 
 def summarize(results: Sequence[CaseResult]) -> dict[str, Any]:
     """The ``--json`` summary of a run or a score."""
-    failures = [r for r in results if not r.ok]
-    return {
-        "cases": len(results),
-        "passed": len(results) - len(failures),
-        "failed": len(failures),
-        "ok": not failures,
-        "failures": [r.to_json() for r in failures],
-    }
+    found: dict[str, Any] = _core.conformance_summary(list(results))
+    return found
 
 
 __all__ = [

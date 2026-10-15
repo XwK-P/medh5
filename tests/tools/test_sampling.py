@@ -213,6 +213,67 @@ class TestPatchSampler:
             assert len(list(iter_patches(sample, sampler, n=3))) == 3
             assert "uniform" in repr(sampler)
 
+    def test_S14_3_iter_patches_yields_what_draws_returns(self, indexed):
+        with medh5.open(indexed) as sample:
+            sampler = PatchSampler(4)
+            drawn = sampler.draws(sample, "organs_tp0", 12, 7)
+            lazy = iter_patches(sample, sampler, annotation="organs_tp0", n=12, rng=7)
+            assert list(lazy) == drawn
+            numpy = list(
+                iter_patches(sample, sampler, n=5, rng=np.random.default_rng(3))
+            )
+            assert numpy == sampler.draws(sample, None, 5, np.random.default_rng(3))
+
+    def test_S14_3_iter_patches_draws_one_patch_per_next(self, tmp_path: Path):
+        """``iter_patches`` was ``yield from draws(...)``: every patch was drawn
+        before the first was yielded.  Each draw here reads its index row, so
+        the engine's read count shows how many have been drawn."""
+        from medh5 import _core
+
+        path = Framed.many_classes(tmp_path / "many.medh5")
+        sampler = PatchSampler(8, strategy="foreground")
+        with medh5.open(path) as s:
+            sampler.draw(s, "organs", 0)
+            _core._read_stats()
+            patches = iter_patches(s, sampler, annotation="organs", n=10_000, rng=0)
+            assert sum(_core._read_stats().values()) == 0
+            first = next(patches)
+            one = sum(_core._read_stats().values())
+            assert 1 <= one <= 2
+            next(patches)
+            assert sum(_core._read_stats().values()) <= 2
+        assert first.used_index is True
+
+    def test_S14_3_draws_pins_the_window_grid(self, tmp_path: Path, label_set, masks):
+        """``draw`` took ``grid=`` and ``draws`` did not, so a run of draws
+        could not be pinned to a visit."""
+        path = write_sample(
+            tmp_path / "two.medh5",
+            label_set=label_set,
+            masks=masks,
+            timepoints=("tp0", "tp1"),
+        )
+        with medh5.open(path) as sample:
+            sampler = PatchSampler(4, strategy="uniform")
+            for grid in ("ct_tp0", "ct_tp1"):
+                patches = sampler.draws(sample, None, 6, 1, grid=grid)
+                assert {p.grid_id for p in patches} == {grid}
+                lazy = iter_patches(sample, sampler, n=6, rng=1, grid=grid)
+                assert list(lazy) == patches
+
+    def test_S14_3_a_misspelt_annotation_is_refused_before_the_first_patch(
+        self, indexed
+    ):
+        """A generator checks nothing until its first ``next()``: a misspelt
+        name surfaced inside the training loop, not where it was written."""
+        with medh5.open(indexed) as sample:
+            sampler = PatchSampler(4)
+            with pytest.raises(KeyError, match="organs_tpx"):
+                iter_patches(sample, sampler, annotation="organs_tpx", n=3)
+            with pytest.raises(KeyError, match="nowhere"):
+                iter_patches(sample, sampler, n=3, grid="nowhere")
+            assert list(iter_patches(sample, sampler, n=0)) == []
+
     @pytest.mark.parametrize("seed", [-1, 2**64, 2**200, [1, -2], [1, 2**64]])
     def test_S14_3_a_seed_is_a_64_bit_word_never_wrapped(self, indexed, seed):
         """``2**64`` wrapped onto ``0`` and ``-1`` onto ``2**64 - 1``, drawing

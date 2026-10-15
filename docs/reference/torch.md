@@ -12,8 +12,9 @@ pip install "medh5[torch]"
 
 `VolumeDataset`, `PatchDataset` and `GridPatchDataset` take the same reading
 arguments: `images`, `annotations`, `label_format` (`onehot`, `labelmap`,
-`instances` or `none`), `physical`, `dtype`, `timepoint`. A patch is drawn, and
-a cover planned, on the grid the images they read share, so `timepoint="tp1"`
+`instances` or `none`), `physical`, `dtype`, `timepoint`. A physical read is
+float32 only where a rescale applies; pass `dtype` for one type across a
+cohort. A patch is drawn, and a cover planned, on the grid the images they read share, so `timepoint="tp1"`
 reads the follow-up's grid; `images=` given beside it must be at that visit. `PairedPatchDataset` takes `images`, `physical` and
 `dtype`, and refuses the other three: a pair chooses its own visits.
 
@@ -67,6 +68,10 @@ every epoch**. The epoch lives in shared memory, so `set_epoch` reaches every
 `DataLoader` worker — `persistent_workers=True` included, under `fork` and
 `spawn`. (Before 1.4.1 persistent workers kept the epoch they were started
 with and repeated epoch 0's draw for the whole run.)
+
+Outside a dataset, `iter_patches(sample, sampler, n=..., rng=..., grid=...)`
+draws the same patches as `sampler.draws(...)`, one per `next()`; see
+[Sampling patches](python-api.md#sampling-patches).
 
 ### GridPatchDataset — deterministic tiling, for inference
 

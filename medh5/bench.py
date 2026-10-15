@@ -49,7 +49,8 @@ class Measurement:
     def from_json(cls, doc: dict[str, Any]) -> Measurement:
         return cls(
             name=str(doc["name"]),
-            value=float(doc["value"]),
+            # `to_json` writes a NaN as `None`, which JSON can carry.
+            value=float("nan") if doc["value"] is None else float(doc["value"]),
             unit=str(doc.get("unit", "ms")),
             target=doc.get("target"),
             description=str(doc.get("description", "")),
@@ -58,21 +59,16 @@ class Measurement:
 
     @property
     def ok(self) -> bool:
-        return self.target is None or self.value <= self.target
+        return bool(self.to_json()["ok"])
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "value": self.value,
-            "unit": self.unit,
-            "target": self.target,
-            "ok": self.ok,
-            "description": self.description,
-            "detail": self.detail or {},
-        }
+        """The measurement as ``bench --json`` prints it: a NaN as ``None``,
+        which JSON can carry."""
+        found: dict[str, Any] = _core.bench_measurement_json(self)
+        return found
 
     def __str__(self) -> str:
-        return str(_core.bench_line(self.to_json()))
+        return str(_core.bench_line(self))
 
 
 def timed(fn: Callable[[], Any], *, repeats: int = 20, warmup: int = 3) -> float:
@@ -229,7 +225,7 @@ def many_class_measurement(
 
 def report(measurements: Sequence[Measurement]) -> str:
     """The text table the ``medh5 bench`` command prints."""
-    return str(_core.bench_report([m.to_json() for m in measurements]))
+    return str(_core.bench_report(list(measurements)))
 
 
 __all__ = [

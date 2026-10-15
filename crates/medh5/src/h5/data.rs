@@ -809,7 +809,8 @@ pub fn chunks(ds: &hdf5::Dataset) -> Option<Vec<usize>> {
     ds.chunk()
 }
 
-/// The dataset's filter pipeline, as `(id, client data)` pairs.
+/// The dataset's filter pipeline, as `(id, client data)` pairs, every
+/// client value included.
 pub fn filters(ds: &hdf5::Dataset) -> Result<Vec<(i32, Vec<u32>)>> {
     use crate::h5sys::{h5d, h5p};
     super::locked(|| unsafe {
@@ -817,25 +818,40 @@ pub fn filters(ds: &hdf5::Dataset) -> Result<Vec<(i32, Vec<u32>)>> {
         if plist < 0 {
             return Err(Error::Io(format!("could not read the creation properties of {}", ds.name())));
         }
-        let n = h5p::H5Pget_nfilters(plist);
-        let mut out = Vec::new();
-        for i in 0..n.max(0) {
-            let mut flags: u32 = 0;
-            let mut nelmts: usize = 32;
-            let mut values = vec![0u32; 32];
-            let mut name = vec![0i8; 64];
-            let mut config: u32 = 0;
+        // `nelmts` goes in as the buffer's capacity and comes back as the
+        // filter's full count, which may be larger: then ask again with room
+        // for all of them.
+        let filter = |i: u32, values: &mut Vec<u32>| -> Option<(i32, usize)> {
+            let (mut flags, mut config, mut nelmts) = (0u32, 0u32, values.len());
             let id = h5p::H5Pget_filter2(
                 plist,
-                i as u32,
+                i,
                 &mut flags,
                 &mut nelmts,
                 values.as_mut_ptr(),
-                name.len(),
-                name.as_mut_ptr().cast(),
+                0,
+                std::ptr::null_mut(),
                 &mut config,
             );
-            values.truncate(nelmts.min(32));
+            (id >= 0).then_some((id, nelmts))
+        };
+        let n = h5p::H5Pget_nfilters(plist);
+        let mut out = Vec::new();
+        for i in 0..n.max(0) as u32 {
+            let mut values = vec![0u32; 32];
+            let Some((id, mut count)) = filter(i, &mut values) else {
+                h5p::H5Pclose(plist);
+                return Err(Error::Io(format!("could not read filter {i} of {}", ds.name())));
+            };
+            if count > values.len() {
+                values = vec![0u32; count];
+                let Some((_, again)) = filter(i, &mut values) else {
+                    h5p::H5Pclose(plist);
+                    return Err(Error::Io(format!("could not read filter {i} of {}", ds.name())));
+                };
+                count = again;
+            }
+            values.truncate(count);
             out.push((id, values));
         }
         h5p::H5Pclose(plist);
@@ -1081,6 +1097,42 @@ fn swap_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `H5Pget_filter2` fills at most the capacity it is given and returns
+    /// the full count: a filter with more than 32 client values lost the
+    /// rest.
+    #[test]
+    fn filters_returns_every_client_value() {
+        use crate::h5sys::{h5d, h5p, h5s, h5t, h5z};
+        super::super::init();
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("f.h5")).unwrap();
+        let values: Vec<u32> = (0..40).map(|v| v * 3 + 1).collect();
+        let dims = [4u64, 4];
+        let id = super::super::locked(|| unsafe {
+            let dcpl = h5p::H5Pcreate(*h5p::H5P_CLS_DATASET_CREATE);
+            h5p::H5Pset_chunk(dcpl, 2, dims.as_ptr());
+            // An optional filter no library registers, as h5py records one it
+            // has not got.
+            h5p::H5Pset_filter(dcpl, 40000, h5z::H5Z_FLAG_OPTIONAL, values.len(), values.as_ptr());
+            let space = h5s::H5Screate_simple(2, dims.as_ptr(), std::ptr::null());
+            let id = h5d::H5Dcreate2(
+                file.id(),
+                c"x".as_ptr(),
+                *h5t::H5T_NATIVE_UCHAR,
+                space,
+                h5p::H5P_DEFAULT,
+                dcpl,
+                h5p::H5P_DEFAULT,
+            );
+            h5s::H5Sclose(space);
+            h5p::H5Pclose(dcpl);
+            h5d::H5Dclose(id)
+        });
+        assert!(id >= 0);
+        let found = filters(&file.dataset("x").unwrap()).unwrap();
+        assert_eq!(found, vec![(40000, values)]);
+    }
 
     fn fixed(n: usize) -> (tempfile::TempDir, hdf5::File, hdf5::Dataset) {
         let dir = tempfile::tempdir().unwrap();

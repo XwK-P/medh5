@@ -233,8 +233,16 @@ fn cli_lookup_message(text: &str) -> String {
     medh5_cli::top_level_message(&medh5::Error::Key(text.to_string()))
 }
 
+/// Why `path` is not worked on as one sample file, as every native command
+/// words it (a collection, with the way to its members); `None` otherwise.
+#[pyfunction]
+fn cli_sample_file_refusal(py: Python<'_>, path: String) -> Option<String> {
+    py.detach(|| medh5_cli::sample_file_refusal(&path))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cli_main, m)?)?;
+    m.add_function(wrap_pyfunction!(cli_sample_file_refusal, m)?)?;
     m.add_function(wrap_pyfunction!(cli_command_tree, m)?)?;
     m.add_function(wrap_pyfunction!(cli_lookup_message, m)?)?;
     m.add("EXIT_OK", medh5_cli::EXIT_OK)?;

@@ -24,9 +24,7 @@ validator reports the value under).
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
-from functools import lru_cache
 from typing import Any
 
 from medh5 import _core
@@ -54,10 +52,10 @@ def schema_text() -> str:
     return str(_core.schema_text())
 
 
-@lru_cache(maxsize=1)
 def schema() -> dict[str, Any]:
-    """The sample-document JSON Schema, parsed."""
-    found: dict[str, Any] = json.loads(schema_text())
+    """The sample-document JSON Schema, parsed: a fresh dict on every call,
+    so a caller's edit stays the caller's."""
+    found: dict[str, Any] = _core.schema()
     return found
 
 

@@ -40,7 +40,7 @@ from medh5.errors import CODES, Severity
 
 Level = Literal["structural", "semantic", "integrity", "strict"]
 
-LEVELS: tuple[Level, ...] = ("structural", "semantic", "integrity", "strict")
+LEVELS: tuple[Level, ...] = _core.LEVELS
 
 LEVEL_ORDER = {name: i for i, name in enumerate(LEVELS)}
 
@@ -99,39 +99,30 @@ class Report:
     def extend(self, diagnostics: Iterable[Diagnostic]) -> None:
         self.diagnostics.extend(diagnostics)
 
-    def _effective_severity(self, diagnostic: Diagnostic) -> Severity:
-        """Severity *at this level*, which is not always the table's severity.
+    def _positions(self) -> tuple[list[int], list[int], list[int]]:
+        """Where the errors, the warnings and the promoted warnings are in
+        `diagnostics`, at this level --- the engine's judgement.
 
         §15.1 defines ``strict`` as the other levels "with warnings promoted to
-        errors", so at ``strict`` there are no warnings.  The promotion has to
-        reach the counts, not just the verdict: reporting ``FAILED ... (0 errors,
-        2 warnings)`` contradicts itself, and a CI job gating on ``errors == 0``
-        --- with the count right there in the JSON --- passed files the same
-        payload called not-ok.  Each diagnostic keeps its measured
+        errors", so at ``strict`` there are no warnings.  The promotion reaches
+        the counts, not just the verdict: reporting ``FAILED ... (0 errors, 2
+        warnings)`` contradicts itself.  Each diagnostic keeps its measured
         ``severity``, so what the table says is still visible.
         """
-        if self.level == "strict":
-            return "error"
-        return diagnostic.severity
+        return _core.validate_report_positions(self)
 
     @property
     def errors(self) -> tuple[Diagnostic, ...]:
-        return tuple(
-            d for d in self.diagnostics if self._effective_severity(d) == "error"
-        )
+        return tuple(self.diagnostics[i] for i in self._positions()[0])
 
     @property
     def warnings(self) -> tuple[Diagnostic, ...]:
-        return tuple(
-            d for d in self.diagnostics if self._effective_severity(d) == "warning"
-        )
+        return tuple(self.diagnostics[i] for i in self._positions()[1])
 
     @property
     def promoted(self) -> tuple[Diagnostic, ...]:
         """Diagnostics the table calls warnings and this level treats as errors."""
-        if self.level != "strict":
-            return ()
-        return tuple(d for d in self.diagnostics if d.severity == "warning")
+        return tuple(self.diagnostics[i] for i in self._positions()[2])
 
     @property
     def codes(self) -> tuple[str, ...]:
@@ -149,17 +140,8 @@ class Report:
         return not self.errors
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "path": self.path,
-            "level": self.level,
-            "profiles": list(self.profiles),
-            "ok": self.ok,
-            "errors": len(self.errors),
-            "warnings": len(self.warnings),
-            "promoted": len(self.promoted),
-            "diagnostics": [d.to_json() for d in self.diagnostics],
-            "checked": self.checked,
-        }
+        found: dict[str, Any] = _core.validate_report_json(self)
+        return found
 
     @classmethod
     def from_json(cls, doc: dict[str, Any]) -> Report:
@@ -177,17 +159,7 @@ class Report:
 
     def format(self, *, verbose: bool = False) -> str:
         """Human-readable text, one diagnostic per line."""
-        head = (
-            f"{self.path}: {'OK' if self.ok else 'FAILED'} "
-            f"[{self.level}] profiles={','.join(self.profiles) or '-'} "
-            f"({len(self.errors)} errors, {len(self.warnings)} warnings)"
-        )
-        lines = [head]
-        for diagnostic in self.diagnostics:
-            lines.append("  " + str(diagnostic))
-            if verbose and diagnostic.summary:
-                lines.append(f"          -> {diagnostic.summary}")
-        return "\n".join(lines)
+        return str(_core.validate_report_format(self, verbose=verbose))
 
     def __repr__(self) -> str:
         return (
@@ -198,19 +170,7 @@ class Report:
 
 def merge(reports: Sequence[Report], path: str = "<multiple>") -> Report:
     """Combine several reports, prefixing each diagnostic's location with its file."""
-    out = Report(path=path, level=reports[0].level if reports else "structural")
-    for report in reports:
-        for diagnostic in report.diagnostics:
-            out.add(
-                Diagnostic(
-                    code=diagnostic.code,
-                    location=f"{report.path}:{diagnostic.location}",
-                    message=diagnostic.message,
-                    severity=diagnostic.severity,
-                    level=diagnostic.level,
-                )
-            )
-    return out
+    return Report.from_json(_core.validate_merge(list(reports), path))
 
 
 def validate_file(

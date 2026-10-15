@@ -272,7 +272,9 @@ intercept`, because that is what the datasets hand a model with
 wrong distribution: a CT stored `int16` under slope 2 and intercept −1024 has a
 stored mean near 100 and a physical mean near −824. `compute_stats(...,
 physical=False)`, or `--stored` on the command line, measures the stored values
-when those are what you want, and the result records which it did.
+when those are what you want, and the result records which it did. (A
+physical read is float32 only where a rescale applies; pass `dtype` for one
+type across a cohort.)
 
 Two things it deliberately does not do.
 

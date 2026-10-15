@@ -17,8 +17,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::model::{
-    ClinicalRecords, Descriptor, Document, Event, Link, ASSESSMENT_SYSTEM, COMPARATORS, ENDPOINT_TYPES, EVENT_KINDS,
-    LESION_PRESENCE, LESION_VALUES, MEDIA_TYPES, RELATIONS, STATUSES, TEMPORAL_TYPES,
+    ClinicalRecords, Descriptor, Document, Event, Link, COMPARATORS, ENDPOINT_TYPES, EVENT_KINDS, LESION_VALUES,
+    MEDIA_TYPES, RELATIONS, STATUSES, TEMPORAL_TYPES,
 };
 use crate::h5::attrs;
 use crate::h5::ops;
@@ -789,7 +789,7 @@ fn check_assessments(records: &ClinicalRecords, base: &str, out: &mut Vec<Findin
         .map(|l| l.source_id.as_str())
         .collect();
     for (i, e) in records.events.iter().enumerate() {
-        if !(e.code_system.as_deref() == Some(ASSESSMENT_SYSTEM) && e.code.as_deref() == Some(LESION_PRESENCE)) {
+        if !e.is_lesion_assessment() {
             continue;
         }
         let loc = row_location(&format!("{base}/events"), Some(&e.event_id), i);

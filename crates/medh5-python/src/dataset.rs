@@ -17,7 +17,7 @@ use medh5::collection as coll;
 use medh5::dataset::{check, manifest, split, stats};
 
 use crate::convert::{f64_vec, json_to_py, opt_strings, py_to_json};
-use crate::errors::R;
+use crate::errors::{path_error, paths_error, R};
 use crate::nodes::Group;
 use crate::reader::SampleHandle;
 
@@ -109,7 +109,8 @@ impl CollectionHandle {
 
 #[pyfunction]
 fn open_collection(py: Python<'_>, path: PathBuf) -> R<CollectionHandle> {
-    Ok(CollectionHandle::wrap(py.detach(move || coll::open_collection(&path))?))
+    let at = path.clone();
+    Ok(CollectionHandle::wrap(py.detach(move || coll::open_collection(&path)).map_err(|e| path_error(e, &at))?))
 }
 
 /// A file whatever its kind: a sample handle, or a collection handle (a
@@ -117,7 +118,8 @@ fn open_collection(py: Python<'_>, path: PathBuf) -> R<CollectionHandle> {
 #[pyfunction]
 #[pyo3(signature = (path, *, key=None))]
 fn open_any<'py>(py: Python<'py>, path: PathBuf, key: Option<String>) -> R<Bound<'py, PyAny>> {
-    let found = py.detach(move || coll::open_any(&path, key.as_deref()))?;
+    let at = path.clone();
+    let found = py.detach(move || coll::open_any(&path, key.as_deref())).map_err(|e| path_error(e, &at))?;
     Ok(match found {
         coll::AnyFile::Sample(s) => Bound::new(py, SampleHandle::wrap(s))?.into_any(),
         coll::AnyFile::Collection(c) => Bound::new(py, CollectionHandle::wrap(c))?.into_any(),
@@ -140,7 +142,7 @@ fn is_collection(obj: &Bound<'_, PyAny>) -> R<bool> {
         }
     }
     let path: PathBuf = obj.extract()?;
-    let file = medh5::h5::file::open_read(&path)?;
+    let file = medh5::h5::file::open_read(&path).map_err(|e| path_error(e, &path))?;
     Ok(coll::is_collection(&file)?)
 }
 
@@ -153,10 +155,13 @@ fn default_key(path: PathBuf) -> R<String> {
 #[pyo3(signature = (sources, out, *, keys=None))]
 fn pack(py: Python<'_>, sources: Vec<PathBuf>, out: PathBuf, keys: Option<&Bound<'_, PyAny>>) -> R<String> {
     let keys = opt_strings(keys)?;
-    let written = py.detach(move || {
-        let refs: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
-        coll::pack(&refs, &out, keys.as_deref())
-    })?;
+    let named = sources.clone();
+    let written = py
+        .detach(move || {
+            let refs: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
+            coll::pack(&refs, &out, keys.as_deref())
+        })
+        .map_err(|e| paths_error(e, &named))?;
     Ok(written.to_string_lossy().into_owned())
 }
 

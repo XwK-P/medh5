@@ -50,13 +50,16 @@ def instance_id_dtype(ids: Iterable[int]) -> Any:
     return _core.instance_id_dtype(list(ids)).type
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class Instance:
     """One physical object: a box, a class, an id and optionally a cropped mask.
 
     ``instance_id`` is **sample-scoped**: the same lesion observed at several
     timepoints reuses its id, so lesion tracking is a join on this field rather
     than an additional structure.
+
+    Two instances are equal when every field is: the box and mask by value.
+    An instance holds arrays, so it is not hashable.
     """
 
     index: int
@@ -75,6 +78,24 @@ class Instance:
         if self.mask is None:
             return int(np.prod([s.stop - s.start for s in self.slices], dtype=np.int64))
         return int(self.mask.sum())
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Instance):
+            return NotImplemented
+        if (self.index, self.instance_id, self.class_id, self.score) != (
+            other.index,
+            other.instance_id,
+            other.class_id,
+            other.score,
+        ):
+            return False
+        if not np.array_equal(self.box, other.box):
+            return False
+        if self.mask is None or other.mask is None:
+            return self.mask is None and other.mask is None
+        return bool(np.array_equal(self.mask, other.mask))
+
+    __hash__ = None  # type: ignore[assignment]
 
     def __repr__(self) -> str:
         return (

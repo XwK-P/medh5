@@ -727,6 +727,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ORTHONORMAL_TOL", affine::ORTHONORMAL_TOL)?;
     m.add("AXIS_KINDS", PyTuple::new(py, engine_grid::AXIS_KINDS)?)?;
     m.add("KNOWN_UNITS", PyTuple::new(py, engine_grid::KNOWN_UNITS)?)?;
+    m.add("COORD_SYSTEMS", PyTuple::new(py, engine_grid::COORD_SYSTEMS)?)?;
     m.add("TIME_UNITS", PyTuple::new(py, engine_grid::TIME_UNITS)?)?;
     // Millimetres per calibrated length unit (§3.2), `px` having none.
     let mm_per_unit = pyo3::types::PyDict::new(py);

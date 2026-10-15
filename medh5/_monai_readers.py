@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5 import _core
 from medh5.errors import MEDH5ValidationError
 from medh5.monai import _label_volume, meta_dict, require_monai, to_dict
 from medh5.sample import Sample
@@ -48,7 +49,7 @@ def _bases() -> tuple[type, type]:
 
 _ReaderBase, _TransformBase = _bases()
 
-SUFFIXES = (".medh5", ".medh5c")
+SUFFIXES: tuple[str, ...] = _core.MANIFEST_SUFFIXES
 _MEMBER = ".medh5c::"
 
 Reference = tuple[str, str | None]

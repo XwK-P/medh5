@@ -195,6 +195,10 @@ ct.read()                  # stored counts
 ct.read(physical=True)     # HU
 ```
 
+A physical read is float32 only where a rescale applies: a series the importer
+stored without one reads in its stored type. Pass `dtype` for one type across
+a cohort.
+
 The report also says that the files are not de-identified: the importer copies
 only the tags it names (§11.4), but it writes no de-identification record, and
 `medh5 validate` reports a file without one (`W903`). See

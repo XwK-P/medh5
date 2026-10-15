@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import dataclasses
+import errno
 import inspect
 import json
 import os
+import pickle
 import stat
+import sys
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
@@ -23,6 +26,9 @@ from medh5.curation import Timeline, Timepoint
 from medh5.errors import (
     MEDH5Error,
     MEDH5FileError,
+    MEDH5FileNotFoundError,
+    MEDH5IsADirectoryError,
+    MEDH5PermissionError,
     MEDH5ValidationError,
     MEDH5VersionError,
 )
@@ -281,6 +287,54 @@ class TestWriteRead:
                 ct.read(physical=True), ct.read(), strict=True
             )
 
+    def test_S4_2_a_physical_read_without_a_rescale_is_the_stored_values_in_their_type(
+        self, tmp_path
+    ):
+        """D27: a physical read is float32 only where a rescale applies."""
+        path = tmp_path / "stored.medh5"
+        values = np.arange(np.prod(SHAPE), dtype=np.uint16).reshape(SHAPE)
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("MR", values, grid="g", modality="MR")
+        with medh5.open(path) as sample:
+            found = sample.images["MR"].read(physical=True)
+        np.testing.assert_array_equal(found, values, strict=True)
+
+    def test_S4_2_an_identity_rescale_declared_explicitly_reads_as_stored(
+        self, tmp_path
+    ):
+        path = tmp_path / "identity.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT",
+                np.full(SHAPE, -7, np.int16),
+                grid="g",
+                modality="CT",
+                rescale_slope=1.0,
+                rescale_intercept=0.0,
+            )
+        with medh5.open(path) as sample:
+            image = sample.images["CT"]
+            assert not image.is_rescaled
+            assert image.read(physical=True).dtype == np.int16
+
+    def test_S4_2_dtype_gives_one_type_across_a_cohort(self, tmp_path):
+        """Two files, one rescaled and one not: ``dtype`` reads both alike."""
+        read = []
+        for name, slope in (("a", None), ("b", 0.5)):
+            path = tmp_path / f"{name}.medh5"
+            with medh5.create(path, codec="portable") as w:
+                w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+                extra = {} if slope is None else {"rescale_slope": slope}
+                w.add_image(
+                    "CT", np.full(SHAPE, 8, np.int16), grid="g", modality="CT", **extra
+                )
+            with medh5.open(path) as sample:
+                read.append(sample.images["CT"].read(physical=True, dtype=np.float32))
+        assert [r.dtype for r in read] == [np.float32, np.float32]
+        assert (read[0][0, 0, 0], read[1][0, 0, 0]) == (8.0, 4.0)
+
     @pytest.mark.parametrize("odd", [None, np.nan, np.inf, 0.5])
     def test_S4_2_W907_advises_int16_only_where_it_holds_every_value(
         self, tmp_path, odd
@@ -306,6 +360,41 @@ class TestWriteRead:
             assert image.read(np.s_[0:4, 0:4, 0:4]).shape == (4, 4, 4)
             with pytest.raises(MEDH5ValidationError):
                 image.read([slice(0, 4)])
+
+    def test_S14_5_an_ellipsis_fills_the_axes_it_stands_for(self, tmp_path):
+        """`read((..., slice(0, 2)))` raised `TypeError` where the dataset's own
+        `[..., 0:2]` worked."""
+        with medh5.open(write_sample(tmp_path / "s.medh5")) as sample:
+            image = sample.images["CT_tp0"]
+            whole = image.read()
+            for roi in ((..., slice(0, 2)), (slice(1, 3), ...), ...):
+                np.testing.assert_array_equal(image.read(roi), whole[roi])
+            assert image.read((slice(0, 2), ..., slice(0, 3))).shape == (
+                2,
+                SHAPE[1],
+                3,
+            )
+        path = tmp_path / "4d.medh5"
+        values = np.arange(2 * 4 * 5 * 6, dtype=np.int16).reshape(2, 4, 5, 6)
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid(
+                "g",
+                shape=(2, 4, 5, 6),
+                spacing=(1.0, 1.0, 1.0),
+                axis_kinds=("channel", "spatial", "spatial", "spatial"),
+            )
+            w.add_image("MR", values, grid="g", modality="MR", channel_names=["a", "b"])
+        with medh5.open(path) as sample:
+            image = sample.images["MR"]
+            assert image.read((..., slice(0, 2))).shape == (2, 4, 5, 2)
+            np.testing.assert_array_equal(
+                image.read((0, ..., slice(1, 3))), values[0, ..., 1:3]
+            )
+
+    def test_S14_5_two_ellipses_are_refused(self, sample_path):
+        with medh5.open(sample_path) as sample:  # noqa: SIM117
+            with pytest.raises(IndexError, match="single ellipsis"):
+                sample.images["CT_tp0"].read((..., slice(0, 2), ...))
 
     @pytest.mark.parametrize("masked", [False, True])
     def test_S4_4_a_valid_region_resolves_its_window_as_an_annotation_does(
@@ -1289,6 +1378,75 @@ class TestOpen:
     def test_missing_file(self, tmp_path):
         with pytest.raises(MEDH5FileError):
             medh5.open(tmp_path / "nope.medh5")
+
+    def test_a_missing_file_is_a_file_not_found_error(self, tmp_path):
+        """One missing file gave three kinds of error, and the one `open` gave
+        carried no `errno`, so ``except FileNotFoundError`` missed it."""
+        missing = tmp_path / "nope.medh5"
+        with pytest.raises(FileNotFoundError) as raised:
+            medh5.open(missing)
+        error = raised.value
+        assert isinstance(error, MEDH5FileNotFoundError)
+        assert isinstance(error, MEDH5FileError)
+        assert error.errno == errno.ENOENT
+        assert error.filename == str(missing)
+        assert str(error) == (
+            f"failed to open {str(missing)!r}: no such file or directory"
+        )
+        for door in (medh5.amend, medh5.open_collection):
+            with pytest.raises(MEDH5FileNotFoundError):
+                door(missing)
+
+    def test_an_os_error_from_the_engine_carries_its_errno(self, tmp_path):
+        """The engine wrote "[Errno 2] ..." into a plain `OSError` whose
+        `errno` was `None`."""
+        from medh5 import conformance
+
+        with pytest.raises(FileNotFoundError) as raised:
+            conformance.check_checksums(tmp_path / "no-suite")
+        assert raised.value.errno == errno.ENOENT
+        assert Path(raised.value.filename) == tmp_path / "no-suite" / "SHA256SUMS"
+        # Python's own words: Windows numbers the error as it does (a missing
+        # directory is its error 3), and Python maps it to ENOENT.
+        expected = "[WinError 3] " if sys.platform == "win32" else "[Errno 2] "
+        assert str(raised.value).startswith(expected)
+
+    def test_a_directory_is_an_is_a_directory_error(self, tmp_path):
+        with pytest.raises(IsADirectoryError) as raised:
+            medh5.open(tmp_path)
+        assert isinstance(raised.value, MEDH5IsADirectoryError)
+        assert raised.value.errno == errno.EISDIR
+        assert raised.value.filename == str(tmp_path)
+        assert "it is a directory, not a file" in str(raised.value)
+
+    @posix_modes
+    @pytest.mark.skipif(
+        getattr(os, "geteuid", lambda: 1)() == 0, reason="root reads any file"
+    )
+    def test_an_unreadable_file_is_a_permission_error(self, sample_path):
+        sample_path.chmod(0)
+        try:
+            with pytest.raises(PermissionError) as raised:
+                medh5.open(sample_path)
+        finally:
+            sample_path.chmod(0o644)
+        assert isinstance(raised.value, MEDH5PermissionError)
+        assert raised.value.errno == errno.EACCES
+
+    def test_a_file_error_pickles_with_its_errno(self, tmp_path):
+        with pytest.raises(MEDH5FileNotFoundError) as raised:
+            medh5.open(tmp_path / "nope.medh5")
+        back = pickle.loads(pickle.dumps(raised.value))
+        assert type(back) is MEDH5FileNotFoundError
+        assert (back.errno, back.filename, str(back)) == (
+            raised.value.errno,
+            raised.value.filename,
+            str(raised.value),
+        )
+        # The defaults keep the one-argument form.
+        plain = MEDH5FileError("x")
+        assert (str(plain), plain.errno, plain.filename) == ("x", None, None)
+        assert str(pickle.loads(pickle.dumps(plain))) == "x"
 
     def test_reference_grid_falls_back_to_the_first_image(self, sample_path):
         with medh5.open(sample_path) as sample:
