@@ -128,19 +128,25 @@ class TestMasks:
         a large array is a pass over all of it: done with the GIL released."""
         mask = np.asfortranarray(masks[0])
         assert not mask.flags.c_contiguous
-        path = tmp_path / "s.medh5"
-
-        def write() -> None:
+        runs = []
+        for k in range(3):
+            path = tmp_path / f"s{k}.medh5"
             with medh5.create(path, sample_id="s") as w:
                 w.add_grid("g", shape=mask.shape, spacing=(1.0, 1.0, 1.0))
                 ct = np.zeros(mask.shape, np.int8)
                 w.add_image("CT", ct, grid="g", modality="CT")
-                w.add_segmentation("seg", grid="g", masks={1: mask}, encoding="bitmask")
-
-        # The better of two writes: one scheduler hiccup is not the GIL.
-        took, longest, idle = min(
-            (watched(write) for _ in range(2)), key=lambda r: r[1] - r[2]
-        )
+                # The call alone: the file's creation and commit are other
+                # work, and a longer window only catches more scheduler noise,
+                # which a slow runner shows at tens of milliseconds.
+                runs.append(
+                    watched(
+                        lambda w=w: w.add_segmentation(
+                            "seg", grid="g", masks={1: mask}, encoding="bitmask"
+                        )
+                    )
+                )
+        # The best of three: one scheduler hiccup is not the GIL.
+        took, longest, idle = min(runs, key=lambda r: r[1] - r[2])
         start = time.perf_counter()
         np.ascontiguousarray(mask)
         copy = time.perf_counter() - start
