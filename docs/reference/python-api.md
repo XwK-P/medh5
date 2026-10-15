@@ -572,7 +572,10 @@ returns one report per file, which is what `medh5 validate` prints.
 
 ```
 MEDH5Error
-├── MEDH5FileError        (also OSError)
+├── MEDH5FileError        (also OSError) — carries .errno, .filename
+│   ├── MEDH5FileNotFoundError   (also FileNotFoundError)
+│   ├── MEDH5PermissionError     (also PermissionError)
+│   └── MEDH5IsADirectoryError   (also IsADirectoryError)
 ├── MEDH5VersionError
 ├── MEDH5SchemaError
 ├── MEDH5ValidationError  (also ValueError) — carries .code
@@ -582,13 +585,18 @@ MEDH5Error
 `MEDH5ValidationError.code` is the §15.2 diagnostic code where one applies,
 so a caller can branch on the defect rather than on the message text.
 
+A file that is missing, a directory or unreadable raises the subclass that
+says so, with the system's `errno` and the `filename`, so `except
+FileNotFoundError` catches a missing sample; `str()` is the message alone, as
+before.
+
 `MEDH5Error` is the base of the errors this package defines, not of every
 error it raises. HDF5 failing to read a file's bytes — a damaged chunk, say —
-raises a plain `OSError`; a missing file or a directory is `MEDH5FileError`, an
-`OSError` with no `errno`, so `except FileNotFoundError` does not catch it; and
-lookups and arguments raise the built-in `KeyError`, `IndexError`, `TypeError`
-and `ValueError`. Where a damaged file must not stop a loop, catch `OSError`
-beside `MEDH5Error`.
+raises `MEDH5IOError`, an `OSError` that is not yet a `MEDH5Error` (in 3.0 it
+derives from `MEDH5FileError`); another system call that fails raises the
+`OSError` subclass of its `errno`; and lookups and arguments raise the built-in
+`KeyError`, `IndexError`, `TypeError` and `ValueError`. Where a damaged file
+must not stop a loop, catch `OSError` beside `MEDH5Error`.
 
 ## Sub-packages
 

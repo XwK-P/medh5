@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import errno
 import inspect
 import json
 import os
+import pickle
 import stat
 from collections.abc import Iterator
 from pathlib import Path
@@ -22,6 +24,9 @@ from medh5.curation import Timeline, Timepoint
 from medh5.errors import (
     MEDH5Error,
     MEDH5FileError,
+    MEDH5FileNotFoundError,
+    MEDH5IsADirectoryError,
+    MEDH5PermissionError,
     MEDH5ValidationError,
     MEDH5VersionError,
 )
@@ -1288,6 +1293,72 @@ class TestOpen:
     def test_missing_file(self, tmp_path):
         with pytest.raises(MEDH5FileError):
             medh5.open(tmp_path / "nope.medh5")
+
+    def test_a_missing_file_is_a_file_not_found_error(self, tmp_path):
+        """One missing file gave three kinds of error, and the one `open` gave
+        carried no `errno`, so ``except FileNotFoundError`` missed it."""
+        missing = tmp_path / "nope.medh5"
+        with pytest.raises(FileNotFoundError) as raised:
+            medh5.open(missing)
+        error = raised.value
+        assert isinstance(error, MEDH5FileNotFoundError)
+        assert isinstance(error, MEDH5FileError)
+        assert error.errno == errno.ENOENT
+        assert error.filename == str(missing)
+        assert str(error) == (
+            f"failed to open {str(missing)!r}: no such file or directory"
+        )
+        for door in (medh5.amend, medh5.open_collection):
+            with pytest.raises(MEDH5FileNotFoundError):
+                door(missing)
+
+    def test_an_os_error_from_the_engine_carries_its_errno(self, tmp_path):
+        """The engine wrote "[Errno 2] ..." into a plain `OSError` whose
+        `errno` was `None`."""
+        from medh5 import conformance
+
+        with pytest.raises(FileNotFoundError) as raised:
+            conformance.check_checksums(tmp_path / "no-suite")
+        assert raised.value.errno == errno.ENOENT
+        assert raised.value.filename == str(tmp_path / "no-suite" / "SHA256SUMS")
+        assert str(raised.value).startswith("[Errno 2] ")
+
+    def test_a_directory_is_an_is_a_directory_error(self, tmp_path):
+        with pytest.raises(IsADirectoryError) as raised:
+            medh5.open(tmp_path)
+        assert isinstance(raised.value, MEDH5IsADirectoryError)
+        assert raised.value.errno == errno.EISDIR
+        assert raised.value.filename == str(tmp_path)
+        assert "it is a directory, not a file" in str(raised.value)
+
+    @posix_modes
+    @pytest.mark.skipif(
+        getattr(os, "geteuid", lambda: 1)() == 0, reason="root reads any file"
+    )
+    def test_an_unreadable_file_is_a_permission_error(self, sample_path):
+        sample_path.chmod(0)
+        try:
+            with pytest.raises(PermissionError) as raised:
+                medh5.open(sample_path)
+        finally:
+            sample_path.chmod(0o644)
+        assert isinstance(raised.value, MEDH5PermissionError)
+        assert raised.value.errno == errno.EACCES
+
+    def test_a_file_error_pickles_with_its_errno(self, tmp_path):
+        with pytest.raises(MEDH5FileNotFoundError) as raised:
+            medh5.open(tmp_path / "nope.medh5")
+        back = pickle.loads(pickle.dumps(raised.value))
+        assert type(back) is MEDH5FileNotFoundError
+        assert (back.errno, back.filename, str(back)) == (
+            raised.value.errno,
+            raised.value.filename,
+            str(raised.value),
+        )
+        # The defaults keep the one-argument form.
+        plain = MEDH5FileError("x")
+        assert (str(plain), plain.errno, plain.filename) == ("x", None, None)
+        assert str(pickle.loads(pickle.dumps(plain))) == "x"
 
     def test_reference_grid_falls_back_to_the_first_image(self, sample_path):
         with medh5.open(sample_path) as sample:

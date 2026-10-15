@@ -87,6 +87,13 @@ def _parser_tree() -> dict[tuple[str, ...], dict[str, Any]]:
 # here is cheaper than the round trip that found it the first time.
 STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
     (
+        "a missing file said to escape FileNotFoundError",
+        r"`except FileNotFoundError` does not catch it",
+        "a missing file is MEDH5FileNotFoundError, a FileNotFoundError with "
+        "its errno and filename (2.1).",
+        None,
+    ),
+    (
         "a higher minor read as optional",
         r"\bMAY\b\W*\s*read a higher minor",
         "1.0 §16 and 1.1 §2.2: a reader MUST NOT refuse a file solely for a "

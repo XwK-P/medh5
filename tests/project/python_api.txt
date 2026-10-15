@@ -241,8 +241,12 @@ medh5.LabelSet.to_json	method	(*, form=None)
 medh5.LabelSet.uri	property
 medh5.LabelSet.version	property
 medh5.MEDH5Error	class	(?) bases=Exception
-medh5.MEDH5FileError	class	(?) bases=medh5.errors.MEDH5Error,OSError
+medh5.MEDH5FileError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5Error,OSError
+medh5.MEDH5FileNotFoundError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,FileNotFoundError
+medh5.MEDH5IOError	class	(?) bases=OSError
 medh5.MEDH5IntegrityError	class	(?) bases=medh5.errors.MEDH5Error
+medh5.MEDH5IsADirectoryError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,IsADirectoryError
+medh5.MEDH5PermissionError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,PermissionError
 medh5.MEDH5SchemaError	class	(?) bases=medh5.errors.MEDH5Error
 medh5.MEDH5ValidationError	class	(message, code=None) bases=medh5.errors.MEDH5Error,ValueError
 medh5.MEDH5VersionError	class	(?) bases=medh5.errors.MEDH5Error
@@ -2798,8 +2802,12 @@ medh5.errors.Code.since	field
 medh5.errors.Code.summary	field
 medh5.errors.Domain	alias
 medh5.errors.MEDH5Error	class	(?) bases=Exception
-medh5.errors.MEDH5FileError	class	(?) bases=medh5.errors.MEDH5Error,OSError
+medh5.errors.MEDH5FileError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5Error,OSError
+medh5.errors.MEDH5FileNotFoundError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,FileNotFoundError
+medh5.errors.MEDH5IOError	class	(?) bases=OSError
 medh5.errors.MEDH5IntegrityError	class	(?) bases=medh5.errors.MEDH5Error
+medh5.errors.MEDH5IsADirectoryError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,IsADirectoryError
+medh5.errors.MEDH5PermissionError	class	(message, errno=None, filename=None) bases=medh5.errors.MEDH5FileError,PermissionError
 medh5.errors.MEDH5SchemaError	class	(?) bases=medh5.errors.MEDH5Error
 medh5.errors.MEDH5ValidationError	class	(message, code=None) bases=medh5.errors.MEDH5Error,ValueError
 medh5.errors.MEDH5VersionError	class	(?) bases=medh5.errors.MEDH5Error

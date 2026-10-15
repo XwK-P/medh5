@@ -8,6 +8,8 @@
 use pyo3::exceptions::{
     PyIndexError, PyKeyError, PyNotImplementedError, PyOSError, PyRuntimeError, PyTypeError, PyValueError,
 };
+use std::path::Path;
+
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::PyType;
@@ -92,7 +94,7 @@ pub fn engine_error(err: medh5::Error) -> PyErr {
         E::Value(m) => PyValueError::new_err(m),
         E::Type(m) => PyTypeError::new_err(m),
         E::Index(m) => PyIndexError::new_err(m),
-        E::Io(m) => PyOSError::new_err(m),
+        E::Io(m) => io_error(m),
         E::NotImplemented(m) => PyNotImplementedError::new_err(m),
         E::Runtime(m) => PyRuntimeError::new_err(m),
         family => Python::attach(|py| {
@@ -119,4 +121,113 @@ pub fn engine_error(err: medh5::Error) -> PyErr {
             }
         }),
     }
+}
+
+/// An engine `Io` error as Python would have raised it: an `OSError` with its
+/// `errno` (and `filename`), which Python makes the subclass of that errno,
+/// where the message is the engine's `[Errno N] reason: 'path'` or the
+/// system's `reason (os error N)`; otherwise a failure of HDF5's,
+/// `MEDH5IOError`.
+fn io_error(message: String) -> PyErr {
+    if let Some((errno, reason, filename)) = errno_message(&message) {
+        return Python::attach(|py| {
+            let filename = filename.and_then(|literal| {
+                py.import("ast").and_then(|ast| ast.call_method1("literal_eval", (literal,))).ok().map(Bound::unbind)
+            });
+            match filename {
+                Some(f) => PyOSError::new_err((errno, reason, f)),
+                None => PyOSError::new_err((errno, reason)),
+            }
+        });
+    }
+    Python::attach(|py| match medh5_class(py, "MEDH5IOError") {
+        Ok(class) => match class.bind(py).call1((message,)) {
+            Ok(instance) => PyErr::from_value(instance),
+            Err(e) => e,
+        },
+        Err(e) => e,
+    })
+}
+
+/// `(errno, reason, the path as a Python literal)` from `[Errno N] reason:
+/// 'path'` ([`medh5::error::os_error`]'s words), or `(errno, reason, None)`
+/// from `reason (os error N)` (an `std::io::Error`'s).
+fn errno_message(message: &str) -> Option<(i32, String, Option<String>)> {
+    if let Some(rest) = message.strip_prefix("[Errno ") {
+        let (number, rest) = rest.split_once("] ")?;
+        let errno = number.parse().ok()?;
+        let at = rest.find(": '").or_else(|| rest.find(": \""));
+        return Some(match at {
+            Some(at) => (errno, rest[..at].to_string(), Some(rest[at + 2..].to_string())),
+            None => (errno, rest.to_string(), None),
+        });
+    }
+    let (reason, tail) = message.rsplit_once(" (os error ")?;
+    Some((tail.strip_suffix(')')?.parse().ok()?, reason.to_string(), None))
+}
+
+/// `err`, from working on `path`: a `MEDH5FileError` asks the system again
+/// why the file failed, and becomes the subclass that names it
+/// (`MEDH5FileNotFoundError`, `MEDH5IsADirectoryError`,
+/// `MEDH5PermissionError`) with its `errno` and `filename`.  Only the error
+/// path asks; the message is the engine's, free of the errno.
+pub fn path_error(err: medh5::Error, path: &Path) -> BindError {
+    let medh5::Error::File(message) = err else { return err.into() };
+    BindError::Py(Python::attach(|py| file_error(py, message, path).unwrap_or_else(|e| e)))
+}
+
+/// [`path_error`] for a call over several paths: the first that the system
+/// says is missing, a directory or unreadable names the error.
+pub fn paths_error(err: medh5::Error, paths: &[impl AsRef<Path>]) -> BindError {
+    match paths.iter().find(|p| why(p.as_ref()).0 != Why::Other) {
+        Some(path) => path_error(err, path.as_ref()),
+        None => err.into(),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Why {
+    NotFound,
+    Directory,
+    Permission,
+    Other,
+}
+
+/// Why `path` cannot be opened, as the system says, and the system's errno
+/// where it gave one.
+fn why(path: &Path) -> (Why, Option<i32>) {
+    use std::io::ErrorKind;
+    let of = |e: &std::io::Error| match e.kind() {
+        ErrorKind::NotFound => Why::NotFound,
+        ErrorKind::PermissionDenied => Why::Permission,
+        _ => Why::Other,
+    };
+    match std::fs::metadata(path) {
+        Err(e) => (of(&e), e.raw_os_error()),
+        Ok(meta) if meta.is_dir() => (Why::Directory, None),
+        Ok(_) => match std::fs::File::open(path) {
+            Err(e) => (of(&e), e.raw_os_error()),
+            Ok(_) => (Why::Other, None),
+        },
+    }
+}
+
+fn file_error(py: Python<'_>, message: String, path: &Path) -> PyResult<PyErr> {
+    let (why, raw) = why(path);
+    let (class, constant) = match why {
+        Why::NotFound => ("MEDH5FileNotFoundError", Some("ENOENT")),
+        Why::Directory => ("MEDH5IsADirectoryError", Some("EISDIR")),
+        Why::Permission => ("MEDH5PermissionError", Some("EACCES")),
+        Why::Other => ("MEDH5FileError", None),
+    };
+    // POSIX's own number; elsewhere (Windows numbers its errors otherwise)
+    // Python's for the class.
+    let errno: Option<i32> = match constant {
+        None => None,
+        Some(_) if cfg!(unix) && why != Why::Directory && raw.is_some() => raw,
+        Some(name) => Some(py.import("errno")?.getattr(name)?.extract()?),
+    };
+    let filename = path.to_string_lossy().into_owned();
+    let instance = medh5_class(py, class)?.bind(py).call1((message, errno, filename))?;
+    Ok(PyErr::from_value(instance))
 }

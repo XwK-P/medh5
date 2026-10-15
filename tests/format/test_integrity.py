@@ -456,6 +456,27 @@ class TestUnreadableData:
         with medh5.open(path) as sample, pytest.raises(OSError, match="images/CT"):
             sample.verify()
 
+    def test_a_damaged_chunk_is_an_io_error_not_a_medh5_error(self, tmp_path):
+        """HDF5 failing a read is `MEDH5IOError`: an `OSError`, and not yet a
+        `MEDH5Error`, so code catching either catches what it caught in 2.0."""
+        from medh5.errors import MEDH5Error, MEDH5IOError
+
+        path = tmp_path / "damaged.medh5"
+        shape = (8, 64, 64)
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            data = np.random.default_rng(0).integers(0, 100, shape).astype(np.int16)
+            w.add_image("CT", data, grid="g", modality="CT")
+        with h5py.File(path, "r") as handle:
+            info = handle["images/CT"].id.get_chunk_info(0)
+        with path.open("r+b") as raw:
+            raw.seek(info.byte_offset + info.size // 2)
+            raw.write(b"\xde\xad\xbe\xef" * 8)
+        with medh5.open(path) as sample, pytest.raises(OSError) as raised:
+            sample.images["CT"].read()
+        assert type(raised.value) is MEDH5IOError
+        assert not isinstance(raised.value, MEDH5Error)
+
 
 class TestIntegrity:
     """A check that checks, and an amend that stays addressed."""

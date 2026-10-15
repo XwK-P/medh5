@@ -12,7 +12,7 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 use medh5::integrity::{digest, repair, verify};
 
 use crate::convert::{json_to_py, py_to_nd};
-use crate::errors::R;
+use crate::errors::{path_error, R};
 
 /// A verification result as the keyword arguments of `VerifyResult`.
 pub fn verify_result_to_py<'py>(py: Python<'py>, r: &verify::VerifyResult) -> PyResult<Bound<'py, PyAny>> {
@@ -50,7 +50,8 @@ fn parse_digest(value: &str) -> R<(String, String)> {
 
 #[pyfunction]
 fn diagnose<'py>(py: Python<'py>, path: PathBuf) -> R<Bound<'py, PyAny>> {
-    let found = py.detach(move || repair::diagnose(&path))?;
+    let at = path.clone();
+    let found = py.detach(move || repair::diagnose(&path)).map_err(|e| path_error(e, &at))?;
     Ok(json_to_py(py, &found.to_json())?)
 }
 
@@ -66,7 +67,8 @@ fn fix<'py>(
     max_coords: Option<usize>,
 ) -> R<Bound<'py, PyAny>> {
     let options = repair::FixOptions { rebuild_index, rewrite_digests, reason, performed_by, max_coords };
-    let done = py.detach(move || repair::fix(&path, &options))?;
+    let at = path.clone();
+    let done = py.detach(move || repair::fix(&path, &options)).map_err(|e| path_error(e, &at))?;
     Ok(json_to_py(py, &done.to_json())?)
 }
 

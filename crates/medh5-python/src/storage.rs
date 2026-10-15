@@ -9,7 +9,7 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 use medh5::storage::{chunking, codecs, index, recompress as rc};
 
 use crate::convert::{array_to_py, bool_array, class_keys, json_to_py, typed_array};
-use crate::errors::R;
+use crate::errors::{path_error, R};
 use crate::geometry::grid_arg;
 
 // -- codecs ------------------------------------------------------------------------------
@@ -101,7 +101,7 @@ fn is_bulk(dataset: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// else `balanced` --- what an amend of the file defaults to.
 #[pyfunction]
 fn profile_family(path: PathBuf) -> R<&'static str> {
-    let file = medh5::h5::file::open_read(&path)?;
+    let file = medh5::h5::file::open_read(&path).map_err(|e| path_error(e, &path))?;
     Ok(codecs::profile_family(&file.as_group()?)?)
 }
 
@@ -378,7 +378,9 @@ fn recompress<'py>(
     out: Option<PathBuf>,
     rechunk: bool,
 ) -> R<Bound<'py, PyAny>> {
-    let result = py.detach(move || rc::recompress(&path, &profile, out.as_deref(), rechunk))?;
+    let at = path.clone();
+    let result =
+        py.detach(move || rc::recompress(&path, &profile, out.as_deref(), rechunk)).map_err(|e| path_error(e, &at))?;
     Ok(json_to_py(py, &result.to_json())?)
 }
 

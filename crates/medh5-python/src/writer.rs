@@ -1422,7 +1422,10 @@ fn create(
 #[pyfunction]
 #[pyo3(signature = (path, *, codec=None))]
 fn amend(py: Python<'_>, path: PathBuf, codec: Option<String>) -> R<SampleWriter> {
-    let inner = py.detach(move || medh5::sample::writer::amend(&path, codec.as_deref()))?;
+    let at = path.clone();
+    let inner = py
+        .detach(move || medh5::sample::writer::amend(&path, codec.as_deref()))
+        .map_err(|e| crate::errors::path_error(e, &at))?;
     Ok(SampleWriter { inner })
 }
 
