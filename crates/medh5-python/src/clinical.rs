@@ -18,7 +18,7 @@ use medh5::clinical::select::SelectionPolicy;
 use medh5::clinical::Clinical as EngineClinical;
 use medh5::companion::cache::{CacheEntry, CacheHeader, CacheWriter, FeatureCache};
 use medh5::companion::task::TaskManifest;
-use medh5::companion::{SourceAccess, SourceRef};
+use medh5::companion::{CohortTask, Partitions, SourceAccess, SourceRef};
 use medh5::sample::Sample as EngineSample;
 
 use crate::convert::{json_to_py, nd_to_py, py_to_json, py_to_nd};
@@ -349,6 +349,50 @@ fn task_repin<'py>(
         Ok((m, report))
     })?;
     Ok(json_to_py(py, &json!({"manifest": m.to_json(), "report": report.to_json()}))?)
+}
+
+/// A task over a cohort (`TaskManifest::from_cohort`), partitioned by
+/// `split` (a split's JSON) or by the claims the samples carry for `set_id`:
+/// the manifest's JSON.
+#[pyfunction]
+#[pyo3(signature = (
+    cohort, task_id, version, identity_namespace, *, split=None, set_id=None, fold=None, base=None,
+    training_partition=None
+))]
+#[allow(clippy::too_many_arguments)]
+fn task_from_cohort<'py>(
+    py: Python<'py>,
+    cohort: &Bound<'py, PyAny>,
+    task_id: String,
+    version: String,
+    identity_namespace: String,
+    split: Option<&Bound<'py, PyAny>>,
+    set_id: Option<String>,
+    fold: Option<u32>,
+    base: Option<PathBuf>,
+    training_partition: Option<String>,
+) -> R<Bound<'py, PyAny>> {
+    let training_partition = training_partition.unwrap_or_else(|| "train".into());
+    let cohort = medh5::dataset::Manifest::from_json(&py_to_json(cohort)?)?;
+    let split = match split {
+        Some(s) => Some(medh5::dataset::Split::from_json(&py_to_json(s)?)?),
+        None => None,
+    };
+    let task = py.detach(move || -> medh5::Result<TaskManifest> {
+        let partitions = match (&split, &set_id) {
+            (Some(split), None) => Partitions::Split { split, fold },
+            (None, Some(set_id)) if fold.is_none() => Partitions::Claims { set_id },
+            (None, Some(_)) => {
+                return Err(medh5::Error::invalid("a fold is a split's; claims already name their partition"));
+            }
+            _ => return Err(medh5::Error::invalid("give a split or the set_id of the claims, one of the two")),
+        };
+        let named = CohortTask::new(&task_id, &version, &identity_namespace)
+            .with_base(base.as_deref())
+            .with_training_partition(&training_partition);
+        TaskManifest::from_cohort(&cohort, partitions, &named)
+    })?;
+    Ok(json_to_py(py, &task.to_json())?)
 }
 
 /// Write the manifest as the engine writes it, refusing an output that is
@@ -729,6 +773,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(task_reconcile, m)?,
         wrap_pyfunction!(task_save, m)?,
         wrap_pyfunction!(task_repin, m)?,
+        wrap_pyfunction!(task_from_cohort, m)?,
         wrap_pyfunction!(task_load_document, m)?,
         wrap_pyfunction!(task_preflight, m)?,
         wrap_pyfunction!(task_sources_outside, m)?,

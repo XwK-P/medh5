@@ -507,6 +507,7 @@ __all__ = [
     "subtrees_identical",
     "target_registration_error",
     "task_fingerprints",
+    "task_from_cohort",
     "task_load_document",
     "task_normalize",
     "task_notes",
@@ -1868,6 +1869,24 @@ def task_reconcile(
     root: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """The manifest with every subject's duplicated events recorded."""
+    ...
+
+def task_from_cohort(
+    cohort: Any,
+    task_id: str,
+    version: str,
+    identity_namespace: str,
+    *,
+    split: Any | None = None,
+    set_id: str | None = None,
+    fold: int | None = None,
+    base: str | os.PathLike[str] | None = None,
+    training_partition: str | None = None,
+) -> dict[str, Any]:
+    """A task over a cohort (`TaskManifest::from_cohort`), partitioned by
+    `split` (a split's JSON) or by the claims the samples carry for `set_id`:
+    the manifest's JSON.
+    """
     ...
 
 def task_repin(

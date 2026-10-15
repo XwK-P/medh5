@@ -33,6 +33,7 @@ pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         ("clinical", Some(("export", sub))) => export(sub, ctx),
         ("clinical", Some(("augment", sub))) => augment(sub, ctx),
         ("clinical", Some(("strip", sub))) => strip(sub, ctx),
+        ("task", Some(("new", sub))) => task_new(sub, ctx),
         ("task", Some(("validate", sub))) => task_validate(sub, ctx),
         ("task", Some(("preflight", sub))) => task_preflight(sub, ctx),
         ("task", Some(("reconcile", sub))) => task_reconcile(sub, ctx),
@@ -41,7 +42,7 @@ pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         ("cache", Some(("info", sub))) => cache_info(sub, ctx),
         ("cache", Some(("ls", sub))) => cache_ls(sub, ctx),
         ("clinical", _) => return Ok(ctx.usage("usage: medh5 clinical {show|select|export|augment|strip}")),
-        ("task", _) => return Ok(ctx.usage("usage: medh5 task {validate|preflight|reconcile|repin}")),
+        ("task", _) => return Ok(ctx.usage("usage: medh5 task {new|validate|preflight|reconcile|repin}")),
         _ => return Ok(ctx.usage("usage: medh5 cache {info|ls|validate}")),
     };
     match result {
@@ -514,6 +515,165 @@ fn task_repin(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         }
     ));
     Ok(EXIT_OK)
+}
+
+/// A task drawn from a cohort (`TaskManifest::from_cohort`), its definition
+/// from `--definition` and the flags, its rows from `--rows`.
+fn task_new(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    use medh5::companion::{CohortTask, Partitions};
+    let out = Path::new(req_str(m, "out"));
+    let definition = match get_str(m, "definition") {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|e| medh5::error::os_error(&e, Path::new(path)))?;
+            match medh5::json::loads(&text) {
+                Ok(Value::Object(doc)) => doc,
+                Ok(_) => return Err(Error::invalid(format!("--definition {}: not a JSON object", repr_str(path)))),
+                Err(e) => return Err(Error::invalid(format!("--definition {}: not JSON: {e}", repr_str(path)))),
+            }
+        }
+        None => serde_json::Map::new(),
+    };
+    let named = |flag: &str, key: Option<&str>| -> medh5::Result<String> {
+        let given = get_str(m, flag).map(str::to_string);
+        let defined = match key {
+            Some(key) => definition.get("task").and_then(|t| t.get(key)),
+            None => definition.get("identity_namespace"),
+        };
+        given.or_else(|| defined.and_then(Value::as_str).map(str::to_string)).ok_or_else(|| {
+            Error::invalid(format!("the task needs --{flag}, or a definition that states it", flag = flag))
+        })
+    };
+    let (task_id, version, namespace) =
+        (named("id", Some("id"))?, named("version", Some("version"))?, named("namespace", None)?);
+    let cohort = crate::dataset::load_manifest(req_str(m, "cohort"), ctx)?;
+    let split = get_str(m, "split").map(|p| medh5::dataset::split::load(Path::new(p))).transpose()?;
+    let fold =
+        get_i64(m, "fold").map(|f| u32::try_from(f).map_err(|_| Error::invalid(format!("--fold {f} is not a fold"))));
+    let fold = fold.transpose()?;
+    let partitions = match (&split, get_str(m, "claims")) {
+        (Some(split), _) => Partitions::Split { split, fold },
+        (None, Some(_)) if fold.is_some() => {
+            return Err(Error::invalid("--fold is a split's: claims already name their partition"))
+        }
+        (None, Some(set_id)) => Partitions::Claims { set_id },
+        (None, None) => return Err(Error::invalid("give --split or --claims")),
+    };
+    let base = out.parent().map(|p| if p.as_os_str().is_empty() { Path::new(".") } else { p });
+    let training = get_str(m, "training_partition").unwrap_or("train");
+    let drawn = TaskManifest::from_cohort(
+        &cohort,
+        partitions,
+        &CohortTask::new(&task_id, &version, &namespace).with_base(base).with_training_partition(training),
+    )?;
+    let mut doc = drawn.to_json();
+    for key in ["policy", "slots", "target"] {
+        if let Some(value) = definition.get(key) {
+            doc[key] = value.clone();
+        }
+    }
+    let description = get_str(m, "description").map(str::to_string).or_else(|| {
+        definition.get("task").and_then(|t| t.get("description")).and_then(Value::as_str).map(str::to_string)
+    });
+    if let Some(d) = description {
+        doc["task"]["description"] = json!(d);
+    }
+    if let Some(follow_up) = get_i64(m, "min_follow_up_us") {
+        match doc.get_mut("target") {
+            Some(Value::Object(target)) => {
+                target.insert("min_follow_up_us".into(), json!(follow_up));
+            }
+            _ => return Err(Error::invalid("--min-follow-up-us is the target's, and the definition states none")),
+        }
+    }
+    if let Some(note) = notes_of(&doc).into_iter().next() {
+        return Err(Error::invalid(format!(
+            "{}: state --min-follow-up-us, or min_follow_up_us in the definition",
+            note.line()
+        )));
+    }
+    let mut task = TaskManifest::from_json(&doc)?;
+    if let Some(rows) = get_str(m, "rows") {
+        task.rows = read_rows(Path::new(rows))?;
+    }
+    let findings = task.validate();
+    if let Some(first) = findings.first() {
+        return Err(Error::coded(
+            &first.code,
+            format!(
+                "the new task fails validation ({} finding(s)): {} {}: {}",
+                findings.len(),
+                first.code,
+                first.location,
+                first.message
+            ),
+        ));
+    }
+    task.check_output(out, &SourceAccess::new(base))
+        .map_err(|e| Error::invalid(format!("{} {}", req_str(m, "out"), e.message())))?;
+    task.save(out)?;
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for s in &task.subjects {
+        let p = s.partition.clone().unwrap_or_default();
+        match counts.iter_mut().find(|(q, _)| *q == p) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((p, 1)),
+        }
+    }
+    if let Some((_, partitions)) = &task.split {
+        counts.sort_by_key(|(p, _)| partitions.iter().position(|q| q == p).unwrap_or(usize::MAX));
+    }
+    if flag(m, "json") {
+        ctx.emit(
+            &json!({
+                "path": req_str(m, "out"),
+                "task_fingerprint": task.task_fingerprint(),
+                "manifest_fingerprint": task.manifest_fingerprint(),
+                "split": task.split.as_ref().map(|(set_id, partitions)| json!({"set_id": set_id, "partitions": partitions})),
+                "subjects": counts.iter().map(|(p, n)| (p.clone(), json!(n))).collect::<serde_json::Map<_, _>>(),
+                "sources": task.subjects.iter().map(|s| s.sources.len()).sum::<usize>(),
+                "rows": task.rows.len(),
+            }),
+            true,
+        );
+        return Ok(EXIT_OK);
+    }
+    let placed: Vec<String> = counts.iter().map(|(p, n)| format!("{n} in {p}")).collect();
+    ctx.print(format!(
+        "wrote {}: {} subject(s) ({}), {} row(s); task fingerprint {}",
+        req_str(m, "out"),
+        task.subjects.len(),
+        placed.join(", "),
+        task.rows.len(),
+        task.task_fingerprint()
+    ));
+    Ok(EXIT_OK)
+}
+
+/// Rows from a CSV of `row_id,subject_id,cutoff_us`, its header first.
+fn read_rows(path: &Path) -> medh5::Result<Vec<medh5::companion::task::Row>> {
+    let text = std::fs::read_to_string(path).map_err(|e| medh5::error::os_error(&e, path))?;
+    let shown = repr_str(&path.to_string_lossy());
+    let mut lines = text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty());
+    let header: Vec<&str> = lines.next().map(|(_, l)| l.split(',').map(str::trim).collect()).unwrap_or_default();
+    if header != ["row_id", "subject_id", "cutoff_us"] {
+        return Err(Error::invalid(format!("{shown}: the first line must be the header row_id,subject_id,cutoff_us")));
+    }
+    let mut rows = Vec::new();
+    for (n, line) in lines {
+        let cells: Vec<&str> = line.split(',').map(str::trim).collect();
+        let [row_id, subject_id, cutoff] = cells[..] else {
+            return Err(Error::invalid(format!("{shown} line {}: three cells, not {}", n + 1, cells.len())));
+        };
+        let cutoff_us = cutoff.parse::<i64>().map_err(|_| {
+            Error::invalid(format!("{shown} line {}: cutoff_us {} is not an integer", n + 1, repr_str(cutoff)))
+        })?;
+        rows.push(medh5::companion::task::Row {
+            row_id: row_id.to_string(),
+            subject_id: subject_id.to_string(),
+            cutoff_us,
+        });
+    }
+    Ok(rows)
 }
 
 fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {

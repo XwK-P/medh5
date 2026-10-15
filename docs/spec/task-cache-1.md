@@ -488,7 +488,7 @@ this table to it.
 | Fixtures | `companion/` in the published [conformance suite](conformance.md#the-task-and-cache-fixtures): one invalid manifest per T-code from T101 to T306, and two valid tasks whose every row's selection, slot and label is stated |
 | Engine | `medh5::companion` — `task`, `view` (preflight), `cache`, `source` |
 | Python | `medh5.task`, `medh5.cache`, `medh5.torch.clinical` ([Train on clinical tasks](../guides/clinical-training.md)) |
-| Command line | `medh5 task validate`, `medh5 task preflight`, `medh5 task reconcile`, `medh5 task repin`, `medh5 cache info`, `medh5 cache ls`, `medh5 cache validate` ([Command line](../reference/cli.md)) |
+| Command line | `medh5 task new`, `medh5 task validate`, `medh5 task preflight`, `medh5 task reconcile`, `medh5 task repin`, `medh5 cache info`, `medh5 cache ls`, `medh5 cache validate` ([Command line](../reference/cli.md)) |
 
 ## Appendix A. Errata
 

@@ -56,6 +56,7 @@ from medh5.clinical import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from medh5.dataset import Manifest, Split
     from medh5.sample import Sample
 
 SCHEMA: str = _core.TASK_SCHEMA
@@ -548,6 +549,60 @@ class TaskManifest:
         if split is not None:
             doc["split"] = {"set_id": split[0], "partitions": list(split[1])}
         return cls(doc, base=base)
+
+    @classmethod
+    def from_cohort(
+        cls,
+        cohort: Manifest,
+        split: Split | str,
+        *,
+        task_id: str,
+        version: str,
+        identity_namespace: str,
+        base: PathLike | None = None,
+        fold: int | None = None,
+        training_partition: str = "train",
+        policy: SelectionPolicy | Mapping[str, Any] | str | None = None,
+        slots: Sequence[Slot] = (),
+        target: Target | None = None,
+        description: str | None = None,
+    ) -> TaskManifest:
+        """A task over a cohort: one subject per cohort ``subject_id``, its
+        entries as its sources, each pinned to what its file holds now.
+
+        ``split`` places the subjects: a :class:`~medh5.dataset.Split` of
+        this cohort (a k-fold one needs ``fold``, which becomes ``val`` and
+        every other fold ``train``), or the ``set_id`` of the claims its
+        samples carry, each made against this manifest.  Refused: an entry
+        the split does not place or places ``unassigned``, a subject placed
+        in two partitions, a claim made against another manifest, and an
+        entry whose recorded ``content_id`` is not its file's.
+
+        Source URIs are relative to ``base`` --- the directory the manifest
+        will be saved in --- where they lie beneath it, else absolute.  The
+        split is ``(set_id, partitions)`` with ``training_partition`` first;
+        fragments of one subject are reconciled; there are no rows yet
+        (:meth:`add_row`).
+        """
+        found: dict[str, Any] = _core.task_from_cohort(
+            cohort._doc(),
+            task_id,
+            str(version),
+            identity_namespace,
+            split=None if isinstance(split, str) else split._doc(),
+            set_id=split if isinstance(split, str) else None,
+            fold=fold,
+            base=None if base is None else os.fspath(base),
+            training_partition=training_partition,
+        )
+        if description is not None:
+            found["task"]["description"] = description
+        found["slots"] = [s.to_json() for s in slots]
+        found["target"] = None if target is None else target.to_json()
+        chosen = _policy_json(policy)
+        if chosen is not None:
+            found["policy"] = chosen
+        return cls(found, base=base)
 
     @classmethod
     def load(cls, path: PathLike) -> TaskManifest:

@@ -633,6 +633,32 @@ The [task and cache contract](../spec/task-cache-1.md): task manifests
 (`medh5.task/1`) and feature caches (`medh5.cache/1`). See
 [Train on clinical tasks](../guides/clinical-training.md).
 
+### `medh5 task new`
+
+```
+medh5 task new OUT --cohort C.json (--split S.json [--fold N] | --claims SET_ID)
+               [--definition TASK.json] [--id ID] [--version V] [--namespace NS]
+               [--description TEXT] [--training-partition P] [--rows ROWS.csv]
+               [--min-follow-up-us N] [--json]
+```
+
+Draw a task from a cohort manifest: one subject per cohort `subject_id`, its
+entries as its sources, each pinned to what its file holds now, each subject
+in the partition the split gives it — or the claims its samples carry for
+`SET_ID`, each made against this cohort manifest. A k-fold split needs
+`--fold`: that fold is `val`, every other `train`. Refused: an entry the split
+does not place or places `unassigned`, a subject placed in two partitions, a
+claim made against another manifest, and an entry whose recorded
+`content_id` is not its file's.
+
+`--definition` supplies `task`, `policy`, `slots` and `target` (a manifest
+holding them will do); `--id`, `--version`, `--namespace` and `--description`
+override it. `--rows` is a CSV with the header `row_id,subject_id,cutoff_us`.
+`OUT`'s directory is the base: source URIs beneath it are written relative to
+it. A target with negatives and no `--min-follow-up-us` (or
+`min_follow_up_us` in the definition) is refused, as is a task that fails
+`task validate`.
+
 ### `medh5 task validate`
 
 ```

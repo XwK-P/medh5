@@ -71,7 +71,7 @@ fn index(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 
 /// A manifest, warning on stderr where it is legacy and 3.0 will read its
 /// paths against another directory.
-fn load_manifest(path: &str, ctx: &mut Ctx) -> medh5::Result<Manifest> {
+pub(crate) fn load_manifest(path: &str, ctx: &mut Ctx) -> medh5::Result<Manifest> {
     let (manifest, differs) = Manifest::load_noting(Path::new(path), None)?;
     if differs {
         ctx.eprint(format!("warning: {}", legacy_warning(path)));

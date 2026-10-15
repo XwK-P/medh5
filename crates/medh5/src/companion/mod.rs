@@ -22,6 +22,7 @@
 //! a task can be wrong about perfectly valid files.
 
 pub mod cache;
+pub mod cohort;
 pub mod source;
 pub mod task;
 pub mod view;
@@ -29,6 +30,7 @@ pub mod view;
 use serde_json::{json, Value};
 
 pub use cache::{validate_cache, validate_cache_in, CacheCheck, CacheReport, CacheWriter, FeatureCache};
+pub use cohort::{CohortTask, Partitions};
 pub use source::{SourceAccess, SourceRef, SourceState};
 pub use task::{RepinReport, Repinned, TaskManifest};
 pub use view::{

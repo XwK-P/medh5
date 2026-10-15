@@ -1,6 +1,13 @@
 <!-- area: task-cache -->
 ### Added
 
+- **A task from a cohort.** `TaskManifest.from_cohort(cohort, split, ...)`
+  and `medh5 task new OUT --cohort C.json --split S.json` draw a task's
+  subjects, pinned sources and partitions from a cohort manifest and its
+  split, or the claims its samples carry (`--claims SET_ID`), refusing an
+  unplaced entry, a subject in two partitions, a claim against another
+  manifest and a stale recorded `content_id` (`TaskManifest::from_cohort` in
+  Rust).
 - **Clocks and days for clinical tasks.** `Clock.utc(id)` and
   `Clock.shifted_utc(id)` build the two common clocks; `utc_us(datetime)`
   turns an aware datetime into the microseconds a task states, and

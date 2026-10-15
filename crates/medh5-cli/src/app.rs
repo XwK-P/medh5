@@ -800,6 +800,32 @@ fn task() -> Command {
     let manifest = || positional("manifest", "a medh5.task/1 manifest (JSON)");
     group("task", "task manifests: rows, cutoffs, sources and what they admit (medh5.task/1)")
         .subcommand(
+            Command::new("new")
+                .about("draw a task from a cohort manifest: its subjects, pinned sources and partitions")
+                .arg(positional("out", "the task manifest to write; its directory is the base of the source URIs"))
+                .arg(opt("cohort", "cohort", "the cohort manifest (medh5 dataset index)").required(true))
+                .arg(
+                    opt("split", "split", "partition by this split (medh5 dataset split -o)")
+                        .conflicts_with("claims")
+                        .required_unless_present("claims"),
+                )
+                .arg(count("fold", "fold", "with a k-fold split: this fold is val, every other train", 0))
+                .arg(opt("claims", "claims", "partition by the claims the samples carry for this set id"))
+                .arg(opt("definition", "definition", "a JSON document supplying task, policy, slots and target"))
+                .arg(opt("id", "id", "the task id (default: the definition's)"))
+                .arg(opt("version", "version", "the task version (default: the definition's)"))
+                .arg(opt("namespace", "namespace", "the identity namespace (default: the definition's)"))
+                .arg(opt("description", "description", "the task's description"))
+                .arg(opt(
+                    "training_partition",
+                    "training-partition",
+                    "the partition preprocessing is fitted on (default: train)",
+                ))
+                .arg(opt("rows", "rows", "a CSV of rows: row_id,subject_id,cutoff_us"))
+                .arg(int("min_follow_up_us", "min-follow-up-us", "the target's minimum follow-up for a negative"))
+                .arg(json()),
+        )
+        .subcommand(
             Command::new("validate")
                 .about("check a manifest without opening its sources (T1xx, T2xx)")
                 .arg(manifest())

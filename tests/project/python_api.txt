@@ -446,6 +446,7 @@ medh5.TaskManifest.add_row	method	(row_id, subject_id, cutoff_us)
 medh5.TaskManifest.add_subject	method	(subject_id, sources, *, partition=None, clock_id=None)
 medh5.TaskManifest.base	property
 medh5.TaskManifest.declared_fingerprint	property
+medh5.TaskManifest.from_cohort	classmethod	(cohort, split, *, task_id, version, identity_namespace, base=None, fold=None, training_partition='train', policy=None, slots=(), target=None, description=None)
 medh5.TaskManifest.identity_namespace	property
 medh5.TaskManifest.load	classmethod	(path)
 medh5.TaskManifest.manifest_fingerprint	property
@@ -3749,6 +3750,7 @@ medh5.task.TaskManifest.add_row	method	(row_id, subject_id, cutoff_us)
 medh5.task.TaskManifest.add_subject	method	(subject_id, sources, *, partition=None, clock_id=None)
 medh5.task.TaskManifest.base	property
 medh5.task.TaskManifest.declared_fingerprint	property
+medh5.task.TaskManifest.from_cohort	classmethod	(cohort, split, *, task_id, version, identity_namespace, base=None, fold=None, training_partition='train', policy=None, slots=(), target=None, description=None)
 medh5.task.TaskManifest.identity_namespace	property
 medh5.task.TaskManifest.load	classmethod	(path)
 medh5.task.TaskManifest.manifest_fingerprint	property

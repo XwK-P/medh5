@@ -2985,3 +2985,218 @@ class TestCommandLine:
             assert s.clinical is not None and len(s.clinical.events) == 6
         assert main(["clinical", "show", str(stripped)]) == EXIT_ERROR
         assert "does not declare the clinical profile" in capsys.readouterr().err
+
+
+def placed(task: TaskManifest) -> list[tuple[str, str | None]]:
+    return [(s.subject_id, s.partition) for s in task.subjects]
+
+
+class TestFromCohort:
+    """A task drawn from a cohort manifest and its split, or its claims."""
+
+    @pytest.fixture
+    def scanned(self, tmp_path: Path) -> tuple[Any, Path]:
+        from medh5.dataset import scan
+
+        root = tmp_path / "cohort"
+        cohort(root, {"P-01": "PD", "P-02": "SD", "P-03": "SD", "P-04": "PR"})
+        manifest, failed = scan(root)
+        assert failed == ()
+        return manifest, root
+
+    @staticmethod
+    def split_of(manifest: Any, places: dict[str, tuple[str, int | None]]) -> Any:
+        from medh5.dataset import Assignment, Split
+
+        return Split(
+            "s1",
+            manifest.sha256(),
+            [
+                Assignment(e.subject_id, *places[e.subject_id], entries=(e.path,))
+                for e in manifest
+            ],
+            group_by="subject_id",
+            k_folds=2 if any(f is not None for _, f in places.values()) else None,
+        )
+
+    def build(self, manifest: Any, split: Any, root: Path, **kw: Any) -> TaskManifest:
+        return TaskManifest.from_cohort(
+            manifest,
+            split,
+            task_id="progression",
+            version="1",
+            identity_namespace="site",
+            base=root,
+            **kw,
+        )
+
+    def test_S3_3_partitions_come_from_the_split(self, scanned):
+        manifest, root = scanned
+        places = {
+            "P-01": ("train", None),
+            "P-02": ("train", None),
+            "P-03": ("val", None),
+            "P-04": ("test", None),
+        }
+        task = self.build(
+            manifest,
+            self.split_of(manifest, places),
+            root,
+            slots=[Slot("ct", "CT", required=True, patch=(4, 8, 8), classes=(3,))],
+            target=TARGET,
+            description="from a cohort",
+        )
+        assert placed(task) == [(s, p) for s, (p, _) in places.items()]
+        assert task.split == ("s1", ("train", "val", "test"))
+        assert [s.sources[0].uri for s in task.subjects] == [
+            f"{s}.medh5" for s in places
+        ]
+        assert task.rows == () and task.validate() == []
+        assert task.target == TARGET
+        assert task.to_json()["task"]["description"] == "from a cohort"
+        task.add_row("P-01@24h", "P-01", 24 * HOUR)
+        assert task.preflight().ok
+
+    def test_S3_3_partitions_come_from_this_manifests_claims(self, scanned):
+        from medh5.dataset import make_splits, scan, write_claims
+
+        manifest, root = scanned
+        split = make_splits(manifest, set_id="claimed", group_by="subject_id")
+        write_claims(split, manifest)
+        claimed, _ = scan(root)
+        task = self.build(claimed, "claimed", root)
+        assert placed(task) == [(e.subject_id, split.partition_of(e)) for e in claimed]
+        assert task.split is not None and task.split[0] == "claimed"
+        # The pins are of the files as claimed, not as first scanned.
+        assert [s.sources[0].content_id for s in task.subjects] == [
+            e.content_id for e in claimed
+        ]
+
+    def test_S3_3_a_claim_of_another_manifest_is_refused(self, scanned):
+        from medh5.dataset import make_splits, scan, write_claims
+
+        manifest, root = scanned
+        write_claims(make_splits(manifest, set_id="claimed"), manifest)
+        claimed, _ = scan(root)
+        fewer = claimed.filter(lambda e: e.subject_id != "P-04")
+        with pytest.raises(MEDH5ValidationError, match="against another manifest"):
+            self.build(fewer, "claimed", root)
+        with pytest.raises(MEDH5ValidationError, match="has no partition"):
+            self.build(claimed, "another-set", root)
+
+    def test_S3_3_a_subject_in_two_partitions_is_refused(self, scanned):
+        from medh5.dataset import Assignment, scan
+
+        _, root = scanned
+        History.write(root / "P-01-b.medh5", subject_id="P-01", response="PD")
+        manifest, _ = scan(root)
+        split = self.split_of(
+            manifest, {e.subject_id: ("train", None) for e in manifest}
+        )
+        split.group_by = "sample_id"
+        split.assignments = [
+            Assignment(
+                e.sample_id,
+                "test" if e.path.endswith("-b.medh5") else "train",
+                entries=(e.path,),
+            )
+            for e in manifest
+        ]
+        with pytest.raises(MEDH5ValidationError, match="in two partitions"):
+            self.build(manifest, split, root)
+        for a in split.assignments:
+            a.partition = "unassigned" if a.entries[0].endswith("-b.medh5") else "train"
+        with pytest.raises(MEDH5ValidationError, match="unassigned"):
+            self.build(manifest, split, root)
+
+    def test_S3_3_fold_n_is_val(self, scanned):
+        manifest, root = scanned
+        places = {
+            "P-01": ("holdout", 0),
+            "P-02": ("holdout", 1),
+            "P-03": ("holdout", 0),
+            "P-04": ("holdout", 1),
+        }
+        split = self.split_of(manifest, places)
+        with pytest.raises(MEDH5ValidationError, match="needs a fold"):
+            self.build(manifest, split, root)
+        task = self.build(manifest, split, root, fold=1)
+        assert placed(task) == [
+            ("P-01", "train"),
+            ("P-02", "val"),
+            ("P-03", "train"),
+            ("P-04", "val"),
+        ]
+        with pytest.raises(MEDH5ValidationError, match="not a fold"):
+            self.build(manifest, split, root, fold=2)
+
+    def test_S3_3_the_training_partition_comes_first(self, scanned):
+        manifest, root = scanned
+        places = {
+            "P-01": ("train", None),
+            "P-02": ("val", None),
+            "P-03": ("test", None),
+            "P-04": ("test", None),
+        }
+        split = self.split_of(manifest, places)
+        task = self.build(manifest, split, root, training_partition="val")
+        assert task.split == ("s1", ("val", "train", "test"))
+        absolute = TaskManifest.from_cohort(
+            manifest, split, task_id="t", version="1", identity_namespace="ns"
+        )
+        assert all(Path(s.sources[0].uri).is_absolute() for s in absolute.subjects)
+        assert absolute.preflight().ok
+
+
+def test_task_new_from_a_split(tmp_path: Path, capsys):
+    """``medh5 task new``: a task drawn from a cohort and its split, its
+    definition from a file and its rows from a CSV."""
+    from medh5.dataset import make_splits, scan
+
+    root = tmp_path / "cohort"
+    cohort(root)
+    manifest, _ = scan(root)
+    manifest.save(root / "cohort.json")
+    split = make_splits(manifest, set_id="s1", group_by="subject_id", k_folds=3)
+    (root / "split.json").write_text(json.dumps(split.to_json()))
+    definition = TaskManifest.new(
+        "progression",
+        "1",
+        identity_namespace="site",
+        slots=[Slot("ct", "CT", required=True, patch=(4, 8, 8), classes=(3,))],
+        target=TARGET,
+    ).to_json()
+    del definition["target"]["min_follow_up_us"]
+    (root / "definition.json").write_text(json.dumps(definition))
+    (root / "rows.csv").write_text(
+        "row_id,subject_id,cutoff_us\nP-01@24h,P-01,86400000000\n"
+    )
+    out = root / "t.task.json"
+    args = [
+        "task", "new", str(out),
+        "--cohort", str(root / "cohort.json"),
+        "--split", str(root / "split.json"),
+        "--definition", str(root / "definition.json"),
+        "--rows", str(root / "rows.csv"),
+    ]  # fmt: skip
+    assert main([*args, "--fold", "0"]) == EXIT_ERROR
+    assert "min-follow-up-us" in capsys.readouterr().err and not out.exists()
+    assert main([*args]) == EXIT_ERROR
+    assert "needs a fold" in capsys.readouterr().err
+    follow = ["--min-follow-up-us", str(60 * DAY), "--fold", "0", "--json"]
+    assert main([*args, *follow]) == EXIT_OK
+    report = json.loads(capsys.readouterr().out)
+    task = TaskManifest.load(out)
+    assert report["task_fingerprint"] == task.task_fingerprint
+    assert report["rows"] == 1 and sum(report["subjects"].values()) == 3
+    assert task.split is not None and task.split[1][0] == "train"
+    assert [s.sources[0].uri for s in task.subjects] == [
+        "P-01.medh5",
+        "P-02.medh5",
+        "P-03.medh5",
+    ]
+    assert task.target is not None and task.target.min_follow_up_us == 60 * DAY
+    assert task.validate() == [] and task.preflight().ok
+    (root / "rows.csv").write_text("row_id,subject_id,cutoff_us\nr,P-99,0\n")
+    assert main([*args, *follow]) == EXIT_ERROR
+    assert "T201" in capsys.readouterr().err

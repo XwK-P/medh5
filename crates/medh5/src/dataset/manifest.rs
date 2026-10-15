@@ -626,7 +626,7 @@ fn lexical(path: &Path) -> PathBuf {
 
 /// `path` made absolute against the working directory, lexically: nothing
 /// is resolved, `..` included.
-fn absolute(path: &Path) -> Result<PathBuf> {
+pub(crate) fn absolute(path: &Path) -> Result<PathBuf> {
     let path = if path.as_os_str().is_empty() { Path::new(".") } else { path };
     Ok(lexical(&std::path::absolute(path).map_err(|e| crate::error::os_error(&e, path))?))
 }
@@ -641,7 +641,7 @@ fn resolve(stored: &str, base: &Path) -> String {
 }
 
 /// A path as a manifest in `dir` (absolute) writes it, as `style` says.
-fn rebase(path: &str, dir: &Path, style: PathStyle) -> Result<String> {
+pub(crate) fn rebase(path: &str, dir: &Path, style: PathStyle) -> Result<String> {
     let named = Path::new(path);
     let full = absolute(named)?;
     let keep_absolute = style == PathStyle::Keep && named.is_absolute();
