@@ -359,6 +359,41 @@ class TestWriteRead:
             with pytest.raises(MEDH5ValidationError):
                 image.read([slice(0, 4)])
 
+    def test_S14_5_an_ellipsis_fills_the_axes_it_stands_for(self, tmp_path):
+        """`read((..., slice(0, 2)))` raised `TypeError` where the dataset's own
+        `[..., 0:2]` worked."""
+        with medh5.open(write_sample(tmp_path / "s.medh5")) as sample:
+            image = sample.images["CT_tp0"]
+            whole = image.read()
+            for roi in ((..., slice(0, 2)), (slice(1, 3), ...), ...):
+                np.testing.assert_array_equal(image.read(roi), whole[roi])
+            assert image.read((slice(0, 2), ..., slice(0, 3))).shape == (
+                2,
+                SHAPE[1],
+                3,
+            )
+        path = tmp_path / "4d.medh5"
+        values = np.arange(2 * 4 * 5 * 6, dtype=np.int16).reshape(2, 4, 5, 6)
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid(
+                "g",
+                shape=(2, 4, 5, 6),
+                spacing=(1.0, 1.0, 1.0),
+                axis_kinds=("channel", "spatial", "spatial", "spatial"),
+            )
+            w.add_image("MR", values, grid="g", modality="MR", channel_names=["a", "b"])
+        with medh5.open(path) as sample:
+            image = sample.images["MR"]
+            assert image.read((..., slice(0, 2))).shape == (2, 4, 5, 2)
+            np.testing.assert_array_equal(
+                image.read((0, ..., slice(1, 3))), values[0, ..., 1:3]
+            )
+
+    def test_S14_5_two_ellipses_are_refused(self, sample_path):
+        with medh5.open(sample_path) as sample:  # noqa: SIM117
+            with pytest.raises(IndexError, match="single ellipsis"):
+                sample.images["CT_tp0"].read((..., slice(0, 2), ...))
+
     @pytest.mark.parametrize("masked", [False, True])
     def test_S4_4_a_valid_region_resolves_its_window_as_an_annotation_does(
         self, tmp_path, masked

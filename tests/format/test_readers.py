@@ -289,6 +289,31 @@ class TestInstances:
             with pytest.raises(KeyError):
                 seg.instance(99)
 
+    def test_S7_4_instances_compare_by_value(self):
+        """`a == b` raised "truth value ... ambiguous", and so did `a in [b]`."""
+        from medh5.annotations.base import Instance
+
+        box = np.array([0, 0, 0, 3, 3, 3], np.float32)
+        mask = np.ones((4, 4, 4), bool)
+        a = Instance(0, 1, 3, box, mask, 0.5)
+        b = Instance(0, 1, 3, box.copy(), mask.copy(), 0.5)
+        assert a == b
+        assert (a != b) is False
+        assert a in [b]
+        assert Instance(0, 1, 3, box) == Instance(0, 1, 3, box.copy())
+        assert a != Instance(0, 1, 3, box, None, 0.5)
+        assert a != Instance(0, 1, 3, box + 1, mask, 0.5)
+        other = mask.copy()
+        other[0, 0, 0] = False
+        assert a != Instance(0, 1, 3, box, other, 0.5)
+        assert a != "an instance"
+
+    def test_S7_4_an_instance_is_unhashable(self):
+        from medh5.annotations.base import Instance
+
+        with pytest.raises(TypeError):
+            hash(Instance(0, 1, 3, np.zeros(6, np.float32)))
+
     def test_box_only_instances_paint_the_whole_box(self, tmp_path, label_set):
         from medh5.annotations.voxel import encode_instances
         from medh5.geometry import slices_to_box

@@ -168,7 +168,7 @@ impl ImageHandle {
             _ => None,
         };
         let grid = self.inner.grid()?;
-        let index = match crate::convert::region(roi)? {
+        let index = match crate::convert::region_for(roi, grid.ndim())? {
             None => vec![Index::Slice(Slice::full()); grid.ndim()],
             Some(items) if items.len() == grid.ndim() => items,
             Some(items) if items.len() == grid.n_spatial() => {
