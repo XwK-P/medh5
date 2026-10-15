@@ -25,10 +25,10 @@ import argparse
 import json
 import os
 import random
+import signal
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 # What a structural file may take: well past what reporting it needs, and far
@@ -66,6 +66,18 @@ def outcome(medh5: str, path: Path) -> str | None:
     return None
 
 
+# Run by a fresh interpreter between this process and the binary: it spawns the
+# binary, waits for it, and writes the binary's own peak to the file it is given.
+_LAUNCHER = """\
+import os, sys
+pid = os.posix_spawnp(sys.argv[2], sys.argv[2:], os.environ)
+_, status, usage = os.wait4(pid, 0)
+with open(sys.argv[1], "w") as peak:
+    peak.write(str(usage.ru_maxrss))
+sys.exit(os.waitstatus_to_exitcode(status))
+"""
+
+
 def measured(
     command: list[str], timeout: float
 ) -> tuple[int | None, str, str, int | None]:
@@ -73,45 +85,45 @@ def measured(
     its error output, and the most memory it reached, in bytes (None where
     nothing measures it, as on Windows).
 
-    The peak is the child's own, from `wait4`.  `RUSAGE_CHILDREN` is the peak
-    of every child the process ever waited for, so run inside a test suite it
-    reported whatever an earlier test's child had reached.
+    Linux counts in a child's peak the memory of the process it was forked
+    from, so a binary started from a test suite holding a gigabyte "reached" a
+    gigabyte; `RUSAGE_CHILDREN`, the peak of every child ever waited for, is
+    worse.  So a small interpreter starts the binary, and reports its peak.
     """
-    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        child = subprocess.Popen(command, stdout=out, stderr=err)
-        peak: int | None = None
-        code: int | None
-        if hasattr(os, "wait4"):
-            deadline = time.monotonic() + timeout
-            timed_out = False
-            while True:
-                pid, status, usage = os.wait4(child.pid, os.WNOHANG)
-                if pid:
-                    break
-                if time.monotonic() > deadline:
-                    child.kill()
-                    _, status, usage = os.wait4(child.pid, 0)
-                    timed_out = True
-                    break
-                time.sleep(0.05)
-            # Reaped here, so Popen must not wait for it again.
-            child.returncode = os.waitstatus_to_exitcode(status)
-            code = None if timed_out else child.returncode
-            # Kibibytes on Linux, bytes on macOS.
-            peak = usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024)
-        else:
+    with tempfile.TemporaryDirectory() as scratch:
+        out_path, err_path = Path(scratch, "out"), Path(scratch, "err")
+        peak_path = Path(scratch, "peak")
+        posix = hasattr(os, "wait4") and hasattr(os, "posix_spawnp")
+        argv = (
+            [sys.executable, "-c", _LAUNCHER, str(peak_path), *command]
+            if posix
+            else command
+        )
+        with out_path.open("wb") as out, err_path.open("wb") as err:
+            # A session of its own, so a timeout kills the binary too.
+            child = subprocess.Popen(
+                argv, stdout=out, stderr=err, start_new_session=posix
+            )
+            code: int | None
             try:
                 code = child.wait(timeout)
             except subprocess.TimeoutExpired:
-                child.kill()
+                if posix:
+                    os.killpg(child.pid, signal.SIGKILL)
+                else:
+                    child.kill()
                 child.wait()
                 code = None
-        out.seek(0)
-        err.seek(0)
+        peak: int | None = None
+        if posix and code is not None and peak_path.is_file():
+            # Kibibytes on Linux, bytes on macOS.
+            peak = int(peak_path.read_text()) * (
+                1 if sys.platform == "darwin" else 1024
+            )
         return (
             code,
-            out.read().decode("utf-8", "replace"),
-            err.read().decode("utf-8", "replace"),
+            out_path.read_text("utf-8", "replace"),
+            err_path.read_text("utf-8", "replace"),
             peak,
         )
 
