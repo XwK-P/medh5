@@ -128,6 +128,7 @@ nav:
       - tutorials/index.md
       - Write and read your first sample: tutorials/first-sample.md
       - Your first training run: tutorials/first-training-run.md
+      - From clinical history to a batch: tutorials/clinical-task.md
 
   - How-to guides:
       - guides/index.md

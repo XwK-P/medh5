@@ -148,7 +148,6 @@ medh5.clinical.EVENT_KINDS
 medh5.clinical.LESION_PRESENCE
 medh5.clinical.LESION_VALUES
 medh5.clinical.MICROSECOND
-medh5.clinical.MINUTE
 medh5.clinical.PROFILE
 medh5.clinical.RELATIONS
 medh5.clinical.SCHEMA

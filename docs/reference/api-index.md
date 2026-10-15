@@ -291,7 +291,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `LESION_VALUES` | constant (`tuple`) |  |  |
 | `Link` | class | A typed relationship between sample-relative objects (1.1 §7). | [Python API › Clinical history (format 1.1)](python-api.md#clinical-history-format-11) |
 | `MICROSECOND` | constant (`int`) |  |  |
-| `MINUTE` | constant (`int`) |  |  |
+| `MINUTE` | constant (`int`) |  | [From clinical history to a training batch › Write two subjects](../tutorials/clinical-task.md#write-two-subjects) |
 | `PROFILE` | constant (`str`) |  |  |
 | `records_from` | function | A bundle from lists. |  |
 | `RELATIONS` | constant (`tuple`) |  |  |

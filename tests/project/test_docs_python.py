@@ -19,15 +19,22 @@ a block pass that never ran a line: ten blocks failed on their first statement
 and were counted as passing.  A block that genuinely cannot be executed says so
 with an ``<!-- illustrative -->`` comment above its fence, on the page, where a
 reader sees it too.
+
+A tutorial is the exception to "the runner supplies the setup": its blocks build
+on each other, and the setup *is* the lesson.  A page whose first line after the
+title is ``<!-- sequential -->`` runs as one program: every block in order, in
+one scratch copy and one namespace.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
 import sys
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -80,25 +87,48 @@ OPTIONAL = frozenset(
 """Packages a page may import that a given CI job does not install."""
 
 
+SEQUENTIAL = "<!-- sequential -->"
+
+
+"""What a page whose blocks build on each other carries, first after its title."""
+
+
+def _parse(text: str) -> list[tuple[int, str, bool]]:
+    """``(line, code, marked)`` for every fenced Python block of a page."""
+    return [
+        (
+            text.count("\n", 0, match.start("code")) + 1,
+            match.group("code"),
+            MARKER in match.group("marker"),
+        )
+        for match in _FENCE.finditer(text)
+    ]
+
+
+def _is_sequential(text: str) -> bool:
+    """Whether the first line after the page's title is :data:`SEQUENTIAL`."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return len(lines) > 1 and lines[0].startswith("# ") and lines[1] == SEQUENTIAL
+
+
 def _blocks() -> list[tuple[Path, int, str, bool]]:
     """``(page, line, code, marked)`` for every fenced Python block."""
-    out: list[tuple[Path, int, str, bool]] = []
-    for page in [*PAGES, README]:
-        text = page.read_text(encoding="utf-8")
-        for match in _FENCE.finditer(text):
-            line = text.count("\n", 0, match.start("code")) + 1
-            out.append(
-                (
-                    page,
-                    line,
-                    match.group("code"),
-                    MARKER in match.group("marker"),
-                )
-            )
-    return out
+    return [
+        (page, line, code, marked)
+        for page in [*PAGES, README]
+        for line, code, marked in _parse(page.read_text(encoding="utf-8"))
+    ]
 
 
 BLOCKS = _blocks()
+
+
+SEQUENTIAL_PAGES = [
+    page for page in PAGES if _is_sequential(page.read_text(encoding="utf-8"))
+]
+
+
+"""The tutorials that run as one program: each block uses what the last made."""
 
 
 @pytest.fixture(scope="module")
@@ -584,7 +614,12 @@ def _namespace(workspace: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
 
 
 def _runnable() -> list[tuple[Path, int, str]]:
-    return [(p, ln, code) for p, ln, code, marked in BLOCKS if not marked]
+    """The unmarked blocks that run alone: a sequential page's run in order."""
+    return [
+        (p, ln, code)
+        for p, ln, code, marked in BLOCKS
+        if not marked and p not in SEQUENTIAL_PAGES
+    ]
 
 
 @pytest.mark.parametrize(
@@ -601,9 +636,18 @@ def test_documented_python_runs(
     needs: the block is the unit of documentation, and one that no longer runs
     is a claim the code has stopped honouring.
     """
-    # A private copy per block, because the examples write: several pages
-    # create `case.medh5`, and one block clobbering the fixture for the next is
-    # a test order dependency rather than a documentation problem.
+    with _scratch(workspace, tmp_path) as namespace:
+        _execute(page, line, code, namespace)
+
+
+@contextlib.contextmanager
+def _scratch(workspace: dict[str, Any], tmp_path: Path) -> Iterator[dict[str, Any]]:
+    """A private copy of the workspace as the working directory, and a namespace.
+
+    A copy per test, because the examples write: several pages create
+    `case.medh5`, and one block clobbering the fixture for the next is a test
+    order dependency rather than a documentation problem.
+    """
     scratch = tmp_path / "docs"
     shutil.copytree(workspace["root"], scratch)
     # The open sample is a *separate* copy from the one the blocks write.  A
@@ -619,11 +663,34 @@ def test_documented_python_runs(
     here = Path.cwd()
     os.chdir(scratch)
     try:
-        _execute(page, line, code, namespace)
+        yield namespace
     finally:
         os.chdir(here)
         namespace["s"].close()
         namespace["_writer"].abort()
+
+
+@pytest.mark.parametrize(
+    "page", SEQUENTIAL_PAGES, ids=lambda p: str(p.relative_to(DOCS))
+)
+def test_documented_pages_run_in_order(
+    page: Path, workspace: dict[str, Any], tmp_path: Path
+) -> None:
+    """A sequential page runs as one program, top to bottom.
+
+    A tutorial's second block uses what its first wrote, so the blocks share
+    one scratch copy and one namespace, and the failure names the block that
+    stopped the page.
+    """
+    with _scratch(workspace, tmp_path) as namespace:
+        _run_in_order(page, page.read_text(encoding="utf-8"), namespace)
+
+
+def _run_in_order(page: Path, text: str, namespace: dict[str, Any]) -> None:
+    """Every unmarked block of *text* in turn, in one *namespace*."""
+    for line, code, marked in _parse(text):
+        if not marked:
+            _execute(page, line, code, namespace)
 
 
 def _execute(page: Path, line: int, code: str, namespace: dict[str, Any]) -> None:
@@ -695,6 +762,32 @@ def test_a_block_using_a_name_nobody_binds_fails() -> None:
         _execute(page, 3, "DataLoader(ds)\n", {})
     with pytest.raises(AssertionError, match="name 'DataLoader'"):
         _execute(page, 3, "DataLoader(ds)\n", {"torch": object()})
+
+
+def test_a_sequential_page_fails_at_the_block_that_fails() -> None:
+    """A page that runs in order carries its names from block to block, and a
+    failure names the block that stopped it, not the page."""
+    page = DOCS / "tutorials" / "example.md"
+    text = (
+        f"# Example\n\n{SEQUENTIAL}\n\n"
+        "```python\nmade = [1]\n```\n\n"
+        "```python\nmade.append(2)\n```\n\n"
+        f"{MARKER}\n```python\nmade.append(None)\n```\n\n"
+        "```python\nassert made == [1, 2, 3]\n```\n"
+    )
+    assert _is_sequential(text)
+    assert not _is_sequential(text.replace(SEQUENTIAL, "Prose first."))
+    namespace: dict[str, Any] = {}
+    with pytest.raises(AssertionError, match=r"example\.md:19 does not run"):
+        _run_in_order(page, text, namespace)
+    # The second block used what the first made; the marked one never ran.
+    assert namespace["made"] == [1, 2]
+
+
+def test_a_sequential_page_runs_only_in_order() -> None:
+    """Its blocks are not also run alone, where the second has no first."""
+    assert SEQUENTIAL_PAGES, "the clinical tutorial runs in order"
+    assert not {p for p, _, _ in _runnable()} & set(SEQUENTIAL_PAGES)
 
 
 @pytest.mark.parametrize("code", ["raise SystemExit(1)", 'raise SystemExit("no")'])
