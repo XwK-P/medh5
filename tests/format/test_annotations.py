@@ -587,6 +587,41 @@ HIERARCHY = LabelSet(
 )
 
 
+class TestImplicitVoxelClosure:
+    """§5.4: writers SHOULD use `explicit` for voxel annotations; one
+    declaring `implicit` is W918, since every read of an ancestor then
+    includes its descendants' voxels."""
+
+    @pytest.mark.parametrize("encoding", ENCODINGS)
+    def test_S5_4_a_voxel_annotation_declaring_implicit_is_W918(
+        self, tmp_path, encoding
+    ):
+        masks = {1: _cube(0, 2), 2: _cube(3, 5)}
+        implicit = _segmentation(
+            tmp_path / "i.medh5",
+            encoding,
+            masks,
+            label_set=HIERARCHY,
+            closure="implicit",
+        )
+        found = [d for d in validate_file(implicit).diagnostics if d.code == "W918"]
+        assert [d.location for d in found] == ["/annotations/seg"]
+        assert "W918" not in validate_file(implicit, level="structural").codes
+        explicit = _segmentation(
+            tmp_path / "e.medh5", encoding, masks, label_set=HIERARCHY
+        )
+        assert "W918" not in validate_file(explicit).codes
+
+    def test_S5_4_an_implicit_classification_is_not_W918(self, tmp_path):
+        path = tmp_path / "c.medh5"
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            w.label_set(HIERARCHY)
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            w.add_classification("dx", {"left_kidney": 1.0}, closure="implicit")
+        assert "W918" not in validate_file(path).codes
+
+
 class TestClosure:
     """§5.4: under `implicit` a class holds wherever a descendant does, in
     every encoding; under `explicit` nothing is inferred.  The closure was

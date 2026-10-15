@@ -137,6 +137,11 @@ classes no ontology code (`W912`). Strict is the gate for a dataset you
 publish, once [de-identification](deidentify.md) and the label set's codes
 have dealt with both; see [Choose a level](validate.md#choose-a-level).
 
+Masks are written with `closure="explicit"`, the default, and should stay
+that way. A segmentation declaring `closure="implicit"` is reported (`W918`):
+every read of an ancestor class would include its descendants' voxels, so a
+`kidney` mask would hold the left kidney's too (spec §5.4).
+
 ## Related
 
 - **[Partial labels and coverage](partial-labels.md)** — `annotated_classes` in full.

@@ -16,6 +16,7 @@ from medh5.annotations.classification import (
     encode_classification,
 )
 from medh5.errors import MEDH5ValidationError
+from medh5.validate import validate_file
 from tests.helpers import SHAPE
 from tests.kits import Numbered
 
@@ -161,6 +162,89 @@ class TestThreeStateSemantics:
             assert annotation.closure == "implicit"
             closed = label_set.close(annotation.asserted_class_ids.tolist(), "implicit")
             assert set(closed) == {1, 3}  # lesion implies liver
+
+
+class TestImplicitContradiction:
+    """§5.4: under `implicit` closure a class asserted absent where an `is_a`
+    descendant is asserted present, in one scope unit, is W916: `state()`
+    answers it positive while `value()` reads the stored 0.0."""
+
+    @staticmethod
+    def _findings(path, label_set, labels, **kwargs):
+        shape = (4, 8, 8)
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_classification("dx", labels, **kwargs)
+        return [d for d in validate_file(path).diagnostics if d.code == "W916"]
+
+    def test_S5_4_an_implicit_negative_ancestor_of_a_positive_is_W916(
+        self, tmp_path, label_set
+    ):
+        path = tmp_path / "dx.medh5"
+        found = self._findings(
+            path, label_set, {"liver": 0.0, "lesion": 1.0}, closure="implicit"
+        )
+        assert [(d.location, d.severity) for d in found] == [
+            ("/annotations/dx", "warning")
+        ]
+        assert "'liver' (1)" in found[0].message
+        assert "'lesion' (3)" in found[0].message
+        with medh5.open(path) as sample:
+            dx = sample.annotations["dx"]
+            assert (dx.state("liver"), dx.value("liver")) == ("positive", 0.0)
+        found = self._findings(
+            tmp_path / "unit.medh5",
+            label_set,
+            {"liver": 0.0, "lesion": 1.0},
+            closure="implicit",
+            scope="slice",
+            scope_ids=[2, 2],
+        )
+        assert len(found) == 1 and "scope unit 2" in found[0].message
+
+    def test_S5_4_W916_needs_implicit_closure(self, tmp_path, label_set):
+        found = self._findings(
+            tmp_path / "dx.medh5", label_set, {"liver": 0.0, "lesion": 1.0}
+        )
+        assert found == []
+
+    def test_S5_4_W916_is_per_scope_unit(self, tmp_path, label_set):
+        found = self._findings(
+            tmp_path / "dx.medh5",
+            label_set,
+            {"liver": 0.0, "lesion": 1.0},
+            closure="implicit",
+            scope="slice",
+            scope_ids=[0, 1],
+        )
+        assert found == []
+
+    def test_S5_4_an_examined_unasserted_ancestor_is_not_W916(
+        self, tmp_path, label_set
+    ):
+        """§9's pattern: assert the most specific class, examine its
+        ancestors; the reader infers them."""
+        found = self._findings(
+            tmp_path / "dx.medh5",
+            label_set,
+            {"lesion": 1.0},
+            closure="implicit",
+            annotated_classes=["liver", "lesion"],
+        )
+        assert found == []
+
+    def test_S5_4_a_soft_ancestor_is_not_W916(self, tmp_path, label_set):
+        """A probability below its descendant's is not monotone, but it does
+        not deny the class: only a value of 0 or less does."""
+        found = self._findings(
+            tmp_path / "dx.medh5",
+            label_set,
+            {"liver": 0.3, "lesion": 0.9},
+            closure="implicit",
+        )
+        assert found == []
 
 
 class TestValidationAtWrite:

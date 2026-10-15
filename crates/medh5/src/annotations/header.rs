@@ -69,6 +69,9 @@ pub(crate) fn is_known_kind(kind: &str) -> bool {
 
 /// Names reserved by spec §16.  A 1.0 writer MUST NOT emit them.
 pub const RESERVED_KINDS: [&str; 1] = ["rle"];
+/// Annotation attributes reserved by spec §16 for a voxel annotation's
+/// pyramid, which 1.x does not define (§4.3).  A writer MUST NOT emit them.
+pub const RESERVED_ATTRIBUTES: [&str; 4] = ["levels", "downsample_factors", "downsample_method", "grid_levels"];
 /// `task` values (§6.2).
 pub const TASKS: [&str; 5] = ["segmentation", "detection", "classification", "registration", "other"];
 
@@ -162,6 +165,22 @@ impl AnnotationHeader {
     }
 
     /// Validate §6.2 and §5.3.
+    /// Refuse an attribute §16 reserves on an annotation (E412): what every
+    /// write of one checks, a transcode carrying a stored header's included.
+    pub(crate) fn refuse_reserved_attributes(&self) -> Result<()> {
+        match self.extra.iter().find(|(name, _)| RESERVED_ATTRIBUTES.contains(&name.as_str())) {
+            None => Ok(()),
+            Some((name, _)) => Err(Error::coded(
+                "E412",
+                format!(
+                    "attribute {} is reserved by spec §16 for an annotation pyramid, which 1.x does not define \
+                     (§4.3); a writer must not emit it",
+                    repr_str(name)
+                ),
+            )),
+        }
+    }
+
     pub fn check(&self) -> Result<()> {
         if RESERVED_KINDS.contains(&self.kind.as_str()) {
             return Err(Error::coded(

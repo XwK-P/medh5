@@ -90,6 +90,11 @@ pub fn digest_bytes(payload: &[u8], algo: &str) -> Result<String> {
 }
 
 /// Split `"<algo>:<hex>"`, raising E703 when malformed.
+///
+/// Lenient, as 2.0 was: it accepts whatever Python's `int(hex, 16)` reads ---
+/// a sign, `0x`, `_`, surrounding whitespace, uppercase and short hex.  What
+/// §13.1 calls a digest is narrower; [`is_canonical_digest`] decides that, and
+/// a digest that is not canonical is malformed (E703).
 pub fn parse_digest(value: &str) -> Result<(String, String)> {
     let malformed = || Error::coded("E703", format!("malformed digest {}", repr_str(value)));
     let (algo, hexdigest) = value.split_once(':').ok_or_else(malformed)?;
@@ -112,6 +117,30 @@ pub fn parse_digest(value: &str) -> Result<(String, String)> {
     Ok((algo.to_string(), hexdigest.to_string()))
 }
 
+/// Whether `value` is a digest as §13.1 spells it: `<algo>:` and the digest
+/// in lowercase hexadecimal, two characters per byte --- 64 for `sha256`, 128
+/// for `sha512` and `blake2b`.  Any other spelling is malformed (E703), not a
+/// mismatch: an uppercase digest of unchanged bytes was reported as tampering.
+pub fn is_canonical_digest(value: &str) -> bool {
+    let Some((algo, hex)) = value.split_once(':') else {
+        return false;
+    };
+    let len = match algo {
+        "sha256" => 64,
+        "sha512" | "blake2b" => 128,
+        _ => return false,
+    };
+    hex.len() == len && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// [`parse_digest`] of a canonical digest (§13.1); any other spelling is E703.
+pub(crate) fn parse_canonical_digest(value: &str) -> Result<(String, String)> {
+    if !is_canonical_digest(value) {
+        return Err(Error::coded("E703", format!("malformed digest {}", repr_str(value))));
+    }
+    parse_digest(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +157,30 @@ mod tests {
         assert!(parse_digest("sha256:").is_err());
         assert!(parse_digest("md5:00").is_err());
         assert!(parse_digest("sha256:xyz").is_err());
+    }
+
+    #[test]
+    fn s13_1_parse_digest_is_lenient_and_canonical_is_exact() {
+        let hex = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(is_canonical_digest(&format!("sha256:{hex}")));
+        assert!(is_canonical_digest(&digest_bytes(b"abc", "sha512").unwrap()));
+        assert!(is_canonical_digest(&digest_bytes(b"abc", "blake2b").unwrap()));
+        let spellings = [
+            format!("sha256:+{hex}"),
+            format!("sha256:0x{hex}"),
+            format!("sha256:{}_{}", &hex[..32], &hex[32..]),
+            format!("sha256: {hex}"),
+            format!("sha256:{}", hex.to_uppercase()),
+            "sha256:00ff".to_string(),
+        ];
+        for spelling in &spellings {
+            // Read, as 2.0 read them; never canonical.
+            assert!(parse_digest(spelling).is_ok(), "{spelling}");
+            assert!(!is_canonical_digest(spelling), "{spelling}");
+            assert_eq!(parse_canonical_digest(spelling).unwrap_err().code(), Some("E703"));
+        }
+        assert!(!is_canonical_digest(&format!("sha512:{hex}")), "a sha256's length under sha512");
+        assert!(!is_canonical_digest(&format!("md5:{hex}")));
+        assert!(!is_canonical_digest(hex));
     }
 }

@@ -5,12 +5,12 @@ use std::collections::BTreeMap;
 use super::{grid_spatial, loc, str_attr, sub_dataset, Context};
 use crate::annotations::encode::normalization_tolerance;
 use crate::array::{DType, NdArray};
-use crate::digest::{parse_digest, DEFAULT_ALGO};
+use crate::digest::{is_canonical_digest, parse_digest, DEFAULT_ALGO};
 use crate::h5::attrs;
 use crate::h5::data::{self, Kind};
 use crate::h5::ops::{self, Node};
 use crate::integrity::digest::{dataset_digest_inspected, STREAM_BYTES};
-use crate::integrity::verify::verify_root_reporting;
+use crate::integrity::verify::{verify_root_reporting, ATTESTED_GROUPS};
 use crate::integrity::{unbound, Binding};
 use crate::json::{py_float, repr_int_tuple, repr_str};
 use crate::validate::Diagnostic;
@@ -82,7 +82,8 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     // W901 says no dataset carries a digest: one whose digest does not parse,
     // or whose type has none, carries one.
     let digested = !(result.checked.is_empty() && result.malformed.is_empty() && result.unverifiable.is_empty());
-    if !result.undigested.is_empty() && !digested && !unread.iter().any(|(path, _)| !path.is_empty()) {
+    let no_digests = !result.undigested.is_empty() && !digested && !unread.iter().any(|(path, _)| !path.is_empty());
+    if no_digests {
         out.push(ctx.err("W901", "/", "no dataset carries a `digest` attribute"));
     }
     for path in &result.malformed {
@@ -101,6 +102,18 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
                 "`content_id` does not recompute under the rules of MEDH5 {}: the root's integrity is unsupported in \
                  this projection, not verified (per-dataset digests were checked)",
                 crate::FORMAT_VERSION
+            ),
+        ));
+    } else if result.content_id_declared.as_deref().is_some_and(|d| !is_canonical_digest(d)) {
+        // A spelling, not a mismatch (§13.1): reported as tampering, it sent
+        // people looking for corruption that was not there.
+        out.push(ctx.err(
+            "E703",
+            "/",
+            format!(
+                "malformed `content_id` {}: §13.1 spells a digest `<algo>:` and lowercase hex of the algorithm's \
+                 length",
+                repr_str(result.content_id_declared.as_deref().unwrap_or_default())
             ),
         ));
     } else if result.content_id_ok() == Some(false) {
@@ -126,7 +139,19 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         for found in unbound(&root)? {
             let at = format!("/{}", found.path);
             match found.binding {
-                Binding::Undigested => {}
+                // A SHOULD (§13.1), so a warning; `clinical/` makes it a MUST
+                // (1.1 §8, E818), and a file with no digests at all is W901.
+                Binding::Undigested => {
+                    let group = found.path.split('/').next().unwrap_or_default();
+                    if !no_digests && ATTESTED_GROUPS.contains(&group) {
+                        out.push(ctx.err(
+                            "W915",
+                            at,
+                            "carries no `digest`, inside an object `content_id` covers: the root does not attest its \
+                             bytes, so an edit to them changes no line (§13.1, §13.2)",
+                        ));
+                    }
+                }
                 Binding::Unlisted => out.push(ctx.err(
                     "E702",
                     at,

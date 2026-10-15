@@ -163,6 +163,13 @@ ontology code, as an RTSTRUCT's are from its ROI names, raise `W912`. Strict is
 the gate for a dataset you publish, once [de-identification](deidentify.md) and
 the label set's codes have dealt with both.
 
+A plane written as a 2-D grid, such as a key image, that names the CT's
+`FrameOfReferenceUID` is reported `W917`. §3.3 compares no plane with a volume,
+so the shared identifier places the plane nowhere. The identifier is kept, as
+the source gave it, and the warning advises: give the plane its own frame, or
+store it as a one-slice 3-D grid where it lies, which is how this importer
+writes a single-slice series.
+
 Images are named for their modality and visit — `CT_tp0` for the first
 visit's CT — and values are stored as the scanner wrote them, with the
 modality LUT recorded rather than applied:

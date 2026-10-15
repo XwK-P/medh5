@@ -251,10 +251,19 @@ pub fn check_timepoints(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let multi = declared.len() > 1;
     let Some(node) = ops::child_group(&ctx.root, "grids") else { return Ok(out) };
     let mut frames: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // Each grid naming a frame, with what §3.3 rule 4 compares besides it.
+    let mut spaces: Vec<(String, String, usize, String)> = Vec::new();
     for name in ops::members(&node)? {
         let Some(grid) = child(&node, &name) else { continue };
         let g = loc(&grid);
         let location = format!("/grids/{name}");
+        if let (Some(frame), Some(kinds)) =
+            (str_attr(g, "frame_uid")?.filter(|f| !f.is_empty()), attrs::get_strs(g, "axis_kinds")?)
+        {
+            let s = kinds.iter().filter(|k| *k == "spatial").count();
+            let system = str_attr(g, "coord_system")?.unwrap_or_else(|| "LPS".into());
+            spaces.push((frame, name.clone(), s, system));
+        }
         let Some(timepoint) = str_attr(g, "timepoint")? else {
             if multi {
                 out.push(ctx.err(
@@ -288,6 +297,29 @@ pub fn check_timepoints(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
                     "frame_uid {} is shared by timepoints {}; follow-up imaging is a new frame unless the subject was never repositioned",
                     repr_str(frame),
                     repr_list(&listed)
+                ),
+            ));
+        }
+    }
+    for (i, (frame, a, a_s, a_system)) in spaces.iter().enumerate() {
+        for (other, b, b_s, b_system) in &spaces[i + 1..] {
+            if other != frame || (a_s == b_s && a_system == b_system) {
+                continue;
+            }
+            let advice = if a_s == b_s {
+                "give each coordinate system its own frame"
+            } else {
+                "give the plane its own frame, or store it as a one-slice 3-D grid where it lies (§3.6)"
+            };
+            out.push(ctx.err(
+                "W917",
+                "/grids",
+                format!(
+                    "grids {} ({a_s}-D, {a_system}) and {} ({b_s}-D, {b_system}) name one frame {}: §3.3 compares \
+                     neither with the other; {advice}",
+                    repr_str(a),
+                    repr_str(b),
+                    repr_str(frame)
                 ),
             ));
         }
