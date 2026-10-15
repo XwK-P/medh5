@@ -70,6 +70,13 @@ with medh5.open("kidneys.medh5") as s:
 Under `"explicit"` the same file would answer `negative` for `kidney`: it was
 examined, and nothing was asserted for it.
 
+Leave the ancestor examined and unasserted, as above. Asserting `kidney` 0.0
+beside `left_kidney` 1.0 contradicts the inference, since `state()` still
+answers `positive` while `value()` reads 0.0, and the validator reports it
+(`W916`). Voxel annotations should stay `"explicit"`. One declaring
+`"implicit"` is reported (`W918`), because every read of an ancestor then
+includes its descendants' voxels.
+
 An **ignore** region marks voxels that must not contribute to a loss in either
 direction. It is not a class: in band (`labelmap`, `layers`) its voxels hold
 the annotation's `ignore_id` (`65535` unless the header says otherwise), and

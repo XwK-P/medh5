@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import h5py
 import numpy as np
@@ -16,7 +17,9 @@ from medh5.integrity import (
     array_digest,
     canonical_attrs,
     dataset_digest,
+    diagnose,
     digest_bytes,
+    fix,
     group_digest,
     parse_digest,
     relative_path,
@@ -304,6 +307,58 @@ class TestIndexCurrency:
             del handle["index/organs_tp0"].attrs["source_digest"]
         with medh5.open(longitudinal_path) as sample:
             assert "organs_tp0" in stale_index_entries(sample.root)
+
+    @staticmethod
+    def _pinned(path: Path, pin) -> None:
+        """Every index entry of *path* pinned to ``pin(group, root)``."""
+        with medh5.open(path) as sample:
+            pins = {
+                name: pin(sample.root[f"annotations/{name}"], sample.root)
+                for name in sample.root["index"]
+            }
+        with h5py.File(path, "r+") as handle:
+            for name, value in pins.items():
+                handle[f"index/{name}"].attrs["source_digest"] = encode_attr(value)
+
+    def test_S13_3_an_index_in_the_files_algorithm_is_current(
+        self, tmp_path, label_set, masks
+    ):
+        """§13.3: the prefix names the hash, as a dataset digest's does.  A
+        sha512 file's sha512 index was stale (W905), so it failed strict."""
+        from tests.format.test_sample import restamped_in
+
+        path = write_sample(
+            tmp_path / "case.medh5", label_set=label_set, masks=masks, index=True
+        )
+        restamped_in(path, "sha512")
+        self._pinned(path, lambda group, root: group_digest(group, "sha512", root=root))
+        with medh5.open(path) as sample:
+            assert stale_index_entries(sample.root) == ()
+            assert set(sample.fresh_indices) == set(sample.root["index"])
+            assert sample.verify().ok
+        report = validate_file(path, level="strict")
+        assert not {"W905", "E701", "E702", "E703"} & set(report.codes)
+        # The writer's own pin, sha256, is as current in the same file.
+        self._pinned(path, lambda group, root: group_digest(group, "sha256", root=root))
+        with medh5.open(path) as sample:
+            assert stale_index_entries(sample.root) == ()
+
+    @pytest.mark.parametrize(
+        "spelling", ["md5:" + "0" * 32, "sha3:" + "0" * 64, "sha256", "SHA256:00"]
+    )
+    def test_S13_3_an_unknown_source_digest_algorithm_is_W905_not_an_error(
+        self, tmp_path, label_set, masks, spelling
+    ):
+        path = write_sample(
+            tmp_path / "case.medh5", label_set=label_set, masks=masks, index=True
+        )
+        self._pinned(path, lambda group, root: spelling)
+        with medh5.open(path) as sample:
+            assert set(stale_index_entries(sample.root)) == set(sample.root["index"])
+            assert not sample.fresh_indices
+            assert sample.verify().ok
+        report = validate_file(path, level="integrity")
+        assert report.ok and "W905" in report.codes
 
 
 class TestVerifyRoot:
@@ -872,6 +927,145 @@ class TestVerify:
         with medh5.open(path) as s:
             # No `content_id` makes no claim to check (§13.2 is a SHOULD).
             assert s.verify().unattested == ()
+
+
+class TestUndigestedDatasets:
+    """D6, §13.1: a dataset without a `digest`, inside an object a declared
+    `content_id` covers, is W915 --- `--level strict` passed the file `verify`
+    failed as unattested."""
+
+    def _boxes(self, path: Path) -> Path:
+        with Framed.writer(path) as w:
+            w.add_boxes(
+                "det", np.array([Framed.box(1, 3)], np.float32), ["c1"], grid="g"
+            )
+        return path
+
+    def _plant(self, path: Path) -> None:
+        with h5py.File(path, "r+") as handle:
+            handle["annotations/det"].create_dataset(
+                "instance_ids", data=np.array([7], np.uint32)
+            )
+
+    def test_S13_1_an_undigested_dataset_under_a_content_id_is_W915(
+        self, tmp_path: Path
+    ):
+        path = self._boxes(tmp_path / "det.medh5")
+        self._plant(path)
+        integrity = validate_file(path, level="integrity")
+        assert [
+            (d.code, d.location) for d in integrity.diagnostics if d.code == "W915"
+        ] == [("W915", "/annotations/det/instance_ids")]
+        assert "W915" not in validate_file(path, level="semantic").codes
+        assert "W915" in validate_file(path, level="strict").codes
+        # Pinned to revision 1, 2.0's verdict.
+        assert "W915" not in validate_file(path, level="strict", codes_revision=1).codes
+        with medh5.open(path) as sample:
+            assert not sample.verify().ok
+
+    def test_S13_1_W915_is_not_reported_without_a_content_id(self, tmp_path: Path):
+        path = self._boxes(tmp_path / "det.medh5")
+        with h5py.File(path, "r+") as handle:
+            del handle.attrs["content_id"]
+        self._plant(path)
+        assert "W915" not in validate_file(path, level="integrity").codes
+
+    def test_S13_1_a_file_with_no_digests_is_W901_not_W915(self, tmp_path: Path):
+        path = self._boxes(tmp_path / "det.medh5")
+        with h5py.File(path, "r+") as handle:
+            for name in list(_datasets(handle)):
+                handle[name].attrs.pop("digest", None)
+        codes = validate_file(path, level="integrity").codes
+        assert "W901" in codes and "W915" not in codes
+
+    def test_S13_1_an_undigested_clinical_dataset_is_E818_not_W915(
+        self, tmp_path: Path
+    ):
+        from tests.kits import History
+
+        path = tmp_path / "history.medh5"
+        History.write(path)
+        with h5py.File(path, "r+") as handle:
+            events = handle["clinical/events"]
+            events.create_dataset(
+                "x_note", data=np.zeros(events["available_lo_us"].shape, "u1")
+            )
+        codes = validate_file(path, level="integrity").codes
+        assert "E818" in codes and "W915" not in codes
+
+
+def _datasets(handle: h5py.File) -> list[str]:
+    found: list[str] = []
+    handle.visititems(
+        lambda name, obj: found.append(name) if isinstance(obj, h5py.Dataset) else None
+    )
+    return found
+
+
+_SPELLINGS = {
+    "sign": lambda hex_: f"+{hex_}",
+    "0x": lambda hex_: f"0x{hex_}",
+    "underscore": lambda hex_: f"{hex_[:32]}_{hex_[32:]}",
+    "whitespace": lambda hex_: f" {hex_}",
+    "uppercase": str.upper,
+    "short": lambda hex_: hex_[:-2],
+}
+
+
+class TestCanonicalDigests:
+    """D4, §13.1: `<hex>` is lowercase hex of the algorithm's length.  Read as
+    Python's `int(hex, 16)` reads a number, an uppercase digest of unchanged
+    bytes was a mismatch (E701) and its root tampered with (E702)."""
+
+    def _respell(self, path: Path, spell: Any, at: str = "images/CT_tp0") -> None:
+        with h5py.File(path, "r+") as handle:
+            algo, hex_ = str(handle[at].attrs["digest"]).split(":")
+            handle[at].attrs["digest"] = f"{algo}:{spell(hex_)}"
+
+    @pytest.mark.parametrize("spell", _SPELLINGS.values(), ids=list(_SPELLINGS))
+    def test_S13_1_a_digest_not_in_canonical_hex_is_E703(
+        self, tmp_path: Path, spell: Any
+    ):
+        path = write_sample(tmp_path / "s.medh5")
+        self._respell(path, spell)
+        report = validate_file(path, level="integrity")
+        assert ("E703", "/images/CT_tp0") in {
+            (d.code, d.location) for d in report.diagnostics
+        }
+        assert "E701" not in report.codes
+        with medh5.open(path) as sample:
+            result = sample.verify()
+        assert "images/CT_tp0" in result.malformed and not result.mismatched
+
+    def test_S13_1_fix_restamps_a_non_canonical_digest(self, tmp_path: Path):
+        path = write_sample(tmp_path / "s.medh5")
+        self._respell(path, str.upper)
+        assert "images/CT_tp0" in diagnose(path).malformed
+        fix(
+            path,
+            rewrite_digests=True,
+            reason="digests from a tool spelling hex in capitals",
+        )
+        with medh5.open(path) as sample:
+            assert sample.verify().ok
+        assert validate_file(path, level="integrity").ok
+
+    def test_S13_1_a_content_id_not_in_canonical_hex_is_E703_not_E702(
+        self, tmp_path: Path
+    ):
+        path = write_sample(tmp_path / "s.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["content_id"] = str(handle.attrs["content_id"]).upper()
+        report = validate_file(path, level="integrity")
+        root = {d.code for d in report.diagnostics if d.location == "/"}
+        assert root == {"E703"}
+        with medh5.open(path) as sample:
+            assert not sample.verify().ok
+        with (
+            pytest.raises(MEDH5ValidationError, match="not a digest"),
+            medh5.amend(path),
+        ):
+            pass
 
 
 class TestCyclicCompare:

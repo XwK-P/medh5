@@ -9,6 +9,7 @@ use serde_json::{json, Map, Value};
 use medh5::annotations::encode::IN_BAND_IGNORE_KINDS;
 use medh5::annotations::select::{analyse, cost_model, select_encoding_checked};
 use medh5::annotations::Annotation;
+use medh5::digest::is_canonical_digest;
 use medh5::h5::{attrs, data, ops};
 use medh5::hdf5;
 use medh5::integrity::group_digest;
@@ -344,10 +345,17 @@ fn holds(
     occupancy: Option<usize>,
     seed: i64,
 ) -> medh5::Result<bool> {
-    // The digest the writer pins an entry to.
-    let digest = group_digest(&annotation.group, root, "sha256")?;
+    // Computed under the algorithm the entry names (§13.3); the writer pins
+    // `sha256`.
+    let pinned = entry.source_digest().ok().flatten();
+    let algo = pinned
+        .as_deref()
+        .filter(|d| is_canonical_digest(d))
+        .and_then(|d| d.split_once(':'))
+        .map_or("sha256", |(algo, _)| algo);
+    let digest = group_digest(&annotation.group, root, algo)?;
     let drawn = |name: &str| attrs::get_i64(&entry.group, name).ok().flatten();
-    let same_draw = entry.source_digest().ok().flatten().as_deref() == Some(digest.as_str())
+    let same_draw = pinned.as_deref() == Some(digest.as_str())
         && drawn("max_coords") == Some(max_coords as i64)
         && drawn("seed") == Some(seed)
         && entry.has_occupancy().ok() == Some(occupancy.is_some());

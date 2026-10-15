@@ -89,6 +89,17 @@ have the same shape and nothing has to know which it is holding. A value of
 `0.0` is an explicit negative — assessed and not present — which is different
 from a class nobody assessed (spec §9).
 
+## Hierarchical labels
+
+Under `closure="implicit"` assert only the most specific class, and list its
+ancestors in `annotated_classes`. `state()` then answers each ancestor
+`positive` in every scope unit where a descendant is asserted above 0, while
+`value()` stays what was stored (spec §5.4, §9). Do not assert an ancestor
+`0.0` beside its positive descendant. `state()` would answer it `positive`
+all the same, so a model reading `value()` learns the opposite of one reading
+`state()`, and the validator reports the contradiction (`W916`). See
+[Closure](../reference/annotations.md#closure).
+
 Where one annotation holds several assertions per class — one per visit, one per
 lesion — read them per scope unit instead:
 

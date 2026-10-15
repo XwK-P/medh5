@@ -236,6 +236,13 @@ $ medh5 fix cohort/*.medh5 --rebuild-index
 A stale index is not a file error. It is a cache that needs rebuilding, and the
 format says so rather than making the file invalid.
 
+The digest names its algorithm in its prefix, `sha256:` or `sha512:`, and a
+reader recomputes the annotation's digest in that one, whatever the file's
+`digest_algo` (§13.3). medh5 pins its own indexes in sha256, in a sha512 file
+too, and reads a sha512 index another writer pinned as current. An index whose
+digest is malformed, or names an algorithm §2.1 does not list, is stale like
+any other.
+
 ## Collections
 
 One `.medh5c` shard holding many samples, for filesystems that dislike a million
