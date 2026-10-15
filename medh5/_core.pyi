@@ -135,6 +135,7 @@ __all__ = [
     "MAX_CLASS_ID",
     "META_DATASET",
     "MIN_CHUNK_BYTES",
+    "MM_PER_UNIT",
     "ORTHONORMAL_TOL",
     "OVERSHOOT_LIMIT",
     "Observation",
@@ -326,6 +327,7 @@ __all__ = [
     "conformance_result_json",
     "conformance_run_corpus",
     "conformance_score",
+    "conformance_score_companion",
     "conformance_summary",
     "contains_at",
     "cost_model",
@@ -470,6 +472,7 @@ __all__ = [
     "pack",
     "parse_digest",
     "payload_to_masks",
+    "polygon_depths",
     "profile_family",
     "pyramid_factors",
     "quality_from_json",
@@ -503,6 +506,7 @@ __all__ = [
     "schema",
     "schema_text",
     "scrub_apply",
+    "scrub_check",
     "scrub_finding",
     "scrub_finding_json",
     "scrub_finding_line",
@@ -636,6 +640,7 @@ IO_FALLBACK_PREFIX: str
 IO_SEVERITIES: tuple[str, ...]
 ISSUE_SEVERITY: tuple[str, ...]
 KNOWN_UNITS: tuple[str, ...]
+MM_PER_UNIT: dict[str, float]
 LABEL_SAFE_METHODS: tuple[str, ...]
 LAST_ROW_TOL: float
 LATERALITY_VALUES: tuple[str, ...]
@@ -965,6 +970,11 @@ def check_contour_role(role: str) -> str:
     """A contour role, or E411."""
     ...
 
+def polygon_depths(polygons: Any) -> list[int]:
+    """Each of one class's polygons in one plane, its depth: how many of the
+    others enclose it (§8.6).  Each is `(V, 2)` in-plane coordinates."""
+    ...
+
 def check_orthonormal(
     direction: npt.ArrayLike, tol: float = ..., *, what: str = "direction"
 ) -> npt.NDArray[np.float64]: ...
@@ -1097,7 +1107,16 @@ def conformance_result_json(result: Any) -> Any:
 def conformance_run_corpus(
     outdir: str | os.PathLike[str], *, names: Sequence[str] | None = None
 ) -> list[Any]: ...
-def conformance_score(root: str | os.PathLike[str], submitted: Any) -> list[Any]: ...
+def conformance_score(
+    root: str | os.PathLike[str],
+    submitted: Any,
+    *,
+    format_version: str | None = None,
+    codes_revision: int | None = None,
+) -> list[Any]: ...
+def conformance_score_companion(
+    root: str | os.PathLike[str], submitted: Any
+) -> list[Any]: ...
 def conformance_summary(results: Any) -> Any:
     """The `--json` summary of a run or a score."""
     ...
@@ -1115,7 +1134,13 @@ def create(
     codec: str = "balanced",
     profiles: Sequence[str] | None = None,
 ) -> SampleWriter:
-    """Create a new sample; use as a context manager, or call `commit()`."""
+    """Create a new sample; use as a context manager, or call `commit()`.
+
+    Without `sample_id`, the sample id is the file name up to its first dot,
+    and `subject_id` defaults to the sample id.  Where that is not the file's
+    stem (`case.v2.medh5`) it warns (`FutureWarning`): medh5 3.0 takes the
+    stem.  A name with nothing before its first dot is refused.
+    """
     ...
 
 def cubic_sample(
@@ -1817,11 +1842,35 @@ def scrub_apply(
     profile: str = ...,
     salt: str = ...,
     date_shift_days: int | None = None,
+    date_shift_range: tuple[int, int] | None = None,
     performed_by: str | None = None,
     pseudonymise_ids: bool = False,
+    withhold_shift: bool | None = None,
+    out: str | os.PathLike[str] | None = None,
+    out_dir: str | os.PathLike[str] | None = None,
+    attest_text: str | None = None,
 ) -> dict[Any, Any]:
     """Act on the actionable findings and write the §11.4 attestation.  The
     report's fields.
+    """
+    ...
+
+def scrub_check(
+    apply_changes: bool,
+    *,
+    profile: str = ...,
+    salt: str = ...,
+    date_shift_days: int | None = None,
+    date_shift_range: tuple[int, int] | None = None,
+    performed_by: str | None = None,
+    pseudonymise_ids: bool = False,
+    withhold_shift: bool | None = None,
+    out: str | os.PathLike[str] | None = None,
+    out_dir: str | os.PathLike[str] | None = None,
+    attest_text: str | None = None,
+) -> None:
+    """Refuse what these options cannot do, before any file is read
+    (`ScrubOptions::check`).
     """
     ...
 
@@ -3310,7 +3359,9 @@ class SampleHandle:
         ...
     def tracks(self, class_key: Any = None, *, measure: bool = True) -> Tracking: ...
     def transform(self, transform_id: str) -> TransformHandle: ...
-    def transform_between(self, source: str, target: str) -> TransformHandle | None: ...
+    def transform_between(
+        self, source: str, target: str, by: str | None = None
+    ) -> TransformHandle | None: ...
     def transform_ids(self) -> list[str]: ...
     def valid_region(self, image_id: str, roi: Any = None) -> Any: ...
     def verify(self, partial: Sequence[str] | None = None) -> Any: ...
@@ -3507,7 +3558,7 @@ class SampleWriter:
         task: str = "other",
         prov: Activity | str | None = None,
         codec: str | None = None,
-    ) -> None:
+    ) -> Group:
         """Write a boolean `mask` annotation (FOV, ignore region).  A
         floating-point mask holding a value other than 0 and 1 is refused
         (E411) rather than read as set wherever it is non-zero.
@@ -3614,6 +3665,9 @@ class SampleWriter:
         masks: Mapping[Any, npt.NDArray[Any]] | None = None,
         probabilities: Mapping[Any, npt.NDArray[Any]] | None = None,
         instances: Sequence[InstanceInput] | None = None,
+        labelmap: npt.NDArray[np.integer[Any]] | None = None,
+        label_values: Mapping[int, int | str | Sequence[int | str]] | None = None,
+        ignore_value: int | None = None,
         encoding: str = "auto",
         threshold: float | None = None,
         annotated_classes: str | Sequence[int | str] | None = None,
@@ -3634,6 +3688,11 @@ class SampleWriter:
         classes, so it is refused (E404), as a transcode to it is.  Masks
         stored as `instances` are one object per class, each minted an id
         above every id the sample holds (§7.4).
+
+        `labelmap` is the masks as one integer volume, borrowed rather than
+        copied: each nonzero value the class of that id, or the classes
+        `label_values` gives it, and `ignore_value` the ignore region.  What it
+        writes is what the masks it implies write, byte for byte.
         """
         ...
     def add_timepoint(self, timepoint_id: str, **fields: Any) -> Timepoint:
@@ -3664,10 +3723,17 @@ class SampleWriter:
         metrics: str | Mapping[str, Any] | None = None,
         prov: Activity | str | None = None,
         codec: str | None = None,
+        field_dtype: str = "float32",
     ) -> Group:
         """A transform mapping points from `from_frame` to `to_frame`:
         `x_M = T(x_F)`, the ITK convention.  `units` defaults to those of the
         grids in the two frames (§10.1).
+
+        `field_dtype` stores a displacement field as `"float32"` (the
+        default), `"float16"` (refused when a finite value would overflow), or
+        `"auto"`: float16 when the largest displacement is below 64 voxels of
+        the field's grid and within float16's range (§10.4).  Any but
+        `"float32"` is refused for another kind.
         """
         ...
     def build_index(
@@ -3769,11 +3835,42 @@ class SampleWriter:
     def remove_annotation(self, ann_id: str) -> None:
         """Drop an annotation, and any index entry derived from it."""
         ...
+    def remove_grid(self, grid_id: str) -> None:
+        """Drop a grid; what still names it (E101, E503), and the last grid
+        going (E111), are checked at commit.
+        """
+        ...
+    def remove_image(self, image_id: str) -> None:
+        """Drop an image, its `acquisition` entry and its `series_uids`
+        mentions; what still names it, and the last image going (E201), are
+        checked at commit.
+        """
+        ...
     def remove_transform(self, transform_id: str) -> None:
         """Drop a transform; what still names it is checked at commit."""
         ...
     def set_clock(self, clock: Any = None, **fields: Any) -> dict[str, Any]:
         """Declare the subject clock, starting the `clinical` profile (1.1 §3)."""
+        ...
+    def set_image_attrs(
+        self,
+        image_id: str,
+        *,
+        modality: str = ...,
+        value_type: str = ...,
+        value_units: str | None = ...,
+        channel_names: Sequence[str] | None = ...,
+        rescale_slope: float | None = ...,
+        rescale_intercept: float | None = ...,
+        window_center: Sequence[float] | None = ...,
+        window_width: Sequence[float] | None = ...,
+        valid_mask: str | None = ...,
+        prov: Activity | str | None = ...,
+    ) -> None:
+        """Change an image's attributes without rewriting its samples (§4.1):
+        `None` removes one.  Checked as `add_image` checks them; `modality`
+        and `value_type` are required and cannot be removed (E205).
+        """
         ...
     def set_quality(self, key: str, **fields: Any) -> QualityRecord:
         """Create or replace a quality record (status defaults to `draft`)."""

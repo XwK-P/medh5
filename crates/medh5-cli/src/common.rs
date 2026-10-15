@@ -18,7 +18,7 @@ pub const EXIT_USAGE: i32 = 2;
 
 /// What a frontend hosting the engine can run that the engine cannot.
 ///
-/// The format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net) and the
+/// The format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, ITK, nnU-Net) and the
 /// dataloader benchmark are Python integrations: they stay in the Python
 /// package, and the command line hands them over to it.
 pub trait Host {

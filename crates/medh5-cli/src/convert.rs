@@ -19,8 +19,8 @@ use crate::app;
 use crate::common::*;
 
 /// What `--help` cannot say for a converter the standalone binary cannot run.
-const NO_PYTHON: &str = "the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net) are part of the Python \
-                         package: install it (`pip install 'medh5[nifti,dicom]'`) and run `medh5 convert` from it, \
+const NO_PYTHON: &str = "the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, ITK, nnU-Net) are part of the \
+                         Python package: install it (`pip install 'medh5[nifti,dicom]'`) and run `medh5 convert` from it, \
                          or point MEDH5_PYTHON at an interpreter that has it";
 
 /// The parsed arguments of one subcommand, keyed as the 1.x parser named
@@ -128,7 +128,7 @@ pub fn finish(report: &ConversionReport, m: &ArgMatches, ctx: &mut Ctx) -> CmdRe
                 repr_str(output)
             )));
         }
-        std::fs::write(path, pretty(&report.to_json()) + "\n").map_err(|e| medh5::error::os_error(&e, path))?;
+        medh5::h5::file::write_atomic(Path::new(path), (pretty(&report.to_json()) + "\n").as_bytes())?;
     }
     if flag(m, "json") {
         ctx.emit(&report.to_json(), true);
@@ -168,7 +168,7 @@ pub fn migrate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             req_str(m, "group_by"),
             get_str(m, "subject_key"),
             reviewed.as_ref(),
-            "balanced",
+            req_str(m, "codec"),
         )?;
         Ok(Some(report))
     })();

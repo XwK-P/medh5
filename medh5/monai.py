@@ -103,7 +103,7 @@ def _monai_affine(grid: Grid, space: str | None) -> npt.NDArray[np.float64]:
     ``SaveImage`` writes: passed in the grid's own units, a metre grid's
     affine said 2 µm voxels.  A ``px`` grid has no size, and stays in pixels.
     """
-    from medh5.io.nifti import MM_PER_UNIT
+    from medh5.geometry import MM_PER_UNIT
 
     affine = (
         grid.affine

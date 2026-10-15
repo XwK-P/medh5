@@ -17,6 +17,8 @@
 mod build;
 pub mod clinical;
 pub mod companion;
+#[doc(hidden)]
+pub mod robustness;
 pub mod suite;
 
 use std::collections::BTreeSet;
@@ -31,7 +33,9 @@ use crate::validate::validate_file;
 use crate::{Error, Result};
 
 pub use build::SEED;
-pub use suite::{check_checksums, load_manifest, publish, score, summarize, CHECKSUMS, SCHEMA};
+pub use suite::{
+    check_checksums, load_manifest, publish, score, score_with, summarize, ScoreOptions, CHECKSUMS, SCHEMA,
+};
 
 /// How a case's file is made.
 pub type Build = Arc<dyn Fn(&Path) -> Result<()> + Send + Sync>;
@@ -81,6 +85,18 @@ impl Case {
         self.errors.is_empty()
     }
 
+    /// The format version the case is addressed to: the latest `since` among
+    /// the codes it expects, and `1.1` for a clause of 1.1 (marked `(1.1)`).
+    ///
+    /// What a file declares is not it: the E009 and E011 cases declare 1.0
+    /// and expect 1.1's answers, the W913 case declares 1.2.  A 1.0-only
+    /// implementation is scored on the cases addressed to 1.0
+    /// ([`suite::ScoreOptions`]).
+    pub fn format_version(&self) -> String {
+        let floor = if self.clause.contains("(1.1)") { "1.1" } else { "1.0" };
+        latest_version(floor, self.errors.iter().chain(&self.warnings).filter_map(|c| crate::codes::since(c)))
+    }
+
     /// The case's entry in `expected.json`.
     pub fn to_json(&self) -> Value {
         let sorted = |v: &[String]| -> Vec<String> {
@@ -98,6 +114,7 @@ impl Case {
             "mutated": self.mutated,
             "expect_errors": sorted(&self.errors),
             "expect_warnings": sorted(&self.warnings),
+            "format_version": self.format_version(),
         })
     }
 
@@ -124,6 +141,25 @@ impl Case {
             mutated: record.get("mutated").and_then(Value::as_bool).unwrap_or(false),
         }
     }
+}
+
+/// A `major.minor` version as numbers, so `1.10` follows `1.9`; `None` for
+/// anything else.
+pub(crate) fn version_key(version: &str) -> Option<(u32, u32)> {
+    let (major, minor) = version.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// The latest of `floor` and `versions`; one that is not a version is passed
+/// over.
+pub(crate) fn latest_version<'a>(floor: &'a str, versions: impl IntoIterator<Item = &'a str>) -> String {
+    let mut latest = floor;
+    for version in versions {
+        if version_key(version) > version_key(latest) {
+            latest = version;
+        }
+    }
+    latest.to_string()
 }
 
 /// What running one case produced.
@@ -259,6 +295,7 @@ pub fn build_corpus(outdir: &Path, names: Option<&[String]>) -> Result<PathBuf> 
     let manifest = json!({
         "format": crate::FORMAT_VERSION,
         "generator": format!("medh5 {}", crate::VERSION),
+        "codes_revision": crate::codes::table_revision(),
         "cases": records,
     });
     let target = outdir.join("expected.json");

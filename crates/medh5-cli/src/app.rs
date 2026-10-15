@@ -92,6 +92,27 @@ fn group(name: &'static str, help: &'static str) -> Command {
         .arg_required_else_help(true)
 }
 
+/// `--codec PROFILE`: the codec profile a converter writes with.
+fn codec() -> Arg {
+    opt("codec", "codec", "codec profile to write: training, balanced (default), archive or portable")
+        .value_name("PROFILE")
+        .value_parser(CODEC_PROFILES)
+        .default_value("balanced")
+}
+
+/// `--annotated-classes`: which classes an import examined (§11.3).
+fn annotated_classes() -> Arg {
+    opt(
+        "annotated_classes",
+        "annotated-classes",
+        "the classes that were examined: all_given (default), the classes the input supplies; all, every class \
+         of the label set; or K1,K2,... --- a class named that the input does not supply was examined and found \
+         absent",
+    )
+    .value_name("all_given|all|K1,K2")
+    .default_value("all_given")
+}
+
 fn report_args(cmd: Command) -> Command {
     cmd.arg(Arg::new("report").long("report").value_name("FILE").help("write the report as JSON")).arg(json())
 }
@@ -301,8 +322,12 @@ fn curation() -> Vec<Command> {
             .arg(paths("sample files to pack"))
             .arg(out_required(format!("output {SUFFIX} file")))
             .arg(
-                append("keys", "key", "sample key for each source, in order; defaults to the file stem")
-                    .value_name("KEY"),
+                append(
+                    "keys",
+                    "key",
+                    "sample key for each source, in order; defaults to the file name up to its first dot",
+                )
+                .value_name("KEY"),
             )
             .arg(json()),
         Command::new("unpack")
@@ -351,14 +376,44 @@ fn curation() -> Vec<Command> {
                     .default_value(""),
             )
             .arg(opt("performed_by", "by", "with --apply: who performed the de-identification; recorded in the file"))
+            .arg(flag(
+                "pseudonymise_ids",
+                "pseudonymise-ids",
+                "with --apply and --salt: replace sample_id and subject_id with salted stable pseudonyms (they are \
+                 often the record number)",
+            ))
             .arg(
-                flag(
-                    "pseudonymise_ids",
-                    "pseudonymise-ids",
-                    "with --apply and --salt: replace sample_id and subject_id with salted stable pseudonyms (they \
-                     are often the record number)",
+                opt(
+                    "date_shift_range",
+                    "date-shift-range",
+                    "with --apply and --salt: shift each subject's dates by a nonzero number of days in MIN:MAX, \
+                     taken from the salt and the subject, so one subject's files agree; the amount is withheld",
                 )
-                .requires("apply_changes"),
+                .value_name("MIN:MAX")
+                .value_parser(shift_range)
+                .allow_hyphen_values(true)
+                .conflicts_with("date_shift_days"),
+            )
+            .arg(flag(
+                "withhold_shift",
+                "withhold-shift",
+                "with --apply: record that dates were shifted, not by how much (one known date restores every other)",
+            ))
+            .arg(opt("out", "out", "with --apply: write the scrubbed sample here, and leave the source as it is"))
+            .arg(opt(
+                "out_dir",
+                "out-dir",
+                "with --apply: write each scrubbed sample into this directory, named by its pseudonymised sample id \
+                 under --pseudonymise-ids, else as it was",
+            ))
+            .arg(
+                opt(
+                    "attest_text",
+                    "attest-text",
+                    "with --apply: record that TOOL de-identified a clinical sample's text, with the digests of the \
+                     bytes it attests; it lapses when they change",
+                )
+                .value_name("TOOL"),
             )
             .arg(json()),
         Command::new("splits")
@@ -512,10 +567,58 @@ fn convert() -> Vec<Command> {
                     "import a NIfTI that declares no spatial mapping (sform_code = qform_code = 0) by taking the \
                      pixdim fallback. Off by default: that grid is assumed, not measured. Recorded as a guess.",
                 ))
+                .arg(flag(
+                    "plane_as_volume",
+                    "plane-as-volume",
+                    "import every 2-D input as a one-slice 3-D grid, (x, y, 1), keeping its full affine: a plane off \
+                     z = 0 or not parallel to x-y is imported where it lies instead of refused",
+                ))
+                .arg(pairs(
+                    "value_units",
+                    "value-units",
+                    "NAME=UNIT",
+                    "the unit an image's values are in (it is then quantitative); repeatable",
+                ))
+                .arg(
+                    opt(
+                        "label_set",
+                        "label-set",
+                        "a label-set JSON file the masks are matched to by key, instead of minting classes",
+                    )
+                    .value_name("FILE"),
+                )
+                .arg(annotated_classes())
+                .arg(codec())
                 .arg(opt("sample_id", "sample-id", "sample id to write; defaults to the output filename"))
                 .arg(opt("subject_id", "subject-id", "subject id to write")),
         ))
-        .subcommand(
+        .subcommand(report_args(
+            Command::new("import-seg-nifti")
+                .about("NIfTI masks -> an annotation of a sample")
+                .arg(positional("sample", "the sample to add the annotation to"))
+                .arg(pairs("mask", "mask", "NAME=PATH", "a mask on the sample's grid; repeatable").required(true))
+                .arg(opt("ann_id", "id", "id for the new annotation").default_value("seg"))
+                .arg(opt("grid", "grid", "grid the masks sit on (default: the sample's reference grid)"))
+                .arg(flag(
+                    "assume_aligned",
+                    "assume-aligned",
+                    "take a mask's voxels as the grid's although its header places them elsewhere: for a header \
+                     known to be wrong. Recorded as a guess.",
+                ))
+                .arg(flag(
+                    "assume_geometry",
+                    "assume-geometry",
+                    "import a mask that declares no spatial mapping (sform_code = qform_code = 0) by taking the \
+                     pixdim fallback. Recorded as a guess.",
+                ))
+                .arg(flag(
+                    "plane_as_volume",
+                    "plane-as-volume",
+                    "read every 2-D mask as a one-slice 3-D grid, (x, y, 1), keeping its full affine",
+                ))
+                .arg(annotated_classes()),
+        ))
+        .subcommand(report_args(
             Command::new("to-nifti")
                 .about("one image or class -> NIfTI")
                 .arg(positional("path", "the sample to read"))
@@ -524,7 +627,7 @@ fn convert() -> Vec<Command> {
                 .arg(opt("annotation", "annotation", "export this annotation instead of the image"))
                 .arg(opt("class_key", "class", "with --annotation, the single class to export"))
                 .arg(flag("stored", "stored", "skip the rescale")),
-        )
+        ))
         .subcommand(report_args(
             Command::new("from-dicom")
                 .about("a DICOM tree -> samples")
@@ -545,7 +648,18 @@ fn convert() -> Vec<Command> {
                 .arg(
                     append("series_uids", "series", "only import these SeriesInstanceUIDs; repeatable")
                         .value_name("SERIES"),
-                ),
+                )
+                .arg(
+                    opt(
+                        "per_slice_rescale",
+                        "per-slice-rescale",
+                        "a series whose slices declare different RescaleSlope/Intercept (PET): refuse it (default), \
+                         or apply each slice's rescale and store physical values as float32",
+                    )
+                    .value_parser(["refuse", "apply"])
+                    .default_value("refuse"),
+                )
+                .arg(codec()),
         ))
         .subcommand(report_args(
             Command::new("from-dicom-seg")
@@ -559,7 +673,8 @@ fn convert() -> Vec<Command> {
                     "frame-salt",
                     "the salt `medh5 scrub` pseudonymised the sample's frames with: the SEG's frame is compared as the \
                      scrub wrote it",
-                )),
+                ))
+                .arg(annotated_classes()),
         ))
         .subcommand(report_args(
             Command::new("to-dicom-seg")
@@ -568,12 +683,49 @@ fn convert() -> Vec<Command> {
                 .arg(positional("annotation", "the annotation to export"))
                 .arg(positional("out", "the DICOM SEG file to write"))
                 .arg(append("source", "source", "a source DICOM file").required(true))
+                .arg(
+                    append(
+                        "classes",
+                        "class",
+                        "export only this class (id or key), which the annotation examined; repeatable",
+                    )
+                    .value_name("K"),
+                )
+                .arg(
+                    opt(
+                        "series_description",
+                        "series-description",
+                        "the SEG's SeriesDescription, a DICOM LO of at most 64 characters (default: medh5 \
+                         segmentation)",
+                    )
+                    .value_name("TEXT"),
+                )
                 .arg(opt(
                     "frame_salt",
                     "frame-salt",
                     "the salt `medh5 scrub` pseudonymised the sample's frames with: the source images' frame is \
                      compared as the scrub wrote it",
-                )),
+                ))
+                .arg(
+                    opt(
+                        "segmentation_type",
+                        "segmentation-type",
+                        "binary (default) thresholds a probmap at its stored threshold; fractional writes a \
+                         probmap's probabilities, quantised to 1/255",
+                    )
+                    .value_parser(["binary", "fractional"])
+                    .default_value("binary"),
+                )
+                .arg(
+                    opt(
+                        "fractional_type",
+                        "fractional-type",
+                        "with --segmentation-type fractional, what the values are: PROBABILITY (default) or \
+                         OCCUPANCY",
+                    )
+                    .value_parser(["PROBABILITY", "OCCUPANCY"])
+                    .default_value("PROBABILITY"),
+                ),
         ))
         .subcommand(report_args(
             Command::new("from-rtstruct")
@@ -587,6 +739,38 @@ fn convert() -> Vec<Command> {
                     "rasterize",
                     "also derive a voxel annotation; the rule is recorded in provenance",
                 ))
+                .arg(
+                    opt(
+                        "mask_id",
+                        "mask-id",
+                        "with --rasterize: id for the voxel annotation (default: the contours' id + _mask)",
+                    )
+                    .value_name("ID")
+                    .requires("rasterize"),
+                )
+                .arg(annotated_classes())
+                .arg(pairs(
+                    "roi_classes",
+                    "roi",
+                    "NUMBER=KEY",
+                    "import ROI NUMBER into class KEY instead of the class its name makes, which imports same-named \
+                     ROIs apart; repeatable",
+                ))
+                .arg(opt(
+                    "points_id",
+                    "points-id",
+                    "id for the points annotation POINT ROIs import into (default: the contours' id + _points)",
+                ))
+                .arg(
+                    opt(
+                        "open_curves",
+                        "open-curves",
+                        "what an ROI of open curves becomes: omit (left out with a warning; polylines arrive in \
+                         2.2.0)",
+                    )
+                    .value_parser(["omit"])
+                    .default_value("omit"),
+                )
                 .arg(opt(
                     "frame_salt",
                     "frame-salt",
@@ -601,6 +785,15 @@ fn convert() -> Vec<Command> {
                 .arg(positional("annotation", "the contour annotation to export"))
                 .arg(positional("out", "the RTSTRUCT file to write"))
                 .arg(append("source", "source", "a source DICOM file; repeat once per slice").required(true))
+                .arg(
+                    opt(
+                        "label",
+                        "label",
+                        "the StructureSetLabel, a DICOM SH of at most 16 characters (default: medh5 export)",
+                    )
+                    .value_name("TEXT"),
+                )
+                .arg(opt("points", "points", "a points annotation to write as POINT ROIs (MARKER)"))
                 .arg(opt(
                     "frame_salt",
                     "frame-salt",
@@ -609,11 +802,50 @@ fn convert() -> Vec<Command> {
                 )),
         ))
         .subcommand(report_args(
+            Command::new("from-itk-transform")
+                .about("an ITK or ANTs transform -> a transform between two grids")
+                .arg(positional("transform", "the .tfm, .txt or ANTs .mat transform to import"))
+                .arg(positional("sample", "the sample to add the transform to"))
+                .arg(opt("transform_id", "id", "id for the new transform").required(true))
+                .arg(opt("fixed", "fixed", "the grid of ITK's fixed image: the transform starts in its frame").required(true))
+                .arg(opt("moving", "moving", "the grid of ITK's moving image: the transform ends in its frame").required(true))
+                .arg(opt("warp", "warp", "a displacement field (NIfTI) applied before the transform, as ANTs pairs them"))
+                .arg(
+                    opt("vectors", "vectors", "the convention of the field's vectors, which its file does not say")
+                        .value_parser(["lps", "ras"]),
+                )
+                .arg(opt("inverse_warp", "inverse-warp", "the warp's inverse field (NIfTI), stored and linked")),
+        ))
+        .subcommand(report_args(
+            Command::new("to-itk-transform")
+                .about("a transform -> an ITK transform (and a displacement field)")
+                .arg(positional("sample", "the sample to read"))
+                .arg(positional("out", "the .tfm, .txt or .mat file to write"))
+                .arg(opt("transform_id", "id", "the transform to export").required(true))
+                .arg(opt("warp_out", "warp-out", "where to write its displacement field (NIfTI)"))
+                .arg(
+                    opt("vectors", "vectors", "the convention to write the field's vectors in")
+                        .value_parser(["lps", "ras"]),
+                ),
+        ))
+        .subcommand(report_args(
             Command::new("from-nnunet")
                 .about("an nnU-Net v2 dataset -> samples")
                 .arg(positional("root", "the nnU-Net v2 dataset directory"))
                 .arg(positional("out", "directory to write the samples into"))
-                .arg(append("case_ids", "case", "only import these case ids; repeatable").value_name("CASE")),
+                .arg(append("case_ids", "case", "only import these case ids; repeatable").value_name("CASE"))
+                .arg(
+                    opt("coord_system", "coord-system", "world coordinate system to store: LPS (default) or RAS")
+                        .value_parser(["LPS", "RAS"])
+                        .default_value("LPS"),
+                )
+                .arg(codec())
+                .arg(flag(
+                    "include_test",
+                    "include-test",
+                    "also import imagesTs's test cases, labeled from labelsTs where present; every case then \
+                     claims its partition in split nnunetv2:<dataset>",
+                )),
         ))
         .subcommand(report_args(
             Command::new("to-nnunet")
@@ -625,6 +857,11 @@ fn convert() -> Vec<Command> {
                         .default_value("Dataset001_medh5"),
                 )
                 .arg(opt("annotation", "annotation", "the annotation to export as labels").default_value("seg"))
+                .arg(
+                    opt("file_ending", "file-ending", "the NIfTI files' ending: .nii.gz (default) or .nii")
+                        .value_parser([".nii.gz", ".nii"])
+                        .default_value(".nii.gz"),
+                )
                 .arg(
                     append(
                         "classes",
@@ -641,7 +878,22 @@ fn convert() -> Vec<Command> {
                     )
                     .value_parser(["refuse", "test"])
                     .default_value("refuse"),
-                ),
+                )
+                .arg(
+                    opt(
+                        "split",
+                        "split",
+                        "place each case by its claim in this split set: test to imagesTs and labelsTs, train or \
+                         val to imagesTr",
+                    )
+                    .value_name("SET_ID"),
+                )
+                .arg(flag(
+                    "replace",
+                    "replace",
+                    "replace an existing dataset in place, file by file and dataset.json last, then remove the \
+                     NIfTI files it no longer writes; every other file is left where it is",
+                )),
         ));
     let migrate = report_args(
         Command::new("migrate")
@@ -658,7 +910,8 @@ fn convert() -> Vec<Command> {
             .arg(
                 opt("write_labels", "write-labels", "mint the cohort's label set, write it for review, and stop")
                     .value_name("FILE"),
-            ),
+            )
+            .arg(codec()),
     );
     vec![convert, migrate]
 }
@@ -703,7 +956,14 @@ fn conformance() -> Command {
             Command::new("build")
                 .about("write the corpus and its manifest")
                 .arg(positional("outdir", "directory to write the corpus into"))
-                .arg(append("names", "case", "only build these cases; repeatable").value_name("CASE")),
+                .arg(append("names", "case", "only build these cases; repeatable").value_name("CASE"))
+                // The hostile files `damaged.py --structural` reports on:
+                // regression fixtures, not cases, so not documented.
+                .arg(
+                    flag("robustness", "robustness", "write the robustness fixtures instead of the corpus")
+                        .hide(true)
+                        .conflicts_with("names"),
+                ),
         )
         .subcommand(
             Command::new("run")
@@ -723,12 +983,40 @@ fn conformance() -> Command {
                 .about("score any implementation's results against a published suite")
                 .arg(positional("suite", "a directory written by `conformance publish`"))
                 .arg(positional("results", "JSON: [{file, errors, warnings}, ...]"))
+                .arg(opt(
+                    "format_version",
+                    "format-version",
+                    "score only the cases addressed to this format version or an earlier one, such as 1.0",
+                ))
+                .arg(
+                    opt(
+                        "codes_revision",
+                        "codes-revision",
+                        "score only the cases this revision of the code table covers, and ignore codes a later \
+                         one allocated",
+                    )
+                    .value_parser(clap::value_parser!(i64).range(1..=i64::from(u32::MAX))),
+                )
+                .arg(flag(
+                    "companion",
+                    "companion",
+                    "score the task-and-cache fixtures under companion/: RESULTS holds what `task validate`, `task \
+                     preflight` and `cache validate` reported with --json",
+                ))
                 .arg(json()),
         )
 }
 
 /// An IoU two objects must reach to match: in (0, 1].  NaN matched nothing,
 /// and 0 or less matched every pair, objects that do not touch among them.
+/// `--date-shift-range MIN:MAX`: two whole numbers of days.
+fn shift_range(text: &str) -> Result<(i64, i64), String> {
+    let (min, max) = text.split_once(':').ok_or_else(|| format!("{text:?} is not MIN:MAX"))?;
+    let day =
+        |part: &str| part.trim().parse::<i64>().map_err(|_| format!("{part:?} in {text:?} is not a whole number"));
+    Ok((day(min)?, day(max)?))
+}
+
 fn iou_threshold(text: &str) -> Result<f64, String> {
     let threshold: f64 = text.trim().parse().map_err(|_| format!("{text:?} is not a number"))?;
     if threshold > 0.0 && threshold <= 1.0 {
@@ -781,12 +1069,18 @@ fn clinical() -> Command {
                 .arg(opt("out", "out", "write to this file instead of stdout").short('o')),
         )
         .subcommand(
-            Command::new("augment")
-                .about("add clinical records to a sample: in place, or into --out (1.1 §10)")
-                .arg(positional("path", "the sample to augment"))
-                .arg(positional("records", "a logical-record bundle (JSON)"))
-                .arg(opt("out", "out", "write a new file instead of replacing the sample").short('o'))
-                .arg(json()),
+            importer(
+                Command::new("augment")
+                    .about("add clinical records to a sample: in place, or into --out (1.1 §10)")
+                    .arg(positional("path", "the sample to augment"))
+                    .arg(
+                        Arg::new("records")
+                            .help("a logical-record bundle (JSON)")
+                            .required_unless_present_any(["from_meds", "from_fhir"]),
+                    ),
+            )
+            .arg(opt("out", "out", "write a new file instead of replacing the sample").short('o'))
+            .arg(json()),
         )
         .subcommand(
             Command::new("strip")
@@ -795,6 +1089,46 @@ fn clinical() -> Command {
                 .arg(out_required("the new file (never the source)"))
                 .arg(json()),
         )
+}
+
+/// `clinical augment`'s importers: a MEDS dataset or a FHIR R4 Bundle in
+/// place of a logical-record bundle, read in the Python package (W21-12).
+fn importer(cmd: Command) -> Command {
+    let only = |arg: Arg| arg.conflicts_with("records");
+    cmd.arg(
+        opt("from_meds", "from-meds", "import a MEDS dataset (its root, or one shard) instead of RECORDS")
+            .requires("meds_subject")
+            .conflicts_with_all(["records", "from_fhir"]),
+    )
+    .arg(int("meds_subject", "meds-subject", "the MEDS subject_id whose rows this sample holds").requires("from_meds"))
+    .arg(
+        opt("from_fhir", "from-fhir", "import a FHIR R4 Bundle (JSON) instead of RECORDS")
+            .requires("fhir_subject")
+            .conflicts_with("records"),
+    )
+    .arg(
+        opt("fhir_subject", "fhir-subject", "the subject reference whose resources this sample holds (Patient/123)")
+            .requires("from_fhir"),
+    )
+    .arg(only(opt("clock_id", "clock-id", "the clock's id (default: the sample's clock)").requires("clock")))
+    .arg(only(
+        opt("clock", "clock", "the clock's reference (default: the sample's clock)")
+            .value_parser(["utc", "shifted_utc", "relative"])
+            .requires("clock_id"),
+    ))
+    .arg(only(opt("origin", "origin", "the instant a relative clock's zero is (ISO 8601)")))
+    .arg(only(opt("timezone", "timezone", "the IANA zone of the source's times without an offset")))
+    .arg(only(append("code_system", "code-system", "PREFIX=URI: codes under PREFIX are that system's (MEDS)")))
+    .arg(only(append("kind", "kind", "PREFIX=KIND: the event kind of codes under PREFIX (MEDS)")))
+    .arg(only(append("day_precision", "day-precision", "codes under PREFIX are known to the day (MEDS)")))
+    .arg(only(append("document_code", "document-code", "rows of CODE are documents (MEDS)")))
+    .arg(only(flag("with_text", "with-text", "import free text: report and document texts")))
+    .arg(only(
+        opt("both_values", "both-values", "a row holding both values: refuse (default), numeric or text")
+            .value_parser(["refuse", "numeric", "text"]),
+    ))
+    .arg(only(opt("report", "report", "write the conversion report as JSON to this file")))
+    .after_help("--from-meds and --from-fhir run in the Python package (MEDS needs pip install 'medh5[meds]').")
 }
 
 /// `--source-root DIR` and `--any-source-path`: where a task's sources may be
@@ -955,6 +1289,7 @@ mod tests {
             (&["fix", "x.medh5", "--rewrite-digests"], "--reason"),
             (&["dataset", "split", "m.json", "--k-folds", "5", "--fold", "0"], "--write-claims"),
             (&["dataset", "split", "m.json", "--assigned-by", "me"], "--write-claims"),
+            (&["convert", "from-rtstruct", "rt.dcm", "c.medh5", "--mask-id", "m"], "--rasterize"),
         ] {
             let error = refused(args);
             assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument, "{args:?}");

@@ -12,13 +12,14 @@ use indexmap::IndexMap;
 use ndarray::{Array2, ArrayD, Axis, IxDyn};
 use serde_json::{json, Map, Value};
 
+use super::depth;
 use super::encode_geometric::{check_scope, check_slice_index, check_space, degenerate_axis, Polygon, CONTOUR_ROLES};
 use super::read::{Annotation, GridRef};
 use crate::array::{Index, Slice};
 use crate::geometry::affine::{box_corners, box_to_slices};
 use crate::geometry::grid::Grid;
 use crate::h5::{attrs, data};
-use crate::json::{format_g, repr_list, repr_str};
+use crate::json::{format_g, repr_str};
 use crate::labels::{ClassKey, Skeleton};
 use crate::{Error, Result};
 
@@ -515,19 +516,44 @@ impl Annotation {
         }
     }
 
-    /// `outer` or `hole` per polygon.
+    /// `outer` or `hole` per polygon: its depth's parity among its class's
+    /// polygons in its plane (§8.6), which is what the region is computed
+    /// from.  A stored `contour_role` that disagrees (W919) or holds a value
+    /// the format does not define (E404) is not read for an in-plane polygon,
+    /// so neither fails a read.  A polygon with `axis = −1` takes part in no
+    /// combination, and keeps the role stored for it --- `outer` where none,
+    /// or none the format defines, is stored.
     pub fn contour_roles(&self) -> Result<Vec<String>> {
-        match self.read_optional::<u8>("contour_role")? {
-            None => Ok(vec!["outer".to_string(); self.n_items()?]),
-            Some(roles) => roles
-                .iter()
-                .map(|v| {
-                    CONTOUR_ROLES.get(*v as usize).map(|r| r.to_string()).ok_or_else(|| {
-                        Error::Index(format!("contour role {v} is not one of {}", repr_list(&CONTOUR_ROLES)))
-                    })
-                })
-                .collect(),
-        }
+        let vertices = self.read_as::<f32>("vertices")?;
+        self.roles_from(&vertices)
+    }
+
+    /// [`Annotation::contour_roles`], from `vertices` already read.
+    fn roles_from(&self, vertices: &ArrayD<f32>) -> Result<Vec<String>> {
+        let n = self.n_items()?;
+        let stored: Vec<u8> = match self.read_optional::<u8>("contour_role")? {
+            Some(roles) => roles.iter().copied().collect(),
+            None => Vec::new(),
+        };
+        let classes: Vec<i64> = self.object_class_ids()?.into_iter().map(i64::from).collect();
+        let planes: Vec<(i64, i64)> =
+            self.contour_planes()?.outer_iter().map(|p| (i64::from(p[0]), i64::from(p[1]))).collect();
+        let offsets = self.contour_offsets()?;
+        // Vertices that are not `(V, S)` (E405) place no polygon in a plane.
+        let flat = match vertices.view().into_dimensionality::<ndarray::Ix2>() {
+            Ok(v) => v.mapv(f64::from),
+            Err(_) => Array2::zeros((0, 0)),
+        };
+        let depths = depth::contour_depths(flat.view(), &offsets, &classes, &planes);
+        Ok((0..n)
+            .map(|i| {
+                let role = match depths.get(i).copied().flatten() {
+                    Some(d) => d % 2,
+                    None => stored.get(i).map(|v| *v as usize).filter(|v| *v < CONTOUR_ROLES.len()).unwrap_or(0),
+                };
+                CONTOUR_ROLES[role].to_string()
+            })
+            .collect())
     }
 
     /// One polygon's `(V, S)` vertices: only its rows of `vertices` are read.
@@ -548,9 +574,9 @@ impl Annotation {
     pub fn polygons(&self) -> Result<Vec<Polygon>> {
         let classes = self.object_class_ids()?;
         let planes = self.contour_planes()?;
-        let roles = self.contour_roles()?;
         let offsets = self.contour_offsets()?;
         let vertices = self.read_as::<f32>("vertices")?;
+        let roles = self.roles_from(&vertices)?;
         let n = vertices.shape().first().copied().unwrap_or(0);
         (0..self.n_items()?)
             .map(|i| {

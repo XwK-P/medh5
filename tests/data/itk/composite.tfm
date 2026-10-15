@@ -1,0 +1,11 @@
+#Insight Transform File V1.0
+#Transform 0
+Transform: CompositeTransform_double_3_3
+#Transform 1
+Transform: TranslationTransform_double_3_3
+Parameters: 10 0 0
+FixedParameters:
+#Transform 2
+Transform: ScaleTransform_double_3_3
+Parameters: 2 2 2
+FixedParameters: 0 0 0

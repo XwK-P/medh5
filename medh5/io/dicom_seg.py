@@ -35,12 +35,26 @@ import numpy.typing as npt
 from medh5._optional import require
 from medh5.annotations.voxel import TRANSCODABLE
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry import COORD_SYSTEMS
-from medh5.io._common import sanitize_key
+from medh5.io import _codes
+from medh5.io._codes import same_concept
+from medh5.io._common import examined_classes, sanitize_key, save_dicom
+from medh5.io._frames import _direction, _frame_placement
+
+# Where it was defined, and is still imported from.
+from medh5.io._frames import _lattice as _lattice
+from medh5.io._patient import (
+    _require_same_frame,
+    _salt_hint,
+    frames_agree,
+    patient_mapping,
+)
 from medh5.io.report import ConversionReport
 
 BINARY = "BINARY"
 FRACTIONAL = "FRACTIONAL"
+
+# A DICOM Long String (LO) holds at most 64 characters: `SeriesDescription`.
+_LO_LENGTH = 64
 
 
 def require_highdicom() -> Any:
@@ -179,7 +193,7 @@ def place_frames(
             "drawn on a different reconstruction",
             code="E405",
         )
-    signs, scale = _from_patient(grid)
+    signs, scale = _patient_mapping(grid)
     _check_plane(geometry, grid, signs, scale)
     for frame in frames:
         # A frame read from a file carries its own plane; every one is checked,
@@ -194,10 +208,7 @@ def place_frames(
             }
             whose = f"SEG frame {frame['index']}'s"
             _check_plane(own, grid, signs, scale, whose=whose)
-    dtype = np.float32 if geometry["fractional"] else bool
-    volumes: dict[int, npt.NDArray[Any]] = {
-        number: np.zeros(shape, dtype=dtype) for number in geometry["segments"]
-    }
+    volumes = _volumes(geometry, shape)
     for frame in frames:
         segment = int(frame["segment"])
         if segment not in volumes:
@@ -228,90 +239,9 @@ def place_frames(
     return volumes
 
 
-def frames_agree(
-    seg_frame: str | None, grid_frame: str | None, salt: str | None = None
-) -> bool | None:
-    """Whether a SEG's frame of reference is a grid's; ``None`` when either
-    states none, so there is nothing to compare.
-
-    A grid of a sample ``medh5 scrub`` pseudonymised holds its frame's
-    pseudonym, which the SEG's own UID never equals; with the scrub's *salt*
-    the SEG's is compared as the scrub would have written it --- an exact
-    correspondence, not an assumption.
-    """
-    if not seg_frame or not grid_frame:
-        return None
-    if seg_frame == grid_frame:
-        return True
-    if salt is not None:
-        from medh5.curation.scrub import pseudonymise
-
-        return pseudonymise(seg_frame, salt) == grid_frame
-    return False
-
-
-def _require_same_frame(
-    frame: str | None, grid: Any, salt: str | None, *, source: str = "the SEG"
-) -> None:
-    """Refuse a grid whose known frame of reference is not *frame* (§3.4).
-
-    Equal numbers in two frames are no correspondence: a grid with another
-    known frame and the same geometry received every voxel, from an explicit
-    ``grid=`` without a word and from automatic matching on a recorded guess.
-    Relating two frames is registration, which the importers do not apply.
-    Where either side states no frame, there is nothing to compare, and
-    placement rests on geometry, as it always has; the import records that
-    as a guess.  *source* names what was drawn in *frame*, for the message.
-    """
-    if frames_agree(frame, grid.frame_uid, salt) is not False:
-        return
-    hint = _salt_hint(grid.frame_uid, salt, "The grid's", f"{source}'s frame")
-    raise MEDH5ValidationError(
-        f"{source} was drawn in frame of reference {frame!r} and grid "
-        f"{grid.grid_id!r} is in {grid.frame_uid!r}: equal geometry in two "
-        "frames is no correspondence, and placing it there needs a "
-        f"registration, which this importer does not apply.{hint}",
-        code="E414",
-    )
-
-
-def _salt_hint(frame: str | None, salt: str | None, whose: str, compared: str) -> str:
-    """What a frame-of-reference refusal adds when *frame* --- *whose* frame
-    --- is a pseudonym ``medh5 scrub`` wrote and no *salt* was given: the
-    scrub's salt compares *compared* as the scrub wrote it.  Empty otherwise.
-    """
-    from medh5.curation.scrub import PSEUDONYM_PREFIX
-
-    if salt is not None or not str(frame).startswith(PSEUDONYM_PREFIX):
-        return ""
-    return (
-        f" {whose} frame is a `medh5 scrub` pseudonym: pass the scrub's salt "
-        "as frame_salt= (`--frame-salt` on the command line) to compare "
-        f"{compared} as the scrub wrote it."
-    )
-
-
-def _from_patient(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
-    """The world-axis signs and the millimetres per grid unit that take a
-    DICOM patient position (LPS, mm) into *grid*'s world coordinates."""
-    from medh5.io.nifti import MM_PER_UNIT
-
-    if grid.coord_system not in COORD_SYSTEMS:
-        raise MEDH5ValidationError(
-            f"grid {grid.grid_id!r} is in {grid.coord_system!r}; a DICOM SEG is "
-            "placed by patient position (LPS), which only an LPS or RAS grid "
-            "can relate to",
-            code="E414",
-        )
-    scale = MM_PER_UNIT.get(grid.units)
-    if scale is None:
-        raise MEDH5ValidationError(
-            f"grid {grid.grid_id!r} is uncalibrated ({grid.units!r}), so no "
-            "patient position is a place on it",
-            code="E414",
-        )
-    flip = 1.0 if grid.coord_system == "LPS" else -1.0
-    return np.array([flip, flip, 1.0]), scale
+def _patient_mapping(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
+    """:func:`~medh5.io._patient.patient_mapping` for a SEG's frames."""
+    return patient_mapping(grid, "a DICOM SEG's frames")
 
 
 def _check_plane(
@@ -393,290 +323,104 @@ def read_dicom_seg(
             "spacing",
             {"spacing": geometry["spacing"][0], "planes": 1},
         )
-    segments = geometry["segments"]
-    depth, rows, columns = geometry["shape"]
-    volumes: dict[int, npt.NDArray[Any]] = {
-        number: np.zeros(
-            (depth, rows, columns),
-            dtype=np.float32 if geometry["fractional"] else bool,
-        )
-        for number in segments
-    }
+    volumes = _volumes(geometry, tuple(geometry["shape"]))
     for frame in frames:
         if frame["segment"] in volumes:
             volumes[frame["segment"]][frame["plane"]] = frame["data"]
-    fractional = geometry["fractional"]
-    scale = float(geometry.get("scale", 255))
     if report is not None:
-        report.decision(
-            "segments",
-            f"{len(segments)} segment(s) were read by frame geometry, not by "
-            "frame order; a SEG may store its frames in any order",
-            {"segments": {k: v["label"] for k, v in segments.items()}},
-        )
-        if fractional:
-            report.decision(
-                "fractional",
-                "SegmentationType is FRACTIONAL, so the segments became a "
-                "`probmap` rather than being thresholded",
-                {"scale": scale},
-            )
+        _seg_notes(report, geometry)
     return volumes, geometry
 
 
+def _volumes(
+    geometry: Mapping[str, Any], shape: tuple[int, ...]
+) -> dict[int, npt.NDArray[Any]]:
+    """An empty volume of *shape* per segment: float32 for a FRACTIONAL SEG,
+    boolean for a BINARY one."""
+    dtype = np.float32 if geometry["fractional"] else bool
+    return {number: np.zeros(shape, dtype=dtype) for number in geometry["segments"]}
+
+
+def _seg_notes(report: ConversionReport, geometry: Mapping[str, Any]) -> None:
+    """The decisions every SEG read records: segments placed by geometry, and
+    a FRACTIONAL SEG read as a probability map."""
+    segments = geometry["segments"]
+    report.decision(
+        "segments",
+        f"{len(segments)} segment(s) were read by frame geometry, not by "
+        "frame order; a SEG may store its frames in any order",
+        {"segments": {k: v["label"] for k, v in segments.items()}},
+    )
+    if geometry["fractional"]:
+        report.decision(
+            "fractional",
+            "SegmentationType is FRACTIONAL, so the segments became a "
+            "`probmap` rather than being thresholded",
+            {"scale": float(geometry.get("scale", 255))},
+        )
+
+
 def _segments(dataset: Any) -> dict[int, dict[str, Any]]:
-    """Segment number → label, algorithm and coded concept, where given."""
+    """Segment number → label, algorithm, and the coded property type,
+    category and type modifier, where given --- each as the file states it,
+    designator included."""
     out: dict[int, dict[str, Any]] = {}
     for item in getattr(dataset, "SegmentSequence", []):
         number = int(item.SegmentNumber)
-        code = None
-        sequence = getattr(item, "SegmentedPropertyTypeCodeSequence", None)
-        if sequence:
-            entry = sequence[0]
-            code = {
-                "scheme": str(getattr(entry, "CodingSchemeDesignator", "")),
-                "code": str(getattr(entry, "CodeValue", "")),
-                "meaning": str(getattr(entry, "CodeMeaning", "")),
-            }
         out[number] = {
             "label": str(getattr(item, "SegmentLabel", f"segment_{number}")),
             "algorithm": str(getattr(item, "SegmentAlgorithmType", "")),
-            "code": code,
+            "code": _coded(item, "SegmentedPropertyTypeCodeSequence"),
+            "category": _coded(item, "SegmentedPropertyCategoryCodeSequence"),
+            "modifier": _coded(item, "SegmentedPropertyTypeModifierCodeSequence"),
         }
     return out
 
 
-def _frame_placement(dataset: Any, n_frames: int) -> dict[str, Any]:
-    """Where each frame belongs, from the per-frame functional groups.
-
-    A functional group may sit in the shared item or in each frame's own
-    (PS3.3 C.7.6.16), so every frame's orientation and pixel spacing are read
-    where they are --- and the frames must agree on them, being one volume's
-    slices.  The first orientation found and the shared spacing stood for
-    every frame: a frame turned in plane was placed as the first one was, and
-    spacing kept in the frames read as 1 mm.
-    """
-    shared = _first_item(dataset, "SharedFunctionalGroupsSequence")
-    per_frame = list(getattr(dataset, "PerFrameFunctionalGroupsSequence", []))
-    positions: list[npt.NDArray[np.float64]] = []
-    segments: list[int] = []
-    orientations: list[npt.NDArray[np.float64]] = []
-    pixels: list[npt.NDArray[np.float64]] = []
-    for index in range(n_frames):
-        group = per_frame[index] if index < len(per_frame) else None
-        positions.append(_position(group, shared))
-        segments.append(_segment_number(group, shared, index))
-        orientations.append(_orientation(group, shared, index))
-        pixels.append(_pixel_spacing(group, shared, index))
-    _congruent(orientations, pixels)
-    orientation = orientations[0]
-    normal = np.cross(orientation[:3], orientation[3:])
-    projected = [float(np.dot(p, normal)) for p in positions]
-    planes = sorted(set(np.round(projected, 4)))
-    first = per_frame[0] if per_frame else None
-    between = _between(first, shared)
-    regular = _lattice(planes, between)
-    # An import places every frame by its own position (`place_frames`), so a
-    # stack no regular lattice holds is still placeable; only a volume of the
-    # file's own (`read_dicom_seg`) needs one.
-    step, lattice = regular or (float("nan"), list(range(len(planes))))
-    source: str | None = "SpacingBetweenSlices" if between else "positions"
-    if regular is None:
-        source = None
-    elif len(planes) == 1 and not between:
-        # One plane has no neighbour to measure a step against: the slab it
-        # states is its only extent, as for a lone DICOM slice; stating none,
-        # it has none (`read_dicom_seg` refuses it), where 1 mm was assumed.
-        step = _thickness(first, shared)
-        source = "SliceThickness" if np.isfinite(step) else None
-    indices = [lattice[planes.index(round(v, 4))] for v in projected]
-    spacing = [step, float(pixels[0][0]), float(pixels[0][1])]
-    origin_index = indices.index(0) if 0 in indices else 0
-    return {
-        "planes": planes,
-        "regular": regular is not None,
-        "spacing_source": source,
-        "indices": indices,
-        "segments": segments,
-        # Each frame's own `ImagePositionPatient`, kept rather than collapsed
-        # into a plane index: placing a frame on the grid it is being imported
-        # onto needs the position, and the index is only meaningful among the
-        # planes this file happens to carry.
-        "positions": positions,
-        "orientations": orientations,
-        "pixel_spacings": pixels,
-        "spacing": spacing,
-        "origin": [float(v) for v in positions[origin_index]],
-        "direction": _direction(orientation),
-        "source_series": _source_series(dataset),
-    }
-
-
-def _direction(orientation: npt.NDArray[np.float64]) -> list[list[float]]:
-    """A frame's `ImageOrientationPatient` as a (slice, row, column) direction."""
-    normal = np.cross(orientation[:3], orientation[3:])
-    return [
-        [float(v) for v in row]
-        for row in np.stack([normal, orientation[3:], orientation[:3]], axis=1)
-    ]
-
-
-def _orientation(group: Any, shared: Any, index: int) -> npt.NDArray[np.float64]:
-    for holder in (group, shared):
-        plane = _first_item(holder, "PlaneOrientationSequence")
-        if plane is not None and hasattr(plane, "ImageOrientationPatient"):
-            return np.asarray(
-                [float(v) for v in plane.ImageOrientationPatient], dtype=np.float64
-            )
-    raise MEDH5ValidationError(
-        f"SEG frame {index} carries no ImageOrientationPatient, in its own "
-        "functional groups or the shared ones, so it cannot be placed"
-    )
-
-
-def _position(group: Any, shared: Any) -> npt.NDArray[np.float64]:
-    for holder in (group, shared):
-        plane = _first_item(holder, "PlanePositionSequence")
-        if plane is not None and hasattr(plane, "ImagePositionPatient"):
-            return np.asarray(
-                [float(v) for v in plane.ImagePositionPatient], dtype=np.float64
-            )
-    raise MEDH5ValidationError("a SEG frame carries no ImagePositionPatient")
-
-
-def _pixel_spacing(group: Any, shared: Any, index: int) -> npt.NDArray[np.float64]:
-    for holder in (group, shared):
-        measures = _first_item(holder, "PixelMeasuresSequence")
-        if measures is not None and getattr(measures, "PixelSpacing", None):
-            return np.asarray(
-                [float(v) for v in measures.PixelSpacing], dtype=np.float64
-            )
-    raise MEDH5ValidationError(
-        f"SEG frame {index} carries no PixelSpacing, in its own functional "
-        "groups or the shared ones; where its pixels lie is not stated, and "
-        "it is refused rather than read as 1 mm"
-    )
-
-
-def _between(group: Any, shared: Any) -> float | None:
-    for holder in (group, shared):
-        measures = _first_item(holder, "PixelMeasuresSequence")
-        if measures is not None and getattr(measures, "SpacingBetweenSlices", None):
-            return float(measures.SpacingBetweenSlices)
-    return None
-
-
-def _thickness(group: Any, shared: Any) -> float:
-    """The ``SliceThickness`` a frame's pixel measures state, NaN for none."""
-    for holder in (group, shared):
-        measures = _first_item(holder, "PixelMeasuresSequence")
-        value = getattr(measures, "SliceThickness", None) if measures else None
-        try:
-            thickness = abs(float(value)) if value is not None else 0.0
-        except (TypeError, ValueError):
-            thickness = 0.0
-        if np.isfinite(thickness) and thickness > 0:
-            return thickness
-    return float("nan")
-
-
-def _congruent(
-    orientations: Sequence[npt.NDArray[np.float64]],
-    pixels: Sequence[npt.NDArray[np.float64]],
-) -> None:
-    """Every frame oriented and spaced as the first: one volume's slices.
-
-    About the SEG alone, so no §15.2 code: the codes describe a sample, and
-    this refusal comes before there is one.
-    """
-    pairs = zip(orientations, pixels, strict=True)
-    for index, (orientation, pixel) in enumerate(pairs):
-        if not np.allclose(orientation, orientations[0], atol=1e-4):
-            raise MEDH5ValidationError(
-                f"SEG frame {index} is oriented {orientation.round(4).tolist()} and "
-                f"frame 0 {orientations[0].round(4).tolist()}: frames turned "
-                "against each other are not one volume's slices"
-            )
-        if not np.allclose(pixel, pixels[0], rtol=1e-4, atol=1e-6):
-            raise MEDH5ValidationError(
-                f"SEG frame {index} has pixel spacing {pixel.tolist()} mm and frame "
-                f"0 {pixels[0].tolist()} mm: frames of different spacing are not "
-                "one volume's slices"
-            )
-
-
-def _segment_number(group: Any, shared: Any, index: int) -> int:
-    """The segment a frame holds, from its own functional groups or the
-    shared ones; a frame that names none is refused, not read as segment 1."""
-    for holder in (group, shared):
-        identification = _first_item(holder, "SegmentIdentificationSequence")
-        number = getattr(identification, "ReferencedSegmentNumber", None)
-        if number is not None:
-            return int(number)
-    raise MEDH5ValidationError(
-        f"SEG frame {index} names no segment: no SegmentIdentificationSequence "
-        "with a ReferencedSegmentNumber, in its own functional groups or the "
-        "shared ones"
-    )
-
-
-def _lattice(
-    planes: Sequence[float], between: float | None
-) -> tuple[float, list[int]] | None:
-    """The regular stack the planes a SEG carries sit on: its step, and each
-    plane's index in it; ``None`` when no regular stack holds them.
-
-    A SEG may omit its empty frames, so the planes it carries need not be
-    adjacent.  The stack is the one whose step --- the stated
-    ``SpacingBetweenSlices``, else the smallest gap --- divides every gap a
-    whole number of times, the omitted planes empty.  The median gap stood
-    for the step: planes at 10, 12.5 and 17.5 mm read as a stack 3.75 mm
-    apart, the middle one 1.25 mm from where it was drawn.
-
-    Every plane must lie within the bound a DICOM series is held to --- a
-    tenth of a step, and at least 0.01 mm --- of where the stack puts it,
-    measured per plane, not per gap: gaps each within a fixed bound drift.
-    Where the smallest gap does not place every plane, the least-squares step
-    from the first plane does, or nothing does; a stated step is kept or
-    refused.  Each gap was held to 10⁻³ mm, which refused planes of a series
-    whose positions were written to two decimals.  One plane has no step to
-    measure: the stated one, or NaN.
-    """
-    from medh5.io.dicom import _position_tolerance
-
-    if len(planes) < 2:
-        return (abs(between) if between else float("nan")), [0] * len(planes)
-    positions = np.asarray(planes, dtype=np.float64)
-    gaps = np.diff(positions)
-    along = positions - positions[0]
-    step = abs(float(between)) if between else float(gaps.min())
-    whole = np.round(gaps / step)
-    if np.any(whole < 1):
+def _coded(item: Any, sequence_name: str) -> dict[str, str] | None:
+    """The first coded concept of *item*'s *sequence_name*, or ``None``."""
+    sequence = getattr(item, sequence_name, None)
+    if not sequence:
         return None
-    indices = np.concatenate([[0.0], np.cumsum(whole)])
-    fits = [step] if between else [step, float(indices @ along / (indices @ indices))]
-    for step in fits:
-        if np.max(np.abs(along - indices * step)) <= _position_tolerance(step):
-            return step, indices.astype(int).tolist()
-    return None
+    entry = sequence[0]
+    code = {
+        "scheme": str(getattr(entry, "CodingSchemeDesignator", "")),
+        "code": str(getattr(entry, "CodeValue", "")),
+        "meaning": str(getattr(entry, "CodeMeaning", "")),
+    }
+    return code if code["scheme"] and code["code"] else None
 
 
-def _first_item(holder: Any, name: str) -> Any:
-    sequence = getattr(holder, name, None) if holder is not None else None
-    return sequence[0] if sequence else None
+def _spelled(code: Mapping[str, str] | None) -> str:
+    """A coded concept as the file states it: ``SCT 7771000``, or ``none``."""
+    return f"{code['scheme']} {code['code']}" if code else "none"
+
+
+def _same(first: Mapping[str, str] | None, second: Mapping[str, str] | None) -> bool:
+    """Whether two coded concepts of a file, or their absence, are one."""
+    if first is None or second is None:
+        return first is second
+    return same_concept(
+        (first["scheme"], first["code"]), (second["scheme"], second["code"])
+    )
+
+
+def _binding(code: Mapping[str, str]) -> Any:
+    """A file's coded concept as an ontology binding (§5.2): the system as
+    the label set spells it where the table knows the designator, and the
+    designator the file states where it does not."""
+    from medh5.labels import OntologyCode
+
+    return OntologyCode(
+        system=_codes.system(code["scheme"]) or code["scheme"],
+        code=code["code"],
+        name=code["meaning"] or None,
+    )
 
 
 def _first(dataset: Any, name: str) -> str | None:
     value = getattr(dataset, name, None)
     return None if value is None else str(value)
-
-
-def _source_series(dataset: Any) -> str | None:
-    for item in getattr(dataset, "ReferencedSeriesSequence", []):
-        uid = getattr(item, "SeriesInstanceUID", None)
-        if uid:
-            return str(uid)
-    return None
 
 
 def from_dicom_seg(
@@ -705,6 +449,10 @@ def from_dicom_seg(
     label set, or minted, by the key their labels make --- are combined into
     it: their union, or for ``FRACTIONAL`` their maximum, recorded as a
     decision.
+
+    A class *annotated_classes* names that no segment supplies was examined
+    and found absent (§11.3): minted after the segments' classes when the
+    sample has no label set, else one its label set must hold (E402).
     """
     import medh5
     from medh5.labels import LabelSet
@@ -736,21 +484,9 @@ def from_dicom_seg(
         "rest in any order",
         {"frames": len(frames), "slices": int(target.spatial_shape[0])},
     )
-    if geometry["fractional"]:
-        log.decision(
-            "fractional",
-            "SegmentationType is FRACTIONAL, so the segments became a "
-            "`probmap` rather than being thresholded",
-            {"scale": geometry["scale"]},
-        )
+    _seg_notes(log, geometry)
 
     segments = geometry["segments"]
-    log.decision(
-        "segments",
-        f"{len(segments)} segment(s) were read by frame geometry, not by "
-        "frame order; a SEG may store its frames in any order",
-        {"segments": {k: v["label"] for k, v in segments.items()}},
-    )
     label_set = existing
     if label_set is not None:
         # DICOM segment numbers are positional --- a SEG numbers its segments
@@ -765,7 +501,7 @@ def from_dicom_seg(
             {"mapping": {str(k): v for k, v in mapping.items()}},
         )
     if label_set is None:
-        classes, mapping = _mint(segments)
+        classes, mapping = _mint(segments, log)
         label_set = LabelSet("dicom-seg", version="1.0.0", classes=classes)
         bound = sum(1 for c in classes if c.codes)
         log.decision(
@@ -782,6 +518,13 @@ def from_dicom_seg(
                 {"unbound": [c.key for c in classes if not c.codes]},
             )
     volumes = _by_class(volumes, mapping, segments, label_set, log, geometry)
+    label_set, examined = examined_classes(
+        annotated_classes,
+        label_set,
+        mint=existing is None,
+        log=log,
+        supplied="the SEG's segments",
+    )
 
     with medh5.amend(sample) as writer:
         if existing is None:
@@ -799,7 +542,7 @@ def from_dicom_seg(
                 ann_id,
                 grid=grid_id,
                 probabilities=payload,
-                annotated_classes=annotated_classes,
+                annotated_classes=examined,
                 prov=activity,
             )
         else:
@@ -807,7 +550,7 @@ def from_dicom_seg(
                 ann_id,
                 grid=grid_id,
                 masks=payload,
-                annotated_classes=annotated_classes,
+                annotated_classes=examined,
                 prov=activity,
             )
             if stats is not None and stats.edges:
@@ -824,52 +567,118 @@ def from_dicom_seg(
 
 def _mint(
     segments: Mapping[int, dict[str, Any]],
+    log: ConversionReport | None = None,
 ) -> tuple[list[Any], dict[int, int]]:
     """Classes minted from SegmentLabel, and segment number → class id.
 
     Segments whose labels make one key are one class, its id the first one's
     number: one "Lesion" segment per lesion is common, and minted apart, two
     classes keyed ``lesion`` were refused (E302).  Segments of one key that
-    code different concepts are refused: one class cannot be both.
-    """
-    from medh5.labels import LabelClass, OntologyCode
+    code different concepts are refused: one class cannot be both.  Nor can
+    it be two sides: segments of one key whose type modifiers differ (Left
+    and Right Kidney, both labelled "Kidney") are refused, where they became
+    one class.
 
-    classes: dict[str, LabelClass] = {}
+    Each class keeps what its first segment states besides the type: the
+    property category as ``properties["dicom_category"]``, and as
+    ``category`` where the concept stands for one category only (see
+    :data:`medh5.io._codes.CATEGORY_OF`); a laterality modifier as
+    ``laterality``.  *log* records both, and any modifier that is not a
+    laterality, which no field holds.
+    """
+    from medh5.labels import LabelClass
+
+    first: dict[str, int] = {}
+    coded: dict[str, int] = {}
     mapping: dict[int, int] = {}
+
+    def both(a: int, b: int) -> str:
+        key = _key(segments[b]["label"])
+        return (
+            f"segments {a} and {b} make one class {key!r} by SegmentLabel "
+            f"({segments[a]['label']!r}, {segments[b]['label']!r})"
+        )
+
     for number, info in sorted(segments.items()):
         key = _key(info["label"])
-        code = info["code"]
-        codes = (
-            (
-                OntologyCode(
-                    system=code["scheme"],
-                    code=code["code"],
-                    name=code["meaning"] or None,
-                ),
-            )
-            if code and code["scheme"] and code["code"]
-            else ()
-        )
-        found = classes.get(key)
-        if found is None:
-            classes[key] = LabelClass(number, key, info["label"], codes=codes)
-        elif codes and found.codes and _concept(codes[0]) != _concept(found.codes[0]):
+        lead = first.setdefault(key, number)
+        if info["code"] is not None:
+            bound = coded.setdefault(key, number)
+            if not _same(segments[bound]["code"], info["code"]):
+                raise MEDH5ValidationError(
+                    f"{both(bound, number)} but code different concepts "
+                    f"({_spelled(segments[bound]['code'])}, "
+                    f"{_spelled(info['code'])}): one class cannot be both. "
+                    "Import it into a sample whose label set holds both"
+                )
+        if not _same(segments[lead]["modifier"], info["modifier"]):
             raise MEDH5ValidationError(
-                f"segments {found.id} and {number} make one class {key!r} by "
-                f"SegmentLabel ({segments[found.id]['label']!r}, "
-                f"{info['label']!r}) but code different concepts "
-                f"({' '.join(_concept(found.codes[0]))}, "
-                f"{' '.join(_concept(codes[0]))}): one class cannot be both. "
-                "Import it into a sample whose label set holds both"
+                f"{both(lead, number)} but carry different type modifiers "
+                f"({_spelled(segments[lead]['modifier'])}, "
+                f"{_spelled(info['modifier'])}): one class cannot be both. "
+                "Give the segments their own labels, or import it into a "
+                "sample whose label set holds both"
             )
-        elif codes and not found.codes:
-            classes[key] = LabelClass(found.id, key, found.name, codes=codes)
-        mapping[number] = classes[key].id
-    return list(classes.values()), mapping
+        mapping[number] = lead
+
+    classes: list[Any] = []
+    categories: dict[str, str] = {}
+    sides: dict[str, str] = {}
+    other: dict[str, str] = {}
+    for key, number in first.items():
+        info = segments[number]
+        code = segments[coded[key]]["code"] if key in coded else None
+        properties: dict[str, Any] = {}
+        category = None
+        if info["category"] is not None:
+            properties["dicom_category"] = _binding(info["category"]).to_json()
+            category = _codes.CATEGORY_OF.get(_normal(info["category"]))
+            if category is not None:
+                categories[key] = category
+        laterality = None
+        if info["modifier"] is not None:
+            laterality = _codes.LATERALITY_OF.get(_normal(info["modifier"]))
+            if laterality is None:
+                other[key] = _spelled(info["modifier"])
+            else:
+                sides[key] = laterality
+        classes.append(
+            LabelClass(
+                number,
+                key,
+                info["label"],
+                category=category,
+                codes=(_binding(code),) if code else (),
+                laterality=laterality,
+                properties=properties,
+            )
+        )
+    if log is not None and (categories or sides):
+        log.decision(
+            "concepts",
+            f"{len(categories)} minted class(es) took a category from the "
+            f"SEG's property category and {len(sides)} a laterality from its "
+            "type modifier; every class keeps its property category as "
+            "properties['dicom_category']",
+            {"categories": categories, "laterality": sides},
+        )
+    if log is not None and other:
+        log.decision(
+            "modifier",
+            f"{len(other)} segment(s) carry a type modifier that is not a "
+            "laterality, which no field of a class holds; it was not carried",
+            {"modifiers": other},
+        )
+    return classes, mapping
 
 
-def _concept(code: Any) -> tuple[str, str]:
-    return str(code.system), str(code.code)
+def _normal(code: Mapping[str, str]) -> tuple[str, str]:
+    """A file's coded concept as ``(designator, code)``, its designator
+    normalised through the table."""
+    return (
+        _codes.designator(code["scheme"]) or code["scheme"],
+        code["code"],
+    )
 
 
 def _by_class(
@@ -1031,6 +840,8 @@ def to_dicom_seg(
     series_description: str = "medh5 segmentation",
     frame_salt: str | None = None,
     report: ConversionReport | None = None,
+    segmentation_type: str = "binary",
+    fractional_type: str = "PROBABILITY",
 ) -> Path:
     """Export one voxel annotation as a DICOM SEG against its source slices.
 
@@ -1039,6 +850,26 @@ def to_dicom_seg(
     refused (E401) before anything is read --- a ``mask`` too, having no
     classes.
 
+    *segmentation_type* ``"binary"`` writes a ``BINARY`` SEG from
+    ``dense()``, which thresholds a ``probmap`` at its stored ``threshold``
+    (recorded as a ``threshold`` decision).  ``"fractional"`` writes a
+    ``probmap``'s probabilities as a ``FRACTIONAL`` SEG of *fractional_type*
+    (``PROBABILITY`` or ``OCCUPANCY``), quantised to 1/255 --- within 1/510
+    of each value --- and any other kind is refused; the report states the
+    error, how many voxels the quantisation moved across the stored
+    threshold, and that ``threshold`` and ``normalized`` are not carried.
+
+    Each segment carries its class's concepts: the property type is the
+    class's first code whose system :mod:`medh5.io._codes` designates, the
+    property category ``properties["dicom_category"]`` or the one its
+    ``category`` stands for, a ``laterality`` the type modifier, and the
+    algorithm type the annotation's provenance says (``predict`` →
+    ``AUTOMATIC``, naming its software).  DICOM requires a type, a category
+    and an algorithm type, so where the sample states none the generic one
+    is written --- SCT 91723000 "Anatomical Structure", ``MANUAL`` --- and
+    the report records a guess naming each class it was written for.  A
+    designator is never invented.
+
     *source_images* are the DICOM files the segmentation was drawn on: a SEG is
     defined by reference to them, and one written without them is orphaned in
     every PACS that receives it.  They must be the annotation grid's slices,
@@ -1046,25 +877,44 @@ def to_dicom_seg(
     *frame_salt* compares a frame ``medh5 scrub`` pseudonymised, as
     :func:`frames_agree` does) and on its lattice (E405 otherwise).
 
-    The SEG is ``BINARY``, so an annotation with an ignore region (§7.7) is
-    refused: a segment's 0 says a voxel was examined and found absent, and it
-    has no value for one nobody examined.  For the same reason a segment is
+    An annotation with an ignore region (§7.7) is refused: a segment's 0
+    says a voxel was examined and found absent, and it has no value for one
+    nobody examined.  For the same reason a segment is
     written only for a class the annotation examined (``annotated_class_ids``):
     by default the others are left out, and *classes* naming one is refused.
     Every class went out, and one nobody looked for became an empty segment ---
     a verified negative to whoever read it back.
+
+    *series_description* is the ``SeriesDescription``, a DICOM LO: one longer
+    than 64 characters is refused before anything is read.
     """
     import medh5
 
     hd = require_highdicom()
     from medh5.io.dicom import _dcmread
 
+    if len(series_description) > _LO_LENGTH:
+        raise MEDH5ValidationError(
+            f"series_description={series_description!r} "
+            f"(--series-description) is {len(series_description)} characters, "
+            "and the SeriesDescription it is written as is a DICOM LO of at "
+            f"most {_LO_LENGTH}: shorten it"
+        )
     log = report or ConversionReport(converter="to-dicom-seg")
     log.source = os.fspath(sample)
+    fractional = _segmentation_type(segmentation_type, fractional_type)
 
     with medh5.open(sample) as opened:
         annotation = opened.annotations[ann_id]
         _require_segments(annotation, ann_id)
+        if fractional and annotation.kind != "probmap":
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r} is a {annotation.kind!r}, which holds no "
+                "fractional values; a FRACTIONAL SEG is written from a 'probmap'. "
+                "Export it with segmentation_type='binary' "
+                "(`--segmentation-type binary`, the default)",
+                code="E401",
+            )
         datasets = [_dcmread(p) for p in source_images]
         if not datasets:
             raise MEDH5ValidationError("to_dicom_seg needs the source DICOM images")
@@ -1076,34 +926,43 @@ def to_dicom_seg(
         if ignored:
             raise MEDH5ValidationError(
                 f"annotation {ann_id!r} ignores {ignored} voxel(s) (§7.7), "
-                "which a BINARY SEG cannot mark --- a segment's 0 would say "
+                "which a SEG cannot mark --- a segment's 0 would say "
                 "they were examined and found absent; export it to NIfTI "
                 "instead (`to_nifti` with annotation=, `medh5 convert "
                 "to-nifti --annotation`), whose labelmap writes them as its "
                 f"ignore id {annotation.ignore_id}"
             )
-        planes = np.asarray(annotation.dense(list(ids)), dtype=bool)
-        descriptions = [
-            hd.seg.SegmentDescription(
-                segment_number=i + 1,
-                segment_label=annotation.class_key(class_id),
-                segmented_property_category=hd.sr.CodedConcept(
-                    "91723000", "SCT", "Anatomical Structure"
-                ),
-                segmented_property_type=hd.sr.CodedConcept(
-                    "91723000", "SCT", "Anatomical Structure"
-                ),
-                algorithm_type=hd.seg.SegmentAlgorithmTypeValues.MANUAL,
-            )
-            for i, class_id in enumerate(ids)
-        ]
+        contains = np.asarray(annotation.dense(list(ids)), dtype=bool)
+        if fractional:
+            values = np.asarray(annotation.probabilities(list(ids)), np.float32)
+            _quantisation(values, contains, float(annotation.threshold), log)
+            options: dict[str, Any] = {
+                "segmentation_type": hd.seg.SegmentationTypeValues.FRACTIONAL,
+                "fractional_type": fractional_type,
+                "max_fractional_value": MAX_FRACTIONAL_VALUE,
+            }
+        else:
+            values = contains
+            if annotation.kind == "probmap":
+                log.decision(
+                    "threshold",
+                    f"the probmap was thresholded at {annotation.threshold:g}, "
+                    "its stored threshold, into a BINARY SEG; its probabilities "
+                    "are not written (segmentation_type='fractional' writes "
+                    "them)",
+                    {"threshold": float(annotation.threshold)},
+                )
+            options = {"segmentation_type": hd.seg.SegmentationTypeValues.BINARY}
+        algorithm_type, algorithm = _algorithm(hd, opened, annotation, ann_id, log)
+        descriptions = _descriptions(
+            hd, opened.label_set, annotation, ids, algorithm_type, algorithm, log
+        )
         # highdicom wants (frames, rows, columns, segments), a frame per
         # source image in the order given; `dense` returns (segments, z, y, x).
-        pixels = np.transpose(planes, (1, 2, 3, 0))[slices]
+        pixels = np.transpose(values, (1, 2, 3, 0))[slices]
         segmentation = hd.seg.Segmentation(
             source_images=datasets,
             pixel_array=pixels,
-            segmentation_type=hd.seg.SegmentationTypeValues.BINARY,
             segment_descriptions=descriptions,
             series_instance_uid=hd.UID(),
             series_number=1,
@@ -1115,24 +974,289 @@ def to_dicom_seg(
             device_serial_number="0",
             series_description=series_description,
             omit_empty_frames=False,
+            **options,
         )
     target = Path(os.fspath(out))
-    segmentation.save_as(str(target))
+    save_dicom(segmentation, target)
     log.decision(
         "segments",
         f"{len(ids)} class(es) were written as separate segments, so overlap "
         "survives the export",
         {"classes": [str(i) for i in ids]},
     )
-    log.guess(
-        "coded_concepts",
-        "segments were given a generic 'Anatomical Structure' concept; MEDH5 "
-        "ontology bindings are not automatically translated into DICOM codes, "
-        "and inventing one would be worse than leaving it generic",
-        {},
-    )
     log.outputs.append(str(target))
     return target
+
+
+SEGMENTATION_TYPES = ("binary", "fractional")
+"""What :func:`to_dicom_seg`'s *segmentation_type* takes."""
+
+FRACTIONAL_TYPES = ("PROBABILITY", "OCCUPANCY")
+"""What :func:`to_dicom_seg`'s *fractional_type* takes (DICOM's
+``SegmentationFractionalType``)."""
+
+MAX_FRACTIONAL_VALUE = 255
+"""The stored value of a probability of 1 in a FRACTIONAL SEG this package
+writes: values are quantised to 1/255, so within 1/510 of what was given."""
+
+
+def _segmentation_type(segmentation_type: str, fractional_type: str) -> bool:
+    """Whether the export is FRACTIONAL; an unknown type is refused."""
+    if segmentation_type not in SEGMENTATION_TYPES:
+        raise MEDH5ValidationError(
+            f"segmentation_type is {segmentation_type!r}; it is one of "
+            f"{', '.join(map(repr, SEGMENTATION_TYPES))}"
+        )
+    if fractional_type not in FRACTIONAL_TYPES:
+        raise MEDH5ValidationError(
+            f"fractional_type is {fractional_type!r}; it is one of "
+            f"{', '.join(map(repr, FRACTIONAL_TYPES))}"
+        )
+    return segmentation_type == "fractional"
+
+
+def _quantisation(
+    values: npt.NDArray[np.float32],
+    contains: npt.NDArray[np.bool_],
+    threshold: float,
+    log: ConversionReport,
+) -> None:
+    """Record what writing *values* at 1/255 does to them.
+
+    The stored values are ``round(p * 255)``, as highdicom writes them, so
+    each comes back within 1/510.  A voxel whose class the annotation
+    *contains* (``p >= threshold``, decided at its stored precision) may come
+    back on the other side of that threshold; how many do is the measure of
+    what a reader who thresholds the SEG at the same value would see change.
+    """
+    stored = np.around(values * float(MAX_FRACTIONAL_VALUE))
+    back = stored.astype(np.float64) / MAX_FRACTIONAL_VALUE
+    error = float(np.max(np.abs(back - values))) if values.size else 0.0
+    changed = int(np.count_nonzero((back >= threshold) != contains))
+    log.decision(
+        "fractional",
+        "the probabilities were written as a FRACTIONAL SEG, quantised to "
+        f"1/{MAX_FRACTIONAL_VALUE}: each value is within 1/"
+        f"{2 * MAX_FRACTIONAL_VALUE} of the stored one (at most {error:.3g} "
+        f"here), and {changed} voxel(s) moved across the stored threshold "
+        f"({threshold:g}). A SEG has no field for the probmap's threshold or "
+        "normalized flag, so neither is carried",
+        {
+            "bound": 1 / (2 * MAX_FRACTIONAL_VALUE),
+            "max_error": error,
+            "changed_side": changed,
+            "threshold": threshold,
+            "max_fractional_value": MAX_FRACTIONAL_VALUE,
+        },
+    )
+
+
+def _algorithm(
+    hd: Any, sample: Any, annotation: Any, ann_id: str, log: ConversionReport
+) -> tuple[Any, Any]:
+    """The SEG's algorithm type and identification, from the annotation's
+    provenance (§11.1).
+
+    A ``predict`` activity whose agent is software of a stated version is
+    ``AUTOMATIC``, identified by that software, family DCM 123110
+    "Artificial Intelligence"; ``annotate`` and ``review`` are ``MANUAL``.
+    Anything else is ``MANUAL`` too --- DICOM requires a value --- and
+    recorded as a guess.
+    """
+    manual = hd.seg.SegmentAlgorithmTypeValues.MANUAL
+    provenance = sample.document.provenance
+    prov = annotation.prov
+    activity = (
+        provenance.activity(prov) if prov and provenance.has_activity(prov) else None
+    )
+
+    def generic(why: str) -> tuple[Any, Any]:
+        log.guess(
+            "algorithm_type",
+            f"{why}; SegmentAlgorithmType MANUAL was written, the generic "
+            "value, because DICOM requires one",
+            {"algorithm_type": "MANUAL", "prov": prov},
+        )
+        return manual, None
+
+    if activity is None:
+        return generic(
+            f"annotation {ann_id!r} has no prov"
+            if not prov
+            else f"annotation {ann_id!r}'s prov {prov!r} names no activity"
+        )
+    if activity.type == "predict":
+        agent = (
+            provenance.agent(activity.agent)
+            if activity.agent and any(a.id == activity.agent for a in provenance.agents)
+            else None
+        )
+        if agent is None or agent.type != "software" or not agent.version:
+            return generic(
+                f"annotation {ann_id!r} was predicted (activity "
+                f"{activity.id!r}), but the activity names no software agent "
+                "with a version, which an AUTOMATIC segment's algorithm "
+                "identification requires"
+            )
+        family = _codes.ARTIFICIAL_INTELLIGENCE
+        identification = hd.AlgorithmIdentificationSequence(
+            name=agent.name,
+            version=agent.version,
+            family=hd.sr.CodedConcept(*family),
+        )
+        log.decision(
+            "algorithm_type",
+            f"annotation {ann_id!r} was predicted by {agent.name} "
+            f"{agent.version} (activity {activity.id!r}), so its segments are "
+            "AUTOMATIC, identified by that software",
+            {
+                "algorithm_type": "AUTOMATIC",
+                "activity": activity.id,
+                "name": agent.name,
+                "version": agent.version,
+            },
+        )
+        return hd.seg.SegmentAlgorithmTypeValues.AUTOMATIC, identification
+    if activity.type in ("annotate", "review"):
+        log.decision(
+            "algorithm_type",
+            f"annotation {ann_id!r} comes from an {activity.type!r} activity "
+            f"({activity.id!r}), so its segments are MANUAL",
+            {"algorithm_type": "MANUAL", "activity": activity.id},
+        )
+        return manual, None
+    return generic(
+        f"annotation {ann_id!r} comes from a {activity.type!r} activity "
+        f"({activity.id!r}), which says neither that a person drew it nor "
+        "that a model predicted it"
+    )
+
+
+def _descriptions(
+    hd: Any,
+    label_set: Any,
+    annotation: Any,
+    ids: Sequence[int],
+    algorithm_type: Any,
+    algorithm: Any,
+    log: ConversionReport,
+) -> list[Any]:
+    """One segment description per class, carrying its concepts (§5.2).
+
+    The property type is the class's first code whose system the table
+    designates; the category its ``properties["dicom_category"]``, else the
+    concept its ``category`` stands for; its ``laterality`` the type modifier
+    (0062,0011), which highdicom takes no parameter for.  A type or category
+    the class does not state is the generic concept, as a guess naming each
+    class.
+    """
+    generic = hd.sr.CodedConcept(*_codes.GENERIC)
+    untyped: list[str] = []
+    unknown: dict[str, list[str]] = {}
+    passed_over: dict[str, list[str]] = {}
+    meanings: list[str] = []
+    uncategorised: dict[str, str | None] = {}
+    lateral: dict[str, str] = {}
+    descriptions = []
+    for number, class_id in enumerate(ids, start=1):
+        key = annotation.class_key(class_id)
+        entry = label_set[class_id] if label_set is not None else None
+        codes = tuple(entry.codes) if entry is not None else ()
+        named = [c for c in codes if _codes.designator(c.system)]
+        strange = [str(c.system) for c in codes if not _codes.designator(c.system)]
+        if named and entry is not None:
+            code = named[0]
+            if code is not codes[0]:
+                passed_over[key] = strange
+            if not code.name:
+                meanings.append(key)
+            kind = hd.sr.CodedConcept(
+                str(code.code),
+                str(_codes.designator(code.system)),
+                str(code.name or entry.name),
+            )
+        else:
+            untyped.append(key)
+            if strange:
+                unknown[key] = strange
+            kind = generic
+        category = _category(hd, entry)
+        if category is None:
+            uncategorised[key] = None if entry is None else entry.category
+            category = generic
+        description = hd.seg.SegmentDescription(
+            segment_number=number,
+            segment_label=key,
+            segmented_property_category=category,
+            segmented_property_type=kind,
+            algorithm_type=algorithm_type,
+            algorithm_identification=algorithm,
+        )
+        side = None if entry is None else entry.laterality
+        if side in _codes.LATERALITY:
+            description.SegmentedPropertyTypeModifierCodeSequence = [
+                hd.sr.CodedConcept(*_codes.LATERALITY[side])
+            ]
+            lateral[key] = side
+        descriptions.append(description)
+    if untyped:
+        log.guess(
+            "property_type",
+            f"{len(untyped)} class(es) state no code a DICOM designator names "
+            f"({', '.join(untyped)}), so their segments' property type is the "
+            "generic SCT 91723000 'Anatomical Structure'; DICOM requires one, "
+            "and a designator is never invented"
+            + (f" (systems the table does not know: {unknown})" if unknown else ""),
+            {"classes": untyped, "unknown_systems": unknown},
+        )
+    if passed_over:
+        log.decision(
+            "property_type_system",
+            f"{len(passed_over)} class(es) took their property type from a "
+            "later code, their first naming a system no DICOM designator "
+            "names",
+            {"passed_over": passed_over},
+        )
+    if meanings:
+        log.decision(
+            "code_meaning",
+            f"{len(meanings)} class(es)' code states no name, so the class's "
+            "display name is its CodeMeaning",
+            {"classes": meanings},
+        )
+    if uncategorised:
+        log.guess(
+            "property_category",
+            f"{len(uncategorised)} class(es) state no category a SEG property "
+            f"category stands for ({', '.join(uncategorised)}), so their "
+            "segments' category is the generic SCT 91723000 'Anatomical "
+            "Structure'; DICOM requires one",
+            {"classes": list(uncategorised), "categories": uncategorised},
+        )
+    if lateral:
+        log.decision(
+            "laterality",
+            f"{len(lateral)} class(es)' laterality was written as the "
+            "segment's property type modifier",
+            {"laterality": lateral},
+        )
+    return descriptions
+
+
+def _category(hd: Any, entry: Any) -> Any:
+    """A class's SEG property category, or ``None`` where it states none: its
+    ``properties["dicom_category"]`` (an import's), else the concept its
+    ``category`` stands for (:data:`medh5.io._codes.CATEGORIES`)."""
+    if entry is None:
+        return None
+    stated = entry.properties.get("dicom_category")
+    if isinstance(stated, Mapping):
+        scheme = _codes.designator(str(stated.get("system") or ""))
+        code, meaning = stated.get("code"), stated.get("name")
+        if scheme and code and meaning:
+            return hd.sr.CodedConcept(str(code), scheme, str(meaning))
+    concept = _codes.CATEGORIES.get(str(entry.category or ""))
+    return None if concept is None else hd.sr.CodedConcept(*concept)
 
 
 def _examined(
@@ -1223,7 +1347,7 @@ def _source_slices(
     of reference is E414, as on import; *salt* compares the images' frames
     as ``medh5 scrub`` pseudonymised the grid's.
     """
-    signs, scale = _from_patient(grid)
+    signs, scale = _patient_mapping(grid)
     shape = tuple(grid.spatial_shape)
     if len(shape) != 3 or len(datasets) != shape[0]:
         raise MEDH5ValidationError(
@@ -1311,6 +1435,9 @@ def _ipp(dataset: Any) -> npt.NDArray[np.float64]:
 __all__ = [
     "BINARY",
     "FRACTIONAL",
+    "FRACTIONAL_TYPES",
+    "MAX_FRACTIONAL_VALUE",
+    "SEGMENTATION_TYPES",
     "SLICE_TOLERANCE",
     "frames_agree",
     "from_dicom_seg",

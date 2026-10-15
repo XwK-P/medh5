@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn table_is_complete_and_well_formed() {
         let codes = all();
-        assert_eq!(codes.len(), 99);
+        assert_eq!(codes.len(), 100);
         for c in codes {
             let expected = if c.code.starts_with('W') { "warning" } else { "error" };
             assert_eq!(c.severity, expected, "{}", c.code);

@@ -228,10 +228,11 @@ pub fn open_any(path: &Path, key: Option<&str>) -> Result<AnyFile> {
     Ok(AnyFile::Sample(Sample::from_root(root, Some(handle), Some(path.to_path_buf()))))
 }
 
-/// The sample key a file gets when none is supplied: its stem.
+/// The sample key a file gets when none is supplied: its name up to its
+/// first dot (medh5 3.0 takes the stem, the name less its last suffix).
 pub fn default_key(path: &Path) -> Result<String> {
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    Ok(validate_sample_key(name.split('.').next().unwrap_or(""))?.to_string())
+    let ids = crate::sample::writer::default_ids(path)?;
+    Ok(validate_sample_key(&ids.current)?.to_string())
 }
 
 /// The `content_id` a sample root's stored digests compute to, when it has
@@ -307,7 +308,7 @@ pub fn pack(sources: &[&Path], out: &Path, keys: Option<&[String]>) -> Result<Pa
     let result = (|| -> Result<()> {
         let handle = file.handle();
         attrs::write(handle, "medh5_kind", &AttrValue::Str("collection".into()))?;
-        let group = handle.create_group(SAMPLES_GROUP)?;
+        let group = ops::new_group(handle, SAMPLES_GROUP)?;
         // The outer root declares the highest version of what it holds
         // (1.1 §8); each member keeps its own.
         let mut outer = crate::version::BASE_VERSION.to_string();
@@ -329,7 +330,7 @@ pub fn pack(sources: &[&Path], out: &Path, keys: Option<&[String]>) -> Result<Pa
                     format!("{} is already a collection; pack takes sample files", source.to_string_lossy()),
                 ));
             }
-            let member = group.create_group(key)?;
+            let member = ops::new_group(&group, key)?;
             copy_root(&src.as_group()?, &member)?;
         }
         attrs::write(handle, "medh5_version", &AttrValue::Str(outer))?;

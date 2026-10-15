@@ -16,17 +16,20 @@ library's defaults.  When it is used, the rule is written down and the contours
 stay in the file beside the mask.
 
 Holes are read the way planners write them: a contour on a slice that lies
-inside an odd number of others is stored with ``role="hole"``, and the
-rasteriser fills each slice by the even-odd rule, so an island inside a hole is
-a region again.  Treating every contour as an outer boundary is how a segmented
-vessel lumen ends up filled in.
+inside an odd number of others of its class is stored with ``role="hole"``,
+and the rasteriser fills each slice by the even-odd rule over those nesting
+depths, so an island inside a hole is a region again (§8.6).  Treating every
+contour as an outer boundary is how a segmented vessel lumen ends up filled
+in.  ROIs of one name are one class, and are combined only where that makes
+no contour of one a hole in another.
 
-Only areas are imported.  A medh5 contour is a closed polygon in one of its
-grid's slices (§8.6), so an import takes the ROIs drawn as ``CLOSED_PLANAR`` or
-``CLOSEDPLANAR_XOR`` contours, each in a slice of the grid, and leaves out with
-a warning an ROI of points or open curves --- a marker, a brachytherapy
-applicator --- rather than fill a line into an area, or mark a class examined
-with nothing in it.
+Areas and points are imported.  A medh5 contour is a closed polygon in one of
+its grid's slices (§8.6), so an import takes the ROIs drawn as
+``CLOSED_PLANAR`` or ``CLOSEDPLANAR_XOR`` contours, each in a slice of the
+grid, as contours, and the ROIs drawn as ``POINT`` contours --- markers ---
+as a ``points`` annotation (§8.5).  It leaves out with a warning an ROI of open
+curves --- a brachytherapy applicator --- rather than fill a line into an area,
+or mark a class examined with nothing in it.
 """
 
 from __future__ import annotations
@@ -40,9 +43,17 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5 import _core
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry import COORD_SYSTEMS
-from medh5.io._common import sanitize_key
+from medh5.geometry import MM_PER_UNIT
+from medh5.io._common import examined_classes, sanitize_key, save_dicom
+from medh5.io._patient import (
+    _one_frame,
+    _require_same_frame,
+    _salt_hint,
+    frames_agree,
+    patient_mapping,
+)
 from medh5.io.report import ConversionReport
 
 MIN_POLYGON_VERTICES = 3
@@ -51,6 +62,14 @@ MIN_POLYGON_VERTICES = 3
 # what a medh5 contour is; POINT, OPEN_PLANAR and OPEN_NONPLANAR are not.
 _CLOSED = "CLOSED_PLANAR"
 _XOR = "CLOSEDPLANAR_XOR"
+_POINT = "POINT"
+
+# What `from_rtstruct(open_curves=...)` takes.  Open curves need a kind of
+# their own, `polylines`, which format 1.2 adds (medh5 2.2.0).
+_OPEN_CURVES = ("omit",)
+
+# A DICOM Short String (SH) holds at most 16 characters: `StructureSetLabel`.
+_SH_LENGTH = 16
 
 
 def read_rtstruct(
@@ -65,6 +84,8 @@ def read_rtstruct(
       order of its contours --- ``None`` where one states none;
     - ``dropped``: per ROI, the type of each contour of fewer than three
       points;
+    - ``points``: per ROI, the points of each ``POINT`` contour, as a
+      ``(k, 3)`` array whatever *k* is (one, in a well-formed file);
     - ``roi_frames``: per ROI, the frame of reference it is in --- its own
       ``ReferencedFrameOfReferenceUID``, else the one frame the file lists,
       else ``None``;
@@ -103,6 +124,7 @@ def read_rtstruct(
     contours: dict[int, list[npt.NDArray[np.float64]]] = {}
     types: dict[int, list[str | None]] = {}
     dropped: dict[int, list[str | None]] = {}
+    marked: dict[int, list[npt.NDArray[np.float64]]] = {}
     for item in getattr(dataset, "ROIContourSequence", []):
         number = int(item.ReferencedROINumber)
         rgb = getattr(item, "ROIDisplayColor", None)
@@ -117,6 +139,8 @@ def read_rtstruct(
                 )
             points = data.reshape(-1, 3)
             kind = str(getattr(contour, "ContourGeometricType", "") or "") or None
+            if kind == _POINT:
+                marked.setdefault(number, []).append(points)
             if points.shape[0] >= MIN_POLYGON_VERTICES:
                 contours.setdefault(number, []).append(points)
                 types.setdefault(number, []).append(kind)
@@ -134,6 +158,7 @@ def read_rtstruct(
         "colors": colors,
         "types": types,
         "dropped": dropped,
+        "points": marked,
         "roi_frames": roi_frames,
         "frames": listed,
         "frame_uid": used.pop() if len(used) == 1 else None,
@@ -152,20 +177,37 @@ def from_rtstruct(
     annotated_classes: Sequence[str] | str = "all_given",
     frame_salt: str | None = None,
     report: ConversionReport | None = None,
+    roi_classes: Mapping[int, str] | None = None,
+    points_id: str | None = None,
+    open_curves: str = "omit",
 ) -> ConversionReport:
     """Import an RTSTRUCT's ROIs as contours, and optionally rasterise them.
 
     The ROIs drawn as areas are imported: ``CLOSED_PLANAR`` contours, and
     ``CLOSEDPLANAR_XOR`` ones that are nested or apart on every slice, where
     their exclusive-or is the holes this importer marks.  An ROI of
-    ``POINT``, ``OPEN_PLANAR`` or ``OPEN_NONPLANAR`` contours is left out
-    with a warning: a medh5 contour is a closed polygon (§8.6), and a filled
-    line, or a class examined with nothing in it, would be invented.  An ROI
-    mixing areas with anything else, or exclusive-or with another type
-    (PS3.3 C.8.8.6.1), is refused, and so are exclusive-or contours that
-    cross; a contour stating no type is read as ``CLOSED_PLANAR``, on a
-    recorded guess.  A contour of fewer than three points encloses nothing,
-    and its drop is a warning.
+    ``OPEN_PLANAR`` or ``OPEN_NONPLANAR`` contours is left out with a
+    warning (*open_curves* ``"omit"``, the only value until open curves
+    arrive as ``polylines`` in medh5 2.2.0): a medh5 contour is a closed
+    polygon (§8.6), and a filled line, or a class examined with nothing in
+    it, would be invented.  An ROI mixing areas with anything else, or
+    exclusive-or with another type (PS3.3 C.8.8.6.1), is refused, and so are
+    exclusive-or contours that cross; a contour stating no type is read as
+    ``CLOSED_PLANAR``, on a recorded guess.  A contour of fewer than three
+    points encloses nothing, and its drop is a warning.
+
+    An ROI of ``POINT`` contours --- markers --- is imported as rows of a
+    ``points`` annotation (§8.5), *points_id* (``f"{ann_id}_points"`` by
+    default): one row per contour, in world coordinates of the contours'
+    frame, of the ROI's class, named for the ROI, with ``task="other"``
+    (a marker is no detection finding).  A POINT contour of more than one
+    point is refused.  A structure set of points alone writes no contours
+    annotation.  An explicit *annotated_classes* list is split: a class
+    drawn as points is examined in the points annotation, every other class
+    it names in the contours one; ``"all"`` applies to the contours only.
+    A class the list names that no ROI supplies was examined and found
+    absent (§11.3): minted after the ROIs' classes when the sample has no
+    label set, else one its label set must hold (E402).
 
     Every contour must lie in a slice of the grid, along its first axis: one
     between two slices, across several (drawn on another orientation, or not
@@ -189,24 +231,42 @@ def from_rtstruct(
     patient coordinates, and is refused (E414).  Stored as read, a contour on
     an RAS grid was mirrored through the origin in x and y, and one on a
     metre grid lay a thousand times as far out.
+
+    Each ROI is a class: the one whose key its ``ROIName`` makes, or, in a
+    sample that has a label set, the class of that key, name or display
+    name.  ROIs that come to one class are combined into it, with a
+    ``merged_rois`` decision naming them, and their contours' roles come
+    from nesting over the whole class, plane by plane (§8.6).  Outlines of
+    two such ROIs that cross are their union; a contour of one inside a
+    contour of another on a plane would become a hole in what both drew as
+    an area, so that import is refused, naming the ROIs and the plane.
+    *roi_classes* (``{ROINumber: key}``; ``--roi NUMBER=KEY`` on the command
+    line) puts an ROI in the class of that key instead --- minted, or one
+    the sample's label set must hold (E402) --- which imports same-named
+    ROIs apart.  Two ROIs of one name, one inside the other, were imported
+    as a hole, and minting a class for each failed (E302).
     """
     import medh5
-    from medh5.annotations.geometric import Polygon
-    from medh5.io.dicom_seg import _require_same_frame, frames_agree
     from medh5.labels import LabelClass, LabelSet
 
+    if open_curves not in _OPEN_CURVES:
+        raise MEDH5ValidationError(
+            f"open_curves={open_curves!r}: medh5 2.1 takes only 'omit', which "
+            "leaves an ROI of open curves out with a warning; open curves "
+            "arrive as `polylines` (format 1.2) in medh5 2.2.0"
+        )
     log = report or ConversionReport(converter="from-rtstruct")
     log.source = os.fspath(path)
     contours, meta = read_rtstruct(path)
-    contours, xor = _areas(contours, meta, log, path)
-    frame = _contour_frame(contours, meta, log, path)
+    contours, xor, marked = _areas(contours, meta, log, path)
+    frame = _contour_frame({**contours, **marked}, meta, log, path)
 
     with medh5.open(sample) as opened:
         grid_id = grid or _match_grid(opened, frame, log, frame_salt)
         target = opened.grids[grid_id]
         existing = opened.label_set
     _require_same_frame(frame, target, frame_salt, source="the RTSTRUCT")
-    signs, scale = _to_patient(target)
+    signs, scale = patient_mapping(target, "RTSTRUCT contours")
     if frames_agree(frame, target.frame_uid, frame_salt) is None:
         log.guess(
             "frame",
@@ -221,36 +281,62 @@ def from_rtstruct(
         number: [signs * points / scale for points in planar]
         for number, planar in contours.items()
     }
+    marked = {number: signs * points / scale for number, points in marked.items()}
+    rois = sorted({*contours, *marked})
 
+    names = {number: meta["names"].get(number, f"roi_{number}") for number in rois}
+    keys = _roi_keys(rois, names, roi_classes, meta, path)
     label_set = existing
     ids: dict[int, int] = {}
     if label_set is None:
-        classes = [
-            LabelClass(
-                i + 1,
-                _key(meta["names"].get(number, f"roi_{number}")),
-                meta["names"].get(number, f"roi_{number}"),
-                color=meta["colors"].get(number),
+        # ROIs whose names make one key are one class: a key is unique in a
+        # label set (E302), and minting a class for each failed the write.
+        firsts: dict[str, int] = {}
+        for number in rois:
+            firsts.setdefault(keys[number], number)
+        colours = {
+            key: next(
+                (
+                    meta["colors"][n]
+                    for n in rois
+                    if keys[n] == key and n in meta["colors"]
+                ),
+                None,
             )
-            for i, number in enumerate(sorted(contours))
+            for key in firsts
+        }
+        classes = [
+            LabelClass(i + 1, key, names[first], color=colours[key])
+            for i, (key, first) in enumerate(firsts.items())
         ]
         label_set = LabelSet("rtstruct", version="1.0.0", classes=classes)
-        ids = {number: i + 1 for i, number in enumerate(sorted(contours))}
+        minted = {key: i + 1 for i, key in enumerate(firsts)}
+        ids = {number: minted[keys[number]] for number in rois}
         log.decision(
             "label_set",
             f"{len(classes)} class(es) were minted from ROIName, keeping each "
             "ROI's display colour",
-            {"names": {str(k): meta["names"].get(k) for k in sorted(contours)}},
+            {"names": {str(k): meta["names"].get(k) for k in rois}},
         )
     else:
         missing = []
-        for number in sorted(contours):
-            name = meta["names"].get(number, f"roi_{number}")
-            found = (
-                label_set.get(_key(name))
-                or label_set.get(name)
-                or _named(label_set, name)
-            )
+        for number in rois:
+            name = names[number]
+            if roi_classes is not None and number in roi_classes:
+                found = label_set.get(keys[number])
+                if found is None:
+                    raise MEDH5ValidationError(
+                        f"roi_classes maps ROI {number} ({name!r}) to class "
+                        f"{keys[number]!r}, which the sample's label set does "
+                        "not hold",
+                        code="E402",
+                    )
+            else:
+                found = (
+                    label_set.get(_key(name))
+                    or label_set.get(name)
+                    or _named(label_set, name)
+                )
             if found is None:
                 missing.append(name)
             else:
@@ -261,28 +347,22 @@ def from_rtstruct(
                 code="E402",
             )
 
-    polygons: list[Polygon] = []
-    for number in sorted(contours):
-        planar = _assign_roles(
-            contours[number],
-            target,
-            log,
-            meta["names"].get(number),
-            xor=number in xor,
-        )
-        for points, role, plane in planar:
-            polygons.append(
-                Polygon(
-                    vertices=points.astype(np.float32),
-                    class_id=ids[number],
-                    # `(0, k)`: the polygon lies in slice k along the grid's
-                    # first spatial axis, in that grid's index space (§8.6).
-                    # It was computed to find holes and then thrown away, so
-                    # `by_plane()` on an imported RTSTRUCT answered nothing.
-                    plane=(0, plane),
-                    role=role,
-                )
-            )
+    polygons = _combine(contours, ids, names, label_set, target, log, xor)
+    points_id = points_id or f"{ann_id}_points"
+    label_set, examined = examined_classes(
+        annotated_classes,
+        label_set,
+        mint=existing is None,
+        log=log,
+        supplied="the ROIs",
+    )
+    on_contours, on_points = _split_examined(
+        examined,
+        [ids[n] for n in sorted(contours)],
+        [ids[n] for n in sorted(marked)],
+        label_set,
+        log,
+    )
     if xor:
         rois = [meta["names"].get(number, f"roi_{number}") for number in sorted(xor)]
         log.decision(
@@ -292,22 +372,44 @@ def from_rtstruct(
             "their exclusive-or is the nesting the holes record",
             {"rois": rois},
         )
-    log.decision(
-        "contours",
-        f"{len(polygons)} contour(s) were stored in grid {grid_id!r}'s world "
-        f"coordinates ({target.coord_system}, {target.units}), converted from "
-        "patient coordinates (LPS, mm) but otherwise exactly as the planner drew "
-        "them; a contour is sub-voxel and a mask is not",
-        {
-            "polygons": len(polygons),
-            "rois": len(contours),
-            "coord_system": target.coord_system,
-            "units": target.units,
-        },
-    )
+    if contours:
+        log.decision(
+            "contours",
+            f"{len(polygons)} contour(s) were stored in grid {grid_id!r}'s world "
+            f"coordinates ({target.coord_system}, {target.units}), converted from "
+            "patient coordinates (LPS, mm) but otherwise exactly as the planner "
+            "drew them; a contour is sub-voxel and a mask is not",
+            {
+                "polygons": len(polygons),
+                "rois": len(contours),
+                "coord_system": target.coord_system,
+                "units": target.units,
+            },
+        )
+    if marked:
+        log.decision(
+            "points",
+            f"{sum(len(p) for p in marked.values())} POINT contour(s) of "
+            f"{len(marked)} ROI(s) were stored as annotation {points_id!r}, one "
+            f"row each, in grid {grid_id!r}'s world coordinates, each row named "
+            "for its ROI and of its class, with task 'other': a marker is a "
+            "landmark (§8.5), not a detection finding",
+            {
+                "annotation": points_id,
+                "rois": {str(n): names[n] for n in sorted(marked)},
+                "task": "other",
+            },
+        )
 
     masks: dict[int, npt.NDArray[np.bool_]] | None = None
-    if rasterize:
+    if rasterize and not contours:
+        log.warn(
+            "rasterization",
+            "the structure set holds no areas, only points, so there was "
+            "nothing to rasterise",
+            {"rois": len(marked)},
+        )
+    elif rasterize:
         masks = _rasterize(polygons, target, log)
         empty = [label_set[c].key for c, mask in masks.items() if not mask.any()]
         if empty:
@@ -327,18 +429,34 @@ def from_rtstruct(
         activity = writer.activity(
             "import", agent=tool, tool="medh5 convert from-rtstruct"
         )
-        writer.add_contours(
-            ann_id,
-            polygons,
-            grid=grid_id,
-            space="world",
-            # The grid's frame, which the coordinates are now in: a frame
-            # compared through the scrub's salt is the grid's pseudonym, and
-            # the RTSTRUCT's own UID is what the scrub removed.
-            frame_uid=target.frame_uid or frame,
-            annotated_classes=annotated_classes,
-            prov=activity,
-        )
+        # The grid's frame, which the coordinates are now in: a frame
+        # compared through the scrub's salt is the grid's pseudonym, and the
+        # RTSTRUCT's own UID is what the scrub removed.
+        frame_uid = target.frame_uid or frame
+        if contours:
+            writer.add_contours(
+                ann_id,
+                polygons,
+                grid=grid_id,
+                space="world",
+                frame_uid=frame_uid,
+                annotated_classes=on_contours,
+                prov=activity,
+            )
+        if marked:
+            numbers = sorted(marked)
+            writer.add_points(
+                points_id,
+                np.concatenate([marked[n] for n in numbers]).astype(np.float32),
+                grid=grid_id,
+                space="world",
+                frame_uid=frame_uid,
+                class_ids=[ids[n] for n in numbers for _ in marked[n]],
+                names=[names[n] for n in numbers for _ in marked[n]],
+                annotated_classes=on_points,
+                task="other",
+                prov=activity,
+            )
         if masks:
             raster = writer.activity(
                 "derive",
@@ -354,7 +472,7 @@ def from_rtstruct(
                 mask_id or f"{ann_id}_mask",
                 grid=grid_id,
                 masks=masks,
-                annotated_classes=annotated_classes,
+                annotated_classes=on_contours,
                 prov=raster,
                 derived_from=[ann_id],
             )
@@ -369,23 +487,83 @@ def from_rtstruct(
     return log
 
 
+def _split_examined(
+    annotated_classes: Sequence[int | str] | str,
+    on_contours: Sequence[int],
+    on_points: Sequence[int],
+    label_set: Any,
+    log: ConversionReport,
+) -> tuple[Sequence[int | str] | str, Sequence[int | str] | str]:
+    """*annotated_classes* for the contours annotation and for the points one.
+
+    A list is split: a class drawn as points is examined in the points
+    annotation, every other class it names in the contours annotation (and a
+    class drawn both ways in both).  ``"all"`` is the contours annotation's:
+    a structure set's markers are not a search of every class for points.
+    A structure set of points alone writes no contours annotation, so there
+    every class a list names is the points annotation's: one drawn nowhere
+    was examined and found absent, and would otherwise be lost.
+    """
+    if not isinstance(annotated_classes, str) and on_points and not on_contours:
+        return [], list(annotated_classes)
+    if isinstance(annotated_classes, str):
+        if annotated_classes == "all" and on_points:
+            log.decision(
+                "annotated_classes",
+                "annotated_classes='all' applies to the contours annotation; "
+                "the points annotation examined the classes it holds",
+                {"points": "all_given"},
+            )
+        return annotated_classes, "all_given"
+    points = set(on_points)
+    contours = set(on_contours)
+
+    def class_id(entry: Any) -> int | None:
+        found = label_set.get(entry)
+        return None if found is None else int(found.id)
+
+    def shown(entries: Sequence[int | str]) -> list[str]:
+        return [label_set[c].key if c in label_set else str(c) for c in entries]
+
+    to_points = [c for c in annotated_classes if class_id(c) in points]
+    to_contours = [
+        c
+        for c in annotated_classes
+        if class_id(c) not in points or class_id(c) in contours
+    ]
+    if to_points:
+        log.decision(
+            "annotated_classes",
+            f"class(es) {shown(to_points)} are drawn as points, so they are "
+            "examined in the points annotation; the others named, in the "
+            "contours annotation",
+            {"points": shown(to_points), "contours": shown(to_contours)},
+        )
+    return to_contours, to_points
+
+
 def _areas(
     contours: Mapping[int, list[npt.NDArray[np.float64]]],
     meta: Mapping[str, Any],
     log: ConversionReport,
     path: str | os.PathLike[str],
-) -> tuple[dict[int, list[npt.NDArray[np.float64]]], set[int]]:
-    """The ROIs drawn as areas, which a medh5 contour can hold, and which of
-    them combine their contours by exclusive-or.
+) -> tuple[
+    dict[int, list[npt.NDArray[np.float64]]], set[int], dict[int, npt.NDArray[Any]]
+]:
+    """The ROIs drawn as areas, which a medh5 contour can hold, which of them
+    combine their contours by exclusive-or, and the ROIs drawn as points,
+    each as its ``(n, 3)`` points (§8.5).
 
     ``ContourGeometricType`` was never read: an open curve was filled as an
     area, an applicator's path flattened onto one slice --- its class then
     marked examined with nothing in it --- and a POINT ROI vanished, as every
-    contour of fewer than three points did, without a note.
+    contour of fewer than three points did, without a note.  Until 2.1 a
+    POINT ROI was left out with a warning.
     """
     names = meta["names"]
     kept: dict[int, list[npt.NDArray[np.float64]]] = {}
     xor: set[int] = set()
+    marked: dict[int, npt.NDArray[Any]] = {}
     untyped: dict[str, int] = {}
     skipped: list[str] = []
     types: Mapping[int, list[str | None]] = meta["types"]
@@ -406,6 +584,23 @@ def _areas(
                 f"with {' and '.join(others)} ones: an ROI is an area or a set "
                 "of points or curves, and which one this is cannot be told"
             )
+        if _POINT in others and len(others) > 1:
+            raise MEDH5ValidationError(
+                f"ROI {name!r} in {path} mixes {' and '.join(others)} contours: "
+                "an ROI is a set of points or a curve, and which one this is "
+                "cannot be told"
+            )
+        if others == [_POINT]:
+            drawn = meta["points"].get(number, [])
+            for points in drawn:
+                if len(points) != 1:
+                    raise MEDH5ValidationError(
+                        f"ROI {name!r} has a POINT contour of {len(points)} "
+                        f"points in {path}: a POINT contour is one point "
+                        "(PS3.3 C.8.8.6), and which one it marks cannot be told"
+                    )
+            marked[number] = np.concatenate(drawn)
+            continue
         if others:
             for kind in others:
                 count = stated.count(kind)
@@ -413,7 +608,9 @@ def _areas(
                     "contour_type",
                     f"ROI {name!r} is drawn as {count} {kind} contour(s), and "
                     "a medh5 contour is a closed polygon (§8.6), so the ROI was "
-                    "not imported, and no class is marked examined for it",
+                    "not imported (open_curves='omit'; open curves arrive as "
+                    "`polylines` in medh5 2.2.0), and no class is marked "
+                    "examined for it",
                     {"roi": name, "type": kind, "contours": count},
                 )
             skipped.append(f"{name!r} is {' and '.join(others)}")
@@ -446,10 +643,10 @@ def _areas(
             "state no ContourGeometricType and were read as CLOSED_PLANAR",
             {"rois": untyped},
         )
-    if not kept:
+    if not kept and not marked:
         why = f": {'; '.join(skipped)}" if skipped else ""
-        raise MEDH5ValidationError(f"{path} contains no usable contours{why}")
-    return kept, xor
+        raise MEDH5ValidationError(f"{path} contains no usable contours or points{why}")
+    return kept, xor, marked
 
 
 def _contour_frame(
@@ -520,6 +717,116 @@ def _named(label_set: Any, name: str) -> Any:
     return found[0] if len(found) == 1 else None
 
 
+def _roi_keys(
+    numbers: Sequence[int],
+    names: Mapping[int, str],
+    roi_classes: Mapping[int, str] | None,
+    meta: Mapping[str, Any],
+    path: str | os.PathLike[str],
+) -> dict[int, str]:
+    """Each ROI's class key: the one *roi_classes* gives it, else the one its
+    name makes.  An ROI number the file does not hold is refused, so a typo
+    does not import the ROI it meant into the class of its name."""
+    given = dict(roi_classes or {})
+    held = {*meta["names"], *meta["types"], *meta["dropped"]}
+    unknown = sorted(n for n in given if n not in held)
+    if unknown:
+        raise MEDH5ValidationError(
+            f"roi_classes names ROI number(s) {unknown}, which {path} does not "
+            f"hold (it holds {sorted(held)})"
+        )
+    blank = sorted(n for n, k in given.items() if not isinstance(k, str) or not k)
+    if blank:
+        raise MEDH5ValidationError(
+            f"roi_classes gives ROI number(s) {blank} no class key"
+        )
+    return {n: given[n] if n in given else _key(names[n]) for n in numbers}
+
+
+def _combine(
+    contours: Mapping[int, list[npt.NDArray[np.float64]]],
+    ids: Mapping[int, int],
+    names: Mapping[int, str],
+    label_set: Any,
+    grid: Any,
+    log: ConversionReport,
+    xor: set[int],
+) -> list[Any]:
+    """Every ROI's polygons, their roles from nesting over each class, plane
+    by plane (§8.6).
+
+    Roles came from nesting within each ROI while the rasteriser nested per
+    class, so an ROI drawn inside another of its name became a hole: an 11×11
+    "Bladder" holding a 4×4 one was 105 voxels where 121 were drawn.  ROIs of
+    one class are combined only where no contour's depth in the class differs
+    from its depth within its own ROI; anywhere else the import is refused.
+    """
+    from medh5.annotations.geometric import Polygon
+
+    placed = {
+        number: _place(contours[number], grid, names[number], xor=number in xor)
+        for number in sorted(contours)
+    }
+    by_class: dict[int, list[int]] = {}
+    for number in sorted(contours):
+        by_class.setdefault(ids[number], []).append(number)
+    depth: dict[tuple[int, int], int] = {}
+    for class_id, numbers in by_class.items():
+        planes: dict[int, list[tuple[int, int]]] = {}
+        for number in numbers:
+            for position, (_, _, plane) in enumerate(placed[number]):
+                planes.setdefault(plane, []).append((number, position))
+        for plane, members in planes.items():
+            merged = _core.polygon_depths([placed[n][p][1][:, 1:] for n, p in members])
+            own: dict[tuple[int, int], int] = {}
+            for number in dict.fromkeys(n for n, _ in members):
+                mine = [(n, p) for n, p in members if n == number]
+                found = _core.polygon_depths([placed[n][p][1][:, 1:] for n, p in mine])
+                own.update(zip(mine, found, strict=True))
+            if any(d != own[member] for member, d in zip(members, merged, strict=True)):
+                rois = sorted({n for n, _ in members})
+                shown = ", ".join(f"{n} ({names[n]!r})" for n in rois)
+                raise MEDH5ValidationError(
+                    f"ROIs {shown} are one class "
+                    f"{label_set[class_id].key!r}, and on slice {plane} of "
+                    f"grid {grid.grid_id!r} a contour of one lies inside a "
+                    "contour of another: combined, it would be a hole in what "
+                    "each ROI drew as an area (§8.6). Import them apart with "
+                    "roi_classes= (--roi NUMBER=KEY), a class key for each"
+                )
+            depth.update(zip(members, merged, strict=True))
+        if len(numbers) > 1:
+            key = label_set[class_id].key
+            log.decision(
+                "merged_rois",
+                f"ROIs {numbers} "
+                f"({', '.join(repr(names[n]) for n in numbers)}) are one class "
+                f"{key!r}, so their contours were combined into it, plane by "
+                "plane; outlines of two of them that cross are their union",
+                {"class": key, "rois": numbers, "names": [names[n] for n in numbers]},
+            )
+    polygons: list[Polygon] = []
+    for number in sorted(contours):
+        holes = 0
+        for position, (points, _, plane) in enumerate(placed[number]):
+            hole = depth[(number, position)] % 2 == 1
+            holes += hole
+            polygons.append(
+                Polygon(
+                    vertices=points.astype(np.float32),
+                    class_id=ids[number],
+                    # `(0, k)`: the polygon lies in slice k along the grid's
+                    # first spatial axis, in that grid's index space (§8.6).
+                    # It was computed to find holes and then thrown away, so
+                    # `by_plane()` on an imported RTSTRUCT answered nothing.
+                    plane=(0, plane),
+                    role="hole" if hole else "outer",
+                )
+            )
+        _note_holes(log, holes, names[number])
+    return polygons
+
+
 def _assign_roles(
     contours: Sequence[npt.NDArray[np.float64]],
     grid: Any,
@@ -534,6 +841,47 @@ def _assign_roles(
     two contours and is a region again.  Marking every enclosed contour a hole
     erased it.
 
+    Returns ``(vertices, role, plane)`` with the plane index that grouping
+    found, so the writer can record it rather than lose it.
+    """
+    placed = _place(contours, grid, name, xor=xor)
+    planes: dict[int, list[int]] = {}
+    for position, (_, _, plane) in enumerate(placed):
+        planes.setdefault(plane, []).append(position)
+    depth: dict[int, int] = {}
+    for positions in planes.values():
+        found = _core.polygon_depths([placed[p][1][:, 1:] for p in positions])
+        depth.update(zip(positions, found, strict=True))
+    out = [
+        (points, "hole" if depth[p] % 2 else "outer", plane)
+        for p, (points, _, plane) in enumerate(placed)
+    ]
+    _note_holes(log, sum(role == "hole" for _, role, _ in out), name)
+    return out
+
+
+def _note_holes(log: ConversionReport, holes: int, name: str | None) -> None:
+    """The decision that *holes* contours of ROI *name* are holes."""
+    if holes:
+        log.decision(
+            "holes",
+            f"{holes} contour(s) of ROI {name!r} lie inside an odd number of others "
+            "on the same slice and were marked as holes; one inside a hole is a "
+            "region again",
+            {"holes": holes, "roi": name},
+        )
+
+
+def _place(
+    contours: Sequence[npt.NDArray[np.float64]],
+    grid: Any,
+    name: str | None,
+    *,
+    xor: bool = False,
+) -> list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], int]]:
+    """One ROI's contours as ``(vertices, index, plane)``, grouped by the
+    slice each lies in, the slices in the order they first appear.
+
     The grouping and the enclosure test are both done in the grid's **index**
     space, where a planar contour has one constant axis.  Doing it on world
     coordinates would only work for axial acquisitions: under the orientation
@@ -543,16 +891,12 @@ def _assign_roles(
     For an *xor* ROI (``CLOSEDPLANAR_XOR``) nesting parity is the
     exclusive-or only while no two contours on a slice cross, so two that do
     are refused, naming the slice: read as nested, they were their union.
-
-    Returns ``(vertices, role, plane)`` with the plane index that grouping
-    found, so the writer can record it rather than lose it.
     """
-    out: list[tuple[npt.NDArray[np.float64], str, int]] = []
     index = [grid.world_to_index(points) for points in contours]
     by_plane: dict[int, list[int]] = {}
     for position, points in enumerate(index):
         by_plane.setdefault(_slice(points, grid, name), []).append(position)
-    holes = 0
+    out: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], int]] = []
     for plane, positions in by_plane.items():
         if xor:
             for first, second in combinations(positions, 2):
@@ -564,19 +908,7 @@ def _assign_roles(
                         "which is all a medh5 contour can hold (§8.6), and "
                         "read as nested they would be their union"
                     )
-        depths = _depths([index[position] for position in positions])
-        for position, depth in zip(positions, depths, strict=True):
-            role = "hole" if depth % 2 else "outer"
-            holes += role == "hole"
-            out.append((contours[position], role, plane))
-    if holes:
-        log.decision(
-            "holes",
-            f"{holes} contour(s) of ROI {name!r} lie inside an odd number of others "
-            "on the same slice and were marked as holes; one inside a hole is a "
-            "region again",
-            {"holes": holes, "roi": name},
-        )
+        out.extend((contours[p], index[p], plane) for p in positions)
     return out
 
 
@@ -591,7 +923,6 @@ def _slice(index: npt.NDArray[np.float64], grid: Any, name: str | None) -> int:
     stored there and rasterised to nothing.
     """
     from medh5.io.dicom import _position_tolerance
-    from medh5.io.nifti import MM_PER_UNIT
 
     shape = grid.spatial_shape
     step = float(grid.spacing[grid.spatial_axes[0]]) * MM_PER_UNIT.get(grid.units, 1.0)
@@ -696,23 +1027,6 @@ def _between(
     return within
 
 
-def _depths(contours: Sequence[npt.NDArray[np.float64]]) -> list[int]:
-    """How many of the other contours on one slice enclose each contour."""
-    return [
-        sum(
-            1
-            for other, outer in enumerate(contours)
-            if other != position and _encloses(outer, inner)
-        )
-        for position, inner in enumerate(contours)
-    ]
-
-
-def _encloses(outer: npt.NDArray[np.float64], inner: npt.NDArray[np.float64]) -> bool:
-    """Whether every vertex of *inner* lies inside *outer*, in-plane."""
-    return bool(np.all(_inside(outer[:, 1:], inner[:, 1:])))
-
-
 def _inside(
     polygon: npt.NDArray[np.float64], points: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.bool_]:
@@ -776,7 +1090,8 @@ def _rasterize(
     }
     for (class_id, plane), contours in planes.items():
         levels: dict[int, npt.NDArray[np.bool_]] = {}
-        for depth, index in zip(_depths(contours), contours, strict=True):
+        depths = _core.polygon_depths([c[:, 1:] for c in contours])
+        for depth, index in zip(depths, contours, strict=True):
             filled = _inside(index[:, 1:], centres).reshape(shape[1], shape[2])
             levels[depth] = filled if depth not in levels else levels[depth] | filled
         region = np.zeros((shape[1], shape[2]), dtype=bool)
@@ -808,7 +1123,6 @@ def _match_grid(
     refused afterwards, as a grid named explicitly is.  Used with a recorded
     guess, a grid in another frame received every contour.
     """
-    from medh5.io.dicom_seg import frames_agree
 
     matches = (
         [g for g in sample.grids.values() if frames_agree(frame, g.frame_uid, salt)]
@@ -843,6 +1157,7 @@ def to_rtstruct(
     label: str = "medh5 export",
     frame_salt: str | None = None,
     report: ConversionReport | None = None,
+    points: str | None = None,
 ) -> Path:
     """Export a ``contours`` annotation as an RT Structure Set.
 
@@ -872,15 +1187,30 @@ def to_rtstruct(
     ROI's contours by exclusive-or or even-odd fill read as medh5 does; two
     contours of one class that cross on a plane are a warning, because
     medh5 means their union and those readers cancel their overlap.
+
+    *points* names a ``points`` annotation (§8.5) to write beside the
+    contours: one ROI per class, of ``POINT`` contours of one point each,
+    with ``RTROIInterpretedType`` ``"MARKER"`` (a contours ROI is
+    ``"ORGAN"``).  Its rows must each have a class, and a class drawn in both
+    annotations is refused: one ROI is areas or points, not both.
+
+    *label* is the ``StructureSetLabel``, a DICOM SH: one longer than 16
+    characters is refused before anything is read, where it was written and
+    the file was not valid DICOM.
     """
     import medh5
     from medh5.io.dicom import _dcmread, require_pydicom
-    from medh5.io.dicom_seg import _salt_hint, frames_agree
 
     pydicom = require_pydicom()
     from pydicom.dataset import Dataset, FileMetaDataset
     from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
+    if len(label) > _SH_LENGTH:
+        raise MEDH5ValidationError(
+            f"label={label!r} (--label) is {len(label)} characters, and the "
+            f"StructureSetLabel it is written as is a DICOM SH of at most "
+            f"{_SH_LENGTH}: shorten it"
+        )
     log = report or ConversionReport(converter="to-rtstruct")
     log.source = os.fspath(sample)
     datasets = [_dcmread(p) for p in source_images]
@@ -890,61 +1220,41 @@ def to_rtstruct(
     frame_uid = _one_frame(datasets)
 
     with medh5.open(sample) as opened:
-        annotation = opened.annotations[ann_id]
-        if annotation.kind != "contours":
-            raise MEDH5ValidationError(
-                f"annotation {ann_id!r} is {annotation.kind!r}; an RTSTRUCT is "
-                "polygons, so export a `contours` annotation (or derive one)",
-                code="E401",
-            )
-        if annotation.grid_id is None:
-            raise MEDH5ValidationError(
-                f"annotation {ann_id!r} names no grid, so its coordinates have no "
-                "units or convention to map to patient coordinates (mm, LPS)",
-                code="E414",
-            )
-        grid = opened.grids[annotation.grid_id]
-        if len(grid.spatial_shape) != 3:
-            raise MEDH5ValidationError(
-                f"grid {grid.grid_id!r} has {len(grid.spatial_shape)} spatial axes; "
-                "RTSTRUCT contours are points of the 3-D patient space",
-                code="E414",
-            )
-        signs, scale = _to_patient(grid)
-        # World coordinates live in the annotation's own frame, index
-        # coordinates in the grid's (§6.2, §8).
-        stated = (
-            annotation.header.frame_uid
-            if annotation.space == "world"
-            else grid.frame_uid
+        annotation, grid, to_patient = _exported(
+            opened, ann_id, "contours", frame_uid, frame_salt, log
         )
-        agree = frames_agree(frame_uid, stated, frame_salt)
-        if agree is False:
-            hint = _salt_hint(
-                stated, frame_salt, "The annotation's", "the images' frame"
-            )
-            raise MEDH5ValidationError(
-                f"annotation {ann_id!r} is in frame of reference {stated!r} and "
-                f"the source images in {frame_uid!r}: contours drawn in one frame "
-                "are not filed under another without a registration, which this "
-                f"exporter does not apply.{hint}",
-                code="E414",
-            )
-        if agree is None:
-            log.guess(
-                "frame_of_reference",
-                f"annotation {ann_id!r} and grid {grid.grid_id!r} state no frame "
-                "of reference for the contours, so they were assumed to be in the "
-                f"source images' frame {frame_uid!r}",
-                {"grid": grid.grid_id, "frame": frame_uid},
-            )
         polygons = list(annotation.polygons())
         class_ids = sorted({int(p.class_id) for p in polygons})
-        names = _roi_names(annotation, class_ids, log)
+        marked: list[tuple[int, npt.NDArray[np.float64]]] = []
+        marker_ids: list[int] = []
+        if points is not None:
+            pointed, _, place = _exported(
+                opened, points, "points", frame_uid, frame_salt, log
+            )
+            rows = np.asarray(pointed.points, dtype=np.float64)
+            owners = [int(c) for c in pointed.object_class_ids]
+            if 0 in owners:
+                raise MEDH5ValidationError(
+                    f"annotation {points!r} has {owners.count(0)} point(s) of no "
+                    "class, and an RTSTRUCT ROI is a class: give its rows "
+                    "class_ids to export it",
+                    code="E402",
+                )
+            marker_ids = sorted(set(owners))
+            both = sorted(set(marker_ids) & set(class_ids))
+            if both:
+                raise MEDH5ValidationError(
+                    f"class(es) {[annotation.class_key(c) for c in both]} are in "
+                    f"both {ann_id!r} and {points!r}: an RTSTRUCT ROI is drawn "
+                    "as areas or as points, not both, so one class cannot be "
+                    "written as one ROI"
+                )
+            marked = list(zip(owners, place(rows), strict=True))
+        names = _roi_names(annotation, [*class_ids, *marker_ids], log)
         found = annotation.label_set
         colors = {
             c: found[c].color if found is not None and c in found else None
-            for c in class_ids
+            for c in [*class_ids, *marker_ids]
         }
         for class_id, planes in _crossings(polygons, grid, annotation.space).items():
             key = annotation.class_key(class_id)
@@ -959,16 +1269,7 @@ def to_rtstruct(
                 {"class": key, "planes": [list(plane) for plane in planes]},
             )
         world = [
-            (
-                int(p.class_id),
-                signs
-                * scale
-                * (
-                    np.asarray(p.vertices, dtype=np.float64)
-                    if annotation.space == "world"
-                    else grid.index_to_world(np.asarray(p.vertices, dtype=np.float64))
-                ),
-            )
+            (int(p.class_id), to_patient(np.asarray(p.vertices, dtype=np.float64)))
             for p in polygons
         ]
 
@@ -1006,7 +1307,14 @@ def to_rtstruct(
     structure.StructureSetROISequence = []
     structure.ROIContourSequence = []
     structure.RTROIObservationsSequence = []
-    for number, class_id in enumerate(class_ids, start=1):
+    drawn: list[tuple[int, str, str, list[npt.NDArray[np.float64]]]] = [
+        (c, _CLOSED, "ORGAN", [p for owner, p in world if owner == c])
+        for c in class_ids
+    ] + [
+        (c, _POINT, "MARKER", [p for owner, p in marked if owner == c])
+        for c in marker_ids
+    ]
+    for number, (class_id, kind, interpreted, shapes) in enumerate(drawn, start=1):
         roi = Dataset()
         roi.ROINumber = number
         roi.ReferencedFrameOfReferenceUID = frame_uid
@@ -1019,22 +1327,19 @@ def to_rtstruct(
         color = colors[class_id]
         contour_item.ROIDisplayColor = list(color[:3]) if color else [255, 0, 0]
         contour_item.ContourSequence = []
-        for owner, points in world:
-            if owner != class_id:
-                continue
+        for shape in shapes:
+            points_of = np.asarray(shape, dtype=np.float64).reshape(-1, 3)
             entry = Dataset()
-            entry.ContourGeometricType = "CLOSED_PLANAR"
-            entry.NumberOfContourPoints = int(np.asarray(points).shape[0])
-            entry.ContourData = [
-                float(v) for v in np.asarray(points, dtype=np.float64).reshape(-1)
-            ]
+            entry.ContourGeometricType = kind
+            entry.NumberOfContourPoints = int(points_of.shape[0])
+            entry.ContourData = [float(v) for v in points_of.reshape(-1)]
             contour_item.ContourSequence.append(entry)
         structure.ROIContourSequence.append(contour_item)
 
         observation = Dataset()
         observation.ObservationNumber = number
         observation.ReferencedROINumber = number
-        observation.RTROIInterpretedType = "ORGAN"
+        observation.RTROIInterpretedType = interpreted
         observation.ROIInterpreter = ""
         structure.RTROIObservationsSequence.append(observation)
 
@@ -1047,15 +1352,92 @@ def to_rtstruct(
         # which is ASCII: a name with an umlaut read back as other letters.
         structure.SpecificCharacterSet = "ISO_IR 192"
     target = Path(os.fspath(out))
-    structure.save_as(str(target), enforce_file_format=True)
+    save_dicom(structure, target, enforce_file_format=True)
     log.decision(
         "contours",
         f"{len(world)} contour(s) across {len(class_ids)} ROI(s) were written in "
         "patient coordinates",
         {"rois": [names[c] for c in class_ids]},
     )
+    if marker_ids:
+        log.decision(
+            "points",
+            f"{len(marked)} point(s) of {points!r} were written as POINT "
+            f"contours of {len(marker_ids)} ROI(s), interpreted as MARKER",
+            {"rois": [names[c] for c in marker_ids]},
+        )
     log.outputs.append(str(target))
     return target
+
+
+def _exported(
+    opened: Any,
+    ann_id: str,
+    kind: str,
+    frame_uid: str,
+    frame_salt: str | None,
+    log: ConversionReport,
+) -> tuple[Any, Any, Any]:
+    """Annotation *ann_id* of *kind*, its grid, and the map of its stored
+    coordinates to patient ones (mm, LPS), once its grid and frame are
+    found to allow it."""
+    annotation = opened.annotations[ann_id]
+    if annotation.kind != kind:
+        what = (
+            "polygons, so export a `contours` annotation (or derive one)"
+            if kind == "contours"
+            else "markers, so pass a `points` annotation as points="
+        )
+        raise MEDH5ValidationError(
+            f"annotation {ann_id!r} is {annotation.kind!r}; an RTSTRUCT's "
+            f"{'ROIs are' if kind == 'contours' else 'POINT ROIs are'} {what}",
+            code="E401",
+        )
+    if annotation.grid_id is None:
+        raise MEDH5ValidationError(
+            f"annotation {ann_id!r} names no grid, so its coordinates have no "
+            "units or convention to map to patient coordinates (mm, LPS)",
+            code="E414",
+        )
+    grid = opened.grids[annotation.grid_id]
+    if len(grid.spatial_shape) != 3:
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} has {len(grid.spatial_shape)} spatial axes; "
+            "RTSTRUCT contours are points of the 3-D patient space",
+            code="E414",
+        )
+    signs, scale = patient_mapping(grid, "RTSTRUCT contours")
+    # World coordinates live in the annotation's own frame, index
+    # coordinates in the grid's (§6.2, §8).
+    stated = (
+        annotation.header.frame_uid if annotation.space == "world" else grid.frame_uid
+    )
+    agree = frames_agree(frame_uid, stated, frame_salt)
+    if agree is False:
+        hint = _salt_hint(stated, frame_salt, "The annotation's", "the images' frame")
+        raise MEDH5ValidationError(
+            f"annotation {ann_id!r} is in frame of reference {stated!r} and "
+            f"the source images in {frame_uid!r}: contours drawn in one frame "
+            "are not filed under another without a registration, which this "
+            f"exporter does not apply.{hint}",
+            code="E414",
+        )
+    if agree is None:
+        log.guess(
+            "frame_of_reference",
+            f"annotation {ann_id!r} and grid {grid.grid_id!r} state no frame "
+            "of reference for the contours, so they were assumed to be in the "
+            f"source images' frame {frame_uid!r}",
+            {"grid": grid.grid_id, "frame": frame_uid},
+        )
+    world = annotation.space == "world"
+
+    def to_patient(coordinates: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        found = coordinates if world else grid.index_to_world(coordinates)
+        mapped: npt.NDArray[np.float64] = signs * scale * found
+        return mapped
+
+    return annotation, grid, to_patient
 
 
 # The value representations that hold text in a character set (PS3.5 6.1.2).
@@ -1114,44 +1496,6 @@ def _crossings(
         if any(_crosses(a, b) for a, b in combinations(drawn, 2)):
             found.setdefault(class_id, []).append(plane)
     return found
-
-
-def _one_frame(datasets: Sequence[Any]) -> str:
-    """The frame of reference every source image shares: an RTSTRUCT's
-    contours are in one, and only the first image's was read."""
-    frames = {str(getattr(d, "FrameOfReferenceUID", "") or "") for d in datasets}
-    if "" in frames or len(frames) != 1:
-        stated = sorted(f or "none" for f in frames)
-        raise MEDH5ValidationError(
-            f"the source images state the frames of reference {stated}; an "
-            "RTSTRUCT's contours are in one, which every source image must state",
-            code="E414",
-        )
-    return frames.pop()
-
-
-def _to_patient(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
-    """The world-axis signs and the millimetres per grid unit that take
-    *grid*'s world coordinates to DICOM patient coordinates (LPS, mm):
-    ``patient = signs * scale * world``, and the import divides them out ---
-    the inverse of the SEG importer's mapping."""
-    from medh5.io.nifti import MM_PER_UNIT
-
-    if grid.coord_system not in COORD_SYSTEMS:
-        raise MEDH5ValidationError(
-            f"grid {grid.grid_id!r} is in {grid.coord_system!r}; RTSTRUCT contours "
-            "are patient coordinates (LPS), which only an LPS or RAS grid relates to",
-            code="E414",
-        )
-    scale = MM_PER_UNIT.get(grid.units)
-    if scale is None:
-        raise MEDH5ValidationError(
-            f"grid {grid.grid_id!r} is in {grid.units!r}, which relates to no "
-            "patient coordinate in millimetres",
-            code="E414",
-        )
-    flip = 1.0 if grid.coord_system == "LPS" else -1.0
-    return np.array([flip, flip, 1.0]), scale
 
 
 __all__ = [

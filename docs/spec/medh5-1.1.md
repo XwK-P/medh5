@@ -137,8 +137,8 @@ UTF-8 — so equal descriptors digest equally (**E801** otherwise). Its schema i
 - `clock.reference` is `relative`, `utc` or `shifted_utc`. Relative times are signed microseconds
   from a documented, subject-specific origin, and a relative clock **MUST** carry a non-empty
   `origin_description` (**E802**). UTC is signed microseconds from the Unix epoch; shifted UTC uses
-  the same epoch after the de-identification shift `/meta` declares, and a `shifted_utc` clock in a
-  sample that declares no `deidentification` is **E802**.
+  the same epoch after the de-identification shift, whose amount `/meta` may withhold, and a
+  `shifted_utc` clock in a sample that declares no `deidentification` is **E802**.
 
 An origin need not be birth or the first image; negative times are valid, including events before
 baseline imaging. Fragments of a subject that share a clock **MUST** share its origin and unit. No
@@ -502,7 +502,15 @@ annotations only. An absent follow-up is censoring under the task's policy, neve
 - **Downgrade** is a separately requested imaging projection (`medh5 clinical strip`): removing
   clinical evidence is reported as a loss, and the result is a different sample with its own
   `content_id`, written at the lowest version it needs.
-- **MEDS** rows map from `subject_id`, the clock time, `code`, `value_num` and `value_text`; MEDS
+- **De-identification** is a separately requested derivation, as downgrade is: the result is a
+  different sample with its own `content_id`. Every event time moves by the one shift applied to
+  `/meta`'s dates, effective and available bounds alike, so a selection at a cutoff moved by that
+  shift admits the same versions; the clock becomes `shifted_utc` under a new `clock.id`, and
+  event, record and document ids are replaced consistently. The versions it writes are new versions
+  of a new sample, not amendments of the source's (§7.3). Text it does not rewrite is attested as
+  de-identified by whoever did, with the digests of the bytes attested.
+- **MEDS** rows map from `subject_id`, `time`, `code`, `numeric_value` and `text_value` (MEDS 0.3)
+  onto the event's subject, effective time, `code`, `value_num` and `value_text`; MEDS
   subject ids need an explicit mapping, and availability bounds, revisions, units and imaging
   references need extension columns. Relative times are never given invented absolute dates.
 - **FHIR** effective time, issued time, coded values and absent-result reasons are useful import
@@ -534,10 +542,11 @@ belong to revision 1 of the table (1.0 §15.2). The complete table, generated fr
 
 ### 11.3 Conformance
 
-The corpus ([Conformance suite](conformance.md)) holds the 1.0 cases unchanged and 36 cases for this
-profile: eight valid — the §9.3 worked example, a one-visit history with years of laboratory values,
-time uncertainty, UTF-8 text, a vocabulary wider than the class space, a mixed-version collection, a
-higher-minor projection, and a value without a unit — and twenty-eight invalid, at least one per new
+The corpus ([Conformance suite](conformance.md)) holds the 1.0 cases unchanged and 37 cases for this
+profile: nine valid — the §9.3 worked example, a one-visit history with years of laboratory values,
+time uncertainty, UTF-8 text, a shifted clock whose shift is withheld, a vocabulary wider than the
+class space, a mixed-version collection, a higher-minor projection, and a value without a unit — and
+twenty-eight invalid, at least one per new
 error code. The task-and-cache contract is not part of the format corpus; the published suite carries
 its own fixtures beside it ([task-cache-1](task-cache-1.md) §10), whose valid task states the selection
 §9.3 describes for every row.
@@ -584,6 +593,9 @@ or reviewing that implementation before its release, showed it was needed.
 | §9.1 | An event of `unknown` time is a plan only when `planned`: the plan rule reads a known effective start, and `order_by = available` admits an unknown-time event as unknown. | Found by the review of 2.0 before its release: the text made every event whose start is not definitely at or before `c` a plan, so an unknown-time event — which has no start — was one, excluded by default, and the ordering by availability that admits such events admitted none. The engine, its documentation and its tests always admitted it as unknown, which reads nothing unknown at the cutoff: its availability is at or before it, and its time stays marked unknown (task contract §6), never placed on the timeline. |
 | §9.1 | Tie groups are the connected components of the overlap relation on inclusive order bounds; bounds sharing an instant overlap. | Found by the audit of 2.0.1: "events whose bounds overlap form one tie group" read as chains or as pairs, and an event limit kept or dropped different events under each. The reference has always chained them, sweeping the bounds in order. |
 | §9.3 | `lab0` lies inside any `closed` context of 72 h or more; an `open` one must be wider. | Found by the audit of 2.0.1: at 72 h, `lab0`'s −48 h is the context's lower edge, which `closed` admits and `open` excludes (§9.1), so "any context of ≥ 72 h" held under one boundary only. |
+| §3 | The amount of a `shifted_utc` clock's shift is what `/meta` declares *or withholds* (1.0 §11.4). | Found in the development of 2.1: the clause read as if `/meta` always stated the amount, while 1.0 §11.4 now advises against recording it, and the validator already accepted a shifted clock whose amount is not recorded. |
+| §10 | De-identification is a derivation: times move by the one shift, the clock becomes `shifted_utc` under a new id, ids are replaced consistently, and text is attested by the digests of its bytes. | Found implementing the clinical scrub: the source's versions cannot be amended — the writer refuses another clock (E802) and §7.3 holds a version added again to what it was — and refusing every clinical sample left only the imaging projection, which loses the history. |
+| §10 | MEDS's columns are named as MEDS names them (`time`, `numeric_value`, `text_value`) and mapped onto this profile's. | Found planning the MEDS importer: the text gave this profile's column names for MEDS's, so an importer written from it looked for columns no MEDS dataset has. |
 | §11 | Diagnostic codes E011, E801–E819, W913 and W914 are allocated, each with a conformance case. | The draft did not allocate codes for unimplemented rules; they are now implemented. |
 | §11.1 | `semantic` checks E802's rule for a `shifted_utc` clock, which needs `/meta`'s de-identification record; the rest of E802 stays `structural`. `integrity` adds E818 beside every 1.0 digest code, E704 included. | Found by the review of 2.0 before its release: the clause placed all of E802 at `structural`, though that rule compares the descriptor with `/meta`, a cross-reference the reference validator checks at `semantic` with the record rules — so a validator built from the text reported at `structural` a defect the reference reports only from `semantic` on; and it named 1.0's integrity codes E701–E703, written before 2.0 allocated E704. |
 

@@ -19,7 +19,7 @@
 > where noted; land them as one pull request from the latest `main`, one commit
 > per item, each with its `tests/project/test_packaging.py` change and its
 > fragment, and the local gate from `CLAUDE.md` passing. Several need the
-> maintainer (trusted publishers, secrets, the `windows-11-arm` runner): put
+> maintainer (trusted publishers, secrets): put
 > what they must do in the pull request description as a checklist, and make the
 > workflow fail with a clear message, never silently skip, when a secret is
 > missing in this repository.
@@ -30,7 +30,7 @@
 |---|---|---|
 | 1 | 01.1 Fuzzing the Rust readers | M |
 | 2 | 01.2 Structural hostile inputs for `damaged.py` | S |
-| 3 | 01.3 cp314t wheels, and Windows arm64 if runners exist | M |
+| 3 | 01.3 cp314t wheels | M |
 | 4 | 01.4 Attestations for every release artifact | S |
 | 5 | 01.5 Trusted publishing to crates.io | S |
 | 6 | 01.6 Licences and sources (`cargo deny`) | S |
@@ -109,14 +109,14 @@
   `--structural` in both jobs.
 - **Changelog.** `<!-- no entry: CI only -->`.
 
-### 01.3 cp314t wheels, and Windows arm64 if runners exist (PR 3, after W21-00 PR 7)
+### 01.3 cp314t wheels (PR 3, after W21-00 PR 7)
 
 - **State at 2.0.2.** One `cp310-abi3` wheel each for manylinux_2_28
   x86_64/aarch64, macOS arm64/x86_64 and win_amd64; `release.yml` checks exactly
   these and the five CLI archives. `#[pymodule(gil_used = true)]`, held by a
   `test_packaging` test. PyPI today: h5py 3.16 and numpy 2.5.4 ship cp314t
   wheels everywhere; torch 2.14.1 ships cp314t for macOS arm64, manylinux
-  x86_64/aarch64 and win_amd64; hdf5plugin 7.1.0 has no win_arm64 wheel;
+  x86_64/aarch64 and win_amd64;
   pyjpegls 1.5.1 (a highdicom dependency) has no wheel after cp313.
 - **Change (D37).**
   - **cp314t.** `build.yml` runs a second `maturin build --release --locked --out
@@ -129,16 +129,6 @@
     extras; if pyjpegls does not build on 3.14t, drop `dicomseg` there and say
     why in a comment); an informational `test-no-gil` job with `PYTHON_GIL=0`
     and `continue-on-error: true`.
-  - **Windows arm64**, only if a test workflow shows `windows-11-arm` runs for
-    this repository (check first; otherwise leave it for 2.2.0 and say so in the
-    pull request): a caller `build-windows-arm64` (`runner: windows-11-arm`,
-    `target: aarch64-pc-windows-msvc`; if the image has no rustup, install
-    `rustup-init.exe` verified by checksum, as `build-dist.sh` does); build with
-    Python 3.12 arm64; `test-windows-arm64` runs 3.12 and 3.14 with the dev extra
-    minus hdf5plugin, plus nifti and dicom, no torch; the target joins
-    `release.yml`'s two lists, `third_party_notices.py`'s `TARGETS`,
-    `docs/install.md` and the CLI zip. `.cargo/config.toml` already sets NDEBUG
-    for `aarch64-pc-windows-msvc`.
 - **Tests.** The informational set in `test_packaging` becomes {test-python-next,
   test-no-gil}; a new test that `release.yml`'s platform and target tuples, the
   build callers and `TARGETS` agree.

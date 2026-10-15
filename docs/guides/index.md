@@ -34,6 +34,7 @@ minutes.
 |---|---|
 | **[Clinical history beside the images](clinical.md)** | Labs, reports and their revisions on one subject clock; what was known at a moment; adding a history to 1.0 files. |
 | **[Train on clinical tasks](clinical-training.md)** | Task manifests, preflight, cutoff-aware batches with missing modalities, document features and caches that know when they are stale. |
+| **[Import from MEDS or FHIR](clinical-import.md)** | One subject's MEDS rows or FHIR R4 resources as events, with nothing invented: no zone, unit, code or availability. |
 
 ## Working with a cohort
 

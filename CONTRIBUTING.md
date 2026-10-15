@@ -258,18 +258,24 @@ deletes them), and push a `vX.Y.Z` tag on a commit whose CI passed.
 
 1. runs the full CI on the tagged commit, which builds every wheel, the sdist
    and every binary, and the advisory checks (`advisories.yml`: `cargo audit`
-   over `Cargo.lock`, `pip-audit` over the extras), which fail on an advisory
-   that `SECURITY.md` has not dispositioned;
+   over `Cargo.lock`, `pip-audit` over the package's requirement and over the
+   extras), which fail on an advisory against a crate or the requirement that
+   `SECURITY.md` has not dispositioned; an advisory against what an extra
+   installs is reported in the run's summary, to disposition in `SECURITY.md`,
+   and does not stop the release;
 2. checks the tag against the workspace version, every platform's wheel and
    binary against the tag (each carrying `LICENSE` and `THIRD_PARTY_NOTICES`),
    and extracts the version's section of `CHANGELOG.md` — a tag with no
    section, a CHANGELOG with entries still under `[Unreleased]`, or a fragment
    left in `changes/`, fails here, before anything is published;
 3. publishes the wheels and the sdist to PyPI through Trusted Publishing, and
-   the crates to crates.io (`medh5-sys`, `medh5`, `medh5-cli`, in that order,
-   with the `CARGO_REGISTRY_TOKEN` secret — each crate built from its package
-   without the token in the environment, then uploaded, and in the index before
-   the next one, which resolves against it);
+   the crates to crates.io through trusted publishing too: every crate is
+   first built from its package, with no token in existence, and a failure
+   there publishes nothing; then the job exchanges its identity for a
+   short-lived token and uploads `medh5-sys`, `medh5` and `medh5-cli`, in
+   that order, each in the index before the next one, which resolves against
+   it. Beside these, every archive, wheel and sdist is attested (`gh
+   attestation verify`);
 4. creates the GitHub Release, with the changelog section as its notes (each
    paragraph on one line, since a release page breaks a line wherever its
    source does) and the distributions, the binaries and their `SHA256SUMS`
@@ -287,14 +293,20 @@ fix the version's section, then `python .github/scripts/release_notes.py vX.Y.Z`
 writes them again and `gh release edit vX.Y.Z --notes-file release-notes.md`
 puts them on the release page.
 
-In this repository a missing `CARGO_REGISTRY_TOKEN` or `HOMEBREW_TAP_TOKEN`
-fails the step that needs it; in a fork the step warns and does nothing, so a
-fork can release to PyPI alone. The format version (`medh5.FORMAT_VERSION`) is
-separate and changes only with the specification.
+In this repository a crates.io exchange that issues no token, or a missing
+`HOMEBREW_TAP_TOKEN`, fails the step that needs it; in a fork the step warns
+and does nothing, so a fork can release to PyPI alone. The format version
+(`medh5.FORMAT_VERSION`) is separate and changes only with the specification.
 
 `THIRD_PARTY_NOTICES` holds the licences of everything the wheel and the binary
 compile in, generated from `Cargo.lock`. After changing `Cargo.lock`, run
 `python .github/scripts/third_party_notices.py`; CI fails while it is stale.
+Every Monday `lock-refresh.yml` refreshes the lock, regenerates the notices
+and opens a pull request on `deps/cargo-lock`; it holds back the crates of the
+native inventory below and lists their bumps in its body, for a person to make
+with the inventory's row. If the repository has neither the `LOCK_REFRESH_APP_ID`
+app nor the `LOCK_REFRESH_TOKEN` token, that pull request runs no CI until it is
+closed and reopened.
 A library under a licence the others do not already name goes into
 `pyproject.toml`'s `license` expression too, and the Homebrew formula's
 (`.github/scripts/homebrew_formula.py`); neither can be corrected for a
@@ -314,11 +326,10 @@ What a release needs from a registry is set up once, outside the repository,
 and a gap in it shows only when the tag runs — by which time PyPI may have the
 version. Before the first tag that publishes there:
 
-- **crates.io**: the account the token belongs to has a verified email
-  address, and `CARGO_REGISTRY_TOKEN` has the `publish-new` scope as well as
-  `publish-update`, since the first version of a crate is a new crate. The
-  secret is in place before the tag: on the repository, or on the `crates-io`
-  environment, which the first run would otherwise create without it.
+- **crates.io**: each crate (`medh5-sys`, `medh5`, `medh5-cli`) has a trusted
+  publisher naming this repository, `release.yml` and the `crates-io`
+  environment. Trusted publishing can only update a crate that exists, so a
+  new crate's first version is published by hand by an owner.
 - **PyPI**: the project's Trusted Publisher names this repository,
   `release.yml` and the `pypi` environment, as it has since 1.x; renaming
   either here means renaming it there.
@@ -327,8 +338,7 @@ version. Before the first tag that publishes there:
   write access to that repository's contents.
 
 After it, add a second owner to each crate (`cargo owner --add`), so that
-publishing does not hang on one account, and consider crates.io's Trusted
-Publishing, which retires the token.
+publishing does not hang on one account.
 
 ### If a release fails partway
 

@@ -28,6 +28,7 @@ from medh5.conformance import (
     publish,
     run_corpus,
     score,
+    score_companion,
     summarize,
 )
 from medh5.errors import CODES, CODES_REVISION, MEDH5Error, MEDH5ValidationError
@@ -338,6 +339,26 @@ class TestCodeRevisions:
         published = json.loads((ROOT / "crates/medh5/data/codes.json").read_text())
         assert published["revision"] == CODES_REVISION
 
+    def test_S15_2_the_table_states_its_revision_and_marks_the_codes(self):
+        """§15.2 names the table's revision, and marks (rN) exactly the codes
+        a revision after the first allocated, in 1.0's table or 1.1's."""
+        spec = (ROOT / "docs" / "spec" / "medh5-1.0.md").read_text(encoding="utf-8")
+        table = spec[
+            spec.index("### 15.2 Error codes") : spec.index("## 16. Versioning")
+        ]
+        stated = f"complete for 1.0 at revision {CODES_REVISION}"
+        assert stated in " ".join(table.split())
+        minor = (ROOT / "docs" / "spec" / "medh5-1.1.md").read_text(encoding="utf-8")
+        added = minor[
+            minor.index("### 11.2 Diagnostic codes") : minor.index("### 11.3")
+        ]
+        marked = {
+            code: int(revision)
+            for code, revision in re.findall(r"`([EW]\d{3})` \(r(\d+)\)", table + added)
+        }
+        later = {c.code: c.revision for c in CODES.values() if c.revision > 1}
+        assert marked == later
+
     def test_S15_2_a_revision_keeps_every_earlier_code(self):
         """No later revision narrows, renumbers, removes or re-severs a code."""
         first = {c.code: c.severity for c in CODES.values() if c.revision == 1}
@@ -578,10 +599,9 @@ class TestPublication:
 
         expected = json.loads((suite / "companion" / "expected.json").read_text())
         fixtures = expected["fixtures"]
-        assert len(fixtures) == 15
+        assert {f["level"] for f in fixtures} == {"validate", "preflight", "cache"}
         for fixture in fixtures:
-            path = suite / "companion" / fixture["file"]
-            main(["task", fixture["level"], str(path), "--json"])
+            main(_fixture_argv(suite, fixture))
             report = json.loads(capsys.readouterr().out)
             found = {f["code"] for f in report["findings"]}
             assert found == set(fixture["findings"]), fixture["name"]
@@ -772,6 +792,222 @@ class TestPublication:
         assert len(submitted) == len(names)
         assert not [entry for entry in submitted if "file" in entry]
         assert summarize(score(suite, submitted))["ok"]
+
+
+def _fixture_argv(suite: Path, fixture: dict) -> list[str]:
+    """The command checking a task-and-cache fixture, with ``--json``."""
+    companion = suite / "companion"
+    path = str(companion / fixture["file"])
+    if fixture["level"] != "cache":
+        return ["task", fixture["level"], path, "--json"]
+    task = ["--task", str(companion / fixture["task"])] if "task" in fixture else []
+    return ["cache", "validate", path, *task, "--json"]
+
+
+def _fixture_reports(suite: Path, capsys) -> list[dict]:
+    """What this implementation's command line reports on every fixture, as a
+    submission: each report named by its fixture's file."""
+    reports = []
+    expected = json.loads((suite / "companion" / "expected.json").read_text())
+    for fixture in expected["fixtures"]:
+        main(_fixture_argv(suite, fixture))
+        report = json.loads(capsys.readouterr().out)
+        reports.append({**report, "file": fixture["file"]})
+    return reports
+
+
+class TestCompanionFixtures:
+    """task-cache-1 §8–§10: the fixtures score an implementation of the
+    contract, the caches as well as the tasks."""
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def suite(cls, tmp_path_factory) -> Path:
+        corpus = tmp_path_factory.mktemp("companion")
+        names = [
+            "clinical-worked-example",
+            "clinical-one-visit-history",
+            "W913-higher-minor-projection",
+        ]
+        return publish(corpus, names=names)
+
+    @staticmethod
+    def _fixtures(suite: Path) -> list[dict]:
+        expected = json.loads((suite / "companion" / "expected.json").read_text())
+        fixtures: list[dict] = expected["fixtures"]
+        return fixtures
+
+    def test_S8_cache_fixtures_score_their_findings(self, suite, capsys):
+        caches = [f for f in self._fixtures(suite) if f["level"] == "cache"]
+        levels = set()
+        for fixture in caches:
+            assert (suite / "companion" / fixture["file"]).is_file(), fixture["name"]
+            main(_fixture_argv(suite, fixture))
+            report = json.loads(capsys.readouterr().out)
+            found = {f["code"] for f in report["findings"]}
+            assert found == set(fixture["findings"]), (fixture["name"], report)
+            assert report["ok"] == (not fixture["findings"])
+            if report["level"] is not None:  # a corrupt manifest has none
+                levels.add(report["level"])
+        assert levels == {"event", "patient"}
+        valid = [f["name"] for f in caches if not f["findings"]]
+        assert sorted(valid) == ["valid-event", "valid-patient"]
+
+    def test_S9_every_companion_code_has_a_fixture(self, suite):
+        from medh5.task import CODES as TASK_CODES
+
+        covered = {code for f in self._fixtures(suite) for code in f["findings"]}
+        assert covered == set(TASK_CODES), set(TASK_CODES) ^ covered
+        # One fixture each: a fixture finding two codes says less about either.
+        for fixture in self._fixtures(suite):
+            assert len(fixture["findings"]) <= 1, fixture["name"]
+
+    def test_S4_an_extra_row_fails_a_fixture(self, suite, capsys):
+        reports = _fixture_reports(suite, capsys)
+        assert all(r.ok for r in score_companion(suite, reports))
+        valid = next(r for r in reports if r["file"] == "valid-two-subjects.task.json")
+        extra = {**valid["rows"][0], "row_id": "invented@h24"}
+        added = {**valid, "rows": [*valid["rows"], extra]}
+        dropped = {**valid, "rows": valid["rows"][1:]}
+        first = valid["rows"][0]
+        positive = {**first, "target": {**first["target"], "status": "positive"}}
+        relabelled = {**valid, "rows": [positive, *valid["rows"][1:]]}
+        for changed, why in [
+            (added, "invented@h24: not a row the fixture states"),
+            (dropped, "worked@h24: not reported"),
+            (relabelled, "worked@h24: target"),
+        ]:
+            others = [r for r in reports if r is not valid]
+            failed = [r for r in score_companion(suite, [*others, changed]) if not r.ok]
+            assert [r.case.name for r in failed] == ["valid-two-subjects"]
+            assert why in (failed[0].error or ""), failed[0].error
+        # `ok` is scored with the findings: a report saying ok over findings is
+        # wrong about itself.
+        cache = next(r for r in reports if "T402-payload-changed" in r["file"])
+        others = [r for r in reports if r is not cache]
+        claimed = [*others, {**cache, "ok": True}]
+        failed = [r for r in score_companion(suite, claimed) if not r.ok]
+        assert [r.case.name for r in failed] == ["T402-payload-changed"]
+        silent = [r for r in score_companion(suite, others) if not r.ok]
+        assert [r.error for r in silent] == ["no result submitted for this fixture"]
+
+    def test_S8_a_published_suite_scores_a_cache_implementation(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Done when: a suite published from anywhere scores every fixture
+        from the command line's own reports, reading nothing but the suite."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        out = tmp_path / "suite"
+        assert main(["conformance", "publish", str(out)]) == 0
+        capsys.readouterr()
+        reports = _fixture_reports(out, capsys)
+        caches = [r for r in reports if r["file"].endswith(".medh5cache")]
+        assert len(caches) == 9
+        results = tmp_path / "results.json"
+        results.write_text(json.dumps(reports), encoding="utf-8")
+        argv = ["conformance", "score", str(out), str(results), "--companion"]
+        assert main([*argv, "--json"]) == 0
+        summary = json.loads(capsys.readouterr().out)
+        assert summary["ok"] and summary["failed"] == 0
+        assert summary["cases"] == len(reports)
+        assert list(elsewhere.iterdir()) == []
+        assert main([*argv, "--codes-revision", "1"]) != 0
+        assert "no format version or code revision" in capsys.readouterr().err
+
+
+class TestBoundedScore:
+    """1.0 §15.2 and 1.1 §2.2: each case states the format version it is
+    addressed to, and a score is bounded by version and by code revision, so
+    an implementation is held to what it was told about."""
+
+    @staticmethod
+    def _expectations(manifest: dict, drop: frozenset[str] = frozenset()) -> list:
+        return [
+            {
+                "file": c["file"],
+                "errors": [x for x in c["expect_errors"] if x not in drop],
+                "warnings": [x for x in c["expect_warnings"] if x not in drop],
+            }
+            for c in manifest["cases"]
+        ]
+
+    def test_every_case_states_its_format_version(self, tmp_path):
+        build_corpus(tmp_path)
+        manifest = load_manifest(tmp_path)
+        assert manifest["codes_revision"] == CODES_REVISION
+        for record in manifest["cases"]:
+            expected = record["expect_errors"] + record["expect_warnings"]
+            latest = max(
+                [CODES[c].since for c in expected]
+                + ["1.1" if "(1.1)" in record["clause"] else "1.0"]
+            )
+            assert record["format_version"] == latest, record["name"]
+        # A file's declared version is not the case's: these two declare 1.0
+        # and expect 1.1's answers.
+        for name in (
+            "E009-clinical-profile-in-a-1-0-file",
+            "E011-collection-version-below-member",
+        ):
+            assert case_by_name(name).format_version == "1.1", name
+        versions = {c.format_version for c in CASES}
+        assert versions == {"1.0", "1.1"}
+
+    def test_S2_2_a_1_0_implementation_is_scored_on_the_cases_addressed_to_1_0(
+        self, tmp_path, capsys
+    ):
+        later = next(c for c in CASES if c.format_version == "1.1")
+        publish(tmp_path, names=["core-minimal", later.name])
+        manifest = load_manifest(tmp_path)
+        only_1_0 = [
+            s
+            for s, c in zip(
+                self._expectations(manifest), manifest["cases"], strict=True
+            )
+            if c["format_version"] == "1.0"
+        ]
+        assert not summarize(score(tmp_path, only_1_0))["ok"]
+        bounded = score(tmp_path, only_1_0, format_version="1.0")
+        assert [r.case.name for r in bounded] == ["core-minimal"]
+        assert summarize(bounded)["ok"]
+
+        results = tmp_path / "results.json"
+        results.write_text(json.dumps(only_1_0), encoding="utf-8")
+        assert main(["conformance", "score", str(tmp_path), str(results)]) != 0
+        capsys.readouterr()
+        argv = ["conformance", "score", str(tmp_path), str(results)]
+        assert main([*argv, "--format-version", "1.0", "--json"]) == 0
+        summary = json.loads(capsys.readouterr().out)
+        assert (summary["cases"], summary["skipped"]) == (1, 1)
+        assert main([*argv, "--format-version", "1"]) != 0
+        assert "not a version" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "code", sorted(c.code for c in CODES.values() if c.revision > 1) or [None]
+    )
+    def test_S15_2_a_validator_of_an_earlier_revision_is_scored_against_it(
+        self, code, tmp_path, capsys
+    ):
+        assert code is not None, "the table holds no code of a later revision"
+        later = frozenset(c.code for c in CODES.values() if c.revision > 1)
+        expecting = next(c for c in CASES if code in c.errors or code in c.warnings)
+        publish(tmp_path, names=["core-minimal", expecting.name])
+        manifest = load_manifest(tmp_path)
+        # What a validator of revision 1 reports: everything but the codes
+        # allocated after it.
+        submitted = self._expectations(manifest, drop=later)
+        results = tmp_path / "results.json"
+        results.write_text(json.dumps(submitted), encoding="utf-8")
+        argv = ["conformance", "score", str(tmp_path), str(results)]
+        assert main(argv) != 0
+        capsys.readouterr()
+        assert main([*argv, "--codes-revision", "1"]) == 0
+        assert "were not scored" in capsys.readouterr().out
+        # A later code reported anyway is ignored under the bound, not held
+        # against the validator.
+        noisy = [{**s, "warnings": [*s["warnings"], code]} for s in submitted]
+        assert summarize(score(tmp_path, noisy, codes_revision=1))["ok"]
 
 
 class TestCorpusSmoke:
@@ -1026,6 +1262,26 @@ class TestStatedCounts:
         assert re.findall(r"profile:\s+(\w+) valid", spec) == [_spelled(valid)]
         invalid = re.findall(r"—\s+and\s+([\w-]+)\s+invalid", spec)
         assert invalid == [_spelled(len(clinical) - valid)], invalid
+
+    def test_S10_the_stated_fixture_counts_are_the_fixture_counts(self, tmp_path):
+        """The conformance page and task-cache-1 §10 count the task manifests
+        and the feature caches under `companion/`; "fourteen task manifests"
+        stood for the release that published fifteen."""
+        names = [
+            "clinical-worked-example",
+            "clinical-one-visit-history",
+            "W913-higher-minor-projection",
+        ]
+        publish(tmp_path, names=names)
+        expected = json.loads((tmp_path / "companion/expected.json").read_text())
+        caches = sum(1 for f in expected["fixtures"] if f["level"] == "cache")
+        tasks = len(expected["fixtures"]) - caches
+        page = (ROOT / "docs/spec/conformance.md").read_text(encoding="utf-8")
+        contract = (ROOT / "docs/spec/task-cache-1.md").read_text(encoding="utf-8")
+        assert re.findall(r"(\w+)\s+task\s+manifests over", page) == [_spelled(tasks)]
+        for text in (page, contract):
+            stated = re.findall(r"(\w+)\s+feature\s+caches", text)
+            assert stated == [_spelled(caches)], stated
 
     def test_S15_2_every_stated_code_count_is_the_registry_size(self):
         """The pages that link the code table said "All 93" and "all 71" while

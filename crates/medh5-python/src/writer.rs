@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use numpy::{PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFrozenSet, PyString, PyTuple};
@@ -14,14 +15,19 @@ use serde_json::Value;
 
 use medh5::annotations::encode::InstanceInput;
 use medh5::annotations::encode_geometric::{Assertions, Polygon};
+use medh5::annotations::select::OverlapStats;
+use medh5::annotations::LabelValue;
 use medh5::labels::ClassKey;
-use medh5::sample::writer::{Annotated, GridOptions, ImageOptions, QualityArg, SampleWriter as EngineWriter};
+use medh5::sample::writer::{
+    Annotated, GridOptions, ImageEdit, ImageOptions, QualityArg, SampleWriter as EngineWriter,
+};
 use medh5::sample::writer_annotations::{
-    AnnotationOptions, ObjectFields, Placement, SegmentationOptions, SegmentationSource, TransformSpec,
+    AnnotationOptions, FieldDtype, LabelmapSource, ObjectFields, Placement, SegmentationOptions, SegmentationSource,
+    TransformSpec,
 };
 
 use crate::convert::{
-    bool_array, class_key, class_keys, detach_if, f64_array, f64_vec, i64_array, i64_vec, kwargs_to_map,
+    asarray, bool_array, class_key, class_keys, detach_if, f64_array, f64_vec, i64_array, i64_vec, kwargs_to_map,
     matrix as to_matrix, opt_strings, py_to_json, py_to_nd, strings, DETACH_ROWS,
 };
 use crate::curation::{Activity, Agent, Cohort, Deidentification, Identity, QualityRecord, SplitClaim, Timepoint};
@@ -162,6 +168,75 @@ fn opt_keys(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<ClassKey>>> {
 }
 
 /// `{class: array}` items, in the mapping's order.
+/// `label_values=`: each value's class, or classes (an nnU-Net region is a
+/// union of values, so a value is in every region holding it).
+fn label_values_arg(obj: &Bound<'_, PyAny>) -> PyResult<Vec<(i64, Vec<ClassKey>)>> {
+    let mut out = Vec::new();
+    for (value, classes) in items_of(obj)? {
+        let classes = match class_key(&classes) {
+            Ok(key) => vec![key],
+            Err(_) => class_keys(&classes)?,
+        };
+        out.push((value.extract::<i64>()?, classes));
+    }
+    Ok(out)
+}
+
+/// `add_segmentation(labelmap=...)`, the volume borrowed from NumPy for the
+/// whole write, which runs with the GIL released.
+#[allow(clippy::too_many_arguments)]
+fn add_labelmap(
+    writer: &mut EngineWriter,
+    ann_id: &str,
+    grid: &str,
+    labelmap: &Bound<'_, PyAny>,
+    values: Option<Vec<(i64, Vec<ClassKey>)>>,
+    ignore_value: Option<i64>,
+    options: SegmentationOptions,
+) -> R<(String, Option<OverlapStats>)> {
+    fn write<T: numpy::Element + LabelValue>(
+        writer: &mut EngineWriter,
+        ann_id: &str,
+        grid: &str,
+        array: &Bound<'_, PyUntypedArray>,
+        values: Option<Vec<(i64, Vec<ClassKey>)>>,
+        ignore_value: Option<i64>,
+        options: SegmentationOptions,
+    ) -> R<(String, Option<OverlapStats>)> {
+        let typed = array.cast::<PyArrayDyn<T>>().map_err(PyErr::from)?;
+        let guard = typed.readonly();
+        let view = guard.as_array();
+        Ok(array.py().detach(move || {
+            let mut source = LabelmapSource::new(view);
+            if let Some(values) = values {
+                source = source.values(values);
+            }
+            if let Some(value) = ignore_value {
+                source = source.ignore_value(value);
+            }
+            writer.add_segmentation_labelmap(ann_id, grid, source, options)
+        })?)
+    }
+    let array = asarray(labelmap, None)?;
+    let dtype = array.dtype();
+    let (a, v, i) = (&array, values, ignore_value);
+    match (dtype.kind() as char, dtype.itemsize()) {
+        ('u', 1) => write::<u8>(writer, ann_id, grid, a, v, i, options),
+        ('u', 2) => write::<u16>(writer, ann_id, grid, a, v, i, options),
+        ('u', 4) => write::<u32>(writer, ann_id, grid, a, v, i, options),
+        ('u', 8) => write::<u64>(writer, ann_id, grid, a, v, i, options),
+        ('i', 1) => write::<i8>(writer, ann_id, grid, a, v, i, options),
+        ('i', 2) => write::<i16>(writer, ann_id, grid, a, v, i, options),
+        ('i', 4) => write::<i32>(writer, ann_id, grid, a, v, i, options),
+        ('i', 8) => write::<i64>(writer, ann_id, grid, a, v, i, options),
+        _ => Err(PyTypeError::new_err(format!(
+            "labelmap= is an integer volume, not of dtype {}; pass masks= for boolean masks",
+            dtype.str()?
+        ))
+        .into()),
+    }
+}
+
 fn items_of<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<(Bound<'py, PyAny>, Bound<'py, PyAny>)>> {
     let mut out = Vec::new();
     for item in obj.call_method0("items")?.try_iter()? {
@@ -409,6 +484,20 @@ impl SampleWriter {
         profiles: Option<&Bound<'_, PyAny>>,
     ) -> R<Self> {
         let profiles = opt_strings(profiles)?.unwrap_or_default();
+        if sample_id.is_none() {
+            let ids = medh5::sample::writer::default_ids(&path)?;
+            if ids.current != ids.stem {
+                let (stem, current) = (medh5::json::repr_str(&ids.stem), medh5::json::repr_str(&ids.current));
+                crate::deprecation::warn(
+                    py,
+                    &format!(
+                        "medh5 3.0 names this sample {stem} (the file stem), not {current}: pass sample_id= (and \
+                         subject_id=) to keep {current}"
+                    ),
+                    true,
+                )?;
+            }
+        }
         let codec = codec.to_string();
         let inner = py.detach(move || {
             medh5::sample::writer::create(&path, sample_id.as_deref(), subject_id.as_deref(), &codec, &profiles)
@@ -776,9 +865,15 @@ impl SampleWriter {
     /// classes, so it is refused (E404), as a transcode to it is.  Masks
     /// stored as `instances` are one object per class, each minted an id
     /// above every id the sample holds (§7.4).
-    #[pyo3(signature = (ann_id, *, grid, masks=None, probabilities=None, instances=None, encoding="auto",
-        threshold=None, annotated_classes=None, closure="explicit", ignore=None, ignore_mask=None, timepoints=None,
-        prov=None, quality=None, derived_from=None, task="segmentation", codec=None))]
+    ///
+    /// `labelmap` is the masks as one integer volume, borrowed rather than
+    /// copied: each nonzero value the class of that id, or the classes
+    /// `label_values` gives it, and `ignore_value` the ignore region.  What it
+    /// writes is what the masks it implies write, byte for byte.
+    #[pyo3(signature = (ann_id, *, grid, masks=None, probabilities=None, instances=None, labelmap=None,
+        label_values=None, ignore_value=None, encoding="auto", threshold=None, annotated_classes=None,
+        closure="explicit", ignore=None, ignore_mask=None, timepoints=None, prov=None, quality=None, derived_from=None,
+        task="segmentation", codec=None))]
     #[allow(clippy::too_many_arguments)]
     fn add_segmentation<'py>(
         &mut self,
@@ -788,6 +883,9 @@ impl SampleWriter {
         masks: Option<&Bound<'py, PyAny>>,
         probabilities: Option<&Bound<'py, PyAny>>,
         instances: Option<&Bound<'py, PyAny>>,
+        labelmap: Option<&Bound<'py, PyAny>>,
+        label_values: Option<&Bound<'py, PyAny>>,
+        ignore_value: Option<i64>,
         encoding: &str,
         threshold: Option<f64>,
         annotated_classes: Option<&Bound<'py, PyAny>>,
@@ -803,41 +901,54 @@ impl SampleWriter {
     ) -> R<Bound<'py, PyTuple>> {
         let writer = self.writer()?;
         writer.grid_ref(grid)?;
-        let given: Vec<&str> = [("masks", masks), ("probabilities", probabilities), ("instances", instances)]
-            .into_iter()
-            .filter(|(_, v)| is_given(*v).is_some())
-            .map(|(n, _)| n)
-            .collect();
+        let sources =
+            [("masks", masks), ("probabilities", probabilities), ("instances", instances), ("labelmap", labelmap)];
+        let given: Vec<&str> = sources.into_iter().filter(|(_, v)| is_given(*v).is_some()).map(|(n, _)| n).collect();
         if given.len() > 1 {
             return Err(medh5::Error::coded(
                 "E404",
                 format!(
-                    "annotation {}: pass one of masks=, probabilities= or instances=, not {}",
+                    "annotation {}: pass one of masks=, probabilities=, instances= or labelmap=, not {}",
                     medh5::json::repr_str(ann_id),
                     given.join(" and ")
                 ),
             )
             .into());
         }
-        let source = if let Some(m) = is_given(masks) {
+        let labelmap = is_given(labelmap);
+        let values = is_given(label_values).map(|v| label_values_arg(&v)).transpose()?;
+        if labelmap.is_none() && (values.is_some() || ignore_value.is_some()) {
+            return Err(medh5::Error::coded(
+                "E404",
+                format!(
+                    "annotation {}: label_values= and ignore_value= apply to labelmap= only",
+                    medh5::json::repr_str(ann_id)
+                ),
+            )
+            .into());
+        }
+        let source = if labelmap.is_some() {
+            None
+        } else if let Some(m) = is_given(masks) {
             let mut out = Vec::new();
             for (k, v) in items_of(&m)? {
                 let what = format!("annotation {}: the mask of class {}", medh5::json::repr_str(ann_id), k.repr()?);
                 out.push((class_key(&k)?, mask_arg(&v, &what)?));
             }
-            SegmentationSource::Masks(out)
+            Some(SegmentationSource::Masks(out))
         } else if let Some(p) = is_given(probabilities) {
             let mut out = Vec::new();
             for (k, v) in items_of(&p)? {
                 out.push((class_key(&k)?, f64_array(&v)?));
             }
-            SegmentationSource::Probabilities(out)
+            Some(SegmentationSource::Probabilities(out))
         } else if let Some(i) = is_given(instances) {
-            SegmentationSource::Instances(instance_inputs(writer, &i)?)
+            Some(SegmentationSource::Instances(instance_inputs(writer, &i)?))
         } else {
-            return Err(
-                medh5::Error::invalid("add_segmentation needs one of masks=, probabilities= or instances=").into()
-            );
+            return Err(medh5::Error::invalid(
+                "add_segmentation needs one of masks=, probabilities=, instances= or labelmap=",
+            )
+            .into());
         };
         let options = SegmentationOptions {
             encoding: Some(encoding.to_string()),
@@ -848,8 +959,11 @@ impl SampleWriter {
             ignore_mask,
             common: common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?,
         };
-        let (id, grid) = (ann_id.to_string(), grid.to_string());
-        let (kind, stats) = py.detach(move || writer.add_segmentation(&id, &grid, source, options))?;
+        let (kind, stats) = match (source, labelmap) {
+            (Some(source), _) => py.detach(move || writer.add_segmentation(ann_id, grid, source, options))?,
+            (None, Some(labelmap)) => add_labelmap(writer, ann_id, grid, &labelmap, values, ignore_value, options)?,
+            (None, None) => unreachable!("one source is given"),
+        };
         let stats = match stats {
             Some(s) => Bound::new(py, crate::annotations::OverlapStats::wrap(s))?.into_any(),
             None => py.None().into_bound(py),
@@ -871,11 +985,15 @@ impl SampleWriter {
         task: &str,
         prov: Option<&Bound<'_, PyAny>>,
         codec: Option<&str>,
-    ) -> R<()> {
+    ) -> R<Group> {
         let mask = mask_arg(mask, &format!("mask {}", medh5::json::repr_str(ann_id)))?;
         let prov = prov_arg(prov)?;
         let writer = self.writer()?;
-        Ok(py.detach(move || writer.add_mask(ann_id, mask, grid, task, prov.as_deref(), codec))?)
+        let group = py.detach(move || -> medh5::Result<_> {
+            writer.add_mask(ann_id, mask, grid, task, prov.as_deref(), codec)?;
+            writer.root()?.group("annotations")?.group(ann_id).map_err(Into::into)
+        })?;
+        Ok(Group::wrap(group))
     }
 
     /// Drop an annotation, and any index entry derived from it.
@@ -886,6 +1004,59 @@ impl SampleWriter {
     /// Drop a transform; what still names it is checked at commit.
     fn remove_transform(&mut self, transform_id: &str) -> R<()> {
         Ok(self.writer()?.remove_transform(transform_id)?)
+    }
+
+    /// Drop an image, its `acquisition` entry and its `series_uids`
+    /// mentions; what still names it, and the last image going (E201), are
+    /// checked at commit.
+    fn remove_image(&mut self, image_id: &str) -> R<()> {
+        Ok(self.writer()?.remove_image(image_id)?)
+    }
+
+    /// Drop a grid; what still names it (E101, E503), and the last grid
+    /// going (E111), are checked at commit.
+    fn remove_grid(&mut self, grid_id: &str) -> R<()> {
+        Ok(self.writer()?.remove_grid(grid_id)?)
+    }
+
+    /// Change an image's attributes without rewriting its samples (§4.1):
+    /// `None` removes one.  Checked as `add_image` checks them.
+    #[pyo3(signature = (image_id, **attrs))]
+    fn set_image_attrs(&mut self, image_id: &str, attrs: Option<&Bound<'_, PyDict>>) -> R<()> {
+        let mut edit = ImageEdit::default();
+        for (key, value) in attrs.into_iter().flat_map(|d| d.iter()) {
+            let key: String = key.extract()?;
+            let given = (!value.is_none()).then_some(&value);
+            let text = |v: Option<&Bound<'_, PyAny>>| v.map(|v| v.extract::<String>()).transpose();
+            match key.as_str() {
+                "modality" => edit.modality = Some(text(given)?),
+                "value_type" => edit.value_type = Some(text(given)?),
+                "value_units" => edit.value_units = Some(text(given)?),
+                "valid_mask" => edit.valid_mask = Some(text(given)?),
+                "prov" => edit.prov = Some(prov_arg(given)?),
+                "channel_names" => edit.channel_names = Some(opt_strings(given)?),
+                "rescale_slope" => edit.rescale_slope = Some(given.map(|v| v.extract::<f64>()).transpose()?),
+                "rescale_intercept" => edit.rescale_intercept = Some(given.map(|v| v.extract::<f64>()).transpose()?),
+                "window_center" => edit.window_center = Some(given.map(f64_vec).transpose()?),
+                "window_width" => edit.window_width = Some(given.map(f64_vec).transpose()?),
+                _ => {
+                    let why = match key.as_str() {
+                        "grid" => "an image's grid is its geometry; write the image again on the other grid",
+                        "digest" => "a digest is the commit's to stamp",
+                        "levels" | "downsample_factors" | "downsample_method" | "grid_levels" => {
+                            "a pyramid's levels are written by add_pyramid"
+                        }
+                        _ => "the specification defines no such image attribute (§4.1)",
+                    };
+                    return Err(medh5::Error::invalid(format!(
+                        "set_image_attrs does not edit {}: {why}",
+                        medh5::json::repr_str(&key)
+                    ))
+                    .into());
+                }
+            }
+        }
+        Ok(self.writer()?.set_image_attrs(image_id, edit)?)
     }
 
     /// Re-encode a voxel annotation in place, preserving its header (§7.6).
@@ -1209,7 +1380,7 @@ impl SampleWriter {
     #[pyo3(signature = (transform_id, *, kind, from_frame, to_frame, matrix=None, field=None, control_points=None,
         components=None, field_grid=None, cp_grid=None, vector_space="world", interpolation="linear",
         extrapolation="zero", order=3, units=None, from_grid=None, to_grid=None, invertible=None, inverse_id=None,
-        metrics=None, prov=None, codec=None))]
+        metrics=None, prov=None, codec=None, field_dtype="float32"))]
     #[allow(clippy::too_many_arguments)]
     fn add_transform(
         &mut self,
@@ -1236,7 +1407,20 @@ impl SampleWriter {
         metrics: Option<&Bound<'_, PyAny>>,
         prov: Option<&Bound<'_, PyAny>>,
         codec: Option<String>,
+        field_dtype: &str,
     ) -> R<Group> {
+        let field_dtype = match field_dtype {
+            "float32" => FieldDtype::Float32,
+            "float16" => FieldDtype::Float16,
+            "auto" => FieldDtype::Auto,
+            other => {
+                return Err(medh5::Error::invalid(format!(
+                    "field_dtype {} is not one of 'float32', 'float16', 'auto'",
+                    medh5::json::repr_str(other)
+                ))
+                .into())
+            }
+        };
         let spec = TransformSpec {
             matrix: is_given(matrix).map(|m| f64_array(&m)).transpose()?,
             field: is_given(field).map(|f| py_to_nd(&f)).transpose()?,
@@ -1260,7 +1444,7 @@ impl SampleWriter {
         let writer = self.writer()?;
         let (id, kind, from, to) =
             (transform_id.to_string(), kind.to_string(), from_frame.to_string(), to_frame.to_string());
-        let group = py.detach(move || writer.add_transform(&id, &kind, &from, &to, spec))?;
+        let group = py.detach(move || writer.add_transform_with(&id, &kind, &from, &to, spec, field_dtype))?;
         Ok(Group::wrap(group))
     }
 

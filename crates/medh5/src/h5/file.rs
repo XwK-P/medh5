@@ -153,12 +153,15 @@ fn os_reason(err: &std::io::Error) -> String {
 ///
 /// The lower bound is HDF5 1.10, the oldest container the specification
 /// promises to be readable by; the upper bound is the library's latest, so
-/// features newer than 1.10 are used only where an object needs them.
+/// features newer than 1.10 are used only where an object needs them.  The
+/// root group is untimed, so the same content is the same bytes.
 pub fn create_truncate(path: &Path) -> Result<hdf5::File> {
     super::init();
     marked(|| {
         hdf5::File::with_options()
             .with_fapl(|p| p.libver_bounds(LibraryVersion::V110, LibraryVersion::latest()))
+            // The root group untimed, as `ops::new_group` makes every other.
+            .with_fcpl(|p| p.obj_track_times(false))
             .create(path)
     })
     .map_err(|e| Error::File(format!("failed to create {}: {}", repr_str(&path.to_string_lossy()), e)))
@@ -281,17 +284,21 @@ struct Staged {
     tmp: PathBuf,
     /// The target's mode, carried onto the replacement; `None` for a new file.
     mode: Option<u32>,
+    /// The target's owner and group, carried onto the replacement on POSIX;
+    /// `None` for a new file, and off POSIX.
+    owner: Option<(u32, u32)>,
 }
 
 impl Staged {
     fn create(given: &Path, naming: Naming) -> Result<Staged> {
         let target = resolve_links(given)?;
         let mode = existing_mode(&target);
+        let owner = existing_owner(&target);
         let named = |e: std::io::Error| crate::error::os_error(&e, given);
         for _ in 0..NAME_TRIES {
             let tmp = temporary_name_as(&target, naming);
             match precreate(&tmp, mode) {
-                Ok(()) => return Ok(Staged { given: given.to_path_buf(), target, tmp, mode }),
+                Ok(()) => return Ok(Staged { given: given.to_path_buf(), target, tmp, mode, owner }),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(named(e)),
             }
@@ -312,6 +319,12 @@ impl Staged {
             // writable handle Windows flushes through.
             fsync_path(&self.tmp).map_err(named)?;
             if let Some(mode) = self.mode {
+                // The group before the mode: a change of owner clears the
+                // set-id bits.
+                let mode = match self.owner {
+                    Some(owner) => carry_owner(&self.tmp, owner, mode),
+                    None => mode,
+                };
                 set_mode(&self.tmp, mode);
             }
             #[cfg(test)]
@@ -400,6 +413,59 @@ fn existing_mode(target: &Path) -> Option<u32> {
     {
         Some(if meta.permissions().readonly() { 0o444 } else { 0o666 })
     }
+}
+
+/// The owner and group of `target`, or `None` when it does not exist or the
+/// system has no such thing.
+fn existing_owner(target: &Path) -> Option<(u32, u32)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(target).ok()?;
+        Some((meta.uid(), meta.gid()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = target;
+        None
+    }
+}
+
+/// Give the replacement `tmp` the replaced file's group --- and its owner,
+/// when run as root --- and return the mode to give it.
+///
+/// A replacement belongs to whoever wrote it, in their primary group, so a
+/// `0o640` file of a shared project group became readable by the writer's
+/// group and unreadable by the project's.  Where the group cannot be given
+/// (the writer is not in it), the mode returned grants the group only what it
+/// grants everyone else ([`narrowed`]), which never widens access.  Access
+/// control lists and extended attributes are not carried.
+#[cfg(unix)]
+fn carry_owner(tmp: &Path, (uid, gid): (u32, u32), mode: u32) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = fs::symlink_metadata(tmp) else { return narrowed(mode) };
+    // SAFETY: `geteuid` reads the process's effective user and cannot fail.
+    let root = unsafe { libc::geteuid() } == 0;
+    let uid = (root && meta.uid() != uid).then_some(uid);
+    if uid.is_none() && meta.gid() == gid {
+        return mode;
+    }
+    match std::os::unix::fs::lchown(tmp, uid, Some(gid)) {
+        Ok(()) => mode,
+        Err(_) => narrowed(mode),
+    }
+}
+
+#[cfg(not(unix))]
+fn carry_owner(_tmp: &Path, _owner: (u32, u32), mode: u32) -> u32 {
+    mode
+}
+
+/// `mode` with its group bits replaced by its other bits: what a file in the
+/// wrong group may grant that group without granting it more than anyone.
+#[cfg(unix)]
+fn narrowed(mode: u32) -> u32 {
+    mode & !0o070 | (mode & 0o007) << 3
 }
 
 /// Create the temporary file before any data, readable by its owner only when
@@ -1088,6 +1154,68 @@ mod tests {
         assert!(fs::metadata(&path).unwrap().permissions().readonly());
         assert!(no_temporaries(dir.path()));
         set_mode(&path, 0o644);
+    }
+
+    /// A group this process may give a file besides the one its new files
+    /// get: a supplementary group, or, as root, any other.
+    #[cfg(unix)]
+    fn another_group() -> Option<u32> {
+        // SAFETY: `getegid`, `geteuid` and `getgroups` read the process's
+        // credentials; the buffer holds as many groups as the first call
+        // counted.
+        let (egid, euid) = unsafe { (libc::getegid(), libc::geteuid()) };
+        let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+        let mut groups = vec![0; usize::try_from(count).unwrap_or(0)];
+        let count = unsafe { libc::getgroups(count, groups.as_mut_ptr()) };
+        groups.truncate(usize::try_from(count).unwrap_or(0));
+        let nobody = if egid == 65534 { 65533 } else { 65534 };
+        groups.into_iter().find(|g| *g != egid).or((euid == 0).then_some(nobody))
+    }
+
+    /// The replacement belonged to the writer's primary group, so a `0o640`
+    /// file of a shared project group became readable by the wrong group
+    /// and unreadable by the right one.
+    #[cfg(unix)]
+    #[test]
+    fn s14_4_an_amend_keeps_the_files_group() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // GitHub's runner user has a supplementary group; a user with none
+        // has no other group to keep.
+        let Some(group) = another_group() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let (sample, report) = (dir.path().join("shared.medh5"), dir.path().join("shared.json"));
+        write_value(&sample, 1).unwrap();
+        write_atomic(&report, b"1").unwrap();
+        for path in [&sample, &report] {
+            std::os::unix::fs::chown(path, None, Some(group)).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        write_value(&sample, 2).unwrap();
+        write_atomic(&report, b"2").unwrap();
+        for path in [&sample, &report] {
+            let meta = fs::metadata(path).unwrap();
+            assert_eq!((meta.gid(), meta.mode() & 0o7777), (group, 0o640), "{path:?}");
+        }
+        assert_eq!((read_value(&sample), fs::read(&report).unwrap()), (2, b"2".to_vec()));
+        assert!(no_temporaries(dir.path()));
+    }
+
+    /// A group the writer is not in cannot be given: the replacement grants
+    /// its own group only what it grants everyone, never more than before.
+    #[cfg(unix)]
+    #[test]
+    fn s14_4_a_group_not_given_is_granted_what_others_are() {
+        assert_eq!(narrowed(0o640), 0o600);
+        assert_eq!(narrowed(0o664), 0o644);
+        assert_eq!(narrowed(0o2770), 0o2700);
+        for mode in 0..0o10000 {
+            let n = narrowed(mode);
+            assert_eq!(n & !0o070, mode & !0o070, "{mode:o}");
+            assert_eq!(n >> 3 & 0o7, mode & 0o7, "{mode:o}");
+        }
+        // A replacement that cannot be looked at is narrowed too.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(carry_owner(&dir.path().join("gone"), (0, 0), 0o660), 0o600);
     }
 
     /// A close that fails stops the commit before the rename: the target is

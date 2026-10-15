@@ -166,6 +166,33 @@ stats.edges      # the overlapping class pairs it found
 `medh5 seg stats FILE ANN` shows the same numbers for an existing annotation,
 including what each alternative encoding would cost.
 
+### From a label volume
+
+A model's argmax and a converter's label file are already one integer volume.
+**`labelmap=` takes it as it is**: each nonzero value is the class of that id,
+or the classes `label_values` gives it, and `ignore_value` marks the ignore
+region (§7.7). A value may stand for several classes, as a voxel of an nnU-Net
+region's component is in its own class and in the region. What it writes is
+what the masks the volume implies write, byte for byte, the encoding chosen
+from the same `stats`; the masks are never built.
+
+```python
+volume = np.select([lesion, liver, spleen], [3, 1, 2]).astype(np.uint8)
+kind, stats = w.add_segmentation(
+    "segmented",
+    grid="ct",
+    labelmap=volume,
+    label_values={1: "liver", 2: "spleen", 3: ["liver", "lesion"]},
+)
+kind             # "layers": a lesion voxel is in the liver as well
+```
+
+The volume is borrowed from NumPy, never copied, and read with the GIL
+released. A nonzero value it holds that `label_values` does not name is
+refused (`E404`), as are `ignore=` (the region is a value here) and a
+`threshold`. One mask per class held the volume once per class: at 104 classes
+of 384³, 11 GB.
+
 ### Transcoding
 
 Any encoding converts to any other without loss of what both can express:
@@ -329,6 +356,20 @@ is flat along and the slice it sits on, `(0, k)` for a polygon on slice `k` of
 an axial stack, `(-1, 0)` for one that is not in-plane. The RTSTRUCT importer
 records it, so `ann.by_plane()` groups an imported structure set by slice.
 `role` distinguishes an outer boundary from a hole inside it.
+
+**A class's polygons combine by depth** (§8.6). On one plane, a polygon's
+depth is how many of the class's other polygons on that plane enclose it;
+polygons of one depth are united, and the region is what lies inside an odd
+number of those layers — a hole cuts the region around it, an island inside
+the hole adds back, and two outlines that cross without nesting are their
+union. Write `role="hole"` exactly for a polygon of odd depth. Readers take
+the depth, not the stored role: `ann.roles` and `ann.polygons()` report each
+in-plane polygon's role from its depth, the validator reports a stored role
+that disagrees as `W919` and one other than 0 or 1 as `E404`, and neither
+stops a read. A polygon with `plane=(-1, 0)` takes part in no combination
+and keeps the role written for it. Avoid storing crossing outlines of one
+class on one plane: a reader that combines them by exclusive-or, as many
+RTSTRUCT readers do, cancels their overlap.
 
 An empty polygon list is accepted when `annotated_classes` names what was
 looked for: a contours annotation can record a verified negative, exactly as

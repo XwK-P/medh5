@@ -281,6 +281,13 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
         "fails the next guide's preflight (T302); amend a copy.",
         None,
     ),
+    (
+        "a SEG export called binary only",
+        r"export is binary|fractional data is thresholded on the way out",
+        'to_dicom_seg(segmentation_type="fractional") writes a probmap as a '
+        "FRACTIONAL SEG; only the default, binary export thresholds.",
+        None,
+    ),
 )
 
 
@@ -440,16 +447,14 @@ def test_the_registration_preflight_resolves_on_frames() -> None:
 def test_transform_between_over_visits_is_described_as_it_behaves(
     tmp_path: Path,
 ) -> None:
-    """Between two visits, `transform_between` tries the visits' frame pairs in
-    grid-id order, and answers for the first that is one frame (`None`) or that
-    a path relates.
+    """Between two visits of several frames, `transform_between` refuses.
 
-    The guides said it searched every pair and returned the first path. Where
-    the visits share a frame, it answers `None` before it reaches a registered
-    pair whose grids sort later, so renaming a grid changes the answer. Out of
-    reach of `STALE_CLAIMS`: both wrong paragraphs carried a word the
-    disclaimer check reads as a correction. Should the engine come to search
-    every pair, this fails, and the pages need the new rule.
+    The guides once said it searched every pair and returned the first path;
+    2.0.2 tried the pairs in grid-id order, so renaming a grid changed the
+    answer (`apet*` gave `None`, `pet*` a transform). 2.1.0 refuses either
+    naming, and the pages say so and point to `by="grid"`. Out of reach of
+    `STALE_CLAIMS`: the wrong paragraphs carried a word the disclaimer check
+    reads as a correction.
     """
     import numpy as np
 
@@ -484,16 +489,19 @@ def test_transform_between_over_visits_is_described_as_it_behaves(
         with medh5.open(path) as s:
             return s.transform_between("tp0", "tp1")
 
-    assert between_visits("apet") is None  # the shared frame's grids sort first
-    assert between_visits("pet") is not None  # ... and here, after the CT's
-    for page in ("guides/longitudinal.md", "guides/registration.md"):
+    from medh5.errors import MEDH5ValidationError
+
+    for naming in ("apet", "pet"):
+        with pytest.raises(MEDH5ValidationError, match="one frame"):
+            between_visits(naming)
+    pages = ("guides/longitudinal.md", "guides/registration.md")
+    for page in (*pages, "reference/python-api.md"):
         text = (DOCS / page).read_text(encoding="utf-8")
-        assert "grid-id order" in text, page
+        assert "grid-id order" not in text, page
         assert "returns the first path it finds" not in text, page
         assert "share a frame with the other visit's" not in text, page
-    assert "grid-id order" in (DOCS / "reference/python-api.md").read_text(
-        encoding="utf-8"
-    )
+        assert "MEDH5ValidationError" in text, page
+        assert 'by="grid"' in text, page
 
 
 def _documented_signatures() -> list[tuple[str, str]]:
@@ -708,6 +716,32 @@ def test_the_torch_docstring_agrees_with_the_docs() -> None:
 
     assert "not optional" not in (torch_pkg.__doc__ or "")
     assert "recommended" in (torch_pkg.__doc__ or "")
+
+
+def test_cargo_install_is_told_the_release_profile() -> None:
+    """crates.io publishes no profile, so `cargo install medh5-cli` built
+    without the workspace's thin LTO and kept the symbol table.  The install
+    page and the crate's README give the profile three ways: the environment,
+    PowerShell's `$env:` and `--config`; each says what `Cargo.toml` says."""
+    workspace = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    section = workspace.split("\n[profile.release]\n", 1)[1].split("\n[", 1)[0]
+    profile = {
+        key: value.strip('"')
+        for key, value in re.findall(r"^([\w-]+) = (\S+)$", section, re.M)
+    }
+    assert profile == {"lto": "thin", "codegen-units": "4", "strip": "symbols"}
+    for path in (DOCS / "install.md", ROOT / "crates/medh5-cli/README.md"):
+        text = path.read_text(encoding="utf-8")
+        found = {
+            "shell": re.findall(r"\bCARGO_PROFILE_RELEASE_(\w+)=(\w+)", text),
+            "powershell": re.findall(
+                r'^\$env:CARGO_PROFILE_RELEASE_(\w+) = "(\w+)"$', text, re.M
+            ),
+            "config": re.findall(r"profile\.release\.([\w-]+)=\"?(\w+)", text),
+        }
+        for form, pairs in found.items():
+            named = {key.lower().replace("_", "-"): value for key, value in pairs}
+            assert named == profile, f"{path.name}: {form}"
 
 
 def test_the_cohort_check_page_shows_each_codes_severity(monkeypatch) -> None:

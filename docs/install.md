@@ -53,6 +53,13 @@ pip downloads a ready-built package (a *wheel*) for Python 3.10 and later on:
 | macOS, Intel or Apple silicon | macOS 11 or later |
 | Windows, x64 | Windows 10 or later |
 
+Each system has a second wheel for free-threaded CPython 3.14 (`python3.14t`),
+which cannot load the first. medh5 is not yet audited for running without the
+GIL, so it asks for it: importing medh5 turns the GIL back on, and Python says
+so once with a `RuntimeWarning`. Everything works as it does on a regular
+CPython; nothing runs in parallel that would not there. Running without the GIL
+is planned for 2.2.
+
 Anywhere else, pip builds medh5 from its source package instead. That takes
 several minutes and needs:
 
@@ -62,10 +69,15 @@ several minutes and needs:
 
 This covers Alpine and other musl-based Linux, Linux with a glibc older than
 2.28 (Ubuntu 18.04, CentOS 7), Windows on ARM, PyPy 3.11 and free-threaded
-CPython 3.14 or later. Free-threaded CPython 3.13 and PyPy 3.10 cannot build it
+CPython 3.15 or later. Free-threaded CPython 3.13 and PyPy 3.10 cannot build it
 at all: PyO3, the library that binds the engine to Python, does not support
 them. If pip prints `Building wheel for medh5`, it found no wheel for your
 system and needs these three.
+
+The 2.1 releases are the last to support Python 3.10, which reaches its end
+of life in October 2026: medh5 2.2.0 will require Python 3.11 or later. Nothing
+changes for 3.10 within 2.1.x, and nothing warns at run time; pin `"medh5<2.2"`
+to stay on a 3.10 interpreter.
 
 ## Only the command line
 
@@ -85,6 +97,14 @@ has an archive for Linux (x86_64 or ARM64, glibc 2.28 or later), macOS (Intel
 or Apple silicon) and Windows (x64), and a `SHA256SUMS` file to check it
 against. Unpack it and put `medh5` on your path.
 
+Each archive, like each wheel, also carries a signed attestation that the
+project's release workflow built it from the tagged commit. With the
+[GitHub CLI](https://cli.github.com), check one before you unpack it:
+
+```bash
+gh attestation verify medh5-2.1.0-x86_64-unknown-linux-gnu.tar.gz --repo medh5-project/medh5
+```
+
 **From source**, with Rust 1.85.1 or later, a C compiler and CMake:
 
 ```bash
@@ -96,6 +116,33 @@ On Windows, set one variable first; without it the build stops and names it:
 ```powershell
 $env:CFLAGS_x86_64_pc_windows_msvc = "-DNDEBUG"
 cargo install --locked medh5-cli
+```
+
+Prefer the Homebrew formula or a download where one fits your system: a crate
+on crates.io carries no build profile, so `cargo install` builds without the
+link-time optimisation the release binaries have, and keeps the symbol table,
+for a larger and slower binary. To build it as the releases are, give cargo
+the project's release profile:
+
+```bash
+CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=4 \
+  CARGO_PROFILE_RELEASE_STRIP=symbols cargo install --locked medh5-cli
+```
+
+In PowerShell:
+
+```powershell
+$env:CARGO_PROFILE_RELEASE_LTO = "thin"
+$env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "4"
+$env:CARGO_PROFILE_RELEASE_STRIP = "symbols"
+cargo install --locked medh5-cli
+```
+
+Or, in any shell, as cargo options:
+
+```bash
+cargo install --locked medh5-cli --config 'profile.release.lto="thin"' \
+  --config profile.release.codegen-units=4 --config 'profile.release.strip="symbols"'
 ```
 
 The binary does everything itself except the converters (`medh5 convert …`,

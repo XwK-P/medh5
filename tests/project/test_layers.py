@@ -38,13 +38,7 @@ PACKAGE = Path(medh5.__file__).parent
 # The write sites other workstreams still own, by file and function: each
 # moves to the engine in its owner's pull request and leaves this list, which
 # is empty at release.
-ALLOWED = {
-    ("medh5/_files.py", "temporary_beside"),  # the later of W21-11 PR 3, W21-13 PR 9
-    ("medh5/io/nifti.py", "write_nifti"),  # W21-13 PR 9
-    ("medh5/io/nnunetv2.py", "to_nnunetv2"),  # W21-13 PR 9
-    ("medh5/io/dicom_seg.py", "to_dicom_seg"),  # W21-13 PR 9
-    ("medh5/io/rtstruct.py", "to_rtstruct"),  # W21-13 PR 9
-}
+ALLOWED: set[tuple[str, str]] = set()
 
 _REPLACING = {("os", "replace"), ("os", "rename"), ("os", "open"), ("shutil", "move")}
 _SAVING = {"save", "save_as", "to_filename"}

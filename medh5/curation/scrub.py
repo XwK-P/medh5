@@ -47,7 +47,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from medh5 import _core
-from medh5.errors import MEDH5Error, MEDH5ValidationError
+from medh5._deprecation import warn
+from medh5.errors import MEDH5Error
 
 PROFILES: tuple[str, ...] = _core.SCRUB_PROFILES
 
@@ -122,7 +123,10 @@ means "``--apply`` will fix this" and the re-scan check holds it to that.
 """
 
 STRICT_RULES: tuple[str, ...] = _core.SCRUB_STRICT_RULES
-"""Rules that only ``--profile strict`` acts on."""
+"""Rules that only ``--profile strict`` acts on.
+
+``date_shift_recorded`` among them: a record that states the amount of its
+date shift restores every date from one, so ``strict`` withholds it."""
 
 IDENTITY_RULES: tuple[str, ...] = _core.SCRUB_IDENTITY_RULES
 """Findings about what the sample is *called*.
@@ -291,6 +295,10 @@ def apply(
     date_shift_days: int | None = None,
     performed_by: str | None = None,
     pseudonymise_ids: bool = False,
+    date_shift_range: tuple[int, int] | None = None,
+    withhold_shift: bool | None = None,
+    out: str | os.PathLike[str] | None = None,
+    attest_text: str | None = None,
 ) -> ScrubReport:
     """Act on the actionable findings and write the §11.4 attestation.
 
@@ -303,22 +311,80 @@ def apply(
     0 is refused, since it moves nothing, and so is a shift other than the one
     the file already records: its dates were moved once, by that.
 
+    ``date_shift_range=(min, max)`` takes the shift from the salt and the
+    subject instead: a nonzero number of days in the range, the same for
+    every file of one subject, and always withheld.  It needs a *salt*.
+
+    ``withhold_shift`` decides whether the record states the amount (D14):
+    one known date restores every other from it.  Withheld, the record omits
+    ``date_shift_days`` and the de-identification activity says the dates
+    were shifted, with a commitment to the amount that a re-run with the same
+    salt and shift verifies.  Left unset, ``strict`` withholds and ``basic``
+    records it, with a ``FutureWarning``: medh5 3.0 withholds by default.
+
     ``pseudonymise_ids`` replaces ``sample_id`` and ``subject_id`` --- and a
     ``cohort.group_id`` equal to either --- with salted stable pseudonyms, so
     every file of one subject still agrees.  It needs a *salt*: those ids are
     usually record numbers, and an unsalted hash of a record number is reversed
-    by hashing every record number.
+    by hashing every record number.  So does any name the run pseudonymises
+    (an agent's, under ``strict``), which is refused without one.
+
+    ``out`` writes the result to a new file and leaves *path* as it is; the
+    report's ``path`` is then *out*.
+
+    A clinical sample (1.1) is written again as a new sample's records (D15):
+    with a ``utc`` clock every time moves by the one shift and the clock
+    becomes ``shifted_utc``; with a ``utc`` clock or ``pseudonymise_ids``,
+    every event, record, document, encounter and clock id is re-minted from
+    the *salt*, so one subject's fragments still share a clock.  Its text is
+    never rewritten: ``attest_text`` names the tool that de-identified it, and
+    the attestation holds the digests of the bytes it covers.  Text no one has
+    attested, or that holds a name, a UID or one of the sample's ids, refuses
+    the apply.
     """
-    return ScrubReport._from_fields(
-        _core.scrub_apply(
-            os.fspath(path),
-            profile=profile,
-            salt=salt,
-            date_shift_days=date_shift_days,
-            performed_by=performed_by,
-            pseudonymise_ids=pseudonymise_ids,
-        )
+    return _apply(
+        path,
+        profile=profile,
+        salt=salt,
+        date_shift_days=date_shift_days,
+        performed_by=performed_by,
+        pseudonymise_ids=pseudonymise_ids,
+        date_shift_range=date_shift_range,
+        withhold_shift=withhold_shift,
+        out=out,
+        attest_text=attest_text,
     )
+
+
+def _apply(
+    path: str | os.PathLike[str],
+    *,
+    out_dir: str | os.PathLike[str] | None = None,
+    stacklevel: int = 4,
+    **options: Any,
+) -> ScrubReport:
+    """:func:`apply`, with `out_dir` for :func:`scrub_paths`; warns, at the
+    caller *stacklevel* frames up, when a shift is recorded by default."""
+    report = ScrubReport._from_fields(
+        _core.scrub_apply(os.fspath(path), out_dir=out_dir, **options)
+    )
+    if options["withhold_shift"] is None and _records_its_shift(report.path):
+        warn(
+            "medh5 3.0 withholds the date shift by default: pass withhold_shift=False "
+            "to record it, or withhold_shift=True to withhold it now",
+            category=FutureWarning,
+            stacklevel=stacklevel,
+        )
+    return report
+
+
+def _records_its_shift(path: str) -> bool:
+    """Whether the sample at *path* states the amount of its date shift."""
+    from medh5.sample import open_sample
+
+    with open_sample(path) as sample:
+        record = sample.document.deidentification
+    return record is not None and bool(record.date_shift_days)
 
 
 def scrub_paths(
@@ -330,13 +396,17 @@ def scrub_paths(
     date_shift_days: int | None = None,
     performed_by: str | None = None,
     pseudonymise_ids: bool = False,
+    date_shift_range: tuple[int, int] | None = None,
+    withhold_shift: bool | None = None,
+    out_dir: str | os.PathLike[str] | None = None,
+    attest_text: str | None = None,
 ) -> list[ScrubReport]:
     """:func:`scan` each of *paths*, or, with *apply_changes*, :func:`apply`
     the other options to each.
 
     One report per path, in order.  Every path is processed, as ``medh5 scrub``
-    processes them: a refused file --- a clinical sample is refused by design
-    --- neither stops the files after it nor loses the reports of the files
+    processes them: a refused file --- a clinical sample whose text no one
+    has attested --- neither stops the files after it nor loses the reports of the files
     before it, whose ``uid_map`` is the only key to the pseudonyms they now
     hold.  When any path was refused, the first refusal is raised once all
     have been processed, with ``reports`` set on it: the report of each path,
@@ -344,34 +414,27 @@ def scrub_paths(
 
     The options :func:`apply` alone acts on are refused without
     *apply_changes* rather than ignored: a scan that was meant as a salted,
-    shifted scrub writes nothing.
+    shifted scrub writes nothing.  The engine checks them, so the command line
+    refuses the same combinations in the same words.  *out_dir* writes each
+    result into that directory and leaves the sources as they are.
     """
-    given = {
-        "salt": salt != "",
-        "date_shift_days": date_shift_days is not None,
-        "performed_by": performed_by is not None,
+    options: dict[str, Any] = {
+        "profile": profile,
+        "salt": salt,
+        "date_shift_days": date_shift_days,
+        "performed_by": performed_by,
         "pseudonymise_ids": pseudonymise_ids,
+        "date_shift_range": date_shift_range,
+        "withhold_shift": withhold_shift,
+        "attest_text": attest_text,
     }
-    named = [name for name, set_ in given.items() if set_]
-    if named and not apply_changes:
-        raise MEDH5ValidationError(
-            f"nothing is written without apply_changes=True, so {' and '.join(named)} "
-            f"would do nothing: pass apply_changes=True, or leave "
-            f"{'it' if len(named) == 1 else 'them'} out"
-        )
+    _core.scrub_check(apply_changes, out_dir=out_dir, **options)
     reports: list[ScrubReport | None] = []
     refusals: list[MEDH5Error] = []
     for path in paths:
         try:
             if apply_changes:
-                report = apply(
-                    path,
-                    profile=profile,
-                    salt=salt,
-                    date_shift_days=date_shift_days,
-                    performed_by=performed_by,
-                    pseudonymise_ids=pseudonymise_ids,
-                )
+                report = _apply(path, out_dir=out_dir, out=None, **options)
             else:
                 report = scan(path, profile=profile)
         except MEDH5Error as refusal:

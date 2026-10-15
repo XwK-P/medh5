@@ -577,7 +577,7 @@ pub fn float_tuple(values: &[f64]) -> String {
 /// geometry would be read, and committed, as a grid declaring less than it
 /// was given, and a corrected retry would find its name taken.
 pub fn write_grid(grids_group: &hdf5::Group, grid: &Grid) -> Result<hdf5::Group> {
-    let group = grids_group.create_group(&grid.grid_id)?;
+    let group = ops::new_group(grids_group, &grid.grid_id)?;
     let written = grid.attrs().iter().try_for_each(|(name, value)| attrs::write(&group, name, value));
     if written.is_err() {
         ops::unlink(grids_group, &grid.grid_id).ok();

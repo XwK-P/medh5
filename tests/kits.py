@@ -18,7 +18,14 @@ defined once, here, under a name for what it builds:
 * :class:`SplitCohort` --- a cohort manifest of one-file groups in strata of
   60 %, 30 % and 10 % and three rare ones, with no files behind it;
 * :class:`EveryCheckCode` --- a cohort manifest raising every code ``dataset
-  check`` reports, with one file behind it.
+  check`` reports, with one file behind it;
+* :class:`Meds` --- a MEDS 0.3 dataset of two subjects, and an imaging sample
+  to import one into;
+* :class:`Fhir` --- a FHIR R4 Bundle of one patient's observations and
+  reports, and an imaging sample to import them into;
+* :class:`NestedSameNameRoiKit` --- one CT plane of 16×16 and an RTSTRUCT of
+  two ROIs named "Bladder", one inside the other.
+* :class:`FoldKit` --- a displacement field folding at one plane, 12×2×2.
 """
 
 from __future__ import annotations
@@ -515,3 +522,397 @@ class EveryCheckCode:
                 ),
             ]
         )
+
+
+class Meds:
+    """A MEDS 0.3 dataset (``data/*.parquet``, ``metadata/dataset.json``) of
+    subjects 1001 and 1002, and an imaging-only sample to import one into.
+
+    Subject 1001 has a birth, a static fact, a creatinine (``LOINC/2160-0``),
+    a local laboratory value, a diagnosis known to the day and a discharge
+    note; MEDS times carry no zone.  Needs ``pyarrow``.
+    """
+
+    SUBJECT = 1001
+    NAME = "demo-ehr"
+
+    @staticmethod
+    def rows() -> list[dict[str, Any]]:
+        import datetime
+
+        def at(*parts: int) -> datetime.datetime:
+            return datetime.datetime(*parts)  # type: ignore[arg-type]
+
+        def row(
+            subject: int, time: Any, code: str, num: Any = None, text: Any = None
+        ) -> dict[str, Any]:
+            return {
+                "subject_id": subject,
+                "time": time,
+                "code": code,
+                "numeric_value": num,
+                "text_value": text,
+            }
+
+        return [
+            row(1001, at(1960, 5, 1), "MEDS_BIRTH"),
+            row(1001, None, "GENDER//F"),
+            row(1001, at(2020, 3, 1, 8, 15), "LOINC/2160-0", 1.1),
+            row(1001, at(2020, 3, 2, 9, 0), "LAB//50912", 0.9),
+            row(1001, at(2020, 3, 1), "DX//I10"),
+            row(
+                1001, at(2020, 3, 5, 12, 0), "NOTE//discharge", text="Discharged home."
+            ),
+            row(1002, at(2021, 1, 1, 10, 0), "LOINC/2160-0", 0.8),
+        ]
+
+    @staticmethod
+    def write(
+        root: Path,
+        rows: Sequence[dict[str, Any]] | None = None,
+        *,
+        shards: int = 1,
+        name: str | None = NAME,
+        rename: dict[str, str] | None = None,
+        extra: dict[str, tuple[Any, list[Any]]] | None = None,
+    ) -> Path:
+        """Write the dataset at *root*: *rows* (the kit's by default) over
+        *shards* files, columns renamed by *rename*, and *extra* columns
+        ``{name: (pyarrow type, values)}``.  Returns *root*."""
+        import json
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        rows = list(Meds.rows() if rows is None else rows)
+        rename = rename or {}
+        types = {
+            "subject_id": pa.int64(),
+            "time": pa.timestamp("us"),
+            "code": pa.string(),
+            "numeric_value": pa.float32(),
+            "text_value": pa.large_string(),
+        }
+        (root / "data").mkdir(parents=True, exist_ok=True)
+        (root / "metadata").mkdir(exist_ok=True)
+        if name is not None:
+            (root / "metadata" / "dataset.json").write_text(
+                json.dumps({"dataset_name": name, "meds_version": "0.3.3"}),
+                encoding="utf-8",
+            )
+        extra = extra or {}
+        for k in range(shards):
+            part = list(range(k, len(rows), shards))
+            arrays = {
+                rename.get(c, c): pa.array([rows[i][c] for i in part], t)
+                for c, t in types.items()
+            }
+            for column, (kind, values) in extra.items():
+                arrays[column] = pa.array([values[i] for i in part], kind)
+            pq.write_table(pa.table(arrays), root / "data" / f"{k}.parquet")
+        return root
+
+    @staticmethod
+    def sample(path: Path) -> Path:
+        """An imaging-only sample (1.0) of subject ``P-01``."""
+        with History.writer_for(path):
+            pass
+        return path
+
+
+class Fhir:
+    """A FHIR R4 Bundle for ``Patient/p1`` (and one resource of another
+    patient), and an imaging-only sample to import it into.
+
+    A creatinine in two versions (``preliminary``, then ``corrected``), a
+    potassium ``< 5`` known to the day, an HbA1c not performed over an open
+    period, a blood pressure panel of two components, a smoking status coded
+    on a schedule, a registered order, an observation coded only in text, and
+    a CT report with its text and its imaging study.
+    """
+
+    SUBJECT = "Patient/p1"
+    LOINC = "http://loinc.org"
+    STUDY = "ImagingStudy/ct0"
+    TEXT = "Baseline CT: a 14 mm nodule ≈ 1.4 cm."
+
+    @staticmethod
+    def resources() -> list[dict[str, Any]]:
+        import base64
+
+        loinc = Fhir.LOINC
+
+        def code(c: str, system: str = loinc) -> dict[str, Any]:
+            return {"coding": [{"system": system, "code": c}]}
+
+        def obs(rid: str, status: str = "final", **fields: Any) -> dict[str, Any]:
+            return {
+                "resourceType": "Observation",
+                "id": rid,
+                "status": status,
+                "subject": {"reference": Fhir.SUBJECT},
+                **fields,
+            }
+
+        def mg(value: float) -> dict[str, Any]:
+            return {
+                "value": value,
+                "unit": "mg/dL",
+                "system": "http://unitsofmeasure.org",
+                "code": "mg/dL",
+            }
+
+        return [
+            {"resourceType": "Patient", "id": "p1"},
+            obs(
+                "creat",
+                "preliminary",
+                meta={"versionId": "1"},
+                code=code("2160-0"),
+                effectiveDateTime="2020-03-01T08:15:00-05:00",
+                issued="2020-03-01T09:15:00-05:00",
+                valueQuantity=mg(1.1),
+                encounter={"reference": "Encounter/e1"},
+            ),
+            obs(
+                "creat",
+                "corrected",
+                meta={"versionId": "2"},
+                code=code("2160-0"),
+                effectiveDateTime="2020-03-01T08:15:00-05:00",
+                issued="2020-03-02T09:15:00-05:00",
+                valueQuantity=mg(1.2),
+                encounter={"reference": "Encounter/e1"},
+            ),
+            obs(
+                "k",
+                code=code("2823-3"),
+                effectiveDateTime="2020-03-01",
+                valueQuantity={"value": 5, "comparator": "<", "unit": "mmol/L"},
+            ),
+            obs(
+                "a1c",
+                code=code("4548-4"),
+                effectivePeriod={"start": "2020-02"},
+                dataAbsentReason={
+                    "coding": [
+                        {
+                            "system": "http://terminology.hl7.org/CodeSystem/"
+                            "data-absent-reason",
+                            "code": "not-performed",
+                        }
+                    ]
+                },
+            ),
+            obs(
+                "bp",
+                code=code("85354-9"),
+                effectiveInstant="2020-03-01T13:00:00Z",
+                issued="2020-03-01T13:05:00Z",
+                interpretation=[
+                    code("N", "http://hl7.org/fhir/v3/ObservationInterpretation")
+                ],
+                component=[
+                    {
+                        "code": code("8480-6"),
+                        "valueQuantity": {
+                            "value": 120,
+                            "unit": "mmHg",
+                            "system": "http://unitsofmeasure.org",
+                            "code": "mm[Hg]",
+                        },
+                        "referenceRange": [{"high": {"value": 140}}],
+                    },
+                    {
+                        "code": code("8462-4"),
+                        "valueQuantity": {"value": 80, "unit": "mmHg"},
+                    },
+                ],
+            ),
+            obs(
+                "smoke",
+                code=code("72166-2"),
+                effectiveTiming={"repeat": {"frequency": 1}},
+                valueCodeableConcept=code("8517006", "http://snomed.info/sct"),
+            ),
+            obs("ordered", "registered", code=code("2160-0")),
+            obs("free", code={"text": "creatinine"}, valueString="normal"),
+            {
+                **obs("other", code=code("2160-0"), valueQuantity=mg(0.9)),
+                "subject": {"reference": "Patient/p2"},
+            },
+            {
+                "resourceType": "DiagnosticReport",
+                "id": "ct-report",
+                "status": "final",
+                "subject": {"reference": Fhir.SUBJECT},
+                "code": code("24627-2"),
+                "effectiveDateTime": "2020-03-01T10:00:00-05:00",
+                "issued": "2020-03-01T15:00:00-05:00",
+                "presentedForm": [
+                    {
+                        "contentType": "text/plain; charset=utf-8",
+                        "data": base64.b64encode(Fhir.TEXT.encode()).decode(),
+                    }
+                ],
+                "imagingStudy": [{"reference": Fhir.STUDY}],
+                "result": [{"reference": "Observation/creat"}],
+            },
+        ]
+
+    @staticmethod
+    def bundle(resources: Sequence[dict[str, Any]] | None = None) -> dict[str, Any]:
+        return {
+            "resourceType": "Bundle",
+            "type": "collection",
+            "entry": [
+                {"resource": r}
+                for r in (Fhir.resources() if resources is None else resources)
+            ],
+        }
+
+    @staticmethod
+    def write(path: Path, resources: Sequence[dict[str, Any]] | None = None) -> Path:
+        import json
+
+        path.write_text(json.dumps(Fhir.bundle(resources)), encoding="utf-8")
+        return path
+
+    @staticmethod
+    def sample(path: Path) -> Path:
+        """An imaging-only sample (1.0), images ``CT_tp0`` and ``CT_tp1``."""
+        return Meds.sample(path)
+
+
+class NestedSameNameRoiKit:
+    """One CT plane of 16×16 voxels at 1 mm, and an RTSTRUCT on it of two ROIs
+    both named "Bladder": ROI 1 a square around 11×11 voxel centres, ROI 2 a
+    square around 4×4 voxel centres strictly inside it, on the same plane.
+
+    Drawn, the class covers 121 voxels; 2.0.2 imported it as 105 (121 − 16),
+    the inner ROI a hole in the outer.
+    """
+
+    SHAPE = (1, 16, 16)
+    FRAME = "1.2.826.0.1.3680043.8.498.919"
+    DRAWN = 121
+    HOLED = 105
+    OUTER = ((2, 12), (2, 12))
+    """Rows and columns, inclusive, of the voxel centres ROI 1 encloses."""
+    INNER = ((6, 9), (6, 9))
+
+    @staticmethod
+    def sample(path: Path, *, label_set: LabelSet | None = None) -> Path:
+        """The CT plane, in the kit's frame; *label_set* when given."""
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            if label_set is not None:
+                w.label_set(label_set)
+            w.add_grid(
+                "ct",
+                shape=NestedSameNameRoiKit.SHAPE,
+                spacing=(1.0, 1.0, 1.0),
+                frame_uid=NestedSameNameRoiKit.FRAME,
+            )
+            w.add_image(
+                "CT",
+                np.zeros(NestedSameNameRoiKit.SHAPE, np.int16),
+                grid="ct",
+                modality="CT",
+            )
+        return path
+
+    @staticmethod
+    def square(grid: Any, rows: tuple[int, int], columns: tuple[int, int]) -> Any:
+        """A square on the plane with its edges on voxel edges around *rows*
+        and *columns* (inclusive), in patient coordinates."""
+        (r0, r1), (c0, c1) = rows, columns
+        corners = [
+            (r0 - 0.5, c0 - 0.5),
+            (r0 - 0.5, c1 + 0.5),
+            (r1 + 0.5, c1 + 0.5),
+            (r1 + 0.5, c0 - 0.5),
+        ]
+        return grid.index_to_world(np.array([[0, r, c] for r, c in corners], float))
+
+    @staticmethod
+    def rtstruct(
+        out: Path, sample: Path, *, names: tuple[str, str] = ("Bladder", "Bladder")
+    ) -> Path:
+        """The structure set: ROI 1 the outer square, ROI 2 the inner one."""
+        import pydicom
+        from pydicom.dataset import Dataset, FileMetaDataset
+        from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+
+        with medh5.open(sample) as opened:
+            grid = opened.grids["ct"]
+        kit = NestedSameNameRoiKit
+        structure = Dataset()
+        structure.file_meta = FileMetaDataset()
+        structure.file_meta.MediaStorageSOPClassUID = pydicom.uid.RTStructureSetStorage
+        structure.file_meta.MediaStorageSOPInstanceUID = generate_uid()
+        structure.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+        structure.SOPClassUID = pydicom.uid.RTStructureSetStorage
+        structure.SOPInstanceUID = structure.file_meta.MediaStorageSOPInstanceUID
+        structure.Modality = "RTSTRUCT"
+        structure.StructureSetLabel = "bladder"
+        frame = Dataset()
+        frame.FrameOfReferenceUID = kit.FRAME
+        structure.ReferencedFrameOfReferenceSequence = [frame]
+        structure.StructureSetROISequence = []
+        structure.ROIContourSequence = []
+        for number, (name, where) in enumerate(
+            zip(names, (kit.OUTER, kit.INNER), strict=True), start=1
+        ):
+            roi = Dataset()
+            roi.ROINumber = number
+            roi.ROIName = name
+            roi.ReferencedFrameOfReferenceUID = kit.FRAME
+            structure.StructureSetROISequence.append(roi)
+            points = kit.square(grid, *where)
+            contour = Dataset()
+            contour.ContourGeometricType = "CLOSED_PLANAR"
+            contour.NumberOfContourPoints = len(points)
+            contour.ContourData = [float(v) for v in points.reshape(-1)]
+            item = Dataset()
+            item.ReferencedROINumber = number
+            item.ROIDisplayColor = [200, 120, 40 * number]
+            item.ContourSequence = [contour]
+            structure.ROIContourSequence.append(item)
+        structure.save_as(str(out), enforce_file_format=True)
+        return out
+
+
+class FoldKit:
+    """A ``displacement`` field on a 12×2×2 grid at 1 mm, identity direction,
+    zero except ``u_x = −3`` mm at ``x = 6``.
+
+    Under central differences the voxels at ``x = 5`` fold (``det = −0.5``):
+    the whole field's ``folding_fraction()`` is 1/12.  A region differenced as
+    if it were the whole field sees none of it in ``[0:6]`` or ``[6:12]``,
+    each of which differences its own edge one-sidedly.
+    """
+
+    SHAPE = (12, 2, 2)
+    FOLD = 5
+    """The ``x`` whose voxels fold."""
+
+    @staticmethod
+    def field(shape: tuple[int, ...] = SHAPE) -> Any:
+        field = np.zeros((3, *shape), np.float32)
+        field[0, 6] = -3.0
+        return field
+
+    @staticmethod
+    def write(path: Path, *, shape: tuple[int, ...] = SHAPE) -> Path:
+        with medh5.create(path, sample_id="fold", codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0), frame_uid="F0")
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="F0",
+                to_frame="F1",
+                field=FoldKit.field(shape),
+                field_grid="g",
+            )
+        return path

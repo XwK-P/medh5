@@ -154,6 +154,16 @@ mask into the engine's layout, `curation.agreement.dice` and `iou`, the
 geometric encoders and `to_world` — release the GIL while they work, so other
 Python threads keep running.
 
+## Write a label volume as it is
+
+A segmentation that is already one integer volume — a model's argmax, an
+nnU-Net or NIfTI label file — goes to `add_segmentation(labelmap=volume)`,
+not through a mask per class. The masks cost the volume's voxels once per
+class, and the writer copied each again: at 104 classes of 384³ the masks
+route peaked 11.2 GB above the image write, and `labelmap=` nothing above it,
+for the same bytes on disk. See
+[From a label volume](../reference/annotations.md#from-a-label-volume).
+
 ## Keep a file's patches together
 
 Each worker keeps its 32 most recently used files open. `shuffle=True`
@@ -180,7 +190,9 @@ both. `set_cache_size(n)` is the other lever — raise it toward the number of
 files a worker cycles through, lower it when descriptors are scarce. Under DDP
 the same sampler gives each rank a contiguous share of the files
 (`num_replicas`, `rank`), where `DistributedSampler` would have every rank
-open every file.
+open every file. A kept handle also keeps its transforms' cubic coefficients:
+a `cubic` displacement field, alone or inside a composite, is read and
+prefiltered once per handle, within a 256 MiB budget per process.
 
 Stitching sliding-window predictions back (`GridStitcher`) keeps one
 accumulator per file in flight: `channels` volumes of the output `dtype`

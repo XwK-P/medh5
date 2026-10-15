@@ -1,7 +1,7 @@
 """The publishing steps of `release.yml`, each safe to run again.
 
     python .github/scripts/release.py newest TAG
-    python .github/scripts/release.py crates
+    python .github/scripts/release.py crates verify|publish
     python .github/scripts/release.py pypi DIST
     python .github/scripts/release.py github-release TAG DIST...
         [--prerelease | --not-latest]
@@ -368,27 +368,35 @@ def pypi_digests(version: str) -> dict[str, str]:
 # --- the steps ------------------------------------------------------------------
 
 
-def publish_crates() -> int:
-    version = workspace_version()
-    # Verifying a crate builds it from its package, running the build script
-    # of every dependency --- which need not see the token that publishes.
-    untokened = {k: v for k, v in os.environ.items() if k not in TOKENS}
-    for name in CRATES:
-        status = crates_io_status(name, version)
+def crate_statuses(version: str) -> dict[str, str]:
+    """Each crate's status on crates.io at `version`; a yanked one stops the
+    release, since crates.io never takes a version again."""
+    statuses = {name: crates_io_status(name, version) for name in CRATES}
+    for name, status in statuses.items():
         if status == "yanked":
             raise SystemExit(
                 f"{name} {version} is on crates.io, yanked, and a version cannot be "
                 "published twice: undo the yank (`cargo yank --undo`) if it holds "
                 "this release, or publish under a new version"
             )
+    return statuses
+
+
+def verify_crates() -> int:
+    """Stage one, without a token: build every crate from its package, as CI's
+    `rust` job does, and hold any version crates.io already has to this
+    commit's.  A failure here publishes nothing."""
+    version = workspace_version()
+    statuses = crate_statuses(version)
+    untokened = {k: v for k, v in os.environ.items() if k not in TOKENS}
+    packages = [arg for name in CRATES for arg in ("-p", name)]
+    # Verifying builds each package, running the build script of every
+    # dependency --- which need not see a token, and here none exists yet.
+    run("cargo", "package", "--locked", *packages, env=untokened)
+    for name, status in statuses.items():
         if status == "absent":
-            run("cargo", "package", "-p", name, "--locked", env=untokened)
-            run("cargo", "publish", "-p", name, "--locked", "--no-verify")
-            # `cargo publish` waits for the index only so long, then warns and
-            # succeeds; the next crate resolves this one through the index.
-            wait_for_index(name, version)
+            print(f"{name} {version} is not on crates.io: to publish")
             continue
-        run("cargo", "package", "-p", name, "--locked", "--no-verify")
         local = (ROOT / "target" / "package" / f"{name}-{version}.crate").read_bytes()
         problems = differences(
             crate_files(local), crate_files(published_crate(name, version))
@@ -400,6 +408,23 @@ def publish_crates() -> int:
                 + "\n  ".join(problems)
             )
         print(f"{name} {version} is already on crates.io, identical: skipped")
+    return 0
+
+
+def publish_crates() -> int:
+    """Stage three, with the token trusted publishing issued: each crate not
+    on crates.io, in dependency order, each in the index before the next,
+    which resolves it there.  Stage one verified them, so none is built
+    again with the token in reach of a build script."""
+    version = workspace_version()
+    statuses = crate_statuses(version)
+    for name in CRATES:
+        if statuses[name] != "absent":
+            continue
+        run("cargo", "publish", "--locked", "--no-verify", "-p", name)
+        # `cargo publish` waits for the index only so long, then warns and
+        # succeeds; the next crate resolves this one through the index.
+        wait_for_index(name, version)
     return 0
 
 
@@ -552,7 +577,8 @@ def main(argv: list[str] | None = None) -> int:
     # `latest=true|false`, for $GITHUB_OUTPUT.
     latest = sub.add_parser("newest")
     latest.add_argument("tag")
-    sub.add_parser("crates")
+    crates = sub.add_parser("crates")
+    crates.add_argument("stage", choices=("verify", "publish"))
     pypi = sub.add_parser("pypi")
     pypi.add_argument("dist", type=Path)
     release = sub.add_parser("github-release")
@@ -585,7 +611,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"latest={str(newest(args.tag, origin_tags())).lower()}")
         return 0
     if args.step == "crates":
-        return publish_crates()
+        return verify_crates() if args.stage == "verify" else publish_crates()
     if args.step == "pypi":
         return check_pypi(args.dist)
     if args.step == "github-release":
