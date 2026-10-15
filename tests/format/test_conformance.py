@@ -712,6 +712,99 @@ class TestPublication:
         assert summarize(score(suite, submitted))["ok"]
 
 
+class TestBoundedScore:
+    """1.0 §15.2 and 1.1 §2.2: each case states the format version it is
+    addressed to, and a score is bounded by version and by code revision, so
+    an implementation is held to what it was told about."""
+
+    @staticmethod
+    def _expectations(manifest: dict, drop: frozenset[str] = frozenset()) -> list:
+        return [
+            {
+                "file": c["file"],
+                "errors": [x for x in c["expect_errors"] if x not in drop],
+                "warnings": [x for x in c["expect_warnings"] if x not in drop],
+            }
+            for c in manifest["cases"]
+        ]
+
+    def test_every_case_states_its_format_version(self, tmp_path):
+        build_corpus(tmp_path)
+        manifest = load_manifest(tmp_path)
+        assert manifest["codes_revision"] == CODES_REVISION
+        for record in manifest["cases"]:
+            expected = record["expect_errors"] + record["expect_warnings"]
+            latest = max(
+                [CODES[c].since for c in expected]
+                + ["1.1" if "(1.1)" in record["clause"] else "1.0"]
+            )
+            assert record["format_version"] == latest, record["name"]
+        # A file's declared version is not the case's: these two declare 1.0
+        # and expect 1.1's answers.
+        for name in (
+            "E009-clinical-profile-in-a-1-0-file",
+            "E011-collection-version-below-member",
+        ):
+            assert case_by_name(name).format_version == "1.1", name
+        versions = {c.format_version for c in CASES}
+        assert versions == {"1.0", "1.1"}
+
+    def test_S2_2_a_1_0_implementation_is_scored_on_the_cases_addressed_to_1_0(
+        self, tmp_path, capsys
+    ):
+        later = next(c for c in CASES if c.format_version == "1.1")
+        publish(tmp_path, names=["core-minimal", later.name])
+        manifest = load_manifest(tmp_path)
+        only_1_0 = [
+            s
+            for s, c in zip(self._expectations(manifest), manifest["cases"])
+            if c["format_version"] == "1.0"
+        ]
+        assert not summarize(score(tmp_path, only_1_0))["ok"]
+        bounded = score(tmp_path, only_1_0, format_version="1.0")
+        assert [r.case.name for r in bounded] == ["core-minimal"]
+        assert summarize(bounded)["ok"]
+
+        results = tmp_path / "results.json"
+        results.write_text(json.dumps(only_1_0), encoding="utf-8")
+        assert main(["conformance", "score", str(tmp_path), str(results)]) != 0
+        capsys.readouterr()
+        argv = ["conformance", "score", str(tmp_path), str(results)]
+        assert main([*argv, "--format-version", "1.0", "--json"]) == 0
+        summary = json.loads(capsys.readouterr().out)
+        assert (summary["cases"], summary["skipped"]) == (1, 1)
+        assert main([*argv, "--format-version", "1"]) != 0
+        assert "not a version" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "code", sorted(c.code for c in CODES.values() if c.revision > 1) or [None]
+    )
+    def test_S15_2_a_validator_of_an_earlier_revision_is_scored_against_it(
+        self, code, tmp_path, capsys
+    ):
+        assert code is not None, "the table holds no code of a later revision"
+        later = frozenset(c.code for c in CODES.values() if c.revision > 1)
+        expecting = next(
+            c for c in CASES if code in c.errors or code in c.warnings
+        )
+        publish(tmp_path, names=["core-minimal", expecting.name])
+        manifest = load_manifest(tmp_path)
+        # What a validator of revision 1 reports: everything but the codes
+        # allocated after it.
+        submitted = self._expectations(manifest, drop=later)
+        results = tmp_path / "results.json"
+        results.write_text(json.dumps(submitted), encoding="utf-8")
+        argv = ["conformance", "score", str(tmp_path), str(results)]
+        assert main(argv) != 0
+        capsys.readouterr()
+        assert main([*argv, "--codes-revision", "1"]) == 0
+        assert "were not scored" in capsys.readouterr().out
+        # A later code reported anyway is ignored under the bound, not held
+        # against the validator.
+        noisy = [{**s, "warnings": [*s["warnings"], code]} for s in submitted]
+        assert summarize(score(tmp_path, noisy, codes_revision=1))["ok"]
+
+
 class TestCorpusSmoke:
     """Every public read path, over every corpus case.
 

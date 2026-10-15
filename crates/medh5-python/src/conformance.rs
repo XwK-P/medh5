@@ -88,12 +88,26 @@ fn conformance_load_manifest<'py>(py: Python<'py>, root: PathBuf) -> R<Bound<'py
 }
 
 #[pyfunction]
-fn conformance_score<'py>(py: Python<'py>, root: PathBuf, submitted: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
+#[pyo3(signature = (root, submitted, *, format_version=None, codes_revision=None))]
+fn conformance_score<'py>(
+    py: Python<'py>,
+    root: PathBuf,
+    submitted: &Bound<'py, PyAny>,
+    format_version: Option<String>,
+    codes_revision: Option<u32>,
+) -> R<Bound<'py, PyList>> {
     let entries: Vec<Value> = match py_to_json(submitted)? {
         Value::Array(items) => items,
         other => vec![other],
     };
-    let results = suite::score(&root, &entries)?;
+    let mut options = suite::ScoreOptions::default();
+    if let Some(version) = &format_version {
+        options = options.format_version(version);
+    }
+    if let Some(revision) = codes_revision {
+        options = options.codes_revision(revision);
+    }
+    let results = suite::score_with(&root, &entries, &options)?;
     Ok(results_to_py(py, &results)?)
 }
 

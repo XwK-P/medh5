@@ -750,7 +750,7 @@ Schemas (`/meta`, the clinical profile, and the task and cache contract's),
 ### `medh5 conformance score`
 
 ```
-medh5 conformance score SUITE RESULTS.json [--json]
+medh5 conformance score SUITE RESULTS.json [--format-version V] [--codes-revision N] [--json]
 ```
 
 Score any implementation's results against a published suite. See
@@ -758,6 +758,11 @@ Score any implementation's results against a published suite. See
 `SHA256SUMS` fails the score, whatever the cases say — a score over files
 that are not the published ones is not a score — and `--json` names those
 files under `changed`.
+
+`--format-version` scores only the cases addressed to that format version or
+an earlier one, and `--codes-revision` only those whose codes that revision of
+the code table holds, ignoring any later code reported. Cases left out are
+counted under `skipped`.
 
 ## Related
 

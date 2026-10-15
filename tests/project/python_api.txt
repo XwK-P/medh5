@@ -2059,11 +2059,12 @@ medh5.compare_annotations	function	(a, b, *, metric=None, threshold=None, classe
 medh5.conformance	module
 medh5.conformance.CASES	constant	tuple
 medh5.conformance.CHECKSUMS	constant	str
-medh5.conformance.Case	class	(name, description, clause, level='semantic', errors=(), warnings=(), suffix='.medh5', mutated=False) bases=
+medh5.conformance.Case	class	(name, description, clause, level='semantic', errors=(), warnings=(), suffix='.medh5', mutated=False, format_version='1.0') bases=
 medh5.conformance.Case.build	method	(path)
 medh5.conformance.Case.clause	field
 medh5.conformance.Case.description	field
 medh5.conformance.Case.errors	field
+medh5.conformance.Case.format_version	field
 medh5.conformance.Case.from_record	classmethod	(record)
 medh5.conformance.Case.level	field
 medh5.conformance.Case.mutated	field
@@ -2092,7 +2093,7 @@ medh5.conformance.check_checksums	function	(root)
 medh5.conformance.load_manifest	function	(root)
 medh5.conformance.publish	function	(outdir, *, names=None)
 medh5.conformance.run_corpus	function	(outdir, *, names=None)
-medh5.conformance.score	function	(root, submitted)
+medh5.conformance.score	function	(root, submitted, *, format_version=None, codes_revision=None)
 medh5.conformance.summarize	function	(results)
 medh5.create	function	(path, *, sample_id=None, subject_id=None, codec='balanced', profiles=None)
 medh5.curation	module

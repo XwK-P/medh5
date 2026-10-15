@@ -997,7 +997,13 @@ def conformance_publish(
 def conformance_run_corpus(
     outdir: str | os.PathLike[str], *, names: Sequence[str] | None = None
 ) -> list[Any]: ...
-def conformance_score(root: str | os.PathLike[str], submitted: Any) -> list[Any]: ...
+def conformance_score(
+    root: str | os.PathLike[str],
+    submitted: Any,
+    *,
+    format_version: str | None = None,
+    codes_revision: int | None = None,
+) -> list[Any]: ...
 def contains_at(values: npt.NDArray[Any], threshold: float) -> npt.NDArray[np.bool_]:
     """`values >= threshold`, decided in the stored precision (§7.5)."""
     ...

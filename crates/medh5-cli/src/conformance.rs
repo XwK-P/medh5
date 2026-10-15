@@ -6,7 +6,8 @@ use clap::ArgMatches;
 use serde_json::{json, Value};
 
 use medh5::conformance::{
-    build_corpus, case_by_name, cases, check_checksums, publish, run_corpus, score, summarize, CaseResult,
+    build_corpus, case_by_name, cases, check_checksums, load_manifest, publish, run_corpus, score_with, summarize,
+    CaseResult, ScoreOptions,
 };
 use medh5::json::repr_str;
 use medh5::pyval::py_path;
@@ -31,7 +32,7 @@ pub fn dispatch(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         }
         Some(("run", sub)) => {
             let results = run_corpus(outdir(sub)?, names)?;
-            Ok(report(&results, None, flag(sub, "json"), ctx))
+            Ok(report(&results, None, None, flag(sub, "json"), ctx))
         }
         Some(("publish", sub)) => {
             let root = py_path(&publish(outdir(sub)?, names)?);
@@ -87,7 +88,14 @@ fn list(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 fn score_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let suite = Path::new(req_str(m, "suite"));
     let results_path = Path::new(req_str(m, "results"));
-    let scored = (|| -> Result<(Vec<String>, Vec<CaseResult>), Error> {
+    let mut options = ScoreOptions::default();
+    if let Some(version) = get_str(m, "format_version") {
+        options = options.format_version(version);
+    }
+    if let Some(revision) = get_i64(m, "codes_revision") {
+        options = options.codes_revision(revision as u32);
+    }
+    let scored = (|| -> Result<(Vec<String>, Vec<CaseResult>, usize), Error> {
         let text =
             std::fs::read_to_string(results_path).map_err(|e| medh5::error::os_error(&e, py_path(results_path)))?;
         let submitted = medh5::json::loads(&text).map_err(|e| Error::Value(format!("not valid JSON: {e}")))?;
@@ -98,9 +106,11 @@ fn score_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             Value::Object(map) => map.keys().map(|k| Value::String(k.clone())).collect(),
             other => vec![other],
         };
-        Ok((stale, score(suite, &entries)?))
+        let results = score_with(suite, &entries, &options)?;
+        let listed = load_manifest(suite)?.get("cases").and_then(Value::as_array).map_or(0, Vec::len);
+        Ok((stale, results, listed))
     })();
-    let (stale, results) = match scored {
+    let (stale, results, listed) = match scored {
         Ok(found) => found,
         Err(e) if e.is_medh5() || matches!(e, Error::Io(_) | Error::Value(_)) => return Ok(ctx.fail(e.python_str())),
         Err(e) => return Err(e),
@@ -121,13 +131,21 @@ fn score_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             }
         }
     }
-    Ok(report(&results, Some(&stale), as_json, ctx))
+    let skipped = listed.saturating_sub(results.len());
+    Ok(report(&results, Some(&stale), Some(skipped), as_json, ctx))
 }
 
 /// Print the outcome; the exit code.  `changed`, for a score, names the
 /// published files whose bytes are no longer the published ones: a score
 /// over them is not a score, so it fails whatever the cases say.
-fn report(results: &[CaseResult], changed: Option<&[String]>, as_json: bool, ctx: &mut Ctx) -> i32 {
+/// `skipped` counts the cases a bounded score left out.
+fn report(
+    results: &[CaseResult],
+    changed: Option<&[String]>,
+    skipped: Option<usize>,
+    as_json: bool,
+    ctx: &mut Ctx,
+) -> i32 {
     let failures: Vec<&CaseResult> = results.iter().filter(|r| !r.ok()).collect();
     let drifted = changed.is_some_and(|c| !c.is_empty());
     if as_json {
@@ -135,6 +153,9 @@ fn report(results: &[CaseResult], changed: Option<&[String]>, as_json: bool, ctx
         if let Some(changed) = changed {
             summary["changed"] = json!(changed);
             summary["ok"] = json!(failures.is_empty() && !drifted);
+        }
+        if let Some(skipped) = skipped {
+            summary["skipped"] = json!(skipped);
         }
         ctx.emit(&summary, true);
     } else {
@@ -151,6 +172,9 @@ fn report(results: &[CaseResult], changed: Option<&[String]>, as_json: bool, ctx
             }
         }
         ctx.print(format!("{}/{} cases pass", results.len() - failures.len(), results.len()));
+        if let Some(skipped @ 1..) = skipped {
+            ctx.print(format!("{skipped} case(s) above the bounds given were not scored"));
+        }
     }
     if failures.is_empty() && !drifted {
         EXIT_OK
