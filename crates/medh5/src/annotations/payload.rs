@@ -133,23 +133,33 @@ pub type Masks = BTreeMap<i64, ArrayD<bool>>;
 
 /// Check every mask has one agreed shape and a writable class id.
 pub fn normalize_masks(masks: &Masks, spatial_shape: Option<&[usize]>) -> Result<Vec<usize>> {
+    normalize_mask_shapes(masks.iter().map(|(class_id, mask)| (*class_id, mask.shape())), spatial_shape)
+}
+
+/// [`normalize_masks`] on the masks' shapes alone, `(class_id, shape)` in
+/// class order: a caller holding the masks elsewhere checks them without
+/// copying them into [`Masks`].
+pub fn normalize_mask_shapes<'a>(
+    masks: impl IntoIterator<Item = (i64, &'a [usize])>,
+    spatial_shape: Option<&[usize]>,
+) -> Result<Vec<usize>> {
     let mut shape: Option<Vec<usize>> = spatial_shape.map(<[usize]>::to_vec);
-    for (class_id, mask) in masks {
+    for (class_id, found) in masks {
         match &shape {
-            None => shape = Some(mask.shape().to_vec()),
-            Some(s) if mask.shape() != s.as_slice() => {
+            None => shape = Some(found.to_vec()),
+            Some(s) if found != s.as_slice() => {
                 return Err(Error::coded(
                     "E405",
                     format!(
                         "mask for class {class_id} has shape {}, expected {}",
-                        repr_int_tuple(mask.shape()),
+                        repr_int_tuple(found),
                         repr_int_tuple(s)
                     ),
                 ))
             }
             _ => {}
         }
-        check_class_id(*class_id)?;
+        check_class_id(class_id)?;
     }
     shape.ok_or_else(|| Error::coded("E410", "no masks were supplied"))
 }

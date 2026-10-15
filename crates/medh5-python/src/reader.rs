@@ -17,7 +17,8 @@ use medh5::storage::index::SamplingIndex as EngineIndex;
 use medh5::transforms::model::Transform as EngineTransform;
 
 use crate::convert::{
-    array_to_py, attr_to_py, class_key, class_keys, dtype_arg, dtype_to_py, f64_array, json_to_py, nd_to_py, slices,
+    array_to_py, attr_to_py, class_key, class_keys, detach_if, dtype_arg, dtype_to_py, f64_array, json_to_py, nd_to_py,
+    slices, DETACH_ROWS,
 };
 use crate::errors::R;
 use crate::geometry::Grid;
@@ -72,7 +73,7 @@ impl ImageHandle {
     }
     #[getter]
     fn dataset(&self) -> R<Dataset> {
-        Ok(Dataset { ds: self.inner.dataset()? })
+        Ok(Dataset::wrap(self.inner.dataset()?))
     }
     #[getter]
     fn attrs<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
@@ -409,7 +410,7 @@ impl AnnotationHandle {
     /// A stored dataset of the annotation group.
     fn dataset(&self, name: &str) -> R<Dataset> {
         self.live()?;
-        Ok(Dataset { ds: self.inner.dataset(name)? })
+        Ok(Dataset::wrap(self.inner.dataset(name)?))
     }
     fn has_dataset(&self, name: &str) -> R<bool> {
         self.live()?;
@@ -687,7 +688,10 @@ impl AnnotationHandle {
         self.live()?;
         let grid = grid_ref_owned(grid)?;
         let coords = f64_array(coords)?;
-        Ok(array_to_py(py, with_grid(&grid, |g| self.inner.to_world(&coords, g))?))
+        let ann = self.inner.clone();
+        let rows = coords.shape().first().copied().unwrap_or(0);
+        let found = detach_if(py, rows >= DETACH_ROWS, move || with_grid(&grid, |g| ann.to_world(&coords, g)))?;
+        Ok(array_to_py(py, found))
     }
     #[pyo3(signature = (coords, *, grid=None))]
     fn to_index<'py>(
@@ -699,7 +703,10 @@ impl AnnotationHandle {
         self.live()?;
         let grid = grid_ref_owned(grid)?;
         let coords = f64_array(coords)?;
-        Ok(array_to_py(py, with_grid(&grid, |g| self.inner.to_index(&coords, g))?))
+        let ann = self.inner.clone();
+        let rows = coords.shape().first().copied().unwrap_or(0);
+        let found = detach_if(py, rows >= DETACH_ROWS, move || with_grid(&grid, |g| ann.to_index(&coords, g)))?;
+        Ok(array_to_py(py, found))
     }
     #[getter]
     fn attributes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
@@ -1063,7 +1070,7 @@ impl TransformHandle {
     #[getter]
     fn field(&self) -> R<Dataset> {
         self.live()?;
-        Ok(Dataset { ds: self.inner.field()? })
+        Ok(Dataset::wrap(self.inner.field()?))
     }
     #[getter]
     fn field_grid_id(&self) -> R<String> {
