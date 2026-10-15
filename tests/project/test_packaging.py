@@ -1627,9 +1627,11 @@ class TestDistribution:
         assert len(list(hostile.glob("*.medh5"))) == 4
         corpus = [binary, str(tmp_path / "corpus"), "--runs", "1"]
         assert damaged.main([*corpus, "--structural", str(hostile)]) == 0
-        assert damaged.structural(binary, tmp_path / "corpus" / "case.medh5") == (
-            "exit 0, not 1: "
-        )
+        # A valid file is not an error.  (What follows the colon is the
+        # binary's stderr, which on a free-threaded interpreter holds the
+        # warning that the GIL was re-enabled.)
+        valid = damaged.structural(binary, tmp_path / "corpus" / "case.medh5")
+        assert valid is not None and valid.startswith("exit 0, not 1:")
         jobs = _jobs(CI.read_text(encoding="utf-8"))
         build = _jobs(BUILD.read_text(encoding="utf-8"))["build"]
         msvc = jobs["msvc-from-crates-io"]
