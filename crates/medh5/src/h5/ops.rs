@@ -761,6 +761,25 @@ fn windows_identity(handle: windows_sys::Win32::Foundation::HANDLE) -> Option<Fi
     ))
 }
 
+/// Whether no other handle may write the file `path` names, and it is still
+/// the file `id` identifies.
+///
+/// Windows does not promise a file's times are current until every handle
+/// that wrote it has closed, so a file rewritten to its old length through a
+/// handle still open could keep its old identity.  Opening it for reading
+/// while refusing to share writing fails while any handle may write it; a
+/// file that is being written is checked, not remembered.
+#[cfg(windows)]
+fn unshared(path: &Path, id: &FileIdentity) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    let Ok(probe) = std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(path) else {
+        return false;
+    };
+    windows_identity(probe.as_raw_handle()).is_some_and(|p| (p.0, p.1) == (id.0, id.1))
+}
+
 /// The identity of the file `handle` holds open --- not whatever `path` names
 /// now.
 ///
@@ -774,8 +793,10 @@ fn windows_identity(handle: windows_sys::Win32::Foundation::HANDLE) -> Option<Fi
 /// archive extracts many with one mtime, and the time is the author's to set
 /// --- so keying on them would let a crafted file of a checked file's length
 /// and time skip the check.  A file with no identity (another driver, another
-/// system) is checked on every open rather than trusted on a guess.
+/// system, and on Windows a file another handle may be writing) is checked on
+/// every open rather than trusted on a guess.
 pub(crate) fn opened_identity(handle: &hdf5::File, path: Option<&Path>) -> Option<FileIdentity> {
+    #[cfg(not(windows))]
     let _ = path;
     let fd = super::file::descriptor(handle)?;
     #[cfg(unix)]
@@ -788,7 +809,8 @@ pub(crate) fn opened_identity(handle: &hdf5::File, path: Option<&Path>) -> Optio
     }
     #[cfg(windows)]
     {
-        windows_identity(super::file::os_handle(fd)?)
+        let id = windows_identity(super::file::os_handle(fd)?)?;
+        path.is_some_and(|p| unshared(p, &id)).then_some(id)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -1105,6 +1127,21 @@ mod tests {
         let handle = crate::h5::file::open_read(&path).unwrap();
         let key = opened_identity(&handle, Some(&path)).expect("a sec2 file has an identity");
         assert!(checked_files().lock().unwrap().contains_key(&key));
+    }
+
+    /// Windows does not promise a file's times are current while a handle
+    /// that may write it is open, so such a file is checked on every open.
+    #[cfg(windows)]
+    #[test]
+    fn s2_a_file_another_handle_may_write_is_not_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clean.medh5");
+        plain(&path);
+        let writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let handle = crate::h5::file::open_read(&path).unwrap();
+        assert!(opened_identity(&handle, Some(&path)).is_none());
+        drop(writer);
+        assert!(opened_identity(&handle, Some(&path)).is_some());
     }
 
     /// A file rewritten in place to its old length, its modification time
