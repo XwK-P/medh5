@@ -25,6 +25,7 @@ defined once, here, under a name for what it builds:
   reports, and an imaging sample to import them into;
 * :class:`NestedSameNameRoiKit` --- one CT plane of 16×16 and an RTSTRUCT of
   two ROIs named "Bladder", one inside the other.
+* :class:`FoldKit` --- a displacement field folding at one plane, 12×2×2.
 """
 
 from __future__ import annotations
@@ -879,3 +880,39 @@ class NestedSameNameRoiKit:
             structure.ROIContourSequence.append(item)
         structure.save_as(str(out), enforce_file_format=True)
         return out
+
+
+class FoldKit:
+    """A ``displacement`` field on a 12×2×2 grid at 1 mm, identity direction,
+    zero except ``u_x = −3`` mm at ``x = 6``.
+
+    Under central differences the voxels at ``x = 5`` fold (``det = −0.5``):
+    the whole field's ``folding_fraction()`` is 1/12.  A region differenced as
+    if it were the whole field sees none of it in ``[0:6]`` or ``[6:12]``,
+    each of which differences its own edge one-sidedly.
+    """
+
+    SHAPE = (12, 2, 2)
+    FOLD = 5
+    """The ``x`` whose voxels fold."""
+
+    @staticmethod
+    def field(shape: tuple[int, ...] = SHAPE) -> Any:
+        field = np.zeros((3, *shape), np.float32)
+        field[0, 6] = -3.0
+        return field
+
+    @staticmethod
+    def write(path: Path, *, shape: tuple[int, ...] = SHAPE) -> Path:
+        with medh5.create(path, sample_id="fold", codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0), frame_uid="F0")
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="F0",
+                to_frame="F1",
+                field=FoldKit.field(shape),
+                field_grid="g",
+            )
+        return path

@@ -4,7 +4,7 @@ One native application over the format engine (the ``medh5-cli`` crate): the
 same grammar, output and exit codes --- 0 success, 1 a handled error, 2 a usage
 error --- whether it runs as the standalone ``medh5`` binary or as this
 package's console script.  The commands only Python can run are handed back to
-the package: the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net),
+the package: the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, ITK, nnU-Net),
 which wrap nibabel, pydicom and highdicom, and the PyTorch dataloader
 benchmark.  The standalone binary reaches them by running this module's
 ``main`` in a Python interpreter that has the package (``python3`` --- ``python``
@@ -220,6 +220,15 @@ def _files(
         read("the SEG this command imports", "seg")
         read("the RTSTRUCT this command imports", "rtstruct")
         read("the sample this command amends", "sample")
+    elif command == "from-itk-transform":
+        read("the transform this command imports", "transform")
+        read("the warp this command imports", "warp")
+        read("the inverse warp this command imports", "inverse_warp")
+        read("the sample this command amends", "sample")
+    elif command == "to-itk-transform":
+        read("the sample this command reads", "sample")
+        if (warp_out := given("warp_out")) is not None:
+            writes.append(("the warp this command writes", warp_out))
     elif command == "from-dicom" and (root := given("root")) is not None:
         trees.append(("the DICOM tree this command reads", root))
         if out is not None and _inside(out, root) and _is_dicom(out):
@@ -561,6 +570,35 @@ def _to_rtstruct(args: Any) -> int:
     return _finish(report, args)
 
 
+def _from_itk_transform(args: Any) -> int:
+    from medh5.io.itk import from_itk_transform
+
+    report = from_itk_transform(
+        args.transform,
+        _sample_file(args.sample),
+        transform_id=args.transform_id,
+        fixed=args.fixed,
+        moving=args.moving,
+        warp=args.warp,
+        vectors=args.vectors,
+        inverse_warp=args.inverse_warp,
+    )
+    return _finish(report, args)
+
+
+def _to_itk_transform(args: Any) -> int:
+    from medh5.io.itk import to_itk_transform
+
+    report = to_itk_transform(
+        _sample_file(args.sample),
+        args.out,
+        transform_id=args.transform_id,
+        warp_out=args.warp_out,
+        vectors=args.vectors,
+    )
+    return _finish(report, args)
+
+
 def _from_nnunet(args: Any) -> int:
     from medh5.io.nnunetv2 import from_nnunetv2
 
@@ -676,6 +714,8 @@ _HANDLERS: dict[str, Callable[[Any], int]] = {
     "to-dicom-seg": _to_dicom_seg,
     "from-rtstruct": _from_rtstruct,
     "to-rtstruct": _to_rtstruct,
+    "from-itk-transform": _from_itk_transform,
+    "to-itk-transform": _to_itk_transform,
     "from-nnunet": _from_nnunet,
     "to-nnunet": _to_nnunet,
 }

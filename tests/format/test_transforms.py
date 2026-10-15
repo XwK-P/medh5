@@ -32,7 +32,7 @@ from medh5.transforms import (
 )
 from medh5.validate import validate_file
 from tests.helpers import ROOT, attested_as_written, encode_attr
-from tests.kits import Flat
+from tests.kits import Flat, FoldKit
 
 SHAPE = (12, 16, 16)
 
@@ -448,8 +448,9 @@ class TestDisplacement:
 
     def test_S10_4_a_jacobian_roi_is_the_same_region_of_the_field(self, tmp_path):
         """On a curved field the determinant varies, so a region resolved to
-        the wrong voxels shows: away from its own edges, which are differenced
-        one-sidedly, the region's determinant is the field's."""
+        the wrong voxels shows.  The region's determinant is the field's,
+        its own edges included: they were differenced one-sidedly, and
+        matched the field's only away from them."""
         grid_shape = (10, 9, 8)
         x = np.arange(grid_shape[0], dtype=np.float64)[:, None, None]
         y = np.arange(grid_shape[1], dtype=np.float64)[None, :, None]
@@ -476,18 +477,11 @@ class TestDisplacement:
                 (np.s_[-7:, -6:, 0:100], np.s_[3:10, 3:9, 0:8]),
             ]:
                 region = warp.jacobian_determinant(roi)
-                assert np.allclose(
-                    region[1:-1, 1:-1, 1:-1], whole[same][1:-1, 1:-1, 1:-1]
-                )
+                assert np.array_equal(region, whole[same])
 
     @pytest.mark.parametrize(
         ("roi", "match"),
         [
-            (np.s_[::2], "step 2"),
-            (np.s_[::2, ::2, ::2], "step 2"),
-            (np.s_[1::3, ::2, :], "step 3"),
-            (np.s_[4:5], "1 voxel on axis 0"),
-            (np.s_[:, 3:4, :], "1 voxel on axis 1"),
             (np.s_[10:4], "no voxel on axis 0"),
             (np.s_[:, :, 99:], "no voxel on axis 2"),
             (np.s_[:, :, :, :], "4 axes"),
@@ -496,8 +490,9 @@ class TestDisplacement:
     def test_S10_4_a_jacobian_roi_it_cannot_difference_is_refused(
         self, tmp_path, roi, match
     ):
-        """A strided region was differenced as if contiguous: ``::2`` on a
-        field folding nowhere reported 100% folding."""
+        """A region that selects no voxel, or names more axes than the grid
+        has, is refused.  A step and a one-voxel axis are accepted
+        (:class:`TestRoiJacobian`): the region is the field's own voxels."""
         path = registered(tmp_path / "reg.medh5", displacement=True)
         with medh5.open(path) as sample:
             warp = sample.transforms["refine"]
@@ -1010,6 +1005,51 @@ class TestComposite:
             assert gap in sample.transforms["chain"].check_chain()
             assert gap in str(exc.value)
 
+    def test_S10_5_a_composite_prefilters_a_cubic_component_once(self, tmp_path):
+        """A composite opened its components afresh at every evaluation, so a
+        cubic field inside one was read whole and prefiltered per call --- per
+        training item.  Its components keep their coefficients, shared with
+        the component opened by its own id."""
+        from medh5 import _core
+
+        rng = np.random.default_rng(5)
+        shape = (10, 12, 14)
+        field = rng.normal(0.0, 1.0, (3, *shape)).astype(np.float32)
+        path = tmp_path / "cubic-composite.medh5"
+        with medh5.create(path, sample_id="c") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0), frame_uid="F0")
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="F0",
+                to_frame="F1",
+                field=field,
+                field_grid="g",
+                interpolation="cubic",
+            )
+            w.add_transform("lift", kind="identity", from_frame="F1", to_frame="F2")
+            w.add_transform(
+                "both",
+                kind="composite",
+                from_frame="F0",
+                to_frame="F2",
+                components=["warp", "lift"],
+            )
+        points = rng.uniform(1.0, 8.0, size=(20, 3))
+        with medh5.open(path) as sample:
+            both = sample.transforms["both"]
+            _core._read_stats()
+            first = both.transform_points(points)
+            assert _core._read_stats()["whole"] >= 1, "the field is read once"
+            for _ in range(3):
+                assert np.array_equal(both.transform_points(points), first)
+            assert _core._read_stats()["whole"] == 0
+            assert np.array_equal(
+                sample.transforms["warp"].transform_points(points), first
+            )
+            assert _core._read_stats()["whole"] == 0, "the component is warp"
+
     def test_composite_needs_at_least_two_declared_components(self, tmp_path):
         with pytest.raises(MEDH5ValidationError) as exc:
             encode_composite(["only-one"])
@@ -1221,7 +1261,8 @@ class TestResolution:
         points = np.array([[3.0, 4.0, 5.0]])
         with medh5.open(path) as sample:
             assert sample.transforms["C"].is_invertible, "the file claims it"
-            assert sample.transforms["C"].inverse() is None, "and stores nothing"
+            # it stores nothing: its inverse is its components' (§10.5)
+            assert isinstance(sample.transforms["C"].inverse(), ChainTransform)
             back = sample.transform_between("F2", "F0")
             assert back is not None
             forward = sample.transforms["C"].transform_points(points)
@@ -1877,8 +1918,10 @@ class TestAmbiguousResolution:
             )
 
         with medh5.open(path) as sample:
+            # `tp0` holds the intermediate frames' grids too, so the question
+            # is the two grids'
             with pytest.raises(MEDH5ValidationError) as exc:
-                sample.transform_between("tp0", "tp1")
+                sample.transform_between("gA", "gT")
             assert exc.value.code == "E501"
 
     def test_a_longer_unambiguous_route_still_resolves(self, tmp_path):
@@ -1922,7 +1965,7 @@ class TestAmbiguousResolution:
                 "bt", kind="affine", matrix=step, from_frame="B", to_frame="T"
             )
         with medh5.open(path) as sample:
-            transform = sample.transform_between("tp0", "tp1")
+            transform = sample.transform_between("gA", "gT")
             assert transform is not None
             assert np.allclose(
                 transform.transform_points([[0.0, 0.0, 0.0]])[0], [2.0, 0.0, 0.0]
@@ -2045,3 +2088,407 @@ class TestFrameGraph:
     def test_the_registration_guide_no_longer_warns_against_linking(self):
         guide = (ROOT / "docs/guides/registration.md").read_text(encoding="utf-8")
         assert "Do not link them with `inverse_id`" not in guide
+
+
+class TestVisitKeys:
+    """A timepoint key answers only for a visit on one frame (1.0 §3.4)."""
+
+    @staticmethod
+    def _two_modalities(path: Path, *, pet: str) -> Path:
+        """Two visits, each a CT grid on its own frame and a PET grid named
+        `{pet}0` / `{pet}1`; both PET grids share one frame, and only the CT
+        frames are registered."""
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            for grid, timepoint, frame in (
+                (f"{pet}0", "tp0", "pseudo:pet"),
+                ("ct0", "tp0", "pseudo:ct0"),
+                (f"{pet}1", "tp1", "pseudo:pet"),
+                ("ct1", "tp1", "pseudo:ct1"),
+            ):
+                w.add_grid(
+                    grid,
+                    shape=(4, 4, 4),
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=timepoint,
+                    frame_uid=frame,
+                )
+            w.add_image("CT", np.zeros((4, 4, 4), np.int16), grid="ct0", modality="CT")
+            w.add_transform(
+                "ct0_to_ct1",
+                kind="affine",
+                from_frame="pseudo:ct0",
+                to_frame="pseudo:ct1",
+                matrix=np.eye(4),
+            )
+        return path
+
+    @pytest.mark.parametrize("pet", ["apet", "pet"])
+    def test_S10_a_visit_of_several_frames_has_no_one_transform(
+        self, tmp_path: Path, pet: str
+    ):
+        """At 2.0.2 `apet*` answered None and `pet*` a transform: the grids'
+        names decided."""
+        path = self._two_modalities(tmp_path / f"{pet}.medh5", pet=pet)
+        with medh5.open(path) as s:
+            for source, target in (("tp0", "tp1"), ("tp1", "tp0"), ("tp0", "ct1")):
+                with pytest.raises(MEDH5ValidationError) as caught:
+                    s.transform_between(source, target)
+                assert caught.value.code is None
+                message = str(caught.value)
+                for named in ("'pseudo:pet'", "'pseudo:ct0'", f"'{pet}0'", "'ct0'"):
+                    assert named in message, (named, message)
+                assert 'by="grid"' in message and "resolve_frames" in message
+            with pytest.raises(MEDH5ValidationError) as caught:
+                s.transform_between("tp0", "tp1")
+            for named in ("'tp0'", "'tp1'", "'ct1'", "'pseudo:ct1'"):
+                assert named in str(caught.value), named
+            # the grids still answer, each pair for itself
+            assert s.transform_between("ct0", "ct1").transform_id == "ct0_to_ct1"
+            assert s.transform_between(f"{pet}0", f"{pet}1") is None
+
+    def test_S10_one_frame_each_answers_as_before(self, tmp_path: Path):
+        def visits(name: str, *transforms: tuple[str, str, str]) -> Path:
+            path = tmp_path / f"{name}.medh5"
+            with medh5.create(path, sample_id=name, codec="portable") as w:
+                w.add_timepoint("tp0", days_from_baseline=0)
+                w.add_timepoint("tp1", days_from_baseline=90)
+                frames = ("F", "F") if name == "shared" else ("F0", "F1")
+                for index, frame in enumerate(frames):
+                    # two grids of one visit on one frame are still one frame
+                    for modality in ("ct", "pet"):
+                        w.add_grid(
+                            f"{modality}{index}",
+                            shape=(4, 4, 4),
+                            spacing=(1.0, 1.0, 1.0),
+                            timepoint=f"tp{index}",
+                            frame_uid=frame,
+                        )
+                w.add_image(
+                    "CT", np.zeros((4, 4, 4), np.int16), grid="ct0", modality="CT"
+                )
+                for tid, source, target in transforms:
+                    w.add_transform(
+                        tid,
+                        kind="affine",
+                        from_frame=source,
+                        to_frame=target,
+                        matrix=np.eye(4),
+                    )
+            return path
+
+        with medh5.open(visits("shared")) as s:
+            assert s.transform_between("tp0", "tp1") is None
+        with medh5.open(visits("path", ("t", "F0", "F1"))) as s:
+            assert s.transform_between("tp0", "tp1").transform_id == "t"
+            found = s.transform_between("tp0", "tp1", by="timepoint")
+            assert found.transform_id == "t"
+        with medh5.open(visits("none", ("t", "F0", "X"))) as s:
+            assert s.transform_between("tp0", "tp1") is None
+        tie = visits("tie", ("aaa", "F0", "F1"), ("zzz", "F0", "F1"))
+        with medh5.open(tie) as s, pytest.raises(MEDH5ValidationError) as caught:
+            s.transform_between("tp0", "tp1")
+        assert caught.value.code == "E501"
+
+    def test_S10_by_grid_reads_a_grid_named_like_a_timepoint(self, tmp_path: Path):
+        """A PET grid named `tp0` beside the visit `tp0` (§2.3: the namespaces
+        are separate); only the PET frames are registered."""
+        path = tmp_path / "named.medh5"
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            for index, tp in enumerate(("tp0", "tp1")):
+                w.add_timepoint(tp, days_from_baseline=index * 90)
+                for grid, frame in (
+                    (f"ct_{tp}", f"pseudo:ct-{tp}"),
+                    (tp, f"pseudo:pet-{tp}"),
+                ):
+                    w.add_grid(
+                        grid,
+                        shape=(4, 4, 4),
+                        spacing=(1.0, 1.0, 1.0),
+                        timepoint=tp,
+                        frame_uid=frame,
+                    )
+            w.add_image(
+                "CT", np.zeros((4, 4, 4), np.int16), grid="ct_tp0", modality="CT"
+            )
+            w.add_transform(
+                "pet_reg",
+                kind="affine",
+                from_frame="pseudo:pet-tp0",
+                to_frame="pseudo:pet-tp1",
+                matrix=np.eye(4),
+            )
+        with medh5.open(path) as s:
+            with pytest.raises(MEDH5ValidationError, match="one frame"):
+                s.transform_between("tp0", "tp1")
+            with pytest.raises(MEDH5ValidationError, match="one frame"):
+                s.transform_between("tp0", "tp1", by="timepoint")
+            by_grid = s.transform_between("tp0", "tp1", by="grid")
+            assert by_grid.transform_id == "pet_reg"
+            assert s.transform_between("ct_tp0", "ct_tp1", by="grid") is None
+            by_frame = s.transform_between(
+                "pseudo:pet-tp0", "pseudo:pet-tp1", by="frame"
+            )
+            assert by_frame.transform_id == "pet_reg"
+            with pytest.raises(KeyError, match="'tp0'"):
+                s.transform_between("tp0", "tp1", by="frame")
+            with pytest.raises(KeyError, match="ct_tp0"):
+                s.transform_between("ct_tp0", "tp1", by="timepoint")
+            with pytest.raises(ValueError, match="'visit'"):
+                s.transform_between("tp0", "tp1", by="visit")  # type: ignore[arg-type]
+
+    def test_S3_4_a_visit_without_framed_grids_is_unrelated(self, tmp_path: Path):
+        """No frame on one side: nothing relates it, and nothing is assumed."""
+        path = tmp_path / "unframed.medh5"
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            w.add_grid("g0", shape=(4, 4, 4), spacing=(1, 1, 1), timepoint="tp0")
+            w.add_grid(
+                "g1",
+                shape=(4, 4, 4),
+                spacing=(1, 1, 1),
+                timepoint="tp1",
+                frame_uid="F1",
+            )
+            # an unframed grid beside a framed one leaves the visit one frame
+            w.add_grid("u1", shape=(4, 4, 4), spacing=(1, 1, 1), timepoint="tp1")
+            w.add_image("CT", np.zeros((4, 4, 4), np.int16), grid="g0", modality="CT")
+            w.add_transform(
+                "t", kind="affine", from_frame="F0", to_frame="F1", matrix=np.eye(4)
+            )
+        with medh5.open(path) as s:
+            assert s.transform_between("tp0", "tp1") is None
+            assert s.transform_between("tp1", "tp0") is None
+            assert s.transform_between("F0", "tp1").transform_id == "t"
+
+
+class TestInverseOfAChain:
+    """The inverse of a chain is its steps' inverses, in reverse (§10.5)."""
+
+    @staticmethod
+    def _three_frames(path: Path, *, deformable: bool = False) -> Path:
+        first = np.array(
+            [[0.9, 0.2, 0.0, 3.0], [-0.1, 1.1, 0.3, -2.0], [0.0, 0.05, 1.2, 1.0]]
+        )
+        second = np.array(
+            [[1.0, 0.0, 0.4, -1.5], [0.2, 0.8, 0.0, 4.0], [0.0, -0.3, 1.0, 0.5]]
+        )
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            for index, frame in enumerate(("F0", "F1", "F2")):
+                w.add_grid(
+                    f"g{index}", shape=(8, 8, 8), spacing=(1, 1, 1), frame_uid=frame
+                )
+            w.add_image("CT", np.zeros((8, 8, 8), np.int16), grid="g0", modality="CT")
+            w.add_transform(
+                "a01",
+                kind="affine",
+                from_frame="F0",
+                to_frame="F1",
+                matrix=np.vstack([first, [0, 0, 0, 1]]),
+            )
+            if deformable:
+                w.add_transform(
+                    "a12",
+                    kind="displacement",
+                    from_frame="F1",
+                    to_frame="F2",
+                    field=np.ones((3, 8, 8, 8), np.float32),
+                    field_grid="g1",
+                    invertible=True,
+                )
+            else:
+                w.add_transform(
+                    "a12",
+                    kind="affine",
+                    from_frame="F1",
+                    to_frame="F2",
+                    matrix=np.vstack([second, [0, 0, 0, 1]]),
+                )
+            w.add_transform(
+                "c02",
+                kind="composite",
+                from_frame="F0",
+                to_frame="F2",
+                components=["a01", "a12"],
+            )
+        return path
+
+    POINTS = np.array([[1.0, 2.0, 3.0], [-4.0, 0.5, 2.25], [0.0, 0.0, 0.0]])
+
+    def test_S10_5_the_inverse_of_a_chain_is_its_steps_inverted_in_reverse(
+        self, tmp_path: Path
+    ):
+        path = self._three_frames(tmp_path / "chain.medh5")
+        with medh5.open(path) as s:
+            chain = ChainTransform([s.transforms["a01"], s.transforms["a12"]])
+            assert chain.is_invertible
+            assert InverseTransform.can_invert(chain)
+            back = chain.inverse()
+            assert isinstance(back, ChainTransform)
+            assert (back.from_frame, back.to_frame) == ("F2", "F0")
+            assert [t.from_frame for t in back.steps] == ["F2", "F1"]
+            forward = chain.transform_points(self.POINTS)
+            assert np.allclose(back.transform_points(forward), self.POINTS, atol=1e-9)
+            assert np.allclose(
+                InverseTransform(chain).transform_points(forward),
+                self.POINTS,
+                atol=1e-9,
+            )
+
+    def test_S10_5_a_composite_of_affines_inverts_without_an_inverse_id(
+        self, tmp_path: Path
+    ):
+        path = self._three_frames(tmp_path / "composite.medh5")
+        with medh5.open(path) as s:
+            composite = s.transforms["c02"]
+            assert InverseTransform.can_invert(composite)
+            back = composite.inverse()
+            assert back is not None
+            assert (back.from_frame, back.to_frame) == ("F2", "F0")
+            forward = composite.transform_points(self.POINTS)
+            assert np.allclose(back.transform_points(forward), self.POINTS, atol=1e-9)
+            assert np.allclose(
+                InverseTransform(composite).transform_points(forward),
+                self.POINTS,
+                atol=1e-9,
+            )
+
+    def test_S10_5_a_step_that_cannot_be_inverted_still_refuses(self, tmp_path: Path):
+        """`invertible: true` on a field with no `inverse_id` is a claim only."""
+        path = self._three_frames(tmp_path / "field.medh5", deformable=True)
+        with medh5.open(path) as s:
+            composite = s.transforms["c02"]
+            assert composite.is_invertible, "the claim stands"
+            assert not InverseTransform.can_invert(composite)
+            assert composite.inverse() is None
+            chain = ChainTransform([s.transforms["a01"], s.transforms["a12"]])
+            assert not InverseTransform.can_invert(chain)
+            assert chain.inverse() is None
+
+    def test_S10_1_resolution_is_unchanged_by_invertible_composites(
+        self, tmp_path: Path
+    ):
+        """A composite's inverse is no new edge of the frame graph: F2 -> F0
+        stays the two analytic inverses, not one hop through `c02`."""
+        from medh5.transforms import frame_graph
+
+        path = self._three_frames(tmp_path / "graph.medh5")
+        with medh5.open(path) as s:
+            assert frame_graph(s.transforms)["F2"] == ["F1"]
+            back = s.transform_between("F2", "F0")
+            assert isinstance(back, ChainTransform)
+            assert [t.transform_id for t in back.steps] == [
+                "a12⁻¹",
+                "a01⁻¹",
+            ]
+            assert s.transform_between("F0", "F2").transform_id == "c02"
+
+
+class TestRoiJacobian:
+    """A region's Jacobian is the field's own, read off its voxels: the
+    differences reach one voxel past the region, and are one-sided only at
+    the field's own edges."""
+
+    @staticmethod
+    def _curved(path: Path, shape: tuple[int, int, int] = (9, 7, 6)) -> Path:
+        rng = np.random.default_rng(3)
+        field = rng.normal(0.0, 0.4, (3, *shape)).astype(np.float32)
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.5, 0.8, 1.2), frame_uid="F0")
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="F0",
+                to_frame="F1",
+                field=field,
+                field_grid="g",
+            )
+        return path
+
+    def test_S10_the_jacobian_of_a_roi_is_the_fields_own(self, tmp_path: Path):
+        """Over random contiguous and strided regions, negative bounds and
+        one-voxel axes included: the region's determinant is the whole
+        field's, sliced."""
+        from hypothesis import given, settings
+        from hypothesis import strategies as st
+
+        shape = (9, 7, 6)
+        path = self._curved(tmp_path / "curved.medh5", shape)
+        bound = st.one_of(st.none(), st.integers(-12, 12))
+
+        axis = st.builds(slice, bound, bound, st.one_of(st.none(), st.integers(1, 4)))
+
+        with medh5.open(path) as s:
+            warp = s.transforms["warp"]
+            whole = warp.jacobian_determinant()
+
+            @settings(max_examples=150, deadline=None, database=None)
+            @given(st.tuples(*(axis for _ in shape)))
+            def check(roi: tuple[slice, ...]) -> None:
+                if any(
+                    len(range(*r.indices(n))) == 0
+                    for r, n in zip(roi, shape, strict=True)
+                ):
+                    with pytest.raises(ValueError, match="no voxel"):
+                        warp.jacobian_determinant(roi)
+                    return
+                region = warp.jacobian_determinant(roi)
+                assert region.shape == whole[roi].shape
+                assert np.allclose(region, whole[roi], rtol=1e-12, atol=1e-12)
+                expected = float(np.mean(whole[roi] <= 0))
+                assert warp.folding_fraction(roi) == pytest.approx(expected)
+
+            check()
+
+    def test_S10_tiled_rois_fold_as_the_whole_field(self, tmp_path: Path):
+        """At 2.0.2 the tiles [0:6] and [6:12] each saw no fold, differencing
+        their own edges one-sidedly."""
+        path = FoldKit.write(tmp_path / "fold.medh5")
+        with medh5.open(path) as s:
+            warp = s.transforms["warp"]
+            whole = warp.jacobian_determinant()
+            assert np.allclose(whole[FoldKit.FOLD], -0.5)
+            assert int(np.count_nonzero(whole <= 0)) == 4  # one plane of 2×2
+            assert warp.folding_fraction() == pytest.approx(1 / 12)
+            for tiles in (
+                (np.s_[0:4], np.s_[4:8], np.s_[8:12]),
+                (np.s_[0:6], np.s_[6:12]),
+            ):
+                parts = [warp.jacobian_determinant(tile) for tile in tiles]
+                assert np.array_equal(np.concatenate(parts), whole)
+                folds = sum(int(np.count_nonzero(part <= 0)) for part in parts)
+                assert folds == 4
+
+    def test_S10_a_strided_roi_keeps_a_one_voxel_fold(self, tmp_path: Path):
+        """A step was refused; differencing on the sampled lattice instead
+        would miss a fold narrower than the step.  The region keeps the
+        field's own determinant at the voxels it selects."""
+        path = FoldKit.write(tmp_path / "fold.medh5")
+        with medh5.open(path) as s:
+            warp = s.transforms["warp"]
+            region = warp.jacobian_determinant(np.s_[1::2])
+            assert region.shape == (6, 2, 2)
+            assert np.allclose(region[2], -0.5), "x = 5 is the third of 1, 3, 5"
+            assert warp.folding_fraction(np.s_[1::2]) == pytest.approx(1 / 6)
+            assert warp.folding_fraction(np.s_[::2]) == 0.0
+
+    def test_S10_a_one_voxel_roi_axis_is_accepted(self, tmp_path: Path):
+        path = FoldKit.write(tmp_path / "fold.medh5")
+        with medh5.open(path) as s:
+            warp = s.transforms["warp"]
+            region = warp.jacobian_determinant(np.s_[5:6, 0:1])
+            assert region.shape == (1, 1, 2)
+            assert np.allclose(region, -0.5)
+            assert warp.folding_fraction(np.s_[5:6]) == 1.0
+
+    def test_S10_a_one_voxel_field_axis_is_still_refused(self, tmp_path: Path):
+        """The field itself needs two voxels on each axis to difference."""
+        path = FoldKit.write(tmp_path / "flat.medh5", shape=(12, 1, 2))
+        with medh5.open(path) as s:
+            warp = s.transforms["warp"]
+            for roi in (None, np.s_[2:6]):
+                with pytest.raises(ValueError, match="field spans 1 voxel on axis 1"):
+                    warp.jacobian_determinant(roi)

@@ -134,6 +134,10 @@ class Transform:
 
     @property
     def is_invertible(self) -> bool:
+        """Whether the mapping is *claimed* invertible: declared
+        (``invertible``, ``inverse_id``), analytic, or true of every step.
+        Whether an inverse can be evaluated is
+        :meth:`InverseTransform.can_invert`."""
         return bool(self._handle.is_invertible)
 
     @property
@@ -151,7 +155,16 @@ class Transform:
         return found
 
     def inverse(self) -> Transform | None:
-        """The stored inverse (``inverse_id``), or ``None``."""
+        """The inverse, or ``None`` when none can be evaluated.
+
+        The stored inverse (``inverse_id``) when the file carries one.  A
+        :class:`ChainTransform`, or a composite without a usable
+        ``inverse_id``, inverts as the chain of its steps' inverses in reverse
+        order, when every step can be inverted (an affine's or identity's
+        analytic inverse, or a stored one).  :attr:`is_invertible` is the
+        claim; :meth:`InverseTransform.can_invert` says whether an inverse can
+        be evaluated.
+        """
         found = self._handle.inverse()
         return None if found is None else wrap_transform(found)
 
@@ -262,18 +275,23 @@ class DisplacementTransform(Transform):
         """``det(I + du/dx)`` per voxel of the field grid, or of *roi*.
 
         *roi* takes what :meth:`read_field` takes: one slice per spatial axis,
-        whole axes after the last one given, and NumPy's negative and
-        out-of-range bounds.  The derivative is a difference on the region's
-        own lattice --- one-sided at its edges, as at the field's --- so a
-        slice with a step other than 1 is refused (take the region, then slice
-        the result), and so is an axis of fewer than 2 voxels.
+        whole axes after the last one given, NumPy's negative and out-of-range
+        bounds, and a positive step.  The result is the whole field's
+        determinant at the voxels *roi* selects,
+        ``jacobian_determinant(roi) == jacobian_determinant()[roi]``: the
+        differences reach one voxel past the region and are one-sided only at
+        the field's own edges, so a strided region keeps a fold narrower than
+        its step and an axis of one voxel is accepted.  Only the voxels the
+        region needs are read.  The field itself needs at least 2 voxels on
+        every axis.
         """
         found: npt.NDArray[np.float64] = self._handle.jacobian_determinant(roi)
         return found
 
     def folding_fraction(self, roi: Sequence[slice] | None = None) -> float:
         """The fraction of voxels where the map folds (``det J <= 0``), over
-        the field or *roi* (as :meth:`jacobian_determinant` takes it)."""
+        the field or the voxels *roi* selects (as :meth:`jacobian_determinant`
+        takes it)."""
         return float(self._handle.folding_fraction(roi))
 
     @property

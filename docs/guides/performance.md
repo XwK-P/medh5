@@ -180,7 +180,9 @@ both. `set_cache_size(n)` is the other lever — raise it toward the number of
 files a worker cycles through, lower it when descriptors are scarce. Under DDP
 the same sampler gives each rank a contiguous share of the files
 (`num_replicas`, `rank`), where `DistributedSampler` would have every rank
-open every file.
+open every file. A kept handle also keeps its transforms' cubic coefficients:
+a `cubic` displacement field, alone or inside a composite, is read and
+prefiltered once per handle, within a 256 MiB budget per process.
 
 Stitching sliding-window predictions back (`GridStitcher`) keeps one
 accumulator per file in flight: `channels` volumes of the output `dtype`

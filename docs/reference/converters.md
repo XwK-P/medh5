@@ -604,6 +604,68 @@ back — a region its components do not cover, a voxel two classes share — is
 refused before any file is written. These refusals carry no §15.2 code: the
 samples are valid, and what they fail is nnU-Net's layout.
 
+### ITK transforms
+
+```
+$ medh5 convert from-itk-transform reg.tfm case.medh5 --id tp0_to_tp1 --fixed ct_tp0 --moving ct_tp1
+$ medh5 convert from-itk-transform out0GenericAffine.mat case.medh5 --id syn \
+      --fixed ct_tp0 --moving ct_tp1 --warp out1Warp.nii.gz --vectors lps
+$ medh5 convert to-itk-transform case.medh5 back.tfm --id syn --warp-out back_warp.nii.gz --vectors ras
+```
+
+<!-- illustrative -->
+```python
+from medh5.io.itk import from_itk_transform, read_itk_transform, to_itk_transform
+
+from_itk_transform("reg.tfm", "case.medh5", transform_id="tp0_to_tp1",
+                   fixed="ct_tp0", moving="ct_tp1")
+to_itk_transform("case.medh5", "back.mat", transform_id="tp0_to_tp1")
+read_itk_transform("back.mat").matrix     # LPS mm, x_moving = T(x_fixed)
+```
+
+ITK's convention is the format's (§10.2): a registration of a *moving* image
+to a *fixed* one maps fixed points to moving points. **The caller names the
+two grids**, in ITK's words, because a transform file names no image; the
+transform is stored from the fixed grid's frame to the moving grid's. ITK's
+points are LPS millimetres, so the matrix is re-expressed in each grid's
+coordinate system and units — an RAS grid flips two axes, a grid in metres
+scales the translation — and a grid in `px`, which has no millimetres, is
+refused. The importer reads text files (`.tfm`, `.txt`) and ANTs' MATLAB
+`.mat`, holding `AffineTransform`, `MatrixOffsetTransformBase`,
+`TranslationTransform`, `IdentityTransform`, `Euler3DTransform` (with its
+ZYX order where the file sets it), `Euler2DTransform`,
+`VersorRigid3DTransform`, `Similarity3DTransform`, `Similarity2DTransform`,
+`ScaleTransform`, or a `CompositeTransform` of them; the centre in the fixed
+parameters folds into the translation. ITK's HDF5 transform files and
+B-splines are refused (they wait for 2.2), as is a transform whose input and
+output dimensions differ.
+
+**A composite is listed in reverse.** ITK applies the last transform it lists
+first; §10.5 applies the first component first. Each component is stored as an
+`affine` between intermediate frames `pseudo:<id>.mid…`, and a `composite`
+`<id>` relates the two grids' frames.
+
+**A displacement field needs `--vectors`.** Some versions of ITK write a
+field's vectors in LPS and others in RAS, and the file does not say which:
+SimpleITK 2.5 writes a vector image's components as they are (LPS) under
+NIfTI's `vector` intent, and reads a `DISPVECT` file's as RAS. An ANTs pair —
+the affine and its `Warp.nii.gz`, the warp applied first — is stored as the
+warp from the fixed frame to `pseudo:<id>.mid`, the affine from there to the
+moving frame, and a `composite` `<id>` between the grids' frames, which earns
+`reg` and is the one shortest route between them. The field is stored on the
+fixed grid when its geometry is that grid's, otherwise on a new grid
+`<id>_field` in the fixed frame. `--inverse-warp` (ANTs' `InverseWarp`) is
+stored linked to the warp by `inverse_id`; its field lies in the intermediate
+frame, so it is refused where that would give the fixed grid's visit a second
+frame.
+
+The export writes each matrix as `AffineTransform_double_3_3` to a `.tfm`,
+`.txt` or `.mat` file (several linear steps as an ITK composite in a text
+file, or multiplied into one affine in a `.mat`), and a displacement applied
+first to `--warp-out`, a `DISPVECT` NIfTI (intent 1006) in the `--vectors`
+convention. Each file is written to a temporary beside it and renamed over
+it.
+
 ### 0.x files
 
 ```

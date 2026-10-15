@@ -687,6 +687,30 @@ jobs:
       - run: rm -rf medh5
       - run: pytest tests/integrations/test_meds.py -v -rs --no-cov
 
+  test-itk:
+    # SimpleITK is the reference for `medh5.io.itk`: `TestItkCrossCheck`
+    # holds the transforms read and written to SimpleITK's own
+    # `TransformPoint`, and pins the vector convention it writes.  It is no
+    # dependency of the package, so it gets a job of its own, where the
+    # cross-check's `importorskip` cannot skip silently.
+    needs: build-linux-x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-dist-x86_64-unknown-linux-gnu
+          path: dist/
+      - run: pip install "$(ls dist/*-abi3-*.whl)[dev,nifti]" "SimpleITK==2.5.*"
+      - run: python -c "import SimpleITK, nibabel"
+      - run: rm -rf medh5
+      # Exit 5 if `-k` selects nothing, so a renamed class fails here too.
+      - run: pytest tests/ -v -rs -k "Itk or itk" --no-cov
+
   prototype:
     # Appendix C.2 publishes a table of results from the executable prototype
     # next to the spec.  It follows the specification with h5py alone, not
@@ -966,6 +990,7 @@ jobs:
       - test-min-deps
       - test-monai
       - test-meds
+      - test-itk
       - prototype
       - conformance
       - hdf5-readers

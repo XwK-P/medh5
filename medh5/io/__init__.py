@@ -29,6 +29,11 @@ _LAZY: dict[str, str] = {
     "to_dicom_seg": "medh5.io.dicom_seg",
     "from_rtstruct": "medh5.io.rtstruct",
     "to_rtstruct": "medh5.io.rtstruct",
+    "ItkTransform": "medh5.io.itk",
+    "read_itk_transform": "medh5.io.itk",
+    "write_itk_transform": "medh5.io.itk",
+    "from_itk_transform": "medh5.io.itk",
+    "to_itk_transform": "medh5.io.itk",
     "from_nnunetv2": "medh5.io.nnunetv2",
     "to_nnunetv2": "medh5.io.nnunetv2",
     # The module is `legacy`, not `migrate`: importing `medh5.io.legacy` would

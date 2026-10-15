@@ -596,6 +596,10 @@ class TestRepositoryGates:
             assert f"name: ci-dist-{target}\n" in jobs[name], name
         assert "-rs" in jobs["test-monai"]
         assert "tests/integrations/test_meds.py -v -rs" in jobs["test-meds"]
+        # SimpleITK, which the ITK cross-check needs, is installed where it runs
+        itk = jobs["test-itk"]
+        assert "SimpleITK" in itk and '-k "Itk or itk"' in itk and "-rs" in itk
+        assert 'python -c "import SimpleITK, nibabel"' in itk
 
     def test_an_older_hdf5_reads_what_the_engine_writes(self):
         """The specification promises files HDF5 1.10 reads, and none was ever
@@ -993,7 +997,7 @@ class TestDistribution:
             if targets:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
-        assert downloading == 15
+        assert downloading == 16
 
     def test_every_shipped_target_is_built_released_and_noticed(self):
         """The targets were listed four times --- the build jobs, the
