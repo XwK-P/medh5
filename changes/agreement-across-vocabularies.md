@@ -22,8 +22,8 @@
 - **A comparison across two samples no longer records the other file's path
   as its own.** Its `against` was `annotations/<the other annotation>`, which
   resolves inside the recording sample. It is now `None`, and `to_record()`
-  refuses it unless `against=` names an annotation of the recording sample;
-  in Rust, `to_record_against`. §11.2 now says whose annotation `against`
-  names.
+  refuses it unless `against=` names an annotation of the recording sample,
+  `annotations/<id>`; in Rust, `to_record_against`. §11.2 now says whose
+  annotation `against` names.
 - **`skipped` names each class once.** A class each side calls by the same
   key was listed twice.

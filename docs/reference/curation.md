@@ -181,8 +181,9 @@ A=B` (repeatable) and `--match-by auto|iou|instance-id`.
 ### Recording a comparison
 
 A `quality.agreement` record's `against` is the path of an annotation of the
-recording sample (§11.2). Within one sample that is the other annotation, and
-`to_record()` fills it in. A comparison across two samples has `against =
+recording sample (§11.2), `annotations/<id>`. Within one sample, even opened
+through two handles, that is the other annotation, and `to_record()` fills it
+in. A comparison across two samples has `against =
 None`, because no path of the recording sample names the other file's
 annotation, and `to_record()` refuses it; copy the other annotation in and name
 it with `to_record(against="annotations/rater_b")`.
