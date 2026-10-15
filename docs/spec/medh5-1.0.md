@@ -1256,6 +1256,10 @@ instant. A validator at level `semantic` **MUST** report dangling `prov` referen
  "edit_effort_s": 640}
 ```
 
+An `agreement` entry's `against` is the path, from the sample root, of an annotation of the same
+sample; an agreement with another sample's annotation **MUST NOT** be recorded under a path of
+this one.
+
 `status` ∈ {`draft`, `submitted`, `reviewed`, `approved`, `rejected`, `deprecated`}. Status changes
 are **activities** (§11.1), not fields with private history — the audit trail is the provenance graph.
 
@@ -1839,10 +1843,10 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 2.3 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.04 ms at 63
 classes), a metadata-only read 0.13 ms, and `open()` → first patch 1.6 ms.
 
-Eighty-seven clauses have been corrected — ten during implementation, eleven in the 1.x package
+Eighty-eight clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
 package, one when it implemented 1.1, twenty-eight in the audits of 2.0 before its release,
-twenty-three in the audit of 2.0.1, and ten in the development of 2.1 — each because
+twenty-three in the audit of 2.0.1, and eleven in the development of 2.1 — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1935,6 +1939,7 @@ implementation could honestly promise, as written:
 | §4.3, §16 | Voxel annotations are not pyramided in 1.x, and `levels`, `downsample_factors`, `downsample_method` and `grid_levels` are reserved on an annotation. §4.3 said voxel annotations "MAY be pyramided identically, with `nearest` or `max`" and defined nothing more: which voxel `nearest` takes under an even factor, what `max` means over class ids, how coverage and the ignore region downsample, whether levels are digested or indexed. Nothing wrote, read or validated one, so no file changes meaning. |
 | §8.6 | Found by the RTSTRUCT importer in the development of 2.1: how a class's polygons in a plane combine is defined by their nesting depth — polygons of one depth united, the region inside an odd number of layers — and `contour_role` **SHOULD** be the depth's parity; readers take the depth, a role that disagrees is W919, and a role other than `0` or `1` is E404. The clause gave the role "0 = outer boundary, 1 = hole" and no rule for combining, so two RTSTRUCT ROIs of one name, one inside the other, were imported as a hole (roles came from nesting per ROI, the rasteriser nested per class), and the reference reader failed on a role of `2`, against §16's rule that readers ignore values they do not know. |
 | §7.4 | An absence is a finding only where the object was looked for: its *located extent* — its boxes at other visits mapped through the shared frame or affine transforms, rounded out to whole voxels — must lie within the grid, within the acquired voxels and outside the ignore region; where no extent can be located, the class-level rule stands. The clause answered only through `annotated_class_ids` and the ignore region, so a lesion was *resolved* at a follow-up whose grid did not contain it — verified with an identity registration and the follow-up 100 mm away — and any ignore region, however far from the object, made every absence unexamined. A path with a nonlinear step does not locate the object: a warped box's corners do not bound it. |
+| §11.2 | An `agreement` entry's `against` is the path, from the sample root, of an annotation of the same sample, and an agreement with another sample's annotation is not recorded under a path of this one. The clause showed `against` only in its example and never said whose annotation it names, so a comparison of two raters' files recorded `annotations/<the other file's annotation>` into the first: a path that resolves inside the recording sample, to itself or to nothing — verified. A comparison across samples is recorded only against an annotation the caller names in the recording sample. |
 
 ### C.2 Prototype checks
 

@@ -751,6 +751,8 @@ def agreement_compare(
     metric: str | None = None,
     threshold: float | None = None,
     classes: Any = None,
+    map_classes: Any = None,
+    match_by: str = "auto",
 ) -> tuple[str, dict[Any, Any]]:
     """The comparison two annotations' kinds support:
     `("voxel" | "instance", fields)`.
@@ -758,7 +760,13 @@ def agreement_compare(
     ...
 
 def agreement_compare_instances(
-    a: Any, b: Any, *, threshold: float = ..., classes: Any = None
+    a: Any,
+    b: Any,
+    *,
+    threshold: float = ...,
+    classes: Any = None,
+    map_classes: Any = None,
+    match_by: str = "auto",
 ) -> dict[Any, Any]:
     """Object-level agreement between two annotations: the fields of an
     `InstanceAgreement`.
@@ -766,7 +774,7 @@ def agreement_compare_instances(
     ...
 
 def agreement_compare_voxel(
-    a: Any, b: Any, *, metric: str = ..., classes: Any = None
+    a: Any, b: Any, *, metric: str = ..., classes: Any = None, map_classes: Any = None
 ) -> dict[Any, Any]:
     """Per-class Dice or IoU between two voxel annotations: the fields of a
     `VoxelAgreement`.
@@ -779,14 +787,16 @@ def agreement_dice(a: Any, b: Any) -> float | None:
 
 def agreement_instance_json(agreement: Any) -> Any: ...
 def agreement_instance_mean_iou(agreement: Any) -> float | None: ...
-def agreement_instance_record(agreement: Any) -> Agreement: ...
+def agreement_instance_record(
+    agreement: Any, against: str | None = None
+) -> Agreement: ...
 def agreement_instance_value(agreement: Any) -> float | None: ...
 def agreement_iou(a: Any, b: Any) -> float | None:
     """Intersection over union, or `None` when both masks are empty."""
     ...
 
 def agreement_voxel_json(agreement: Any) -> Any: ...
-def agreement_voxel_record(agreement: Any) -> Agreement: ...
+def agreement_voxel_record(agreement: Any, against: str | None = None) -> Agreement: ...
 def agreement_voxel_value(agreement: Any) -> float | None: ...
 def amend(path: str | os.PathLike[str], *, codec: str | None = None) -> SampleWriter:
     """Copy-on-write amend: build a new file from the old and replace it.

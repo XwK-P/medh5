@@ -115,10 +115,11 @@ space (`E414`), and a box whose bound is not finite or whose `lo` is above its
 from medh5.curation.agreement import compare_instances
 
 result = compare_instances(s.annotations["pred"], s.annotations["truth"],
-                           threshold=0.5)
+                           threshold=0.5, match_by="auto")
 result.matched            # ((index in a, index in b, iou), ...): rows, not ids
 result.only_in_a, result.only_in_b
 result.matched_by         # "instance_id" within one sample where both carry ids, else "iou"
+                          # (match_by="iou" or "instance_id" says which)
 result.to_json()["threshold"]  # None for an id match, which pairs whatever the IoU
 result.mean_iou           # None when nothing matched
 result.value              # object F1; None when neither side has an object
@@ -139,6 +140,52 @@ file's label set: an id both use that the two label sets give different
 meanings, or a class name the two resolve to different ids, is refused (`C102`,
 as `dataset check` refuses it in a cohort) rather than scored. Where a file has
 no label set, its ids are compared as numbers.
+
+`match_by` chooses how objects pair. `"auto"` is the rule above; `"iou"` pairs
+by where the objects are even where both carry ids; `"instance_id"` pairs by id
+and refuses two samples, because an id names an object only within its own
+sample (§7.4). No id map across samples exists: the format defines no identity
+across them.
+
+### Two vocabularies
+
+Two raters' files often number one vocabulary differently: liver is 1 in one
+and 6 in the other. Compared by id that is refused (`C102`); `map_classes` says
+which class of `b` each class of `a` is scored against.
+
+<!-- illustrative -->
+```python
+from medh5.curation.agreement import compare_voxel
+
+with medh5.open("rater_a.medh5") as a, medh5.open("rater_b.medh5") as b:
+    seg = (a.annotations["organs"], b.annotations["organs"])
+    by_key = compare_voxel(*seg, map_classes="key")
+    stated = compare_voxel(*seg, map_classes={"liver": 6})
+by_key.per_class          # {"liver": 0.94}: keyed by a's classes
+by_key.b_class_ids        # {"liver": 6}: the class of b each was scored against
+by_key.skipped            # a key b's label set lacks, and why: never scored 0
+```
+
+- `"id"` (the default): one id is one class on both sides.
+- `"key"`: classes of one key are compared. Both sides need an inline label
+  set, so a label set by reference is refused, and where both classes carry a
+  code of one ontology the codes must agree: one key with two codes is two
+  classes (`C102`).
+- A mapping of `a`'s classes to `b`'s, by key or id: it must be one to one,
+  since a class two classes map onto is counted twice. Classes it does not name
+  are not compared.
+
+`medh5 agree` takes the same choices as `--map-classes id|key`, `--map-class
+A=B` (repeatable) and `--match-by auto|iou|instance-id`.
+
+### Recording a comparison
+
+A `quality.agreement` record's `against` is the path of an annotation of the
+recording sample (§11.2). Within one sample that is the other annotation, and
+`to_record()` fills it in. A comparison across two samples has `against =
+None`, because no path of the recording sample names the other file's
+annotation, and `to_record()` refuses it; copy the other annotation in and name
+it with `to_record(against="annotations/rater_b")`.
 
 ## Tracking
 

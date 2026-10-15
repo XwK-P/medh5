@@ -179,6 +179,16 @@ knowing about or a mistake worth finding. The validator raises `W909` for it,
 sample-scoped, because the costly case is a disagreement *between* two visits'
 annotations rather than within one.
 
+### Two readers of one follow-up
+
+An `instance_id` joins an object across the visits of one sample; it names
+nothing in another file. Comparing two readers' files of one visit therefore
+pairs objects by where they are, and `match_by="instance_id"` is refused there.
+Where the readers used two numberings of one vocabulary, `map_classes="key"`
+scores liver against liver, and the comparison is recorded only against an
+annotation of the recording sample
+([agreement](../reference/curation.md#two-vocabularies)).
+
 ## Train on the pairs
 
 `PairedPatchDataset` draws the same anatomical location at two visits, mapping

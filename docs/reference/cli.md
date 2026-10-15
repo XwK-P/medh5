@@ -270,7 +270,7 @@ Agents, activities, quality records and the de-identification record.
 ### `medh5 agree`
 
 ```
-medh5 agree PATH A B [--metric dice|iou] [--threshold T] [--record] [--json]
+medh5 agree PATH A B [--metric dice|iou] [--threshold T] [--map-classes id|key | --map-class A=B ...] [--match-by auto|iou|instance-id] [--record] [--json]
 ```
 
 Per-class Dice or IoU between two voxel annotations, and object F1 between two
@@ -283,6 +283,11 @@ comparison with nothing to score says so rather than reporting 0. The two must
 share a grid (for index boxes) or a frame (for world boxes). `--record` prints
 the `quality.agreement` record the measurement produces, keyed by class id, and
 exits 1 when there is nothing to record.
+
+`--map-classes key` compares classes of one key rather than one id, across two
+inline label sets; `--map-class A=B`, repeatable, pairs a class of `A` with one
+of `B` by key or id, one to one. `--match-by iou` pairs objects by where they are
+even where both carry instance ids, and `--match-by instance-id` by id alone.
 
 ### `medh5 splits`
 

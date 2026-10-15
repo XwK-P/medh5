@@ -23,7 +23,9 @@ use medh5::curation::splits as sp;
 use medh5::labels::ClassKey;
 
 use crate::annotations::annotation_handle;
-use crate::convert::{asarray, class_keys, detach_if, f64_array, json_to_py, py_to_json, strings, DETACH_BYTES};
+use crate::convert::{
+    asarray, class_key, class_keys, detach_if, f64_array, json_to_py, py_to_json, strings, DETACH_BYTES,
+};
 use crate::curation::{Agreement, SplitClaim};
 use crate::errors::R;
 
@@ -55,6 +57,49 @@ fn classes_arg(classes: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<ClassK
         Some(c) if !c.is_none() => Ok(Some(class_keys(c)?)),
         _ => Ok(None),
     }
+}
+
+/// `map_classes` as Python gives it: `"id"`, `"key"`, or a mapping of
+/// classes of `a` to classes of `b` (ids or keys, each resolved on its side).
+fn class_map_arg(
+    map: Option<&Bound<'_, PyAny>>,
+    a: &medh5::annotations::Annotation,
+    b: &medh5::annotations::Annotation,
+) -> R<ag::ClassMap> {
+    let Some(map) = map.filter(|m| !m.is_none()) else { return Ok(ag::ClassMap::Id) };
+    if let Ok(name) = map.extract::<String>() {
+        return match name.as_str() {
+            "id" => Ok(ag::ClassMap::Id),
+            "key" => Ok(ag::ClassMap::Key),
+            _ => Err(PyValueError::new_err(format!(
+                "map_classes is 'id', 'key' or a mapping of a's classes to b's; got {name:?}"
+            ))
+            .into()),
+        };
+    }
+    let mut explicit = IndexMap::new();
+    for (x, y) in items_of(map)? {
+        explicit.insert(a.resolve_class(&class_key(&x)?)?, b.resolve_class(&class_key(&y)?)?);
+    }
+    Ok(ag::ClassMap::Explicit(explicit))
+}
+
+fn match_by_arg(match_by: &str) -> PyResult<ag::MatchBy> {
+    match match_by {
+        "auto" => Ok(ag::MatchBy::Auto),
+        "iou" => Ok(ag::MatchBy::Iou),
+        "instance_id" => Ok(ag::MatchBy::InstanceId),
+        other => Err(PyValueError::new_err(format!("match_by is 'auto', 'iou' or 'instance_id'; got {other:?}"))),
+    }
+}
+
+/// `{a's key: b's class id}` for the classes a comparison compared.
+fn b_class_ids<'py>(py: Python<'py>, pairs: &IndexMap<String, (i64, i64)>) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    for (key, (_, b)) in pairs {
+        out.set_item(key, b)?;
+    }
+    Ok(out)
 }
 
 /// A `VoxelAgreement`'s fields, as its constructor takes them.
@@ -126,41 +171,66 @@ fn instance_arg(obj: &Bound<'_, PyAny>) -> PyResult<ag::InstanceAgreement> {
 /// Per-class Dice or IoU between two voxel annotations: the fields of a
 /// `VoxelAgreement`.
 #[pyfunction]
-#[pyo3(signature = (a, b, *, metric="dice".to_string(), classes=None))]
+#[pyo3(signature = (a, b, *, metric="dice".to_string(), classes=None, map_classes=None))]
 fn agreement_compare_voxel<'py>(
     py: Python<'py>,
     a: &Bound<'py, PyAny>,
     b: &Bound<'py, PyAny>,
     metric: String,
     classes: Option<&Bound<'py, PyAny>>,
+    map_classes: Option<&Bound<'py, PyAny>>,
 ) -> R<Bound<'py, PyDict>> {
     let (a, b) = (annotation_handle(a)?, annotation_handle(b)?);
-    let keys = classes_arg(classes)?;
-    let found = py.detach(move || ag::compare_voxel(&a, &b, &metric, keys.as_deref()))?;
-    Ok(voxel_fields(py, &found)?)
+    let mut options = ag::CompareOptions::default();
+    options.classes = classes_arg(classes)?;
+    options.map_classes = class_map_arg(map_classes, &a, &b)?;
+    options.metric = Some(metric);
+    let found = py.detach(move || ag::compare_voxel_with(&a, &b, &options))?;
+    match found.comparison {
+        ag::Comparison::Voxel(v) => {
+            let fields = voxel_fields(py, &v)?;
+            fields.set_item("b_class_ids", b_class_ids(py, &found.pairs)?)?;
+            Ok(fields)
+        }
+        ag::Comparison::Instance(_) => unreachable!("compare_voxel_with compares voxels"),
+    }
 }
 
 /// Object-level agreement between two annotations: the fields of an
 /// `InstanceAgreement`.
 #[pyfunction]
-#[pyo3(signature = (a, b, *, threshold=ag::DEFAULT_IOU, classes=None))]
+#[pyo3(signature = (a, b, *, threshold=ag::DEFAULT_IOU, classes=None, map_classes=None, match_by="auto"))]
 fn agreement_compare_instances<'py>(
     py: Python<'py>,
     a: &Bound<'py, PyAny>,
     b: &Bound<'py, PyAny>,
     threshold: f64,
     classes: Option<&Bound<'py, PyAny>>,
+    map_classes: Option<&Bound<'py, PyAny>>,
+    match_by: &str,
 ) -> R<Bound<'py, PyDict>> {
     let (a, b) = (annotation_handle(a)?, annotation_handle(b)?);
-    let keys = classes_arg(classes)?;
-    let found = py.detach(move || ag::compare_instances(&a, &b, threshold, keys.as_deref()))?;
-    Ok(instance_fields(py, &found)?)
+    let mut options = ag::CompareOptions::default();
+    options.classes = classes_arg(classes)?;
+    options.map_classes = class_map_arg(map_classes, &a, &b)?;
+    options.match_by = match_by_arg(match_by)?;
+    options.threshold = Some(threshold);
+    let found = py.detach(move || ag::compare_instances_with(&a, &b, &options))?;
+    match found.comparison {
+        ag::Comparison::Instance(i) => {
+            let fields = instance_fields(py, &i)?;
+            fields.set_item("b_class_ids", b_class_ids(py, &found.pairs)?)?;
+            Ok(fields)
+        }
+        ag::Comparison::Voxel(_) => unreachable!("compare_instances_with compares objects"),
+    }
 }
 
 /// The comparison two annotations' kinds support:
 /// `("voxel" | "instance", fields)`.
 #[pyfunction]
-#[pyo3(signature = (a, b, *, metric=None, threshold=None, classes=None))]
+#[pyo3(signature = (a, b, *, metric=None, threshold=None, classes=None, map_classes=None, match_by="auto"))]
+#[allow(clippy::too_many_arguments)]
 fn agreement_compare<'py>(
     py: Python<'py>,
     a: &Bound<'py, PyAny>,
@@ -168,14 +238,23 @@ fn agreement_compare<'py>(
     metric: Option<String>,
     threshold: Option<f64>,
     classes: Option<&Bound<'py, PyAny>>,
+    map_classes: Option<&Bound<'py, PyAny>>,
+    match_by: &str,
 ) -> R<(&'static str, Bound<'py, PyDict>)> {
     let (a, b) = (annotation_handle(a)?, annotation_handle(b)?);
-    let keys = classes_arg(classes)?;
-    let found = py.detach(move || ag::compare(&a, &b, metric.as_deref(), threshold, keys.as_deref()))?;
-    Ok(match found {
-        ag::Comparison::Voxel(v) => ("voxel", voxel_fields(py, &v)?),
-        ag::Comparison::Instance(i) => ("instance", instance_fields(py, &i)?),
-    })
+    let mut options = ag::CompareOptions::default();
+    options.metric = metric;
+    options.threshold = threshold;
+    options.classes = classes_arg(classes)?;
+    options.map_classes = class_map_arg(map_classes, &a, &b)?;
+    options.match_by = match_by_arg(match_by)?;
+    let found = py.detach(move || ag::compare_with(&a, &b, &options))?;
+    let (kind, fields) = match &found.comparison {
+        ag::Comparison::Voxel(v) => ("voxel", voxel_fields(py, v)?),
+        ag::Comparison::Instance(i) => ("instance", instance_fields(py, i)?),
+    };
+    fields.set_item("b_class_ids", b_class_ids(py, &found.pairs)?)?;
+    Ok((kind, fields))
 }
 
 #[pyfunction]
@@ -184,8 +263,13 @@ fn agreement_voxel_value(agreement: &Bound<'_, PyAny>) -> PyResult<Option<f64>> 
 }
 
 #[pyfunction]
-fn agreement_voxel_record(agreement: &Bound<'_, PyAny>) -> R<Agreement> {
-    Ok(Agreement::wrap(voxel_arg(agreement)?.to_record()?))
+#[pyo3(signature = (agreement, against=None))]
+fn agreement_voxel_record(agreement: &Bound<'_, PyAny>, against: Option<&str>) -> R<Agreement> {
+    let found = voxel_arg(agreement)?;
+    Ok(Agreement::wrap(match against {
+        Some(path) => found.to_record_against(path)?,
+        None => found.to_record()?,
+    }))
 }
 
 #[pyfunction]
@@ -204,8 +288,13 @@ fn agreement_instance_mean_iou(agreement: &Bound<'_, PyAny>) -> PyResult<Option<
 }
 
 #[pyfunction]
-fn agreement_instance_record(agreement: &Bound<'_, PyAny>) -> R<Agreement> {
-    Ok(Agreement::wrap(instance_arg(agreement)?.to_record()?))
+#[pyo3(signature = (agreement, against=None))]
+fn agreement_instance_record(agreement: &Bound<'_, PyAny>, against: Option<&str>) -> R<Agreement> {
+    let found = instance_arg(agreement)?;
+    Ok(Agreement::wrap(match against {
+        Some(path) => found.to_record_against(path)?,
+        None => found.to_record()?,
+    }))
 }
 
 #[pyfunction]

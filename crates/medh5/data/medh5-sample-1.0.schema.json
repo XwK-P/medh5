@@ -229,7 +229,7 @@
       "properties": {
         "metric": { "type": "string", "examples": ["dice", "iou", "hausdorff95", "surface_dice", "kappa", "tre"] },
         "value": { "type": "number" },
-        "against": { "type": "string", "description": "HDF5 path of the annotation compared against." },
+        "against": { "type": "string", "description": "Path, from the sample root, of an annotation of the same sample, compared against." },
         "per_class": { "type": "object",
           "patternProperties": { "^[0-9]{1,5}$": { "type": "number" } },
           "additionalProperties": false }
