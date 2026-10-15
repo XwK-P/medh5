@@ -135,6 +135,13 @@ item["valid"]["CT"]                   # where the image holds data (§4.4)
 `ignore_index=65535` works directly; see
 [the torch reference](../reference/torch.md#a-batch) for a masked loss.
 
+An ignore region belongs to the annotation that declares it (§7.7). Where one
+training target draws classes from several annotations — the slots of a
+clinical task — `ClinicalTaskDataset(..., class_ignore=True)` keeps the regions
+apart per class, so one rater's uncertain band does not erase another rater's
+class from the loss; see
+[Train on clinical tasks](clinical-training.md#train-on-it).
+
 Working from a manifest instead — to choose samples by coverage before loading
 anything — the same facts are metadata there and cost nothing to consult:
 

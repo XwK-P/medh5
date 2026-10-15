@@ -343,13 +343,32 @@ Extract — every member, or only the keys named — or list what is inside.
 ### `medh5 dataset index`
 
 ```
-medh5 dataset index ROOT -o manifest.json [--strict] [--json]
+medh5 dataset index ROOT -o manifest.json [--strict] [--absolute] [--json]
 ```
 
 Metadata-only scan of a directory tree. Reports what would not open instead of
 aborting; `--strict` makes the first failure fatal. Follows symlinked
 directories (each once), matches suffixes in any case, and skips AppleDouble
 `._*` files.
+
+The manifest's paths are [relative to the manifest](cohort-manifest.md) where
+they lie beneath its directory, and absolute otherwise, so it opens from any
+directory and moves with its cohort; `--absolute` writes every path absolute.
+
+### `medh5 dataset upgrade`
+
+```
+medh5 dataset upgrade manifest.json -o upgraded.json [--base DIR] [--json]
+```
+
+Rewrites a manifest written before 2.1, whose paths are relative to the
+directory its scan ran in, as a [`medh5.dataset/1`](cohort-manifest.md)
+manifest: every path beneath the manifest's directory is written relative to
+it, and the rest absolute. `--base` names the
+directory the old paths are relative to (by default the working directory, as
+2.0 read them). Refuses, writing nothing, when any entry's file does not exist
+under that directory. The cohort commands read such a manifest as 2.0 did, and
+warn where 3.0 will read it otherwise.
 
 ### `medh5 dataset split`
 
