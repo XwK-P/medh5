@@ -1,7 +1,8 @@
 """Build the NIfTI parity corpus's inputs and its case table.
 
 Run once, under the released medh5 2.1.0 (``pip install "medh5[nifti]==2.1.0"
-h5py`` in a virtual environment of its own), from the repository root::
+nibabel==5.4.2 numpy==2.5.4 h5py`` in a virtual environment of its own), from
+the repository root::
 
     python tests/data/nifti-parity/make_inputs.py
 
