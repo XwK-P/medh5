@@ -598,7 +598,10 @@ pub fn read_nifti(path: &Path, options: &ReadOptions) -> Result<NiftiRead> {
         geometry.leading_stated = geometry.time_measured;
     }
     let item = voxels.element.itemsize();
-    let mut voxels = Voxels { shape: geometry.shape.clone(), ..voxels };
+    // The geometry keeps a scalar's shape, `()`; its array, as 2.1.0's
+    // `ascontiguousarray` returned it, is `(1,)`.
+    let held = if geometry.shape.is_empty() { vec![1] } else { geometry.shape.clone() };
+    let mut voxels = Voxels { shape: held, ..voxels };
     voxels.bytes = c_order(std::mem::take(&mut voxels.bytes), item, &shape, &order);
     geometry.dtype = voxels.numpy_str();
     Ok(NiftiRead { voxels, geometry })
@@ -1544,6 +1547,7 @@ pub fn import_seg_nifti(
 
 #[cfg(test)]
 mod tests {
+    use super::super::header::{Version, VoxOffset};
     use super::*;
 
     #[test]
@@ -1560,6 +1564,23 @@ mod tests {
         assert_eq!(c_order(bytes.clone(), 2, &shape, &[3, 2, 1, 0]), bytes);
         let kept = c_order(bytes, 2, &shape, &[0, 1, 2, 3]);
         assert_eq!(&kept[..8], &[0, 1, 12, 13, 4, 5, 16, 17]);
+    }
+
+    #[test]
+    fn s02_2_a_scalar_reads_as_one_element_on_no_axes() {
+        // dim[0] = -1, big-endian: a shape of no dimensions.  The geometry
+        // keeps `()`, the array is `(1,)`, as 2.1.0 returned them.
+        let mut h = Header::new(Version::One);
+        (h.dim[0], h.dim[1], h.datatype, h.bitpix, h.big_endian) = (-1, 4, 4, 16, true);
+        h.vox_offset = VoxOffset::Float(352.0);
+        let mut bytes = h.encode();
+        bytes.extend_from_slice(&[0, 0, 0, 0, 0, 7, 0, 9]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scalar.nii");
+        std::fs::write(&path, bytes).unwrap();
+        let read = read_nifti(&path, &ReadOptions::default().with_assume_geometry(true)).unwrap();
+        assert_eq!((read.geometry.shape, read.geometry.axis_order), (Vec::new(), Vec::new()));
+        assert_eq!((read.voxels.shape, read.voxels.bytes), (vec![1], vec![0, 7]));
     }
 
     #[test]
