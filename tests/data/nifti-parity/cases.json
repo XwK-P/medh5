@@ -1,0 +1,3828 @@
+{
+ "corpus": "medh5 NIfTI parity",
+ "recorded_with": "medh5 2.1.0",
+ "cases": [
+  {
+   "id": "import-le-int16-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-le-int16-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-le-int16",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-le-int16.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-be-int16-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/be-int16.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-be-int16-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-be-float32",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/be-float32.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-be-float32.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-n2-int16-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/n2-int16.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-n2-int16-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-n2-int16",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/n2-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-n2-int16.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-n2-be-float64-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/n2-be-float64.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-n2-be-float64-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-pair-int16-hdr",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/pair-int16.hdr"
+    ]
+   ],
+   "masks": [],
+   "out": "import-pair-int16-hdr.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-pair-int16-img",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/pair-int16.img"
+    ]
+   ],
+   "masks": [],
+   "out": "import-pair-int16-img.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-pair-n2-int16-hdr",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/pair-n2-int16.hdr"
+    ]
+   ],
+   "masks": [],
+   "out": "import-pair-n2-int16-hdr.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-pair-be-int16-hdr",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/pair-be-int16.hdr"
+    ]
+   ],
+   "masks": [],
+   "out": "import-pair-be-int16-hdr.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-extension-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/extension.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-extension-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-descrip",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/descrip.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-descrip.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dtype-uint8",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dtype-uint8.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dtype-uint8.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dtype-int8",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dtype-int8.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dtype-int8.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dtype-uint16",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dtype-uint16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dtype-uint16.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dtype-int32",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dtype-int32.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dtype-int32.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dtype-uint32",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dtype-uint32.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dtype-uint32.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dtype-int64",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dtype-int64.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dtype-int64.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dtype-uint64",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dtype-uint64.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dtype-uint64.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dtype-float32",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dtype-float32.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dtype-float32.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dtype-float64",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dtype-float64.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dtype-float64.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dtype-complex64",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dtype-complex64.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dtype-complex64.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dtype-rgb24",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dtype-rgb24.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dtype-rgb24.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-scaled-int16",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/scaled-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-scaled-int16.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-scaled-float32",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/scaled-float32.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-scaled-float32.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-scale-zero",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/scale-zero.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-scale-zero.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-scale-identity",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/scale-identity.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-scale-identity.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-scale-inter-only",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/scale-inter-only.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-scale-inter-only.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-sform-only",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/sform-only.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-sform-only.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-qform-only",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/qform-only.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-qform-only.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-qform-oblique",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/qform-oblique.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-qform-oblique.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-qform-flipped",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/qform-flipped.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-qform-flipped.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-sform-oblique",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/sform-oblique.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-sform-oblique.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-both-oblique",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/both-oblique.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-both-oblique.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-both-disagree",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/both-disagree.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-both-disagree.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-sform-code4",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/sform-code4.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-sform-code4.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-no-mapping",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/no-mapping.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-no-mapping.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-qform-half-turn",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/qform-half-turn.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-qform-half-turn.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-qform-not-rotation",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/qform-not-rotation.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-qform-not-rotation.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-qform-negative-pixdim",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/qform-negative-pixdim.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-qform-negative-pixdim.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-units-meter",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/units-meter.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-units-meter.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-units-micron",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/units-micron.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-units-micron.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-units-unknown",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/units-unknown.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-units-unknown.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-cine-sec",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/cine-sec.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-cine-sec.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-cine-msec",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/cine-msec.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-cine-msec.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-cine-usec",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/cine-usec.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-cine-usec.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-cine-unitless",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/cine-unitless.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-cine-unitless.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-cine-no-step",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/cine-no-step.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-cine-no-step.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-intent-time",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/intent-time.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-intent-time.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-intent-vector",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/intent-vector.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-intent-vector.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-intent-rgb",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/intent-rgb.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-intent-rgb.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dwi",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dwi.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dwi.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-multi-echo",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/multi-echo.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-multi-echo.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-echo-numbers",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/echo-numbers.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-echo-numbers.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-echo-scalar",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/echo-scalar.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-echo-scalar.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-echo-short",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/echo-short.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-echo-short.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-echo-words",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/echo-words.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-echo-words.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-volume-timing",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/volume-timing.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-volume-timing.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-both-kinds",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/both-kinds.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-both-kinds.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-broken-sidecar",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/broken-sidecar.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-broken-sidecar.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-squeeze",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/squeeze.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-squeeze.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-vector5",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/vector5.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-vector5.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-five",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/five.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-five.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-plane",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/plane.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-plane.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-plane-z50",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/plane-z50.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-plane-z50.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-plane-tilted",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/plane-tilted.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-plane-tilted.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-plane-flat",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/plane-flat.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-plane-flat.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-plane-sheared",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/plane-sheared.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-plane-sheared.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-slice",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/slice.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-slice.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-bad-magic-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/bad-magic.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-bad-magic-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-bad-sizeof-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/bad-sizeof.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-bad-sizeof-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-dim0-8-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dim0-8.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-dim0-8-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-negative-dim-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/negative-dim.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-negative-dim-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-vox-offset-0-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/vox-offset-0.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-vox-offset-0-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-vox-offset-far-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/vox-offset-far.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-vox-offset-far-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-bad-datatype-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/bad-datatype.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-bad-datatype-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-short-header-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/short-header.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-short-header-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-truncated-data-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/truncated-data.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-truncated-data-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-empty-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/empty.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-empty-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-random-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/random.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-random-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-truncated",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/truncated.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-truncated.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-not-gzip",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/not-gzip.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-not-gzip.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-trailing",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/trailing.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-trailing.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-pair-missing-img-hdr",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/pair-missing-img.hdr"
+    ]
+   ],
+   "masks": [],
+   "out": "import-pair-missing-img-hdr.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-pair-short-hdr",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/pair-short.hdr"
+    ]
+   ],
+   "masks": [],
+   "out": "import-pair-short-hdr.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-scan-txt",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/scan.txt"
+    ]
+   ],
+   "masks": [],
+   "out": "import-scan-txt.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-not-nifti-mgh",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/not-nifti.mgh"
+    ]
+   ],
+   "masks": [],
+   "out": "import-not-nifti-mgh.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-missing-nii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/missing.nii"
+    ]
+   ],
+   "masks": [],
+   "out": "import-missing-nii.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-no-mapping-assumed",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/no-mapping.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-no-mapping-assumed.medh5",
+   "options": {
+    "assume_geometry": true
+   }
+  },
+  {
+   "id": "import-ras",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-ras.medh5",
+   "options": {
+    "coord_system": "RAS"
+   }
+  },
+  {
+   "id": "import-unknown-system",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-unknown-system.medh5",
+   "options": {
+    "coord_system": "XYZ"
+   }
+  },
+  {
+   "id": "import-untransposed",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-untransposed.medh5",
+   "options": {
+    "transpose": false
+   }
+  },
+  {
+   "id": "import-untransposed-4d",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/cine-sec.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-untransposed-4d.medh5",
+   "options": {
+    "transpose": false
+   }
+  },
+  {
+   "id": "import-untransposed-plane",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/plane.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-untransposed-plane.medh5",
+   "options": {
+    "transpose": false
+   }
+  },
+  {
+   "id": "import-fourth-time",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/dwi.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-fourth-time.medh5",
+   "options": {
+    "fourth_axis": "time"
+   }
+  },
+  {
+   "id": "import-fourth-channel",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/cine-sec.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-fourth-channel.medh5",
+   "options": {
+    "fourth_axis": "channel"
+   }
+  },
+  {
+   "id": "import-fourth-unknown",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/cine-sec.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-fourth-unknown.medh5",
+   "options": {
+    "fourth_axis": "depth"
+   }
+  },
+  {
+   "id": "import-both-kinds-time",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/both-kinds.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-both-kinds-time.medh5",
+   "options": {
+    "fourth_axis": "time"
+   }
+  },
+  {
+   "id": "import-both-kinds-channel",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/both-kinds.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-both-kinds-channel.medh5",
+   "options": {
+    "fourth_axis": "channel"
+   }
+  },
+  {
+   "id": "import-vector5-time",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/vector5.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-vector5-time.medh5",
+   "options": {
+    "fourth_axis": "time"
+   }
+  },
+  {
+   "id": "import-plane-z50-volume",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/plane-z50.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-plane-z50-volume.medh5",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "import-plane-tilted-volume",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/plane-tilted.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-plane-tilted-volume.medh5",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "import-plane-flat-volume",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/plane-flat.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-plane-flat-volume.medh5",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "import-plane-sheared-volume",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/plane-sheared.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-plane-sheared-volume.medh5",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "import-plane-volume",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/plane.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-plane-volume.medh5",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "import-volume-plane-flag",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-volume-plane-flag.medh5",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "import-codec-portable",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-codec-portable.medh5",
+   "options": {
+    "codec": "portable"
+   }
+  },
+  {
+   "id": "import-codec-fast",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-codec-fast.medh5",
+   "options": {
+    "codec": "fast"
+   }
+  },
+  {
+   "id": "import-codec-training",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-codec-training.medh5",
+   "options": {
+    "codec": "training"
+   }
+  },
+  {
+   "id": "import-identity",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-identity.medh5",
+   "options": {
+    "sample_id": "case_01",
+    "subject_id": "patient-7"
+   }
+  },
+  {
+   "id": "import-sample-only",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-sample-only.medh5",
+   "options": {
+    "sample_id": "case_02"
+   }
+  },
+  {
+   "id": "import-subject-only",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-subject-only.medh5",
+   "options": {
+    "subject_id": "patient-7"
+   }
+  },
+  {
+   "id": "import-non-ascii",
+   "call": "from_nifti",
+   "images": [
+    [
+     "image",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "Müller Hans.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-modality",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-modality.medh5",
+   "options": {
+    "modalities": {
+     "CT": "CT"
+    },
+    "value_units": {
+     "CT": "HU"
+    }
+   }
+  },
+  {
+   "id": "import-empty",
+   "call": "from_nifti",
+   "images": [],
+   "masks": [],
+   "out": "import-empty.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ],
+    [
+     "PET",
+     "inputs/dtype-float32.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two-shape",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ],
+    [
+     "B",
+     "inputs/other-shape.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two-shape.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two-origin",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ],
+    [
+     "B",
+     "inputs/other-origin.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two-origin.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two-direction",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ],
+    [
+     "B",
+     "inputs/other-direction.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two-direction.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two-metres",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ],
+    [
+     "M",
+     "inputs/units-meter.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two-metres.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two-times",
+   "call": "from_nifti",
+   "images": [
+    [
+     "A",
+     "inputs/cine-sec.nii.gz"
+    ],
+    [
+     "B",
+     "inputs/cine-sec-other.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two-times.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two-ms",
+   "call": "from_nifti",
+   "images": [
+    [
+     "A",
+     "inputs/cine-sec.nii.gz"
+    ],
+    [
+     "B",
+     "inputs/cine-msec.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two-ms.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two-lend",
+   "call": "from_nifti",
+   "images": [
+    [
+     "A",
+     "inputs/cine-unitless.nii.gz"
+    ],
+    [
+     "B",
+     "inputs/cine-sec.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two-lend.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two-keep",
+   "call": "from_nifti",
+   "images": [
+    [
+     "A",
+     "inputs/cine-sec.nii.gz"
+    ],
+    [
+     "B",
+     "inputs/cine-unitless.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two-keep.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two-kinds",
+   "call": "from_nifti",
+   "images": [
+    [
+     "DWI",
+     "inputs/dwi.nii.gz"
+    ],
+    [
+     "CINE",
+     "inputs/cine-sec.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two-kinds.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two-dwi",
+   "call": "from_nifti",
+   "images": [
+    [
+     "A",
+     "inputs/dwi.nii.gz"
+    ],
+    [
+     "B",
+     "inputs/dwi-other.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two-dwi.medh5",
+   "options": {}
+  },
+  {
+   "id": "import-two-planes",
+   "call": "from_nifti",
+   "images": [
+    [
+     "A",
+     "inputs/plane-z50.nii.gz"
+    ],
+    [
+     "B",
+     "inputs/slice.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "import-two-planes.medh5",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "masks",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "lesion",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "out": "masks.medh5",
+   "options": {}
+  },
+  {
+   "id": "masks-names",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "Liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "GTV-1",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "out": "masks-names.medh5",
+   "options": {}
+  },
+  {
+   "id": "masks-collide",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "GTV 1",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "gtv-1",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "out": "masks-collide.medh5",
+   "options": {}
+  },
+  {
+   "id": "masks-scaled",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-scaled.nii.gz"
+    ]
+   ],
+   "out": "masks-scaled.medh5",
+   "options": {}
+  },
+  {
+   "id": "masks-float",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-float.nii.gz"
+    ]
+   ],
+   "out": "masks-float.medh5",
+   "options": {}
+  },
+  {
+   "id": "masks-empty-class",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "spleen",
+     "inputs/mask-spleen.nii.gz"
+    ]
+   ],
+   "out": "masks-empty-class.medh5",
+   "options": {}
+  },
+  {
+   "id": "masks-annotated",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "lesion",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "out": "masks-annotated.medh5",
+   "options": {
+    "annotated_classes": [
+     "liver",
+     "spleen"
+    ]
+   }
+  },
+  {
+   "id": "masks-annotated-all",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "lesion",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "out": "masks-annotated-all.medh5",
+   "options": {
+    "annotated_classes": "all"
+   }
+  },
+  {
+   "id": "masks-label-set",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "lesion",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "out": "masks-label-set.medh5",
+   "options": {
+    "label_set": "inputs/labels.json"
+   }
+  },
+  {
+   "id": "masks-label-set-names",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "Liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "GTV-1",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "out": "masks-label-set-names.medh5",
+   "options": {
+    "label_set": "inputs/labels.json"
+   }
+  },
+  {
+   "id": "masks-label-set-missing",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "lesion",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "out": "masks-label-set-missing.medh5",
+   "options": {
+    "label_set": "inputs/labels-small.json"
+   }
+  },
+  {
+   "id": "masks-label-set-annotated",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "lesion",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "out": "masks-label-set-annotated.medh5",
+   "options": {
+    "label_set": "inputs/labels.json",
+    "annotated_classes": [
+     "liver",
+     "spleen"
+    ]
+   }
+  },
+  {
+   "id": "masks-label-set-no-masks",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [],
+   "out": "masks-label-set-no-masks.medh5",
+   "options": {
+    "label_set": "inputs/labels.json"
+   }
+  },
+  {
+   "id": "masks-shape",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-shape.nii.gz"
+    ]
+   ],
+   "out": "masks-shape.medh5",
+   "options": {}
+  },
+  {
+   "id": "masks-origin",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-origin.nii.gz"
+    ]
+   ],
+   "out": "masks-origin.medh5",
+   "options": {}
+  },
+  {
+   "id": "masks-metres",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-metres.nii.gz"
+    ]
+   ],
+   "out": "masks-metres.medh5",
+   "options": {}
+  },
+  {
+   "id": "masks-no-mapping",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-no-mapping.nii.gz"
+    ]
+   ],
+   "out": "masks-no-mapping.medh5",
+   "options": {}
+  },
+  {
+   "id": "masks-no-mapping-assumed",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-no-mapping.nii.gz"
+    ]
+   ],
+   "out": "masks-no-mapping-assumed.medh5",
+   "options": {
+    "assume_geometry": true
+   }
+  },
+  {
+   "id": "masks-plane",
+   "call": "from_nifti",
+   "images": [
+    [
+     "XR",
+     "inputs/plane-z50.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "bone",
+     "inputs/plane-mask.nii.gz"
+    ]
+   ],
+   "out": "masks-plane.medh5",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "masks-ras",
+   "call": "from_nifti",
+   "images": [
+    [
+     "CT",
+     "inputs/le-int16.nii.gz"
+    ]
+   ],
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "lesion",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "out": "masks-ras.medh5",
+   "options": {
+    "coord_system": "RAS"
+   }
+  },
+  {
+   "id": "seg-plain",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "lesion",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-plain-names",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "Liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "GTV-1",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-plain-id",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ]
+   ],
+   "options": {
+    "ann_id": "organs"
+   }
+  },
+  {
+   "id": "seg-plain-annotated",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ],
+    [
+     "lesion",
+     "inputs/mask-lesion.nii.gz"
+    ]
+   ],
+   "options": {
+    "annotated_classes": [
+     "liver",
+     "spleen"
+    ]
+   }
+  },
+  {
+   "id": "seg-plain-grid",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ]
+   ],
+   "options": {
+    "grid": "g"
+   }
+  },
+  {
+   "id": "seg-plain-no-grid",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ]
+   ],
+   "options": {
+    "grid": "nope"
+   }
+  },
+  {
+   "id": "seg-plain-system",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ]
+   ],
+   "options": {
+    "coord_system": "LPS"
+   }
+  },
+  {
+   "id": "seg-plain-other-system",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ]
+   ],
+   "options": {
+    "coord_system": "RAS"
+   }
+  },
+  {
+   "id": "seg-plain-shape",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-shape.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-plain-origin",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-origin.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-plain-spacing",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-spacing.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-plain-direction",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-direction.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-plain-aligned",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-origin.nii.gz"
+    ]
+   ],
+   "options": {
+    "assume_aligned": true
+   }
+  },
+  {
+   "id": "seg-plain-metres",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-metres.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-plain-scaled",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-scaled.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-plain-no-mapping",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-no-mapping.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-plain-no-mapping-assumed",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-no-mapping.nii.gz"
+    ]
+   ],
+   "options": {
+    "assume_geometry": true
+   }
+  },
+  {
+   "id": "seg-plain-untransposed",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ]
+   ],
+   "options": {
+    "transpose": false
+   }
+  },
+  {
+   "id": "seg-ct-label-set",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ]
+   ],
+   "options": {
+    "ann_id": "more"
+   }
+  },
+  {
+   "id": "seg-ct-missing-class",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "masks": [
+    [
+     "spleen",
+     "inputs/mask-spleen.nii.gz"
+    ]
+   ],
+   "options": {
+    "ann_id": "more"
+   }
+  },
+  {
+   "id": "seg-ct-taken-id",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-ras",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/ras.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/mask-liver.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-one-slice",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/one-slice.medh5",
+   "masks": [
+    [
+     "bone",
+     "inputs/plane-mask.nii.gz"
+    ]
+   ],
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "seg-one-slice-plane",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/one-slice.medh5",
+   "masks": [
+    [
+     "bone",
+     "inputs/plane-mask.nii.gz"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-plain-not-nifti",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [
+    [
+     "liver",
+     "inputs/random.nii"
+    ]
+   ],
+   "options": {}
+  },
+  {
+   "id": "seg-plain-empty",
+   "call": "import_seg_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "masks": [],
+   "options": {}
+  },
+  {
+   "id": "export-plain",
+   "call": "to_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "image": "CT",
+   "out": "plain.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-ras",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ras.medh5",
+   "image": "CT",
+   "out": "ras.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-oblique",
+   "call": "to_nifti",
+   "sample": "inputs/samples/oblique.medh5",
+   "image": "CT",
+   "out": "oblique.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-metres",
+   "call": "to_nifti",
+   "sample": "inputs/samples/metres.medh5",
+   "image": "CT",
+   "out": "metres.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-microns",
+   "call": "to_nifti",
+   "sample": "inputs/samples/microns.medh5",
+   "image": "CT",
+   "out": "microns.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-pixels",
+   "call": "to_nifti",
+   "sample": "inputs/samples/pixels.medh5",
+   "image": "CT",
+   "out": "pixels.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-dtype-float32",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dtype-float32.medh5",
+   "image": "IM",
+   "out": "dtype-float32.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-dtype-float64",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dtype-float64.medh5",
+   "image": "IM",
+   "out": "dtype-float64.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-dtype-uint8",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dtype-uint8.medh5",
+   "image": "IM",
+   "out": "dtype-uint8.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-dtype-uint16",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dtype-uint16.medh5",
+   "image": "IM",
+   "out": "dtype-uint16.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-dtype-int64",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dtype-int64.medh5",
+   "image": "IM",
+   "out": "dtype-int64.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-dtype-bool",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dtype-bool.medh5",
+   "image": "IM",
+   "out": "dtype-bool.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-one-slice",
+   "call": "to_nifti",
+   "sample": "inputs/samples/one-slice.medh5",
+   "image": "CT",
+   "out": "one-slice.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-ct",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "ct.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-ct-nii",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "ct.nii",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-ct-stored",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "ct.nii.gz",
+   "beside": {},
+   "options": {
+    "physical": false
+   }
+  },
+  {
+   "id": "export-labelmap",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "seg.nii.gz",
+   "beside": {},
+   "options": {
+    "annotation": "seg"
+   }
+  },
+  {
+   "id": "export-class",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "liver.nii.gz",
+   "beside": {},
+   "options": {
+    "annotation": "seg",
+    "class_key": "liver"
+   }
+  },
+  {
+   "id": "export-class-id",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "lesion.nii.gz",
+   "beside": {},
+   "options": {
+    "annotation": "seg",
+    "class_key": 2
+   }
+  },
+  {
+   "id": "export-class-unexamined",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "x.nii.gz",
+   "beside": {},
+   "options": {
+    "annotation": "partial",
+    "class_key": "lesion"
+   }
+  },
+  {
+   "id": "export-class-examined",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "x.nii.gz",
+   "beside": {},
+   "options": {
+    "annotation": "partial",
+    "class_key": "liver"
+   }
+  },
+  {
+   "id": "export-class-ignored",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "x.nii.gz",
+   "beside": {},
+   "options": {
+    "annotation": "ignored",
+    "class_key": "liver"
+   }
+  },
+  {
+   "id": "export-ignored-labelmap",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "x.nii.gz",
+   "beside": {},
+   "options": {
+    "annotation": "ignored"
+   }
+  },
+  {
+   "id": "export-pet-mask",
+   "call": "to_nifti",
+   "sample": "inputs/samples/pet.medh5",
+   "image": "CT",
+   "out": "m.nii.gz",
+   "beside": {},
+   "options": {
+    "annotation": "petseg"
+   }
+  },
+  {
+   "id": "export-pet",
+   "call": "to_nifti",
+   "sample": "inputs/samples/pet.medh5",
+   "image": "PET",
+   "out": "pet.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-dce-even",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dce-even.medh5",
+   "image": "DCE",
+   "out": "dce-even.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-dce-uneven",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dce-uneven.medh5",
+   "image": "DCE",
+   "out": "dce-uneven.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-dce-ms",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dce-ms.medh5",
+   "image": "DCE",
+   "out": "dce-ms.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-dce-one",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dce-one.medh5",
+   "image": "DCE",
+   "out": "dce-one.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-dwi",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dwi.medh5",
+   "image": "MR",
+   "out": "dwi.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-echo",
+   "call": "to_nifti",
+   "sample": "inputs/samples/echo.medh5",
+   "image": "MR",
+   "out": "echo.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-echo-all",
+   "call": "to_nifti",
+   "sample": "inputs/samples/echo-all.medh5",
+   "image": "MR",
+   "out": "echo-all.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-vector",
+   "call": "to_nifti",
+   "sample": "inputs/samples/vector.medh5",
+   "image": "MR",
+   "out": "vector.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-xray",
+   "call": "to_nifti",
+   "sample": "inputs/samples/xray.medh5",
+   "image": "XR",
+   "out": "xray.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-xray-cine",
+   "call": "to_nifti",
+   "sample": "inputs/samples/xray-cine.medh5",
+   "image": "XR",
+   "out": "xray-cine.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-xray-seg",
+   "call": "to_nifti",
+   "sample": "inputs/samples/xray.medh5",
+   "image": "XR",
+   "out": "seg.nii.gz",
+   "beside": {},
+   "options": {
+    "annotation": "seg"
+   }
+  },
+  {
+   "id": "export-dce-uneven-nii",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dce-uneven.medh5",
+   "image": "DCE",
+   "out": "dce.nii",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-name-plain",
+   "call": "to_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "image": "CT",
+   "out": "plain",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-name-ct-img",
+   "call": "to_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "image": "CT",
+   "out": "ct.img",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-name-ct-hdr",
+   "call": "to_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "image": "CT",
+   "out": "ct.hdr",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-name-ct-nii-txt",
+   "call": "to_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "image": "CT",
+   "out": "ct.nii.txt",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-directory",
+   "call": "to_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "image": "CT",
+   "out": "folder.nii",
+   "beside": {
+    "folder.nii": null
+   },
+   "options": {}
+  },
+  {
+   "id": "export-missing-image",
+   "call": "to_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "image": "MR",
+   "out": "x.nii.gz",
+   "beside": {},
+   "options": {}
+  },
+  {
+   "id": "export-missing-annotation",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "x.nii.gz",
+   "beside": {},
+   "options": {
+    "annotation": "nope"
+   }
+  },
+  {
+   "id": "export-missing-class",
+   "call": "to_nifti",
+   "sample": "inputs/samples/ct.medh5",
+   "image": "CT",
+   "out": "x.nii.gz",
+   "beside": {},
+   "options": {
+    "annotation": "seg",
+    "class_key": "spleen"
+   }
+  },
+  {
+   "id": "export-beside-object",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dce-uneven.medh5",
+   "image": "DCE",
+   "out": "x.nii.gz",
+   "beside": {
+    "x.json": "inputs/beside/object.json"
+   },
+   "options": {}
+  },
+  {
+   "id": "export-beside-timing",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dce-even.medh5",
+   "image": "DCE",
+   "out": "x.nii.gz",
+   "beside": {
+    "x.json": "inputs/beside/timing.json"
+   },
+   "options": {}
+  },
+  {
+   "id": "export-beside-list",
+   "call": "to_nifti",
+   "sample": "inputs/samples/echo.medh5",
+   "image": "MR",
+   "out": "x.nii.gz",
+   "beside": {
+    "x.json": "inputs/beside/list.json",
+    "x.bval": "inputs/beside/old.bval"
+   },
+   "options": {}
+  },
+  {
+   "id": "export-beside-broken",
+   "call": "to_nifti",
+   "sample": "inputs/samples/echo.medh5",
+   "image": "MR",
+   "out": "x.nii.gz",
+   "beside": {
+    "x.json": "inputs/beside/broken.json",
+    "x.bval": "inputs/beside/old.bval"
+   },
+   "options": {}
+  },
+  {
+   "id": "export-beside-broken-unneeded",
+   "call": "to_nifti",
+   "sample": "inputs/samples/plain.medh5",
+   "image": "CT",
+   "out": "x.nii.gz",
+   "beside": {
+    "x.json": "inputs/beside/broken.json"
+   },
+   "options": {}
+  },
+  {
+   "id": "export-beside-bval",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dce-even.medh5",
+   "image": "DCE",
+   "out": "x.nii.gz",
+   "beside": {
+    "x.bval": "inputs/beside/old.bval"
+   },
+   "options": {}
+  },
+  {
+   "id": "export-beside-bval-dwi",
+   "call": "to_nifti",
+   "sample": "inputs/samples/dwi.medh5",
+   "image": "MR",
+   "out": "x.nii",
+   "beside": {
+    "x.bval": "inputs/beside/old.bval",
+    "x.json": "inputs/beside/object.json"
+   },
+   "options": {}
+  },
+  {
+   "id": "read-bad-datatype.nii",
+   "call": "read_nifti",
+   "path": "inputs/bad-datatype.nii",
+   "options": {}
+  },
+  {
+   "id": "read-bad-magic.nii",
+   "call": "read_nifti",
+   "path": "inputs/bad-magic.nii",
+   "options": {}
+  },
+  {
+   "id": "read-bad-sizeof.nii",
+   "call": "read_nifti",
+   "path": "inputs/bad-sizeof.nii",
+   "options": {}
+  },
+  {
+   "id": "read-be-float32.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/be-float32.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-be-int16.nii",
+   "call": "read_nifti",
+   "path": "inputs/be-int16.nii",
+   "options": {}
+  },
+  {
+   "id": "read-both-disagree.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/both-disagree.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-both-kinds.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/both-kinds.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-both-oblique.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/both-oblique.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-broken-sidecar.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/broken-sidecar.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-cine-msec.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/cine-msec.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-cine-no-step.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/cine-no-step.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-cine-sec-other.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/cine-sec-other.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-cine-sec.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/cine-sec.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-cine-unitless.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/cine-unitless.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-cine-usec.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/cine-usec.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-descrip.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/descrip.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dim0-8.nii",
+   "call": "read_nifti",
+   "path": "inputs/dim0-8.nii",
+   "options": {}
+  },
+  {
+   "id": "read-dtype-complex64.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dtype-complex64.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dtype-float32.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dtype-float32.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dtype-float64.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dtype-float64.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dtype-int32.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dtype-int32.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dtype-int64.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dtype-int64.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dtype-int8.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dtype-int8.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dtype-rgb24.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dtype-rgb24.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dtype-uint16.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dtype-uint16.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dtype-uint32.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dtype-uint32.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dtype-uint64.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dtype-uint64.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dtype-uint8.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dtype-uint8.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dwi-other.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dwi-other.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-dwi.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/dwi.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-echo-numbers.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/echo-numbers.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-echo-scalar.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/echo-scalar.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-echo-short.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/echo-short.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-echo-words.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/echo-words.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-empty.nii",
+   "call": "read_nifti",
+   "path": "inputs/empty.nii",
+   "options": {}
+  },
+  {
+   "id": "read-extension.nii",
+   "call": "read_nifti",
+   "path": "inputs/extension.nii",
+   "options": {}
+  },
+  {
+   "id": "read-five.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/five.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-intent-rgb.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/intent-rgb.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-intent-time.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/intent-time.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-intent-vector.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/intent-vector.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-le-int16.nii",
+   "call": "read_nifti",
+   "path": "inputs/le-int16.nii",
+   "options": {}
+  },
+  {
+   "id": "read-le-int16.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/le-int16.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-mask-direction.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/mask-direction.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-mask-float.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/mask-float.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-mask-lesion.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/mask-lesion.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-mask-liver.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/mask-liver.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-mask-metres.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/mask-metres.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-mask-no-mapping.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/mask-no-mapping.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-mask-origin.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/mask-origin.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-mask-scaled.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/mask-scaled.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-mask-shape.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/mask-shape.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-mask-spacing.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/mask-spacing.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-mask-spleen.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/mask-spleen.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-multi-echo.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/multi-echo.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-n2-be-float64.nii",
+   "call": "read_nifti",
+   "path": "inputs/n2-be-float64.nii",
+   "options": {}
+  },
+  {
+   "id": "read-n2-int16.nii",
+   "call": "read_nifti",
+   "path": "inputs/n2-int16.nii",
+   "options": {}
+  },
+  {
+   "id": "read-n2-int16.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/n2-int16.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-negative-dim.nii",
+   "call": "read_nifti",
+   "path": "inputs/negative-dim.nii",
+   "options": {}
+  },
+  {
+   "id": "read-no-mapping.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/no-mapping.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-not-gzip.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/not-gzip.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-other-direction.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/other-direction.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-other-origin.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/other-origin.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-other-shape.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/other-shape.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-pair-be-int16.hdr",
+   "call": "read_nifti",
+   "path": "inputs/pair-be-int16.hdr",
+   "options": {}
+  },
+  {
+   "id": "read-pair-int16.hdr",
+   "call": "read_nifti",
+   "path": "inputs/pair-int16.hdr",
+   "options": {}
+  },
+  {
+   "id": "read-pair-missing-img.hdr",
+   "call": "read_nifti",
+   "path": "inputs/pair-missing-img.hdr",
+   "options": {}
+  },
+  {
+   "id": "read-pair-n2-int16.hdr",
+   "call": "read_nifti",
+   "path": "inputs/pair-n2-int16.hdr",
+   "options": {}
+  },
+  {
+   "id": "read-pair-short.hdr",
+   "call": "read_nifti",
+   "path": "inputs/pair-short.hdr",
+   "options": {}
+  },
+  {
+   "id": "read-plane-flat.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/plane-flat.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-plane-mask.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/plane-mask.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-plane-sheared.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/plane-sheared.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-plane-tilted.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/plane-tilted.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-plane-z50.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/plane-z50.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-plane.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/plane.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-qform-flipped.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/qform-flipped.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-qform-half-turn.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/qform-half-turn.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-qform-negative-pixdim.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/qform-negative-pixdim.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-qform-not-rotation.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/qform-not-rotation.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-qform-oblique.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/qform-oblique.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-qform-only.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/qform-only.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-random.nii",
+   "call": "read_nifti",
+   "path": "inputs/random.nii",
+   "options": {}
+  },
+  {
+   "id": "read-scale-identity.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/scale-identity.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-scale-inter-only.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/scale-inter-only.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-scale-zero.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/scale-zero.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-scaled-float32.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/scaled-float32.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-scaled-int16.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/scaled-int16.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-sform-code4.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/sform-code4.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-sform-oblique.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/sform-oblique.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-sform-only.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/sform-only.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-short-header.nii",
+   "call": "read_nifti",
+   "path": "inputs/short-header.nii",
+   "options": {}
+  },
+  {
+   "id": "read-slice.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/slice.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-squeeze.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/squeeze.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-trailing.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/trailing.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-truncated-data.nii",
+   "call": "read_nifti",
+   "path": "inputs/truncated-data.nii",
+   "options": {}
+  },
+  {
+   "id": "read-truncated.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/truncated.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-units-meter.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/units-meter.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-units-micron.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/units-micron.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-units-unknown.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/units-unknown.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-vector5.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/vector5.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-volume-timing.nii.gz",
+   "call": "read_nifti",
+   "path": "inputs/volume-timing.nii.gz",
+   "options": {}
+  },
+  {
+   "id": "read-vox-offset-0.nii",
+   "call": "read_nifti",
+   "path": "inputs/vox-offset-0.nii",
+   "options": {}
+  },
+  {
+   "id": "read-vox-offset-far.nii",
+   "call": "read_nifti",
+   "path": "inputs/vox-offset-far.nii",
+   "options": {}
+  },
+  {
+   "id": "read-le-int16.nii.gz-transpose=False",
+   "call": "read_nifti",
+   "path": "inputs/le-int16.nii.gz",
+   "options": {
+    "transpose": false
+   }
+  },
+  {
+   "id": "read-cine-sec.nii.gz-transpose=False",
+   "call": "read_nifti",
+   "path": "inputs/cine-sec.nii.gz",
+   "options": {
+    "transpose": false
+   }
+  },
+  {
+   "id": "read-plane-z50.nii.gz-transpose=False",
+   "call": "read_nifti",
+   "path": "inputs/plane-z50.nii.gz",
+   "options": {
+    "transpose": false
+   }
+  },
+  {
+   "id": "read-no-mapping.nii.gz-transpose=False",
+   "call": "read_nifti",
+   "path": "inputs/no-mapping.nii.gz",
+   "options": {
+    "transpose": false
+   }
+  },
+  {
+   "id": "read-le-int16.nii.gz-coord_system=RAS",
+   "call": "read_nifti",
+   "path": "inputs/le-int16.nii.gz",
+   "options": {
+    "coord_system": "RAS"
+   }
+  },
+  {
+   "id": "read-cine-sec.nii.gz-coord_system=RAS",
+   "call": "read_nifti",
+   "path": "inputs/cine-sec.nii.gz",
+   "options": {
+    "coord_system": "RAS"
+   }
+  },
+  {
+   "id": "read-plane-z50.nii.gz-coord_system=RAS",
+   "call": "read_nifti",
+   "path": "inputs/plane-z50.nii.gz",
+   "options": {
+    "coord_system": "RAS"
+   }
+  },
+  {
+   "id": "read-no-mapping.nii.gz-coord_system=RAS",
+   "call": "read_nifti",
+   "path": "inputs/no-mapping.nii.gz",
+   "options": {
+    "coord_system": "RAS"
+   }
+  },
+  {
+   "id": "read-le-int16.nii.gz-assume_geometry=True",
+   "call": "read_nifti",
+   "path": "inputs/le-int16.nii.gz",
+   "options": {
+    "assume_geometry": true
+   }
+  },
+  {
+   "id": "read-cine-sec.nii.gz-assume_geometry=True",
+   "call": "read_nifti",
+   "path": "inputs/cine-sec.nii.gz",
+   "options": {
+    "assume_geometry": true
+   }
+  },
+  {
+   "id": "read-plane-z50.nii.gz-assume_geometry=True",
+   "call": "read_nifti",
+   "path": "inputs/plane-z50.nii.gz",
+   "options": {
+    "assume_geometry": true
+   }
+  },
+  {
+   "id": "read-no-mapping.nii.gz-assume_geometry=True",
+   "call": "read_nifti",
+   "path": "inputs/no-mapping.nii.gz",
+   "options": {
+    "assume_geometry": true
+   }
+  },
+  {
+   "id": "read-le-int16.nii.gz-plane_as_volume=True",
+   "call": "read_nifti",
+   "path": "inputs/le-int16.nii.gz",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "read-cine-sec.nii.gz-plane_as_volume=True",
+   "call": "read_nifti",
+   "path": "inputs/cine-sec.nii.gz",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "read-plane-z50.nii.gz-plane_as_volume=True",
+   "call": "read_nifti",
+   "path": "inputs/plane-z50.nii.gz",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "read-no-mapping.nii.gz-plane_as_volume=True",
+   "call": "read_nifti",
+   "path": "inputs/no-mapping.nii.gz",
+   "options": {
+    "plane_as_volume": true
+   }
+  },
+  {
+   "id": "read-le-int16.nii.gz-fourth_axis=channel",
+   "call": "read_nifti",
+   "path": "inputs/le-int16.nii.gz",
+   "options": {
+    "fourth_axis": "channel"
+   }
+  },
+  {
+   "id": "read-cine-sec.nii.gz-fourth_axis=channel",
+   "call": "read_nifti",
+   "path": "inputs/cine-sec.nii.gz",
+   "options": {
+    "fourth_axis": "channel"
+   }
+  },
+  {
+   "id": "read-plane-z50.nii.gz-fourth_axis=channel",
+   "call": "read_nifti",
+   "path": "inputs/plane-z50.nii.gz",
+   "options": {
+    "fourth_axis": "channel"
+   }
+  },
+  {
+   "id": "read-no-mapping.nii.gz-fourth_axis=channel",
+   "call": "read_nifti",
+   "path": "inputs/no-mapping.nii.gz",
+   "options": {
+    "fourth_axis": "channel"
+   }
+  }
+ ]
+}

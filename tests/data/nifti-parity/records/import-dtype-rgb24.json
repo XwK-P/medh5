@@ -1,0 +1,13 @@
+{
+ "id": "import-dtype-rgb24",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "TypeError",
+  "code": null,
+  "message": "arrays of dtype [('R', 'u1'), ('G', 'u1'), ('B', 'u1')] cannot be stored; use a boolean, integer or floating dtype"
+ },
+ "files": []
+}

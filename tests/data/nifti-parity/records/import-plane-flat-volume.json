@@ -1,0 +1,13 @@
+{
+ "id": "import-plane-flat-volume",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "{corpus}/inputs/plane-flat.nii.gz is a 2-D plane whose affine's third column is [0.0, 0.0, 0.0]: read as (x, y, 1), that column is the third axis, and a zero one gives the slice no normal and no thickness, which are not invented; write them into the file's affine, or import the plane without plane_as_volume"
+ },
+ "files": []
+}

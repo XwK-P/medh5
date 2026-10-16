@@ -174,7 +174,7 @@ def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
     build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
     # The targets ci.yml passes to build.yml, one job each.
     built = set(re.findall(r"^      target: (\S+)$", ci, re.M))
-    assert len(built) == 4
+    assert len(built) == 6
     assert set(brew.TARGETS.values()) <= built
     assert all(target in release for target in built)
     assert 'name="medh5-$version-$target"' in build
@@ -452,11 +452,11 @@ class TestRepositoryGates:
         assert floor
         version = tuple(map(int, pins["maturin_version"].split(".")))
         assert tuple(map(int, floor[1].split("."))) <= version < (int(floor[2]),)
-        for arch in ("x86_64", "aarch64"):
+        for arch in ("x86_64", "aarch64", "x86_64_musl", "aarch64_musl"):
             assert re.search(rf"^rustup_sha256_{arch}=[0-9a-f]{{64}}$", build, re.M)
-        assert "sha256sum --check" in build
+        assert '[[ "$actual" != "$digest" ]]' in build
         containers = re.findall(r"container: (\S+)", CI.read_text(encoding="utf-8"))
-        assert len(containers) == 2
+        assert len(containers) == 4
         for image in containers:
             assert re.fullmatch(r"quay\.io/pypa/[\w.-]+@sha256:[0-9a-f]{64}", image)
         built = []
@@ -486,6 +486,8 @@ class TestRepositoryGates:
         ]
         assert sorted(callers) == [
             "build-linux-aarch64",
+            "build-linux-musl-aarch64",
+            "build-linux-musl-x86_64",
             "build-linux-x86_64",
             "build-macos-arm64",
             "build-windows-x86_64",
@@ -636,6 +638,8 @@ class TestRepositoryGates:
         entry names, when a value reads otherwise than it did for the newest
         h5py, and when a file was not read at all."""
         import h5py
+
+        pytest.importorskip("hdf5plugin")  # the script reads Blosc2 through it
 
         readers = _release_script("hdf5_readers.py")
         cases = tmp_path / "cases"
@@ -991,7 +995,7 @@ class TestDistribution:
             for name, job in jobs.items()
             if "uses: ./.github/workflows/build.yml" in job
         }
-        assert len(build_of) == 4
+        assert len(build_of) == 6
         downloading = 0
         for name, job in jobs.items():
             targets = set(re.findall(r"name: ci-(?:dist|cli)-([\w-]+)$", job, re.M))
@@ -1005,7 +1009,7 @@ class TestDistribution:
             if targets:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
-        assert downloading == 15
+        assert downloading == 17
 
     def test_every_shipped_target_is_built_released_and_noticed(self):
         """The targets were listed four times --- the build jobs, the
@@ -1056,6 +1060,40 @@ class TestDistribution:
         # `dist/*.whl` now.
         for name, job in jobs.items():
             assert "dist/*.whl" not in job, name
+
+    def test_musl_gets_wheels_and_a_static_binary(self):
+        """Alpine and the other musl Linux built medh5 from source, which
+        takes a compiler, CMake and minutes.  Each architecture has musllinux
+        wheels and a binary that links musl statically, so it runs on any
+        Linux; the wheels are tested in the image that built them, and the
+        binary is checked to need no shared library."""
+        jobs = _jobs(CI.read_text(encoding="utf-8"))
+        build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
+        assert "--compatibility musllinux_1_2" in build
+        assert 'readelf -d "$exe" | grep -q NEEDED' in build
+        for arch in ("x86_64", "aarch64"):
+            target = f"{arch}-unknown-linux-musl"
+            caller = jobs[f"build-linux-musl-{arch}"]
+            assert f"      target: {target}\n" in caller
+            image = re.search(r"^      container: (\S+)$", caller, re.M)
+            assert image and image[1].startswith(f"quay.io/pypa/musllinux_1_2_{arch}@")
+            test = jobs[f"test-linux-musl-{arch}"]
+            # Tested in the image it was built in.
+            assert f"      IMAGE: {image[1]}\n" in test
+            assert f"bash .github/scripts/test-musl.sh {target}" in test
+        script = (ROOT / ".github/scripts/test-musl.sh").read_text(encoding="utf-8")
+        assert '!= "hdf5plugin"' in script and '"dev"' in script
+        assert "--image expects NAME=VALUE" in script
+        assert "pytest tests/ -v -rs" in script
+        # The checkout's own `medh5/` has no engine, and shadowed the
+        # installed one for the first import run from the checkout.
+        assert script.index("rm -rf medh5") < script.index("import medh5")
+        # The glibc host cannot install a musl wheel: those checks are the
+        # test job's.
+        steps = _jobs(BUILD.read_text(encoding="utf-8"))["build"].split("\n      - ")
+        for name in ("The wheel installs", "The binary hands the converters"):
+            (step,) = [s for s in steps if name in s]
+            assert "if: ${{ !endsWith(inputs.target, '-musl') }}" in step
 
     def test_macos_on_intel_is_not_built(self):
         """2.2.0 dropped macOS on Intel.  Its build was the slowest of every
@@ -1637,6 +1675,29 @@ class TestDistribution:
             assert any(fnmatch.fnmatch(path, pattern) for pattern in include), path
         sdist = _jobs(CI.read_text(encoding="utf-8"))["sdist"]
         assert "rm -rf medh5" in sdist and "pytest tests/project" in sdist
+
+    def test_the_sdist_carries_the_tests_data(self):
+        """The shipped tests read `tests/data` (the ITK golden files, the NIfTI
+        parity corpus); left out, the parity test failed to collect from the
+        unpacked sdist."""
+        include = re.findall(
+            r'\{ path = "([^"]+)", format = "sdist" \}',
+            PYPROJECT.read_text(encoding="utf-8"),
+        )
+        data = [
+            p.relative_to(ROOT).as_posix()
+            for p in (ROOT / "tests" / "data").rglob("*")
+            if p.is_file()
+            and "__pycache__" not in p.parts
+            and not p.name.startswith(".")
+        ]
+        assert any("nifti-parity/inputs/" in path for path in data)
+        missing = [
+            path
+            for path in data
+            if not any(fnmatch.fnmatch(path, pattern) for pattern in include)
+        ]
+        assert not missing
 
     def test_a_damaged_file_is_reported_by_every_binary(self, tmp_path):
         """An HDF5 compiled without NDEBUG aborts on a damaged file; CI damages

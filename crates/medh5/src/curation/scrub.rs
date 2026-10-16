@@ -35,8 +35,10 @@ use crate::sample::{frame_references, open_sample, FRAME_ATTRS};
 use crate::{Error, Result};
 
 mod clinical;
+mod collection;
 
 pub use clinical::{CLINICAL, CLINICAL_CLOCK, CLINICAL_ID, CLINICAL_TEXT};
+pub use collection::REFUSED_MEMBER;
 
 pub const PROFILES: [&str; 2] = ["basic", "strict"];
 
@@ -551,7 +553,8 @@ impl std::fmt::Display for Finding {
 }
 
 fn names_the_sample(finding: &Finding) -> bool {
-    IDENTITY_RULES.contains(&finding.rule.as_str()) || UNFIXABLE_LOCATIONS.contains(&finding.r#where.as_str())
+    IDENTITY_RULES.contains(&finding.rule.as_str())
+        || UNFIXABLE_LOCATIONS.contains(&collection::in_member(&finding.r#where))
 }
 
 /// What was found, what was changed, and what was never looked at.
@@ -2211,8 +2214,13 @@ fn check_profile(profile: &str) -> Result<()> {
     }
 }
 
-/// Find identifiers in one file.  Changes nothing.
+/// Find identifiers in one file.  Changes nothing.  A collection is read
+/// member by member, into one report whose locations name each member
+/// (`KEY::where`).
 pub fn scan(path: &Path, profile: &str) -> Result<ScrubReport> {
+    if collection::names_collection(path) {
+        return collection::scan(path, profile);
+    }
     scan_with(path, profile, &[])
 }
 
@@ -2225,8 +2233,21 @@ fn scan_with(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<ScrubR
 /// [`scan_with`], and what the clinical profile is to `apply`.
 fn scan_examined(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<(ScrubReport, clinical::Profile)> {
     check_profile(profile)?;
-    let mut report = ScrubReport::new(&path.to_string_lossy(), profile);
     let sample = open_sample(path)?;
+    scan_sample(&sample, path, &path.to_string_lossy(), profile, replaced)
+}
+
+/// [`scan_examined`] over an open sample: `named` is the file whose name the
+/// `file_name` rule reads, and `shown` the report's path.
+fn scan_sample(
+    sample: &crate::sample::Sample,
+    named: &Path,
+    shown: &str,
+    profile: &str,
+    replaced: &[Replaced],
+) -> Result<(ScrubReport, clinical::Profile)> {
+    let path = named;
+    let mut report = ScrubReport::new(shown, profile);
     let document = sample.document()?;
     let doc = match document.to_json() {
         Value::Object(m) => m,
@@ -2243,8 +2264,15 @@ fn scan_examined(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<(S
         sweep.hdf5(&sample.root)?;
     }
     scan_file_name(path, &document.identity.sample_id, &document.identity.subject_id, &mut report);
-    // The ids the clinical text must not hold: the sample's, and those this
-    // run replaced.
+    let ids = text_ids(document, replaced);
+    let found = clinical::examine(sample, &doc, &ids, &mut report)?;
+    escalate(&mut report);
+    Ok((report, found))
+}
+
+/// The ids the clinical text must not hold: the sample's, and those a run
+/// replaced.
+fn text_ids(document: &SampleDocument, replaced: &[Replaced]) -> Vec<String> {
     let mut ids: Vec<String> = [&document.identity.sample_id, &document.identity.subject_id]
         .into_iter()
         .filter(|id| !id.starts_with(PSEUDONYM_PREFIX) && id.chars().count() >= MIN_SWEPT_ID)
@@ -2253,9 +2281,7 @@ fn scan_examined(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<(S
     ids.extend(replaced.iter().map(|r| r.old.clone()));
     ids.sort();
     ids.dedup();
-    let found = clinical::examine(&sample, &doc, &ids, &mut report)?;
-    escalate(&mut report);
-    Ok((report, found))
+    ids
 }
 
 /// What `apply` does beyond scanning, as 2.0 asked for it.  [`ScrubOptions`]
@@ -2318,6 +2344,13 @@ pub struct ScrubOptions {
     /// The tool that de-identified a clinical sample's text, attested with
     /// the digests of the bytes it attests (D15).
     pub attest_text: Option<String>,
+    /// For a collection: leave out a member that refuses, and list it,
+    /// rather than write nothing.
+    pub skip_refused: bool,
+    /// Rewrite each name, date, UID and sample id the rules find in a
+    /// clinical sample's text as a placeholder, as new documents and new
+    /// event versions with every span remapped (E7).
+    pub redact_text: bool,
 }
 
 impl From<ApplyOptions> for ScrubOptions {
@@ -2379,6 +2412,16 @@ impl ScrubOptions {
         self
     }
 
+    pub fn with_skip_refused(mut self, skip: bool) -> Self {
+        self.skip_refused = skip;
+        self
+    }
+
+    pub fn with_redact_text(mut self, redact: bool) -> Self {
+        self.redact_text = redact;
+        self
+    }
+
     fn profile(&self) -> &str {
         if self.profile.is_empty() {
             "basic"
@@ -2406,6 +2449,8 @@ impl ScrubOptions {
                 (self.out.is_some(), "--out (out)"),
                 (self.out_dir.is_some(), "--out-dir (out_dir)"),
                 (self.attest_text.is_some(), "--attest-text (attest_text)"),
+                (self.skip_refused, "--skip-refused (skip_refused)"),
+                (self.redact_text, "--redact-text (redact_text)"),
             ]
             .into_iter()
             .filter_map(|(set, name)| set.then_some(name))
@@ -2586,8 +2631,18 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
 
 /// [`apply`], with every option: a shift taken from a range or withheld, a
 /// copy rather than a rewrite.
+///
+/// A collection is scrubbed member by member into a new collection, at
+/// `out` (or under its own name in `out_dir`), and never rewritten: each
+/// member by the sample rules with the one salt, so pseudonyms, re-minted
+/// ids and a range's per-subject shifts agree across members as across
+/// files.  A member that refuses leaves nothing written, or with
+/// `skip_refused` is left out and listed (rule [`REFUSED_MEMBER`]).
 pub fn apply_with(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> {
     options.check(true)?;
+    if collection::names_collection(path) {
+        return collection::apply(path, options);
+    }
     let profile = options.profile();
     let strict = profile == "strict";
     let (mut report, found) = scan_examined(path, profile, &[])?;
@@ -2602,15 +2657,17 @@ pub fn apply_with(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> {
             )))
         }
         clinical::Profile::Examined(examined) => {
-            if let Some(why) = clinical::refusal(examined, options.attest_text.is_some(), &shown) {
+            if let Some(why) = clinical::refusal(examined, options.attest_text.is_some(), options.redact_text, &shown) {
                 return Err(Error::invalid(why));
             }
             Some(examined)
         }
     };
-    // A utc clock is the subject's own time; ids are re-minted on request.
-    // Either writes the records again, as new versions of a new sample.
-    let derives = examined.is_some_and(|e| e.utc || (options.pseudonymise_ids && e.ids));
+    // A utc clock is the subject's own time; ids are re-minted on request;
+    // redacted text is new bytes (E7).  Each writes the records again, as new
+    // versions of a new sample.
+    let redacting = options.redact_text && examined.is_some_and(|e| !e.redactable.is_empty());
+    let derives = redacting || examined.is_some_and(|e| e.utc || (options.pseudonymise_ids && e.ids));
     if derives && options.salt.is_empty() {
         return Err(Error::invalid(format!(
             "{shown}'s clinical records are written again with every id re-minted from --salt (salt), so that a \
@@ -2619,7 +2676,7 @@ pub fn apply_with(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> {
         )));
     }
     // Refused before anything is written.
-    let (state, replaced, prior, subject_id, sample_id, records) = {
+    let (state, replaced, prior, subject_id, sample_id, records, redaction) = {
         let sample = open_sample(path)?;
         let records = match sample.clinical()? {
             Some(clinical) if derives => Some(clinical.records()?),
@@ -2631,6 +2688,16 @@ pub fn apply_with(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> {
             _ => Map::new(),
         };
         let replaced = if options.pseudonymise_ids { ids_replaced(document, &options.salt) } else { Vec::new() };
+        // What the scan looked for, replaced where it found it; a span the
+        // edit cannot carry refuses the run here.
+        let (records, redaction) = match records {
+            Some(records) if redacting => {
+                let (records, redaction) = clinical::redact(records, &text_ids(document, &[]))
+                    .map_err(|e| Error::invalid(format!("{shown}: {}", e.message())))?;
+                (Some(records), Some(redaction))
+            }
+            records => (records, None),
+        };
         let identity = &document.identity;
         (
             shifted(&doc),
@@ -2639,6 +2706,7 @@ pub fn apply_with(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> {
             identity.subject_id.clone(),
             identity.sample_id.clone(),
             records,
+            redaction,
         )
     };
     if options.salt.is_empty() {
@@ -2795,15 +2863,33 @@ pub fn apply_with(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> {
         // The clinical records, derived (D15), and the text's attestation.
         let mut attested = Vec::new();
         let mut derived = false;
+        let mut redacted = None;
         if let Some(examined) = examined {
             let mut digests = examined.digests.clone();
+            let rewritten = redaction.as_ref().map(|r| r.digests.clone()).unwrap_or_default();
+            digests.extend(rewritten.clone());
             let mut reminted = None;
             if let Some(records) = records {
                 let n = records.events.len();
-                let (records, minted) =
-                    clinical::derive(records, clinical_shift, &options.salt, &subject_key(&subject_id, &options.salt))?;
+                let no_variants = std::collections::HashMap::new();
+                let variants = redaction.as_ref().map_or(&no_variants, |r| &r.variants);
+                let subject = subject_key(&subject_id, &options.salt);
+                let (records, minted) = clinical::derive(records, clinical_shift, &options.salt, &subject, variants)?;
                 writer.add_records(records)?;
                 digests = clinical::rekeyed(&digests, &minted);
+                if let Some(redaction) = &redaction {
+                    let written = clinical::rekeyed(&rewritten, &minted);
+                    let mut fields = Map::new();
+                    fields.insert("tool".into(), json!("medh5 scrub"));
+                    fields.insert("params".into(), Value::Object(clinical::redaction_record(&written)));
+                    writer.activity("deidentify", Some(&agent.id), None, fields)?;
+                    removed.push(format!(
+                        "clinical text redacted: {} document(s) and {} short text(s) rewritten as new versions, {} \
+                         span(s) moved",
+                        redaction.documents, redaction.short_texts, redaction.spans
+                    ));
+                    redacted = Some(redaction.documents + redaction.short_texts);
+                }
                 // Keyed by kind: an event and its record often share an id.
                 for r in &minted {
                     report.uid_map.insert(format!("{}:{}", r.kind, r.old), r.new.clone());
@@ -2824,7 +2910,9 @@ pub fn apply_with(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> {
             // Asked for now, or carried to the re-minted ids from the
             // attestations that already held, each by its own tool.
             let named = options.attest_text.as_deref();
-            for (tool, digests) in clinical::attestations_to_write(examined, named, &digests, reminted.as_deref()) {
+            for (tool, digests) in
+                clinical::attestations_to_write(examined, named, &digests, reminted.as_deref(), &rewritten)
+            {
                 let by = match (&options.performed_by, named) {
                     (None, Some(named)) => writer.software(named, None, Map::new())?.id,
                     _ => agent.id.clone(),
@@ -2847,6 +2935,11 @@ pub fn apply_with(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> {
                 "; sample and subject ids retained"
             },
             match (derived, attested.is_empty()) {
+                (true, _) if redacted.is_some() => format!(
+                    "; clinical records written again as new versions, the names, dates, UIDs and ids this tool \
+                     finds in their text redacted; clinical text attested by {}, not by this tool",
+                    attested.join(", ")
+                ),
                 (true, _) => format!(
                     "; clinical records written again as new versions; clinical text attested by {}, not by this \
                      tool",

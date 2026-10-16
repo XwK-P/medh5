@@ -1,0 +1,79 @@
+{
+ "id": "read-slice.nii.gz",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "read": {
+  "geometry": {
+   "notes": [],
+   "spacing": [
+    1.0,
+    0.8999999761581421,
+    0.800000011920929
+   ],
+   "origin": [
+    10.0,
+    20.0,
+    50.0
+   ],
+   "direction": [
+    [
+     0.0,
+     0.0,
+     -1.0
+    ],
+    [
+     0.0,
+     -1.0,
+     0.0
+    ],
+    [
+     1.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "coord_system": "LPS",
+   "shape": [
+    1,
+    3,
+    4
+   ],
+   "axis_order": [
+    2,
+    1,
+    0
+   ],
+   "time_values": null,
+   "time_units": null,
+   "time_measured": false,
+   "leading_kind": "spatial",
+   "leading_stated": false,
+   "b_values": null,
+   "channel_field": null,
+   "channel_values": null,
+   "stated_by": null,
+   "squeezed": [],
+   "units": "mm",
+   "dtype": "int16",
+   "rescale": null,
+   "plane_as_volume": null,
+   "header": {
+    "descrip": "",
+    "scl_slope": null,
+    "scl_inter": null
+   }
+  },
+  "array": {
+   "dtype": "<i2",
+   "shape": [
+    1,
+    3,
+    4
+   ],
+   "sha256": "0ff1d34b330a0b20cfffc7ad45850536156d3f18bcca9db13d61e7318b3fdfdd"
+  }
+ },
+ "outcome": "ok",
+ "files": []
+}

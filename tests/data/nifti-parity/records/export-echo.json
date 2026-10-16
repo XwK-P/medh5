@@ -1,0 +1,138 @@
+{
+ "id": "export-echo",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "returned": "{out}/echo.nii.gz",
+ "report": {
+  "source": "",
+  "converter": "to-nifti",
+  "outputs": [],
+  "ok": true,
+  "counts": {
+   "info": 0,
+   "decision": 1,
+   "guess": 0,
+   "warning": 0
+  },
+  "notes": [
+   {
+    "kind": "channels",
+    "message": "the fourth axis is a channel axis of 2; it was written as NIfTI's vector dimension (dim[5], vector intent), and ['EchoTime'] in the sidecar",
+    "severity": "decision",
+    "detail": {
+     "channels": 2,
+     "fields": [
+      "EchoTime"
+     ]
+    }
+   }
+  ]
+ },
+ "export": {
+  "echo.json": {
+   "text": "{\n  \"EchoTime\": [\n    0.005,\n    0.01\n  ]\n}\n"
+  },
+  "echo.nii.gz": {
+   "gzip": true,
+   "endianness": "<",
+   "header": {
+    "sizeof_hdr": 348,
+    "data_type": "",
+    "db_name": "",
+    "extents": 0,
+    "session_error": 0,
+    "regular": "",
+    "dim_info": 0,
+    "dim": [
+     5,
+     4,
+     3,
+     2,
+     1,
+     2,
+     1,
+     1
+    ],
+    "intent_p1": 0.0,
+    "intent_p2": 0.0,
+    "intent_p3": 0.0,
+    "intent_code": 1007,
+    "datatype": 4,
+    "bitpix": 16,
+    "slice_start": 0,
+    "pixdim": [
+     1.0,
+     0.800000011920929,
+     0.8999999761581421,
+     2.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ],
+    "vox_offset": 352.0,
+    "scl_slope": 1.0,
+    "scl_inter": 0.0,
+    "slice_end": 0,
+    "slice_code": 0,
+    "xyzt_units": 2,
+    "cal_max": 0.0,
+    "cal_min": 0.0,
+    "slice_duration": 0.0,
+    "toffset": 0.0,
+    "glmax": 0,
+    "glmin": 0,
+    "descrip": "",
+    "aux_file": "",
+    "qform_code": 0,
+    "sform_code": 2,
+    "quatern_b": 0.0,
+    "quatern_c": 0.0,
+    "quatern_d": 0.0,
+    "qoffset_x": -10.0,
+    "qoffset_y": -20.0,
+    "qoffset_z": 5.0,
+    "srow_x": [
+     0.800000011920929,
+     0.0,
+     0.0,
+     -10.0
+    ],
+    "srow_y": [
+     0.0,
+     0.8999999761581421,
+     0.0,
+     -20.0
+    ],
+    "srow_z": [
+     0.0,
+     0.0,
+     2.0,
+     5.0
+    ],
+    "intent_name": "",
+    "magic": "n+1"
+   },
+   "data": {
+    "dtype": "<i2",
+    "shape": [
+     4,
+     3,
+     2,
+     1,
+     2
+    ],
+    "bytes": 96,
+    "trailing": 0,
+    "sha256": "03ce6321ae65c3c6b1204faade3a17c83ee854d08f9965f970f792727491c5cd"
+   }
+  }
+ },
+ "outcome": "ok",
+ "files": [
+  "echo.json",
+  "echo.medh5",
+  "echo.nii.gz"
+ ]
+}

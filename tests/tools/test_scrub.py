@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -711,7 +712,7 @@ class TestScrubRules:
     def test_a_rewritten_string_dataset_keeps_its_filters(self, tmp_path: Path):
         """Widening a fixed-length dataset kept its compression and dropped the
         rest: a checksummed column lost its Fletcher32 to a scrub."""
-        import hdf5plugin
+        hdf5plugin = pytest.importorskip("hdf5plugin")
 
         from medh5.curation import scrub
 
@@ -2575,3 +2576,428 @@ class TestWithheldShift:
             + main(["scrub", str(quiet), "--apply", "--withhold-shift"])
             == 0
         )
+
+
+class TestScrubCollection:
+    """W22-07.1 (E8): a collection is scrubbed member by member, into a new
+    collection, and its source is only read."""
+
+    IDS = (("MRN-0001", "subj-1"), ("MRN-0002", "subj-1"), ("MRN-0003", "subj-2"))
+
+    @staticmethod
+    def _collection(tmp_path: Path, *extra: Path) -> Path:
+        from medh5.collection import pack
+
+        paths = [
+            _dated(tmp_path / f"{sample}.medh5", sample_id=sample, subject_id=subject)
+            for sample, subject in TestScrubCollection.IDS
+        ]
+        return pack([*paths, *extra], tmp_path / "cohort.medh5c")
+
+    @staticmethod
+    def _members(path: Path) -> dict[str, Any]:
+        """Each member's key, ids, first date and stored `content_id`."""
+        from medh5.collection import open_collection
+
+        with open_collection(path) as collection:
+            return {
+                key: (
+                    collection[key].document.identity.sample_id,
+                    collection[key].document.identity.subject_id,
+                    collection[key].document.timepoints["tp0"].date,
+                    collection[key].content_id,
+                )
+                for key in collection
+            }
+
+    @staticmethod
+    def _scratch(tmp_path: Path) -> list[str]:
+        return [p.name for p in tmp_path.iterdir() if ".scrub-" in p.name]
+
+    def test_S2_2_a_scrubbed_collection_is_a_new_collection(self, tmp_path: Path):
+        source = self._collection(tmp_path)
+        before = self._members(source)
+        out = tmp_path / "shared.medh5c"
+        report = scrubber.apply(
+            source,
+            out=out,
+            salt="pep",
+            pseudonymise_ids=True,
+            date_shift_range=(-400, -100),
+        )
+        assert report.applied and report.ok and report.path == str(out)
+        assert validate_file(out).ok
+        after = self._members(out)
+        # Keyed by each member's pseudonym, as `--out-dir` names a file.
+        pseudonyms = {
+            scrubber.pseudonymise(sample, "pep"): sample for sample, _ in self.IDS
+        }
+        assert sorted(after) == sorted(p.removeprefix("pseudo:") for p in pseudonyms)
+        for key, (sample_id, subject_id, date, content_id) in after.items():
+            old = pseudonyms[sample_id]
+            assert key == sample_id.removeprefix("pseudo:")
+            assert subject_id == scrubber.pseudonymise(dict(self.IDS)[old], "pep")
+            assert date != "2020-01-31" and content_id != before[old][3]
+        # One report: each member's findings under its source key, what a
+        # re-scan still finds under the key it was written as.
+        assert {f.where.split("::")[0] for f in report.findings} == {
+            sample for sample, _ in self.IDS
+        }
+        assert (
+            f"MRN-0001 written as {scrubber.pseudonymise('MRN-0001', 'pep')[7:]}"
+            in (report.actions)
+        )
+        assert set(report.uid_map) >= {"MRN-0001", "MRN-0002", "MRN-0003", "subj-1"}
+        assert b"MRN-000" not in out.read_bytes()
+        assert not self._scratch(tmp_path)
+
+    def test_S11_4_members_of_one_subject_share_a_shift(self, tmp_path: Path):
+        source = self._collection(tmp_path)
+        out = tmp_path / "shared.medh5c"
+        scrubber.apply(source, out=out, salt="pep", date_shift_range=(-400, -100))
+        dates = {sample: date for sample, _, date, _ in self._members(out).values()}
+        assert dates["MRN-0001"] == dates["MRN-0002"] != dates["MRN-0003"]
+        # The members agree with the samples scrubbed one by one.
+        alone = _dated(tmp_path / "alone.medh5", subject_id="subj-2")
+        scrubber.apply(alone, salt="pep", date_shift_range=(-400, -100))
+        with medh5.open(alone) as sample:
+            assert sample.document.timepoints["tp0"].date == dates["MRN-0003"]
+
+    def test_S2_2_a_refused_member_leaves_no_output(self, tmp_path: Path):
+        clinical = TestClinicalScrub._clinical(tmp_path)
+        source = self._collection(tmp_path, clinical)
+        out = tmp_path / "shared.medh5c"
+        with pytest.raises(MEDH5ValidationError, match="nothing was written") as no:
+            scrubber.apply(source, out=out, salt="pep", withhold_shift=True)
+        said = str(no.value)
+        assert "member 'visit' of" in said and "--skip-refused" in said
+        # Quoted as Python quotes it, so a Windows path's backslashes double.
+        assert repr(f"{source}::visit") in said and ".scrub-" not in said
+        assert not out.exists() and not self._scratch(tmp_path)
+        # Left out and listed, the others written.
+        report = scrubber.apply(
+            source, out=out, salt="pep", withhold_shift=True, skip_refused=True
+        )
+        assert sorted(self._members(out)) == ["MRN-0001", "MRN-0002", "MRN-0003"]
+        (refused,) = [f for f in report.findings if f.rule == "refused_member"]
+        assert refused.where == "visit" and "a name, a UID" in refused.detail
+        assert "visit left out: refused" in report.actions
+        assert not self._scratch(tmp_path)
+
+    def test_S2_2_the_source_collection_is_byte_identical(self, tmp_path: Path):
+        source = self._collection(tmp_path)
+        before = source.read_bytes()
+        scanned = scrubber.scan(source)
+        assert not scanned.applied
+        assert [f.where for f in scanned.findings] == [
+            f"{sample}::timepoints[0].date" for sample, _ in self.IDS
+        ]
+        report = scrubber.apply(
+            source, out=tmp_path / "shared.medh5c", withhold_shift=True, salt="pep"
+        )
+        assert report.ok
+        assert source.read_bytes() == before
+
+    def test_S2_2_a_collection_is_never_rewritten_in_place(self, tmp_path: Path):
+        source = self._collection(tmp_path)
+        with pytest.raises(MEDH5ValidationError, match="give --out"):
+            scrubber.apply(source)
+        with pytest.raises(MEDH5ValidationError, match="the collection being scrubbed"):
+            scrubber.apply(source, out=source)
+        # In a directory, under its own name.
+        target = tmp_path / "shared"
+        target.mkdir()
+        [report] = scrubber.scrub_paths(
+            [source], apply_changes=True, withhold_shift=True, out_dir=target
+        )
+        assert report.path == str(target / source.name)
+
+    def test_S11_4_a_member_keyed_by_a_record_number_is_reported(self, tmp_path: Path):
+        """A member's key is a lone sample's file name: the identity rule
+        reads it as it reads a name, and a pseudonymised run re-keys it."""
+        from medh5.collection import pack
+
+        path = tmp_path / "1.2.840.10008.5.medh5"
+        _dated(path, sample_id="s1")
+        source = pack([path], tmp_path / "c.medh5c", keys=["1.2.840.10008.5"])
+        (keyed,) = [f for f in scrubber.scan(source).findings if f.rule == "file_name"]
+        assert keyed.where == "1.2.840.10008.5::member key"
+        assert keyed.value == "1.2.840.10008.5" and "member key" in keyed.detail
+        assert "rename" not in keyed.detail
+        report = scrubber.apply(
+            source,
+            out=tmp_path / "shared.medh5c",
+            salt="pep",
+            pseudonymise_ids=True,
+            withhold_shift=True,
+        )
+        assert not [f for f in report.remaining if f.rule == "file_name"]
+
+    def test_S11_4_each_members_reminted_ids_are_kept(self, tmp_path: Path):
+        """Two subjects' histories on clocks of one id re-mint apart, so the
+        key to the pseudonyms keeps each under its member; a pseudonym of an
+        id, the salt's alone, stays one entry."""
+        from medh5.clinical import HOUR, Event
+        from medh5.collection import pack
+        from tests.kits import History
+
+        visit = Event(
+            "visit", "visit", "observation", "point", "final", 0, available_us=HOUR
+        )
+        paths = []
+        for subject in ("P-01", "P-02"):
+            path = tmp_path / f"{subject}.medh5"
+            History.write(path, subject_id=subject, events=[visit], lesion=False)
+            paths.append(path)
+        source = pack(paths, tmp_path / "c.medh5c")
+        report = scrubber.apply(
+            source,
+            out=tmp_path / "shared.medh5c",
+            salt="pep",
+            pseudonymise_ids=True,
+            withhold_shift=True,
+            attest_text="reviewed",
+        )
+        clocks = {k: v for k, v in report.uid_map.items() if "clock:" in k}
+        assert sorted(k.split("::")[0] for k in clocks) == ["P-01", "P-02"]
+        assert len(set(clocks.values())) == 2
+        assert "event:visit" not in report.uid_map
+        assert (
+            report.uid_map["P-01::event:visit"] != report.uid_map["P-02::event:visit"]
+        )
+        assert report.uid_map["P-01"] == scrubber.pseudonymise("P-01", "pep")
+
+    def test_S2_2_a_key_as_long_as_a_key_may_be(self, tmp_path: Path):
+        """A key may be 255 bytes, longer than a file name with its suffix
+        can be: the member is scrubbed under it all the same."""
+        from medh5.collection import open_collection, pack
+
+        key = "k" * 255
+        source = pack([_dated(tmp_path / "s.medh5")], tmp_path / "c.medh5c", keys=[key])
+        out = tmp_path / "shared.medh5c"
+        report = scrubber.apply(source, out=out, salt="pep", withhold_shift=True)
+        assert report.ok
+        with open_collection(out) as collection:
+            assert list(collection) == [key]
+        assert {f.where.split("::")[0] for f in report.findings} == {key}
+
+    def test_the_cli_scrubs_a_collection(self, tmp_path: Path, capsys):
+        from medh5.cli import main
+
+        source = self._collection(tmp_path)
+        out = tmp_path / "shared.medh5c"
+        assert main(["scrub", str(source), "--apply", "--withhold-shift"]) == 1
+        assert "give --out" in capsys.readouterr().err
+        flags = ["--apply", "--salt", "pep", "--withhold-shift", "--out", str(out)]
+        assert main(["scrub", str(source), *flags, "--json"]) == 0
+        [report] = json.loads(capsys.readouterr().out)
+        assert report["path"] == str(out) and report["ok"]
+        assert main(["scrub", str(source), "--skip-refused"]) == 2
+        assert "--skip-refused (skip_refused)" in capsys.readouterr().err
+
+
+class TestRedactText:
+    """W22-07.2 (E7): a redacted clinical document is a new document, owned
+    by a new version of its event, and every span into it moves with it."""
+
+    NOTE = "Seen with Smith^Alice today; review on 2020-02-14."
+
+    @staticmethod
+    def _sample(
+        tmp_path: Path,
+        *,
+        notes: Sequence[tuple[str, str]] = (("note", NOTE),),
+        spans: Sequence[tuple[str, str]] = (("note", "today"),),
+        name: str = "visit.medh5",
+    ) -> Path:
+        """One document event per note, each owning its text, and a link
+        citing each *spans* entry's words in its note."""
+        from medh5.clinical import HOUR, Document, Event, Link
+        from tests.kits import History
+
+        texts = dict(notes)
+        events = [
+            Event(
+                key,
+                key,
+                "document",
+                "point",
+                "final",
+                effective_start_us=0,
+                available_us=HOUR,
+            )
+            for key in texts
+        ]
+        links = [
+            Link.between(("event", key), "describes", ("document", f"{key}_text"))
+            for key in texts
+        ]
+        for key, words in spans:
+            text = texts[key].encode()
+            start = text.index(words.encode())
+            links.append(
+                Link.between(
+                    ("document", f"{key}_text"),
+                    "describes",
+                    ("image", "CT_tp0"),
+                    span=(start, start + len(words.encode())),
+                )
+            )
+        path = tmp_path / name
+        History.write(
+            path,
+            events=events,
+            documents=[Document(f"{key}_text", text) for key, text in notes],
+            links=links,
+        )
+        return path
+
+    @staticmethod
+    def _cited(records: Any) -> list[str]:
+        """What every span in *records* cites, in order."""
+        texts = {d.document_id: d.text.encode() for d in records.documents}
+        return [
+            texts[link.source_id][link.source_span[0] : link.source_span[1]].decode()
+            for link in records.links
+            if link.source_span is not None
+        ]
+
+    def test_S6_redaction_writes_a_new_document_and_version(self, tmp_path: Path):
+        path = self._sample(tmp_path)
+        before = path.read_bytes()
+        with medh5.open(path) as sample:
+            held = sample.clinical.records()
+        out = tmp_path / "shared.medh5"
+        report = scrubber.apply(
+            path, salt="pep", redact_text=True, attest_text="reviewed", out=out
+        )
+        assert report.ok and path.read_bytes() == before
+        with medh5.open(out) as sample:
+            records = sample.clinical.records()
+            activities = sample.document.provenance.activities_by_type("deidentify")
+        note = report.uid_map["document:note_text"]
+        (document,) = [d for d in records.documents if d.document_id == note]
+        assert document.text == "Seen with [NAME] today; review on [DATE]."
+        # Owned by a new version of its event: a new id, the same record and
+        # the source's availability.
+        (event,) = [
+            e for e in records.events if e.event_id == report.uid_map["event:note"]
+        ]
+        (was,) = [e for e in held.events if e.event_id == "note"]
+        assert event.record_id == report.uid_map["record:note"]
+        assert event.available_us == was.available_us
+        assert any(
+            (link.source_id, link.relation, link.target_id)
+            == (event.event_id, "describes", note)
+            for link in records.links
+        )
+        # A document without a hit is the same bytes under its new id.
+        texts = sorted(d.text for d in records.documents if d.document_id != note)
+        assert texts == sorted(
+            d.text for d in held.documents if d.document_id != "note_text"
+        )
+        # The redaction is recorded, apart from the attestation, with the
+        # digests of the bytes it wrote.
+        digest = "sha256:" + hashlib.sha256(document.text.encode()).hexdigest()
+        (redaction,) = [
+            a for a in activities if a.params.get("scope") == "clinical_text_redaction"
+        ]
+        assert redaction.params["tool"] == "medh5 scrub"
+        assert redaction.params["placeholders"]["name"] == "[NAME]"
+        assert redaction.params["digests"] == {f"clinical/documents/{note}": digest}
+        (attested,) = [
+            a for a in activities if a.params.get("scope") == "clinical_text"
+        ]
+        assert attested.params["digests"][f"clinical/documents/{note}"] == digest
+        assert any("redacted" in action for action in report.actions)
+
+    def test_S6_spans_are_remapped_through_the_redaction(self, tmp_path: Path):
+        path = self._sample(tmp_path)
+        with medh5.open(path) as sample:
+            assert self._cited(sample.clinical.records()) == ["today"]
+        report = scrubber.apply(
+            path, salt="pep", redact_text=True, attest_text="reviewed"
+        )
+        assert report.ok
+        with medh5.open(path) as sample:
+            assert self._cited(sample.clinical.records()) == ["today"]
+
+    def test_S6_a_span_inside_a_redacted_range_is_refused(self, tmp_path: Path):
+        path = self._sample(tmp_path, spans=[("note", "Smith^Alice today")])
+        before = path.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="overlap the range") as no:
+            scrubber.apply(path, salt="pep", redact_text=True, attest_text="reviewed")
+        said = str(no.value)
+        assert "document:note_text -describes-> image:CT_tp0" in said
+        assert "[10, 21)" in said and "Smith" not in said
+        assert path.read_bytes() == before
+
+    def test_S6_a_redacted_sample_validates_clean(self, tmp_path: Path):
+        path = self._sample(tmp_path)
+        report = scrubber.apply(
+            path,
+            salt="pep",
+            redact_text=True,
+            attest_text="reviewed",
+            pseudonymise_ids=True,
+        )
+        assert report.ok
+        result = validate_file(path)
+        assert result.ok, result
+        rescan = scrubber.scan(path)
+        assert not [f for f in rescan.findings if f.rule.startswith("clinical")]
+        # Re-applied, nothing is left to redact: the records are the same.
+        with medh5.open(path) as sample:
+            held = sample.clinical.records()
+        again = scrubber.apply(
+            path, salt="pep", redact_text=True, pseudonymise_ids=True
+        )
+        assert again.ok
+        with medh5.open(path) as sample:
+            assert sample.clinical.records() == held
+
+    def test_S6_redaction_is_read_one_document_at_a_time(self, tmp_path: Path):
+        """Each document is redacted from its own bytes, and its spans by its
+        own edits; one whose bytes do not read refuses the run by name."""
+        notes = [("note", self.NOTE), ("letter", "Dear Jones^Bob, all is well.")]
+        spans = [("note", "today"), ("letter", "all is well")]
+        path = self._sample(tmp_path, notes=notes, spans=spans)
+        out = tmp_path / "shared.medh5"
+        report = scrubber.apply(
+            path, salt="pep", redact_text=True, attest_text="reviewed", out=out
+        )
+        with medh5.open(out) as sample:
+            records = sample.clinical.records()
+        letter = report.uid_map["document:letter_text"]
+        (redacted,) = [d.text for d in records.documents if d.document_id == letter]
+        assert redacted == "Dear [NAME], all is well."
+        assert sorted(self._cited(records)) == ["all is well", "today"]
+        TestClinicalScrub._plant(path, "letter_text", b"w", b"\xff")
+        with pytest.raises(MEDH5ValidationError, match="does not read") as no:
+            scrubber.apply(path, salt="pep", redact_text=True, attest_text="reviewed")
+        assert "letter_text" in str(no.value) and "note_text" not in str(no.value)
+
+    def test_S6_redacted_text_still_needs_an_attestation(self, tmp_path: Path):
+        path = self._sample(tmp_path)
+        with pytest.raises(MEDH5ValidationError, match="--attest-text TOOL"):
+            scrubber.apply(path, salt="pep", redact_text=True)
+        with pytest.raises(MEDH5ValidationError, match="--salt"):
+            scrubber.apply(path, redact_text=True, attest_text="reviewed")
+        with pytest.raises(MEDH5ValidationError, match="--redact-text"):
+            scrubber.apply(path, salt="pep", attest_text="reviewed")
+        with pytest.raises(
+            MEDH5ValidationError, match=r"--redact-text \(redact_text\)"
+        ):
+            scrubber.scrub_paths([path], redact_text=True)
+
+    def test_the_cli_flag(self, tmp_path: Path, capsys):
+        from medh5.cli import main
+
+        path = self._sample(tmp_path)
+        flags = ["--apply", "--salt", "pep", "--attest-text", "reviewed"]
+        assert main(["scrub", str(path), *flags, "--redact-text", "--json"]) == 0
+        [report] = json.loads(capsys.readouterr().out)
+        assert report["ok"]
+        with medh5.open(path) as sample:
+            texts = [d.text for d in sample.clinical.records().documents]
+        assert any("[NAME]" in text for text in texts)

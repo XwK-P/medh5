@@ -1,0 +1,13 @@
+{
+ "id": "masks-collide",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "masks 'GTV 1' and 'gtv-1' would both be class 'gtv_1'; a class key keeps lowercase letters, digits and underscores only, so rename one"
+ },
+ "files": []
+}

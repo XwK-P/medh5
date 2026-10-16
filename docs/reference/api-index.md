@@ -1091,6 +1091,10 @@ compiled extension the modules re-export from, not an API of its own.
 | `linear_part` | function | Return a grid's `direction @ diag(spacing)`: the `(S, S)` map from index to world displacement. |  |
 | `linear_sample` | function | Interpolate `(C, *spatial)` data multilinearly at `(N, S)` continuous indices: an `(N, C)` array. |  |
 | `refuse_outside` | function | Raise `MEDH5ValidationError` if any of the `inside` flags is false: `extrapolation='error'`. |  |
+| `resample` | function | Resample images of the sample at *path* onto another grid, and record it. | [Python API › Resampling](python-api.md#resampling) |
+| `RESAMPLE_INTERPOLATIONS` | constant (`tuple`) |  | [Python API › Resampling](python-api.md#resampling) |
+| `ResampledImage` | class | One image a resample wrote. | [Python API › Resampling](python-api.md#resampling) |
+| `ResampleReport` | class | What `resample` wrote. | [Python API › Resampling](python-api.md#resampling) |
 | `resolve_between` | function | The transform relating two frame uids, or `None` when none does. |  |
 | `sample_field` | function | Interpolate a field at `(N, S)` continuous indices with the declared `interpolation` (§10.4). |  |
 | `SPEC_TRANSFORM_ATTRS` | constant (`tuple`) |  |  |

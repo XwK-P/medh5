@@ -1,0 +1,13 @@
+{
+ "id": "import-dim0-8-nii",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "HeaderDataError",
+  "code": null,
+  "message": "vox offset 0 too low for single file nifti1"
+ },
+ "files": []
+}

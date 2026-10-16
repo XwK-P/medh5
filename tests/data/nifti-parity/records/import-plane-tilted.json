@@ -1,0 +1,13 @@
+{
+ "id": "import-plane-tilted",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "{corpus}/inputs/plane-tilted.nii.gz is a 2-D plane not parallel to the x-y world plane, and §3.6 gives a 2-D grid a 2x2 direction on the first two world axes --- no 2-D grid describes it; save it as (x, y, 1), or pass plane_as_volume=True (--plane-as-volume), to import it as a single-slice 3-D volume"
+ },
+ "files": []
+}

@@ -2205,4 +2205,6 @@ class TestThe1xNamesStillAnswer:
             "compression_opts": 4,
             "shuffle": True,
         }
+        # Blosc2's keywords are hdf5plugin's to give.
+        pytest.importorskip("hdf5plugin")
         assert PROFILES["training"].image.kwargs()["compression"] == 32026

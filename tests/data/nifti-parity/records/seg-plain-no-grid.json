@@ -1,0 +1,15 @@
+{
+ "id": "seg-plain-no-grid",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "KeyError",
+  "code": null,
+  "message": "'nope'"
+ },
+ "files": [
+  "plain.medh5"
+ ]
+}

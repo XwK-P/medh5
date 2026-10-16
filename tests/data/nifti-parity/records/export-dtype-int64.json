@@ -1,0 +1,15 @@
+{
+ "id": "export-dtype-int64",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "ValueError",
+  "code": null,
+  "message": "Image data has type int64, which may cause incompatibilities with other tools. To use this type, pass an explicit header or dtype argument to Nifti1Image()."
+ },
+ "files": [
+  "dtype-int64.medh5"
+ ]
+}

@@ -1,0 +1,13 @@
+{
+ "id": "import-plane-sheared-volume",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "{corpus}/inputs/plane-sheared.nii.gz is a 2-D plane whose affine's third column [-0.5, 0.0, 1.0] is not orthogonal to its in-plane axes: read as (x, y, 1), the grid would be sheared, and no other normal is invented; correct the file's affine, or import the plane without plane_as_volume"
+ },
+ "files": []
+}

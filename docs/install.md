@@ -50,6 +50,7 @@ pip downloads a ready-built package (a *wheel*) for Python 3.10 and later on:
 | System | Requirement |
 |---|---|
 | Linux, x86_64 or ARM64 | glibc 2.28 or later: Ubuntu 20.04, Debian 10, RHEL 8 or newer |
+| Linux with musl, x86_64 or ARM64 | musl 1.2 or later: Alpine 3.13 or newer |
 | macOS, Apple silicon | macOS 11 or later |
 | Windows, x64 | Windows 10 or later |
 
@@ -68,8 +69,8 @@ several minutes and needs:
 - network access to crates.io, where the build fetches its Rust dependencies.
 
 This covers macOS on Intel (2.2.0 dropped its wheel; 2.1 was the last with
-one), Alpine and other musl-based Linux, Linux with a glibc older than 2.28
-(Ubuntu 18.04, CentOS 7), Windows on ARM, PyPy 3.11 and free-threaded
+one), Linux with a glibc older than 2.28 (Ubuntu 18.04, CentOS 7) or a musl
+older than 1.2, Windows on ARM, PyPy 3.11 and free-threaded
 CPython 3.15 or later. Free-threaded CPython 3.13 and PyPy 3.10 cannot build it
 at all: PyO3, the library that binds the engine to Python, does not support
 them. If pip prints `Building wheel for medh5`, it found no wheel for your
@@ -94,8 +95,10 @@ brew install medh5-project/medh5/medh5
 
 **A download.** Every [GitHub Release](https://github.com/medh5-project/medh5/releases/latest)
 has an archive for Linux (x86_64 or ARM64, glibc 2.28 or later), macOS (Apple
-silicon) and Windows (x64), and a `SHA256SUMS` file to check it
-against. Unpack it and put `medh5` on your path.
+silicon) and Windows (x64), and a `SHA256SUMS` file to check it against. The
+Linux archives named `…-linux-musl` hold a static binary, which needs no C
+library at all and so runs on any Linux of its architecture, Alpine and
+distroless images among them. Unpack it and put `medh5` on your path.
 
 Each archive, like each wheel, also carries a signed attestation that the
 project's release workflow built it from the tagged commit. With the

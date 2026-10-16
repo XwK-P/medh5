@@ -1,0 +1,13 @@
+{
+ "id": "import-untransposed-4d",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "a 4-D NIfTI keeps its time axis last, and §3.1 requires the spatial axes to be trailing and contiguous, so this array cannot be declared as a grid without reordering it --- drop `transpose=False` for 4-D input"
+ },
+ "files": []
+}
