@@ -416,6 +416,12 @@ impl CubicCoefficients {
 
     /// Interpolate at `(N, S)` continuous indices, as [`cubic_sample`] does.
     pub(crate) fn sample(&self, coords: &Array2<f64>) -> Result<Array2<f64>> {
+        let all: Vec<usize> = (0..self.planes.len()).collect();
+        self.sample_components(coords, &all)
+    }
+
+    /// Interpolate only the listed components, in that order: `(N, len)`.
+    pub(crate) fn sample_components(&self, coords: &Array2<f64>, components: &[usize]) -> Result<Array2<f64>> {
         let spatial = &self.spatial;
         check_points(spatial, coords)?;
         let inside = inside_extent(spatial, coords);
@@ -435,8 +441,9 @@ impl CubicCoefficients {
             Boundary::Constant => coords[[row, axis]].clamp(0.0, (spatial[axis] as f64 - 1.0).max(0.0)),
             Boundary::Nearest => coords[[row, axis]].clamp(-EXACT_INTEGER, EXACT_INTEGER),
         });
-        let mut out = Array2::<f64>::zeros((clamped.nrows(), self.planes.len()));
-        for (c, coeffs) in self.planes.iter().enumerate() {
+        let mut out = Array2::<f64>::zeros((clamped.nrows(), components.len()));
+        for (c, component) in components.iter().enumerate() {
+            let coeffs = &self.planes[*component];
             for (row, v) in spline_interpolate(coeffs, &clamped, self.boundary, self.npad).into_iter().enumerate() {
                 out[[row, c]] = if self.extrapolation == "zero" && !inside[row] { 0.0 } else { v };
             }

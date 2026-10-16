@@ -880,22 +880,33 @@ fn fill_json(fill: f64) -> Value {
     }
 }
 
-/// A grid's `time_values` in seconds: `time_units` is `"s"` unless it says
-/// `"ms"` (§3.2).
-fn seconds(grid: &Grid) -> Option<Vec<f64>> {
-    let scale = if grid.time_units.as_deref() == Some("ms") { 1e-3 } else { 1.0 };
-    grid.time_values.as_ref().map(|values| values.iter().map(|t| t * scale).collect())
+/// A grid's `time_units`: `"s"` unless it says `"ms"` (§3.2).
+fn time_units(grid: &Grid) -> &str {
+    if grid.time_units.as_deref() == Some("ms") {
+        "ms"
+    } else {
+        "s"
+    }
 }
 
-/// Whether two grids state the same acquisition times, compared in seconds.
+/// Whether two grids state the same acquisition times.  In the same units the
+/// values must be equal; across units the seconds are taken to milliseconds,
+/// one rounding, and may differ by that rounding only --- a tolerance relative
+/// to the value would let two times a second apart pass near 1e9 s.
 fn same_times(a: &Grid, b: &Grid) -> bool {
-    match (seconds(a), seconds(b)) {
-        (None, None) => true,
-        (Some(x), Some(y)) => {
-            x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| p == q || (p - q).abs() <= 1e-9 * p.abs().max(q.abs()))
-        }
-        _ => false,
+    let (x, y) = match (&a.time_values, &b.time_values) {
+        (None, None) => return true,
+        (Some(x), Some(y)) if x.len() == y.len() => (x, y),
+        _ => return false,
+    };
+    let ms = |grid: &Grid, t: f64| if time_units(grid) == "s" { t * 1e3 } else { t };
+    if time_units(a) == time_units(b) {
+        return x == y;
     }
+    x.iter().zip(y).all(|(p, q)| {
+        let (p, q) = (ms(a, *p), ms(b, *q));
+        p == q || (p - q).abs() <= 2.0 * f64::EPSILON * p.abs().max(q.abs())
+    })
 }
 
 fn describe_times(grid: &Grid) -> String {
@@ -965,9 +976,9 @@ fn resample_image(
     let (dataset, chunks) =
         writer.create_image(&job.output, job.dtype, &target.grid_id, &image.modality()?, options)?;
     let target_spatial = target.spatial_shape();
-    let chunk: Vec<usize> = match &chunks {
-        Some(c) => c[c.len() - s..].to_vec(),
-        None => target_spatial.clone(),
+    let (leading_chunk, chunk): (Vec<usize>, Vec<usize>) = match &chunks {
+        Some(c) => (c[..c.len() - s].to_vec(), c[c.len() - s..].to_vec()),
+        None => (leading_shape.clone(), target_spatial.clone()),
     };
     let cubic = if plan.interpolation == "cubic" {
         let whole = image.read(None, false, Some(DType::F64))?.to_f64();
@@ -983,8 +994,6 @@ fn resample_image(
     for block in blocks(&target_spatial, &chunk) {
         let dims: Vec<usize> = block.iter().map(|(a, b)| b - a).collect();
         let n: usize = dims.iter().product();
-        #[cfg(test)]
-        LARGEST_BLOCK.with(|largest| largest.set(largest.get().max(n)));
         let mut indices = Array2::<f64>::zeros((n, s));
         for (row, mut point) in indices.outer_iter_mut().enumerate() {
             let mut rest = row;
@@ -1058,43 +1067,68 @@ fn resample_image(
                 invalidate(&mut valid, &target_spatial, &block, &dims, row);
             }
         }
-        let values: NdArray = match plan.interpolation.as_str() {
-            "nearest" => match (&crop, &roi) {
-                (Some(crop), Some(roi)) => {
-                    let stored = image.read(Some(roi), false, None)?;
-                    gather(&stored, lanes, &nearest_rows(crop), plan.fill, job.dtype)?
-                }
-                _ => constant(job.dtype, lanes, n, plan.fill)?,
-            },
-            interpolation => {
-                let mut out = Array2::<f64>::from_elem((n, lanes), plan.fill);
-                if let (Some(crop), Some(roi)) = (&crop, &roi) {
-                    let computed = if interpolation == "cubic" {
-                        cubic.as_ref().expect("prefiltered above").sample(&clamped)?
-                    } else {
-                        let stored = image.read(Some(roi), false, Some(DType::F64))?.to_f64();
-                        let mut field_shape = vec![lanes];
-                        field_shape.extend(crop.iter().map(|(a, b)| b - a));
-                        let field = stored.into_shape_with_order(IxDyn(&field_shape))?;
-                        let local = Array2::from_shape_fn((n, s), |(row, k)| clamped[[row, k]] - crop[k].0 as f64);
-                        linear_sample(&field, &local, "nearest")?
-                    };
-                    for (row, ok) in inside.iter().enumerate() {
-                        if *ok {
-                            out.row_mut(row).assign(&computed.row(row));
+        let rows = crop.as_ref().map(|crop| nearest_rows(crop));
+        let local =
+            crop.as_ref().map(|crop| Array2::from_shape_fn((n, s), |(row, k)| clamped[[row, k]] - crop[k].0 as f64));
+        // Each chunk of the leading (time, channel) axes in turn, so a block
+        // holds one chunk of the image and no more, however many frames.
+        for lead in blocks(&leading_shape, &leading_chunk) {
+            let lead_dims: Vec<usize> = lead.iter().map(|(a, b)| b - a).collect();
+            let group: usize = lead_dims.iter().product();
+            #[cfg(test)]
+            LARGEST_BLOCK.with(|largest| largest.set(largest.get().max(n * group)));
+            let roi: Option<Vec<Slice>> = roi.as_ref().map(|spatial| {
+                let mut full: Vec<Slice> = lead.iter().map(|(a, b)| Slice::new(*a as i64, *b as i64)).collect();
+                full.extend(spatial.iter().cloned());
+                full
+            });
+            let values: NdArray = match plan.interpolation.as_str() {
+                "nearest" => match (&rows, &roi) {
+                    (Some(rows), Some(roi)) => {
+                        let stored = image.read(Some(roi), false, None)?;
+                        gather(&stored, group, rows, plan.fill, job.dtype)?
+                    }
+                    _ => constant(job.dtype, group, n, plan.fill)?,
+                },
+                interpolation => {
+                    let mut out = Array2::<f64>::from_elem((n, group), plan.fill);
+                    if let (Some(crop), Some(roi), Some(local)) = (&crop, &roi, &local) {
+                        let computed = if interpolation == "cubic" {
+                            let lanes = lane_indices(&leading_shape, &lead);
+                            cubic.as_ref().expect("prefiltered above").sample_components(&clamped, &lanes)?
+                        } else {
+                            let stored = image.read(Some(roi), false, Some(DType::F64))?.to_f64();
+                            let mut field_shape = vec![group];
+                            field_shape.extend(crop.iter().map(|(a, b)| b - a));
+                            let field = stored.into_shape_with_order(IxDyn(&field_shape))?;
+                            linear_sample(&field, local, "nearest")?
+                        };
+                        for (row, ok) in inside.iter().enumerate() {
+                            if *ok {
+                                out.row_mut(row).assign(&computed.row(row));
+                            }
                         }
                     }
+                    convert(&out, job.dtype, &job.source)?
                 }
-                convert(&out, job.dtype, &job.source)?
-            }
-        };
-        let mut shape = leading_shape.clone();
-        shape.extend(&dims);
-        let mut starts = vec![0usize; leading_shape.len()];
-        starts.extend(block.iter().map(|(a, _)| *a));
-        data::write_region(&dataset, &values.reshape(&shape)?, &starts)?;
+            };
+            let mut shape = lead_dims;
+            shape.extend(&dims);
+            let mut starts: Vec<usize> = lead.iter().map(|(a, _)| *a).collect();
+            starts.extend(block.iter().map(|(a, _)| *a));
+            data::write_region(&dataset, &values.reshape(&shape)?, &starts)?;
+        }
     }
     Ok((filled, valid))
+}
+
+/// The flat (C-order) lanes of the leading axes a block of them covers.
+fn lane_indices(shape: &[usize], block: &[(usize, usize)]) -> Vec<usize> {
+    let mut lanes = vec![0usize];
+    for (k, (a, b)) in block.iter().enumerate() {
+        lanes = lanes.iter().flat_map(|lane| (*a..*b).map(move |i| lane * shape[k] + i)).collect();
+    }
+    lanes
 }
 
 /// Mark one voxel of a block as holding no data, making the target-wide mask
@@ -1245,6 +1279,77 @@ mod tests {
             let want = ramp(centre(z, 8), centre(y, 32), centre(x, 32));
             assert!((values[[z, y, x]] - want).abs() < 1e-3, "{z} {y} {x}: {} vs {want}", values[[z, y, x]]);
         }
+    }
+
+    /// The leading (time) axes are chunked too: a block holds one frame of
+    /// one spatial chunk, not every frame of it.
+    #[test]
+    fn a_time_series_is_resampled_a_frame_chunk_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.medh5");
+        let mut w = create(&path, Some("s"), Some("s"), "portable", &[]).unwrap();
+        let options = |origin: f64, chunk_hint: Option<Vec<i64>>| GridOptions {
+            frame_uid: Some("F0".into()),
+            axis_kinds: Some(vec!["time".into(), "spatial".into(), "spatial".into(), "spatial".into()]),
+            time_values: Some(vec![0.0, 1.0, 2.0]),
+            origin: Some(vec![origin; 3]),
+            chunk_hint,
+            ..Default::default()
+        };
+        w.add_grid("g", &[3, 4, 16, 16], &[1.0, 1.0, 1.0], options(0.0, None)).unwrap();
+        let values: Vec<f32> = (0..3 * 4 * 16 * 16).map(|i| i as f32).collect();
+        let image = NdArray::from_vec(&[3, 4, 16, 16], values).unwrap();
+        w.add_image("img", &image, "g", "MR", ImageOptions::default()).unwrap();
+        let fine = options(-0.25, Some(vec![1, 4, 16, 16]));
+        w.add_grid("fine", &[3, 8, 32, 32], &[0.5, 0.5, 0.5], fine).unwrap();
+        w.commit(true).unwrap();
+        for interpolation in ["nearest", "linear", "cubic"] {
+            LARGEST_BLOCK.with(|largest| largest.set(0));
+            let mut plan = ResamplePlan::onto(["img"], "fine");
+            plan.interpolation = interpolation.into();
+            plan.suffix = Some(format!("_{interpolation}"));
+            resample(&path, &plan).unwrap();
+            assert_eq!(LARGEST_BLOCK.with(|largest| largest.get()), 4 * 16 * 16, "{interpolation}");
+            let sample = open_sample(&path).unwrap();
+            let written = sample.image(&format!("img_{interpolation}")).unwrap();
+            let values = written.read(None, false, Some(DType::F64)).unwrap().to_f64();
+            // Every frame is its own: frame t is frame 0 shifted by t·1024,
+            // which nearest, linear and cubic all preserve exactly.
+            for &(z, y, x) in &[(0usize, 0usize, 0usize), (5, 17, 30), (7, 31, 31)] {
+                for t in 1..3 {
+                    let shift = values[[t, z, y, x]] - values[[0, z, y, x]];
+                    assert!((shift - 1024.0 * t as f64).abs() < 1e-2, "{interpolation} {t}: {shift}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn s3_2_equal_units_compare_times_exactly() {
+        let grid = |units: Option<&str>, values: Vec<f64>| {
+            Grid::from_spec(crate::geometry::grid::GridSpec {
+                grid_id: "g".into(),
+                shape: vec![values.len() as i64, 2, 2],
+                spacing: vec![1.0, 1.0],
+                axis_kinds: Some(vec!["time".into(), "spatial".into(), "spatial".into()]),
+                time_values: Some(values),
+                time_units: units.map(String::from),
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let big = 1.0e9;
+        assert!(same_times(&grid(None, vec![big]), &grid(Some("s"), vec![big])));
+        assert!(!same_times(&grid(None, vec![big]), &grid(None, vec![big + 1.0])));
+        assert!(!same_times(&grid(None, vec![big]), &grid(Some("ms"), vec![big * 1e3 + 1.0])));
+        assert!(same_times(&grid(None, vec![big, 0.1]), &grid(Some("ms"), vec![big * 1e3, 100.0])));
+    }
+
+    #[test]
+    fn leading_blocks_name_their_flat_lanes() {
+        assert_eq!(lane_indices(&[], &[]), vec![0]);
+        assert_eq!(lane_indices(&[4, 3], &[(1, 3), (0, 1)]), vec![3, 6]);
+        assert_eq!(lane_indices(&[4, 3], &[(2, 3), (1, 3)]), vec![7, 8]);
     }
 
     #[test]

@@ -300,6 +300,9 @@ class TestSharedFrame:
             ("s", (0.0, 1.0), True),
             ("ms", (0.0, 1.0), False),
             ("ms", (0.0, 1000.0), True),
+            # Equal units compare exactly: no tolerance grows with the value.
+            ("s", (0.0, 1.0 + 1e-10), False),
+            (None, (0.0, 1.0), True),
         ],
     )
     def test_S3_2_time_values_are_compared_in_seconds(
