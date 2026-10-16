@@ -518,6 +518,35 @@ class TestOneThreadAtATime:
         hammered([replace(k) for k in range(threads)], rounds=200)
         assert prov.to_json()["agents"] == doc.provenance.to_json()["agents"]
 
+    @pytest.mark.parametrize("threads", [8])
+    def test_threads_editing_one_nested_member_keep_every_edit(self, threads: int):
+        """Threads appending to a list nested in one document member, and
+        setting keys of a dict beside it: every edit is kept, in the view and
+        in the document, because a change and the rewrite it makes are one
+        step."""
+        from medh5.document import new_document
+
+        doc = new_document("s")
+        doc.extra["log"] = {"items": [], "seen": {}}
+        member = doc.extra["log"]
+        rounds = 100
+
+        def edit(k: int) -> Callable[[], None]:
+            count = iter(range(10**9))
+
+            def call() -> None:
+                n = next(count)
+                member["items"].append(f"{k}.{n}")
+                member["seen"][f"{k}.{n}"] = n
+
+            return call
+
+        assert hammered([edit(k) for k in range(threads)], rounds=rounds) == 0
+        every = {f"{k}.{n}" for k in range(threads) for n in range(rounds)}
+        assert set(member["items"]) == every
+        assert set(doc.extra["log"]["items"]) == every
+        assert set(doc.extra["log"]["seen"]) == every
+
 
 class TestShared:
     """What threads may share: an open sample, read from many at once, and the

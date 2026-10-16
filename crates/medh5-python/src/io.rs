@@ -299,8 +299,8 @@ fn meta_fields<'py>(py: Python<'py>, meta: &lg::LegacyMeta) -> PyResult<Bound<'p
 }
 
 #[pyfunction]
-fn legacy_is(path: PathBuf) -> bool {
-    lg::is_legacy(&path)
+fn legacy_is(py: Python<'_>, path: PathBuf) -> bool {
+    crate::h5(py, || lg::is_legacy(&path))
 }
 
 /// A 0.x file's metadata, as `LegacyMeta` fields.
@@ -345,7 +345,7 @@ fn legacy_build_label_set<'py>(py: Python<'py>, paths: &Bound<'py, PyAny>) -> R<
     let owned = paths_arg(paths)?;
     let refs: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
     let mut log = scratch();
-    let label_set = lg::build_label_set(&refs, Some(&mut log))?;
+    let label_set = crate::h5(py, || lg::build_label_set(&refs, Some(&mut log)))?;
     Ok((LabelSet::wrap(label_set), notes_fields(py, &log.notes)?))
 }
 

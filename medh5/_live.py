@@ -25,10 +25,13 @@ A copy of a view (``copy.copy``, ``dict(view)``, ``pickle``) is a plain
 ``dict``, detached from the document; a copy of a record is a record no
 document handed out.
 
-Threads may share a view.  A rewrite compares the member's token and replaces
-it in one step, and a view rereads the document in one step, under one lock:
-two threads editing one member each write their edit over the other's, never
-over a token the other has already spent.
+Threads may share a view.  A change nested in a member, the rewrite it makes
+(comparing the member's token and replacing it), and a view's reread of the
+document each happen in one step, under one lock: two threads editing one
+member each write their edit over the other's, never over a token the other
+has already spent, and never rewrite a container the other is changing.  A
+value given is converted before the lock is taken, so no caller's code runs
+under it.
 """
 
 from __future__ import annotations
@@ -41,9 +44,10 @@ from typing import Any, SupportsIndex
 __all__ = ["Members"]
 
 _LOCK = threading.RLock()
-"""Held while a member's token is compared and replaced (`_Anchor.rewrite`),
-and while a view rereads the document (`Members._sync`).  Reentrant, so
-nested use on one thread never blocks itself."""
+"""Held while a container nested in a member changes and the member is
+rewritten (`_Anchor.rewrite`), and while a view rereads the document
+(`Members._sync`).  Reentrant, so nested use on one thread never blocks
+itself."""
 
 
 class _Anchor:
@@ -230,15 +234,22 @@ class _NestedDict(dict[str, Any]):
         if self._anchor is not None:
             self._anchor.rewrite()
 
-    def __setitem__(self, key: str, value: Any) -> None:
-        super().__setitem__(key, self._adopt(value))
-        self._changed()
-
-    def __delitem__(self, key: str) -> None:
+    def _check(self) -> None:
         if self._anchor is not None:
             self._anchor.check()
-        super().__delitem__(key)
-        self._changed()
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        value = self._adopt(value)
+        with _LOCK:
+            self._check()
+            super().__setitem__(key, value)
+            self._changed()
+
+    def __delitem__(self, key: str) -> None:
+        with _LOCK:
+            self._check()
+            super().__delitem__(key)
+            self._changed()
 
     def __ior__(self, other: Any) -> _NestedDict:  # type: ignore[override,misc]
         self.update(other)
@@ -247,8 +258,10 @@ class _NestedDict(dict[str, Any]):
     def update(self, other: Any = (), /, **kwargs: Any) -> None:
         given = dict(other, **kwargs)
         changes = {key: self._adopt(value) for key, value in given.items()}
-        super().update(changes)
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().update(changes)
+            self._changed()
 
     def setdefault(self, key: str, default: Any = None) -> Any:
         if key not in self:
@@ -256,28 +269,28 @@ class _NestedDict(dict[str, Any]):
         return self[key]
 
     def pop(self, key: str, *default: Any) -> Any:
-        if key not in self:
-            if default:
-                return default[0]
-            raise KeyError(key)
-        if self._anchor is not None:
-            self._anchor.check()
-        value = super().pop(key)
-        self._changed()
+        with _LOCK:
+            if key not in self:
+                if default:
+                    return default[0]
+                raise KeyError(key)
+            self._check()
+            value = super().pop(key)
+            self._changed()
         return copy.deepcopy(value)
 
     def popitem(self) -> tuple[str, Any]:
-        if self._anchor is not None:
-            self._anchor.check()
-        key, value = super().popitem()
-        self._changed()
+        with _LOCK:
+            self._check()
+            key, value = super().popitem()
+            self._changed()
         return key, copy.deepcopy(value)
 
     def clear(self) -> None:
-        if self._anchor is not None:
-            self._anchor.check()
-        super().clear()
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().clear()
+            self._changed()
 
     def __reduce__(self) -> tuple[Any, ...]:
         return (dict, (dict(self),))
@@ -315,64 +328,93 @@ class _NestedList(list[Any]):
             value = [self._adopt(v) for v in value]
         else:
             value = self._adopt(value)
-        super().__setitem__(index, value)
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().__setitem__(index, value)
+            self._changed()
 
     def __delitem__(self, index: SupportsIndex | slice) -> None:
-        self._check()
-        super().__delitem__(index)
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().__delitem__(index)
+            self._changed()
 
     def __iadd__(self, other: Iterable[Any]) -> _NestedList:  # type: ignore[misc]
         self.extend(other)
         return self
 
     def __imul__(self, count: SupportsIndex) -> _NestedList:
-        self._check()
-        super().__imul__(count)
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().__imul__(count)
+            self._changed()
         return self
 
     def append(self, value: Any) -> None:
-        super().append(self._adopt(value))
-        self._changed()
+        value = self._adopt(value)
+        with _LOCK:
+            self._check()
+            super().append(value)
+            self._changed()
 
     def extend(self, values: Iterable[Any]) -> None:
-        super().extend([self._adopt(v) for v in values])
-        self._changed()
+        adopted = [self._adopt(v) for v in values]
+        with _LOCK:
+            self._check()
+            super().extend(adopted)
+            self._changed()
 
     def insert(self, index: SupportsIndex, value: Any) -> None:
-        super().insert(index, self._adopt(value))
-        self._changed()
+        value = self._adopt(value)
+        with _LOCK:
+            self._check()
+            super().insert(index, value)
+            self._changed()
 
     def pop(self, index: SupportsIndex = -1) -> Any:
-        self._check()
-        value = super().pop(index)
-        self._changed()
+        with _LOCK:
+            self._check()
+            value = super().pop(index)
+            self._changed()
         return copy.deepcopy(value)
 
     def remove(self, value: Any) -> None:
-        self._check()
-        super().remove(value)
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().remove(value)
+            self._changed()
 
     def clear(self) -> None:
-        self._check()
-        super().clear()
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().clear()
+            self._changed()
 
     def sort(self, *, key: Any = None, reverse: bool = False) -> None:
         self._check()
         # A sort that fails partway leaves a list part-sorted, which the next
         # edit would write through: sort a copy, and keep it only if it ends.
-        ordered = sorted(self, key=key, reverse=reverse)
-        super().__setitem__(slice(None), ordered)
-        self._changed()
+        # The copy is sorted before the lock (`key` is the caller's), and
+        # kept only if no other edit came in meanwhile.
+        before = list(self)
+        ordered = sorted(before, key=key, reverse=reverse)
+        with _LOCK:
+            self._check()
+            if len(self) != len(before) or any(
+                a is not b for a, b in zip(self, before, strict=True)
+            ):
+                raise RuntimeError(
+                    f"`{self._anchor.member if self._anchor else 'list'}` "
+                    "changed on another thread while it was sorted; sort it again"
+                )
+            super().__setitem__(slice(None), ordered)
+            self._changed()
 
     def reverse(self) -> None:
-        self._check()
-        super().reverse()
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().reverse()
+            self._changed()
 
     def __reduce__(self) -> tuple[Any, ...]:
         return (list, (list(self),))

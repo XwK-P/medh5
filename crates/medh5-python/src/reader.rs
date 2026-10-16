@@ -1570,9 +1570,9 @@ impl SampleHandle {
     }
     /// `{grid_id: Grid}`, with §3.7's implicit timepoint resolved.
     fn grids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
-        let sample = h5(py, || self.sample())?;
+        let grids = h5(py, || -> R<_> { Ok(self.sample()?.grids()?.clone()) })?;
         let out = PyDict::new(py);
-        for (k, g) in sample.grids()?.iter() {
+        for (k, g) in grids.iter() {
             out.set_item(k, Grid::wrap(g.clone()))?;
         }
         Ok(out)
@@ -1665,7 +1665,7 @@ impl SampleHandle {
     }
     fn attr_name_map<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
-        for (k, v) in h5(py, || self.sample())?.attr_name_map()? {
+        for (k, v) in h5(py, || -> R<_> { Ok(self.sample()?.attr_name_map()?) })? {
             out.set_item(k, PyTuple::new(py, v)?)?;
         }
         Ok(out)

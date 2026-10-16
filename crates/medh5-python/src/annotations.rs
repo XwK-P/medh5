@@ -489,9 +489,10 @@ impl AnnotationHeader {
 impl AnnotationHeader {
     /// The header an annotation group carries (`sample.root["annotations/x"]`).
     #[classmethod]
-    fn read(_cls: &Bound<'_, pyo3::types::PyType>, group: &Bound<'_, PyAny>) -> R<Self> {
+    fn read(cls: &Bound<'_, pyo3::types::PyType>, group: &Bound<'_, PyAny>) -> R<Self> {
         let group = crate::integrity::group_of(group)?;
-        Ok(AnnotationHeader { inner: medh5::annotations::header::AnnotationHeader::read(&group)? })
+        let inner = crate::h5(cls.py(), || medh5::annotations::header::AnnotationHeader::read(&group))?;
+        Ok(AnnotationHeader { inner })
     }
 
     #[classattr]
