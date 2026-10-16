@@ -335,7 +335,7 @@ fn image_header(dims: &[usize], element: Element, affine: &[[f64; 4]; 4]) -> Res
     header.srow_y = affine[1];
     header.srow_z = affine[2];
     header.sform_code = 2;
-    let q = qform(affine);
+    let q = qform(affine).ok_or_else(|| Error::Value(format!("Could not decompose affine:\n{}", numpy_str(affine))))?;
     header.qform_code = 0;
     header.pixdim[0] = q.qfac;
     header.pixdim[1..4].copy_from_slice(&q.zooms);
@@ -345,6 +345,80 @@ fn image_header(dims: &[usize], element: Element, affine: &[[f64; 4]; 4]) -> Res
     header.scl_slope = 1.0;
     header.scl_inter = 0.0;
     Ok(header)
+}
+
+/// A 4x4 float64 array as numpy's `str()` prints it (`precision=8`,
+/// `floatmode='maxprec'`): positional, or scientific when the non-zero
+/// magnitudes span more than 1e3 or reach 1e8 or fall below 1e-4.
+fn numpy_str(m: &[[f64; 4]; 4]) -> String {
+    let values: Vec<f64> = m.iter().flatten().copied().collect();
+    let finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    let magnitudes = finite.iter().map(|v| v.abs()).filter(|v| *v != 0.0);
+    let (max, min) = magnitudes.fold((None, None), |(hi, lo): (Option<f64>, Option<f64>), v| {
+        (Some(hi.map_or(v, |h| h.max(v))), Some(lo.map_or(v, |l| l.min(v))))
+    });
+    let scientific = matches!((max, min), (Some(hi), Some(lo)) if hi >= 1e8 || lo < 1e-4 || hi / lo > 1e3);
+    // Each finite value's integer part (sign included), fraction digits and
+    // exponent, each at most 8 digits and with trailing zeros trimmed.
+    let parts: Vec<(String, String, i32)> = finite.iter().map(|v| float_parts(*v, scientific)).collect();
+    let mut pad_left = parts.iter().map(|p| p.0.len()).max().unwrap_or(0);
+    let precision = parts.iter().map(|p| p.1.len()).max().unwrap_or(0);
+    let exp_size = parts.iter().map(|p| p.2.unsigned_abs().to_string().len().max(2)).max().unwrap_or(0);
+    let pad_right = if scientific { exp_size + 2 + precision } else { precision };
+    if finite.len() != values.len() {
+        let neginf = values.iter().any(|v| *v == f64::NEG_INFINITY) as usize;
+        pad_left = pad_left.max((3 + neginf).saturating_sub(pad_right + 1));
+    }
+    let cell = |v: f64| -> String {
+        if !v.is_finite() {
+            let word = if v.is_nan() {
+                "nan"
+            } else if v > 0.0 {
+                "inf"
+            } else {
+                "-inf"
+            };
+            return format!("{word:>width$}", width = pad_left + pad_right + 1);
+        }
+        let (int, frac, exp) = float_parts(v, scientific);
+        if scientific {
+            let sign = if exp < 0 { '-' } else { '+' };
+            format!("{int:>pad_left$}.{frac:0<precision$}e{sign}{:0>exp_size$}", exp.unsigned_abs())
+        } else {
+            format!("{int:>pad_left$}.{frac:<precision$}")
+        }
+    };
+    let rows: Vec<String> =
+        m.iter().map(|row| format!("[{}]", row.iter().map(|v| cell(*v)).collect::<Vec<_>>().join(" "))).collect();
+    format!("[{}]", rows.join("\n "))
+}
+
+/// `v`'s integer part, fraction digits and exponent as numpy's dragon4
+/// gives them: the shortest digits that read back as `v`, rounded to 8
+/// fraction digits where there are more, trailing zeros dropped.
+fn float_parts(v: f64, scientific: bool) -> (String, String, i32) {
+    let trim = |s: String| -> (String, String) {
+        let (int, frac) = s.split_once('.').map_or((s.clone(), String::new()), |(i, f)| (i.into(), f.into()));
+        (int, frac.trim_end_matches('0').into())
+    };
+    if scientific {
+        let shortest = format!("{v:e}");
+        let (mantissa, exp) = shortest.split_once('e').expect("`{:e}` writes an exponent");
+        let mantissa = match mantissa.split_once('.') {
+            Some((_, frac)) if frac.len() > 8 => format!("{v:.8e}").split_once('e').unwrap().0.to_string(),
+            _ => mantissa.to_string(),
+        };
+        let (int, frac) = trim(mantissa);
+        (int, frac, exp.parse().expect("`{:e}` writes an integer exponent"))
+    } else {
+        let shortest = format!("{v}");
+        let fixed = match shortest.split_once('.') {
+            Some((_, frac)) if frac.len() > 8 => format!("{v:.8}"),
+            _ => shortest,
+        };
+        let (int, frac) = trim(fixed);
+        (int, frac, 0)
+    }
 }
 
 /// nibabel's `set_slope_inter` checks.
@@ -818,6 +892,57 @@ mod tests {
         assert!(check_shape(&[32767, 1]).is_ok());
         assert!(slope_inter(0.0, 1.0).is_err());
         assert_eq!(slope_inter(f64::NAN, f64::NAN).unwrap(), (1.0, 0.0));
+    }
+
+    #[test]
+    fn s4_2_numpy_prints_an_affine_as_it_did() {
+        // Each against numpy 2's `str()` of the same array.
+        let d =
+            |a: f64, b: f64, c: f64| [[a, 0.0, 0.0, 0.0], [0.0, b, 0.0, 0.0], [0.0, 0.0, c, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        let cases: [([[f64; 4]; 4], &str); 7] = [
+            (d(1.0, 0.0, 1.0), "[[1. 0. 0. 0.]\n [0. 0. 0. 0.]\n [0. 0. 1. 0.]\n [0. 0. 0. 1.]]"),
+            (
+                [[0.5, 0.0, 0.0, -120.25], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 3.0, 1500.0], [0.0, 0.0, 0.0, 1.0]],
+                "[[ 5.0000e-01  0.0000e+00  0.0000e+00 -1.2025e+02]\n [ 0.0000e+00  0.0000e+00  0.0000e+00  0.0000e+00]\n \
+                 [ 0.0000e+00  0.0000e+00  3.0000e+00  1.5000e+03]\n [ 0.0000e+00  0.0000e+00  0.0000e+00  1.0000e+00]]",
+            ),
+            (d(f64::NAN, 1.0, 1.0), "[[nan  0.  0.  0.]\n [ 0.  1.  0.  0.]\n [ 0.  0.  1.  0.]\n [ 0.  0.  0.  1.]]"),
+            (
+                d(f64::NEG_INFINITY, 1.5, 1.0),
+                "[[-inf  0.   0.   0. ]\n [ 0.   1.5  0.   0. ]\n [ 0.   0.   1.   0. ]\n [ 0.   0.   0.   1. ]]",
+            ),
+            (
+                [[1e-5, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 2.5, -3.0], [0.0, 0.0, 0.0, 1.0]],
+                "[[ 1.0e-05  0.0e+00  0.0e+00  0.0e+00]\n [ 0.0e+00  0.0e+00  0.0e+00  0.0e+00]\n \
+                 [ 0.0e+00  0.0e+00  2.5e+00 -3.0e+00]\n [ 0.0e+00  0.0e+00  0.0e+00  1.0e+00]]",
+            ),
+            (
+                [[-0.0, 0.0, 0.0, 0.1 + 0.2], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0 / 3.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                "[[-0.          0.          0.          0.3       ]\n [ 0.          0.          0.          0.        ]\n \
+                 [ 0.          0.          0.33333333  0.        ]\n [ 0.          0.          0.          1.        ]]",
+            ),
+            (
+                [[f64::NAN, 0.0, 0.0, 1e9], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.25, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                "[[     nan 0.00e+00 0.00e+00 1.00e+09]\n [0.00e+00 0.00e+00 0.00e+00 0.00e+00]\n \
+                 [0.00e+00 0.00e+00 1.25e+00 0.00e+00]\n [0.00e+00 0.00e+00 0.00e+00 1.00e+00]]",
+            ),
+        ];
+        for (affine, printed) in cases {
+            assert_eq!(numpy_str(&affine), printed);
+        }
+    }
+
+    #[test]
+    fn s4_2_an_affine_with_no_rotation_is_refused_as_nibabel_refused_it() {
+        // A zero column divides to NaN, on which numpy's SVD does not
+        // converge: nibabel's `HeaderDataError`, the affine printed.
+        let mut affine = eye();
+        affine[[1, 1]] = 0.0;
+        let out = tempfile::tempdir().unwrap();
+        let err = write_nifti(&series(2, 0), &affine, &out.path().join("flat.nii"), &WriteOptions::default(), None);
+        assert!(matches!(err, Err(Error::Value(m))
+            if m == "Could not decompose affine:\n[[1. 0. 0. 0.]\n [0. 0. 0. 0.]\n [0. 0. 1. 0.]\n [0. 0. 0. 1.]]"));
+        assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0, "nothing written");
     }
 
     #[test]

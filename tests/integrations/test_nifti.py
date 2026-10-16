@@ -1391,6 +1391,16 @@ class TestGridsAgreeInTimeAndUnits:
         assert geometry["time_values"] == pytest.approx([10.0, 12.5, 15.0])
         assert geometry["time_measured"]
 
+    def test_an_affine_with_a_zero_column_is_refused_and_nothing_written(
+        self, tmp_path
+    ):
+        flat = np.diag([1.0, 0.0, 1.0, 1.0])
+        with pytest.raises(
+            ValueError, match=r"^Could not decompose affine:\n\[\[1\. 0\."
+        ):
+            write_nifti(np.zeros((2, 2, 2), np.int16), flat, tmp_path / "f.nii")
+        assert list(tmp_path.iterdir()) == []
+
     def test_S3_2_a_time_axis_of_no_frames_states_no_times(self, tmp_path):
         out = write_nifti(
             np.zeros((2, 2, 2, 0), np.int16),

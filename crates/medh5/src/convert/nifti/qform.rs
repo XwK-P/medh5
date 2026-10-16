@@ -28,8 +28,10 @@ pub struct Qform {
     pub offset: [f64; 3],
 }
 
-/// What `Nifti1Header.set_qform(affine)` writes.
-pub fn qform(affine: &[[f64; 4]; 4]) -> Qform {
+/// What `Nifti1Header.set_qform(affine)` writes; `None` where a column is
+/// zero or a value not finite, which leaves no rotation to decompose (numpy's
+/// SVD does not converge on the NaN the division makes).
+pub fn qform(affine: &[[f64; 4]; 4]) -> Option<Qform> {
     let mut rzs: M3 = [[0.0; 3]; 3];
     for r in 0..3 {
         for c in 0..3 {
@@ -47,6 +49,9 @@ pub fn qform(affine: &[[f64; 4]; 4]) -> Qform {
             rotation[r][c] = rzs[r][c] / zooms[c];
         }
     }
+    if rotation.iter().flatten().any(|v| !v.is_finite()) {
+        return None;
+    }
     let qfac = if det3(&rotation) > 0.0 {
         1.0
     } else {
@@ -56,7 +61,12 @@ pub fn qform(affine: &[[f64; 4]; 4]) -> Qform {
         -1.0
     };
     let quat = mat2quat(&nearest_rotation(&rotation));
-    Qform { qfac, zooms, quaternion: [quat[1], quat[2], quat[3]], offset: [affine[0][3], affine[1][3], affine[2][3]] }
+    Some(Qform {
+        qfac,
+        zooms,
+        quaternion: [quat[1], quat[2], quat[3]],
+        offset: [affine[0][3], affine[1][3], affine[2][3]],
+    })
 }
 
 fn det3(m: &M3) -> f64 {
