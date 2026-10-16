@@ -25,6 +25,10 @@ const GROUP: &str = "TransformGroup";
 const TYPE: &str = "TransformType";
 const PARAMETERS: &str = "TransformParameters";
 const FIXED: &str = "TransformFixedParameters";
+/// The misspellings earlier ITK releases wrote, which its reader still falls
+/// back to.
+const LEGACY_PARAMETERS: &str = "TranformParameters";
+const LEGACY_FIXED: &str = "TranformFixedParameters";
 
 /// One transform of an ITK transform file, as the file lists it: ITK's type
 /// name, its parameters and its fixed parameters.
@@ -56,7 +60,9 @@ impl ItkEntry {
 /// Refused: a file with no `/TransformGroup`, or none in it; members not
 /// numbered `0` to `n - 1`; an entry without one `TransformType` string, or
 /// whose parameters are not one-dimensional numbers; and parameters on a
-/// composite, which ITK neither writes nor reads.
+/// composite, which ITK neither writes nor reads.  Parameters under the
+/// misspelling earlier ITK releases wrote (`TranformParameters`) are read as ITK
+/// reads them.
 pub fn read_itk_h5(path: &Path) -> Result<Vec<ItkEntry>> {
     let shown = repr_str(&path.to_string_lossy());
     let refused = |why: String| Error::invalid(format!("{shown} is not an ITK transform file: {why}"));
@@ -90,16 +96,23 @@ pub fn read_itk_h5(path: &Path) -> Result<Vec<ItkEntry>> {
         if names.len() != 1 {
             return Err(refused(format!("{at}/{TYPE} holds {} strings, not one", names.len())));
         }
-        let numbers = |dataset: &str| -> Result<Option<Vec<f64>>> {
-            let Ok(ds) = member.dataset(dataset) else { return Ok(None) };
+        let numbers = |dataset: &str, legacy: &str| -> Result<Option<Vec<f64>>> {
+            let (dataset, ds) = match member.dataset(dataset) {
+                Ok(ds) => (dataset, ds),
+                Err(_) => match member.dataset(legacy) {
+                    Ok(ds) => (legacy, ds),
+                    Err(_) => return Ok(None),
+                },
+            };
             if data::is_strings(&ds) || ds.ndim() > 1 {
                 return Err(refused(format!("{at}/{dataset} is not a one-dimensional array of numbers")));
             }
             Ok(Some(data::read(&ds)?.to_f64().iter().copied().collect()))
         };
-        let entry = ItkEntry::new(names.swap_remove(0).trim(), numbers(PARAMETERS)?.unwrap_or_default(), {
-            numbers(FIXED)?.unwrap_or_default()
-        });
+        let entry =
+            ItkEntry::new(names.swap_remove(0).trim(), numbers(PARAMETERS, LEGACY_PARAMETERS)?.unwrap_or_default(), {
+                numbers(FIXED, LEGACY_FIXED)?.unwrap_or_default()
+            });
         if entry.is_composite() && !(entry.parameters.is_empty() && entry.fixed_parameters.is_empty()) {
             return Err(refused(format!("{at} is a composite with parameters of its own, which ITK does not write")));
         }
@@ -162,6 +175,25 @@ mod tests {
         let kind = bare.dataset("TransformType").unwrap();
         assert_eq!(kind.shape(), [1]);
         assert!(matches!(kind.dtype().unwrap().to_descriptor().unwrap(), hdf5::types::TypeDescriptor::VarLenAscii));
+    }
+
+    #[test]
+    fn itk_h5_the_legacy_misspelled_parameters_are_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.h5");
+        {
+            let file = hdf5::File::create(&path).unwrap();
+            let zero = file.create_group("TransformGroup").unwrap().create_group("0").unwrap();
+            data::create_strings(&zero, "TransformType", &["AffineTransform_double_3_3".into()]).unwrap();
+            let entry = affine();
+            zero.new_dataset_builder()
+                .with_data(Array1::from(entry.parameters).view())
+                .create("TranformParameters")
+                .unwrap();
+            let fixed = Array1::from(entry.fixed_parameters);
+            zero.new_dataset_builder().with_data(fixed.view()).create("TranformFixedParameters").unwrap();
+        }
+        assert_eq!(read_itk_h5(&path).unwrap(), [affine()]);
     }
 
     #[test]

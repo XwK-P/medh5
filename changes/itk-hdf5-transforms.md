@@ -6,4 +6,5 @@
   (`.hdf5`, `.hdf`) file as ITK writes one, a composite flattened in reverse
   as for `.tfm`, and `to_itk_transform` and `write_itk_transform` write one;
   through the engine's HDF5, so the converters still need no `h5py`. They
-  were refused before.
+  were refused before. Parameters under the misspelling earlier ITK
+  releases wrote (`TranformParameters`) are read, as ITK reads them.
