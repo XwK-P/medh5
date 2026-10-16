@@ -536,7 +536,8 @@ def resample(
     over.  ``nearest`` keeps the dtype; ``linear`` and ``cubic`` write
     ``float32`` unless *dtype* is given, rounded half to even and clipped.
     A voxel whose source point lies outside the source takes *fill*, and the
-    image's ``valid_mask`` (§4.4) marks the voxels holding data.  One
+    image's ``valid_mask`` (§4.4) marks the voxels holding data; a non-finite
+    *fill* is recorded as Python spells it (``"nan"``, ``"inf"``).  One
     ``resample`` activity records the inputs, the target, the transform path
     and the interpolation, and every object written names it.
 

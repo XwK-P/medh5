@@ -498,6 +498,28 @@ class TestRecord:
         report = validate_file(path, level="integrity")
         assert report.ok and not report.errors
 
+    @pytest.mark.parametrize(
+        ("fill", "recorded"),
+        [(np.nan, "nan"), (np.inf, "inf"), (-np.inf, "-inf"), (-2.5, -2.5)],
+    )
+    def test_S11_1_a_non_finite_fill_is_recorded_as_given(
+        self, tmp_path, fill, recorded
+    ):
+        """JSON has no NaN, and a provenance document refuses one; a fill
+        recorded as ``null`` would claim a derivation nobody ran.  A non-finite
+        fill is recorded as Python spells the float, which ``float()`` reads
+        back."""
+        path = one_grid(tmp_path / "s.medh5", np.ones((2, 2, 2), np.float32))
+        with medh5.amend(path) as w:
+            w.add_grid("wide", shape=(2, 2, 3), spacing=(1.0,) * 3, frame_uid="F0")
+        resample(path, "img", onto="wide", interpolation="nearest", fill=fill)
+        with medh5.open(path) as s:
+            (activity,) = s.document.provenance.activities_by_type("resample")
+            assert activity.params["fill"] == recorded
+            outside = np.asarray(s.images["img_on_wide"].read())[..., 2]
+        assert np.array_equal(outside, np.full((2, 2), fill), equal_nan=True)
+        assert float(recorded) == fill or np.isnan(fill)
+
     def test_S11_1_the_transform_path_and_the_target_are_inputs(self, tmp_path):
         path = registered_pair(tmp_path / "s.medh5")
         report = resample(path, "img", onto="tgt")

@@ -548,7 +548,9 @@ is refused (`MEDH5ValidationError`), as is a target id already taken.
 `interpolation` is one of `RESAMPLE_INTERPOLATIONS`; `nearest` keeps the dtype,
 `linear` and `cubic` write `float32` unless `dtype` is given. Voxels whose
 source point lies outside the source take `fill`, and the output's
-`valid_mask` marks the ones holding data. The `ResampleReport` carries the
+`valid_mask` marks the ones holding data. JSON has no NaN, so a non-finite
+`fill` is recorded in the activity as Python spells it (`"nan"`, `"inf"`,
+`"-inf"`), which `float()` reads back. The `ResampleReport` carries the
 `activity_id` of the one `resample` activity, the target `grid_id` and whether
 it is `new_grid`, an entry per image (`ResampledImage`: `source`, `image_id`,
 `dtype`, `valid_mask`, `filled_voxels`), the transform path per source grid

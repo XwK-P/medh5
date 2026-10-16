@@ -794,7 +794,7 @@ fn write(sample: &Sample, writer: &mut SampleWriter, plan: &ResamplePlan, prepar
     }
     params.insert("transforms".into(), json!(transforms));
     params.insert("interpolation".into(), json!(plan.interpolation));
-    params.insert("fill".into(), json!(plan.fill));
+    params.insert("fill".into(), fill_json(plan.fill));
     params.insert("dtype".into(), json!(plan.dtype.map(DType::name)));
     if prepared.new_grid {
         let options = GridOptions {
@@ -865,6 +865,19 @@ fn write(sample: &Sample, writer: &mut SampleWriter, plan: &ResamplePlan, prepar
         filled_voxels,
         content_id: None,
     })
+}
+
+/// `fill` as the activity records it: a number, or for a non-finite fill
+/// the string Python spells it with (`"nan"`, `"inf"`, `"-inf"`) --- JSON has
+/// no NaN, and `null` would record a fill nobody used.
+fn fill_json(fill: f64) -> Value {
+    if fill.is_nan() {
+        json!("nan")
+    } else if fill.is_infinite() {
+        json!(if fill > 0.0 { "inf" } else { "-inf" })
+    } else {
+        json!(fill)
+    }
 }
 
 /// A grid's `time_values` in seconds: `time_units` is `"s"` unless it says
