@@ -494,6 +494,7 @@ __all__ = [
     "read_grid",
     "read_grids",
     "read_indices",
+    "read_itk_h5",
     "recompress",
     "recompress_paths",
     "refuse_outside",
@@ -577,6 +578,7 @@ __all__ = [
     "voxel_volume",
     "world_to_index",
     "write_atomic",
+    "write_itk_h5",
     "written_version",
 ]
 
@@ -2337,6 +2339,21 @@ def voxel_volume(spacing: Sequence[float]) -> float: ...
 def world_to_index(
     affine: npt.ArrayLike, points: npt.ArrayLike
 ) -> npt.NDArray[np.float64]: ...
+def read_itk_h5(
+    path: str | os.PathLike[str],
+) -> list[tuple[str, list[float], list[float]]]:
+    """The transforms of an ITK HDF5 transform file, in its order, each as
+    `(type, parameters, fixed parameters)`.
+    """
+
+def write_itk_h5(
+    path: str | os.PathLike[str],
+    entries: Sequence[tuple[str, Sequence[float], Sequence[float]]],
+) -> None:
+    """Write `entries`, each `(type, parameters, fixed parameters)`, as the ITK
+    HDF5 transform file `path`, replacing it atomically.
+    """
+
 def write_atomic(path: str | os.PathLike[str], data: str | bytes) -> None:
     """`data` as `path`'s whole content: a `str` as UTF-8, its `\\n` kept on
     every platform, `bytes` as given.

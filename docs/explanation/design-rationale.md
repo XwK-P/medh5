@@ -134,6 +134,16 @@ every consumer has to handle both, and in practice half of them then handle
 neither. Displacement components go on the leading axis, chunked one component
 per chunk, so one component or one region reads in isolation.
 
+An ITK B-spline is stored as the `bspline` kind on its own lattice, not as a
+displacement field sampled at its control points, because only the first is
+the same transform. Measured against SimpleITK over an oblique lattice's
+domain, the field sampled with the spline's values was 3.7 mm off, and even
+samples chosen so the cubic prefilter returns ITK's coefficients were
+1.8e-6 mm off at 48 mm displacements, float32 being the field's precision; the
+`bspline` kind, float64 coefficients evaluated as ITK evaluates them, was
+2e-13 mm off. Converting the representation would have invented geometry
+within registration accuracy, and the format already had the exact one.
+
 ### Integrity: per-object digests and a Merkle root
 
 Keeping the monolithic hash was rejected, and so was dropping checksums —

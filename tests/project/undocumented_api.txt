@@ -438,7 +438,6 @@ medh5.torch.handles.open_cached
 medh5.torch.open_cached
 medh5.torch.require_torch
 medh5.torch.stack_images
-medh5.transforms.BSplineTransform
 medh5.transforms.DEFAULT_ORDER
 medh5.transforms.DisplacementTransform
 medh5.transforms.EXTRAPOLATIONS
