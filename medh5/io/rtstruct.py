@@ -453,7 +453,10 @@ def from_rtstruct(
                 "task": "other",
             },
         )
-        if tuple(int(part) for part in version.split(".")[:2]) < (1, 2):
+        # A version that is not numbers (`1.x`) is a projection, which the
+        # amendment below refuses; there is nothing to report raised.
+        parts = version.split(".")[:2]
+        if all(n.isdigit() for n in parts) and tuple(map(int, parts)) < (1, 2):
             log.decision(
                 "version",
                 f"a polylines annotation is format 1.2 (§3), so the sample, "

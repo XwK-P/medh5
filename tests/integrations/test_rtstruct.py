@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5.errors import MEDH5ValidationError
+from medh5.errors import MEDH5ValidationError, MEDH5VersionError
 from medh5.io.report import ConversionReport
 from medh5.validate import validate_file
 from tests.helpers import square_contour as _square
@@ -1598,6 +1598,18 @@ class TestOpenCurves:
         [note] = report.of_kind("version")
         assert note.detail == {"from": "1.0", "to": "1.2"}
         assert "W913" in note.message
+
+    def test_v1_2_S2_2_curves_into_a_projection_meet_its_refusal(self, case):
+        """A version of the same major that is not numbers (`1.x`) is read as
+        a projection (1.2 §2.2), which is never amended: the import reaches
+        that refusal, rather than failing on the version in its report."""
+        h5py = pytest.importorskip("h5py")
+        from tests.helpers import encode_attr
+
+        with h5py.File(case.path, "r+") as handle:
+            handle.attrs["medh5_version"] = encode_attr("1.x")
+        with pytest.raises(MEDH5VersionError, match="only as a projection"):
+            self._import(case, self._rois(case.grid))
 
     def test_v1_2_S3_a_curve_of_one_point_is_dropped_with_a_warning(self, case):
         grid = case.grid

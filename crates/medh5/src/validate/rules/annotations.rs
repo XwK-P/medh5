@@ -912,8 +912,9 @@ pub fn check_instance_identity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let mut table: BTreeMap<u64, BTreeMap<i64, Vec<String>>> = BTreeMap::new();
     for (name, group) in ctx.children("annotations")? {
-        let (Some(ids_ds), Some(cls_ds)) = (sub_dataset(&group, "instance_ids"), sub_dataset(&group, "class_ids"))
-        else {
+        // A polyline's class is its `polyline_class_ids` (1.2 §3).
+        let classes = sub_dataset(&group, "class_ids").or_else(|| sub_dataset(&group, "polyline_class_ids"));
+        let (Some(ids_ds), Some(cls_ds)) = (sub_dataset(&group, "instance_ids"), classes) else {
             continue;
         };
         let ids: Vec<u64> = data::read(&ids_ds)?.cast::<u64>().iter().copied().collect();

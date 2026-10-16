@@ -3043,8 +3043,8 @@ class Observation:
     @property
     def kind(self) -> str:
         """The annotation's kind: `instances` (a mask), `boxes`, `obb`, or
-        `points` (presence only).  Not one of the 1.x dataclass's fields, so
-        its shape and `repr` are unchanged.
+        `points` or `polylines` (presence only).  Not one of the 1.x
+        dataclass's fields, so its shape and `repr` are unchanged.
         """
         ...
     def to_json(self) -> dict[str, Any]: ...

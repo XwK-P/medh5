@@ -234,3 +234,31 @@ class TestPolylines:
         ):
             w.add_polylines("x", [Polyline(line, 9)], grid="g")
         assert e.value.code == "E402"
+
+
+class TestIdentity:
+    """1.2 §3: a polyline's `instance_ids` are those of the other kinds, so a
+    curve joins its object's track and its class is held to W909 (1.0 §7.4)."""
+
+    def test_v1_2_S3_a_track_joins_polylines_as_presence(self, tmp_path):
+        path = curves(tmp_path / "c.medh5")
+        with medh5.open(path) as s:
+            tracking = s.tracks()
+            assert tracking.skipped == {}
+            assert set(tracking) == {11, 12}
+            [seen] = tracking[11].observations
+        assert seen.kind == "polylines"
+        assert seen.class_id == 1 and seen.volume is None
+        # The box enclosing the curve's vertices, as a point's is [p, p].
+        assert np.array_equal(seen.box, [[4.0, 4.0], [2.0, 9.0], [2.0, 6.5]])
+
+    def test_v1_2_S3_W909_reads_a_polyline_s_class(self, tmp_path):
+        path = curves(tmp_path / "c.medh5")
+        with medh5.amend(path) as w:
+            w.add_points(
+                "tip", [[4.0, 2.0, 2.0]], grid="g", class_ids=["c3"], instance_ids=[11]
+            )
+        report = validate_file(path)
+        [conflict] = [d for d in report.diagnostics if d.code == "W909"]
+        assert "instance id 11" in conflict.message
+        assert "'vessels'" in conflict.message and "'tip'" in conflict.message
