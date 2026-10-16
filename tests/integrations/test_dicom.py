@@ -972,6 +972,28 @@ class TestDicom:
         assert acquisition["ConvolutionKernel"] == "B30f"
         assert report.of_kind("acquisition")
 
+    @pytest.mark.parametrize("end", [0, -1])
+    def test_S4_5_an_attribute_some_slices_omit_is_not_recorded(
+        self, tree, tmp_path, end
+    ):
+        """A tag stated by some slices and not others is a disagreement,
+        whichever end of the stack omits it."""
+        from medh5.io.dicom import from_dicom
+
+        paths = tree["ct0"]["paths"]
+        for path in paths:
+            ds = pydicom.dcmread(path)
+            ds.XRayTubeCurrent = 100
+            ds.save_as(path)
+        ds = pydicom.dcmread(paths[end])
+        del ds.XRayTubeCurrent
+        ds.save_as(paths[end])
+        report = from_dicom(tree["root"], tmp_path / "s.medh5")
+        with medh5.open(tmp_path / "s.medh5") as sample:
+            assert "XRayTubeCurrent" not in sample.document.acquisition["CT_tp0"]
+        (note,) = report.of_kind("acquisition")
+        assert "XRayTubeCurrent" in note.message
+
     def test_S11_4_a_converted_file_says_it_is_not_de_identified(
         self, tree, tmp_path, capsys
     ):
@@ -1473,6 +1495,28 @@ class TestEnhancedMultiFrame:
             with medh5.open(out) as sample:
                 image = sample.images["CT_tp0"]
                 assert (image.value_type, image.value_units) == (value_type, units)
+
+    @pytest.mark.parametrize(
+        ("modality", "stated", "expected"),
+        [
+            ("CT", "HU", ("quantitative", "HU")),
+            ("PT", "US", ("intensity", None)),
+        ],
+    )
+    def test_a_rescale_type_some_slices_omit_reads_as_its_default(
+        self, tmp_path, modality, stated, expected
+    ):
+        """An omitted CT ``RescaleType`` is HU, so slices stating ``HU`` agree
+        with it; another modality's type is not read, so is not compared."""
+        classic = self._classic(tmp_path, modality)
+        for path in classic["paths"][::2]:
+            ds = pydicom.dcmread(path)
+            ds.RescaleType = stated
+            ds.save_as(path)
+        out = self._imported(tmp_path / "classic", tmp_path / "out.medh5")
+        with medh5.open(out) as sample:
+            image = sample.images[f"{modality}_tp0"]
+            assert (image.value_type, image.value_units) == expected
 
     def test_frames_of_different_rescale_types_are_refused(self, tmp_path):
         from copy import deepcopy

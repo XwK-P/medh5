@@ -618,12 +618,18 @@ def _plan_series(
             {"series_uid": series.series_uid},
         )
     rescale, rescales = _series_rescale(slices, uids, series, report, per_slice_rescale)
-    # What the rescale gives: one quantity for the volume, so one type.
-    rescale_type = _agreed(
-        slices,
-        lambda s: _text(getattr(s, "RescaleType", None)),
-        "RescaleType",
-        series,
+    # What the rescale gives: one quantity for the volume, so one type.  Only
+    # a CT's is read (:func:`_values`), and an omitted one is HU, so slices
+    # stating ``HU`` agree with slices stating nothing.
+    rescale_type = (
+        _agreed(
+            slices,
+            lambda s: _text(getattr(s, "RescaleType", None)) or "HU",
+            "RescaleType",
+            series,
+        )
+        if series.modality == "CT"
+        else None
     )
     direction = np.stack([normal, column, row], axis=1)
     geometry = {
@@ -664,8 +670,10 @@ def _acquisition(
     varying = []
     for tag in STORED_TAGS:
         values = [_scalar(getattr(s, tag, None)) for s in slices]
-        if values[0] is None:
+        if all(value is None for value in values):
             continue
+        # Stated by some slices and not others is a disagreement too,
+        # whichever slice sorts first.
         if any(_differs(values[0], value) for value in values[1:]):
             varying.append(tag)
             continue
