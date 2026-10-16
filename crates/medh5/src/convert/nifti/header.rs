@@ -220,6 +220,33 @@ impl Element {
     }
 }
 
+/// `vox_offset` as each version stores it: NIfTI-1 a float32, which a
+/// header may make NaN or fractional, NIfTI-2 an int64, which an `f64`
+/// holds exactly only up to 2^53.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VoxOffset {
+    Float(f64),
+    Int(i64),
+}
+
+impl VoxOffset {
+    /// The offset as a float, for comparisons as 2.1.0 made them.
+    pub fn as_f64(self) -> f64 {
+        match self {
+            VoxOffset::Float(v) => v,
+            VoxOffset::Int(v) => v as f64,
+        }
+    }
+
+    /// The offset as an integer, truncated as `int()` truncates.
+    pub fn as_i64(self) -> i64 {
+        match self {
+            VoxOffset::Float(v) => v as i64,
+            VoxOffset::Int(v) => v,
+        }
+    }
+}
+
 /// One header, every field held at the widest type either version stores it
 /// in.  Fields only NIfTI-1 has (the Analyze leftovers, `glmax`, `glmin`)
 /// are zero, and ignored, in a NIfTI-2 header, as `eol_check` and
@@ -246,11 +273,7 @@ pub struct Header {
     pub bitpix: i64,
     pub slice_start: i64,
     pub pixdim: [f64; 8],
-    pub vox_offset: f64,
-    /// NIfTI-2's `vox_offset` as stored, an integer `vox_offset` rounds past
-    /// 2^53; `encode` writes it while `vox_offset` still says the same.
-    /// 0 for NIfTI-1, whose offset is a float.
-    pub vox_offset_exact: i64,
+    pub vox_offset: VoxOffset,
     pub scl_slope: f64,
     pub scl_inter: f64,
     pub slice_end: i64,
@@ -422,8 +445,7 @@ impl Header {
             bitpix: 32,
             slice_start: 0,
             pixdim,
-            vox_offset: 0.0,
-            vox_offset_exact: 0,
+            vox_offset: VoxOffset::Float(0.0),
             scl_slope: f64::NAN,
             scl_inter: f64::NAN,
             slice_end: 0,
@@ -509,7 +531,7 @@ impl Header {
                 h.bitpix = f.i16(72);
                 h.slice_start = f.i16(74);
                 h.pixdim = f.f32s(76);
-                h.vox_offset = f.f32(108);
+                h.vox_offset = VoxOffset::Float(f.f32(108));
                 h.scl_slope = f.f32(112);
                 h.scl_inter = f.f32(116);
                 h.slice_end = f.i16(120);
@@ -548,8 +570,7 @@ impl Header {
                 h.intent_p2 = f.f64(88);
                 h.intent_p3 = f.f64(96);
                 h.pixdim = f.f64s(104);
-                h.vox_offset_exact = f.i64(168);
-                h.vox_offset = h.vox_offset_exact as f64;
+                h.vox_offset = VoxOffset::Int(f.i64(168));
                 h.scl_slope = f.f64(176);
                 h.scl_inter = f.f64(184);
                 h.cal_max = f.f64(192);
@@ -615,7 +636,7 @@ impl Header {
                 for (k, v) in self.pixdim.iter().enumerate() {
                     w.f32(76 + 4 * k, *v);
                 }
-                w.f32(108, self.vox_offset);
+                w.f32(108, self.vox_offset.as_f64());
                 w.f32(112, self.scl_slope);
                 w.f32(116, self.scl_inter);
                 w.i16(120, self.slice_end);
@@ -659,7 +680,7 @@ impl Header {
                 for (k, v) in self.pixdim.iter().enumerate() {
                     w.f64(104 + 8 * k, *v);
                 }
-                w.i64(168, self.exact_offset());
+                w.i64(168, self.vox_offset.as_i64());
                 w.f64(176, self.scl_slope);
                 w.f64(184, self.scl_inter);
                 w.f64(192, self.cal_max);
@@ -744,11 +765,9 @@ impl Header {
             problems.push(format!("magic string {} is not valid", crate::json::repr_str(&latin1(&magic))));
         }
         // vox_offset: level 40 for a single file's voxels inside its header.
-        if self.vox_offset != 0.0
-            && magic == self.version.single_magic()
-            && self.vox_offset < self.version.single_offset()
-        {
-            problems.push(format!("vox offset {} too low for single file nifti1", self.vox_offset.trunc() as i64));
+        let vox_offset = self.vox_offset.as_f64();
+        if vox_offset != 0.0 && magic == self.version.single_magic() && vox_offset < self.version.single_offset() {
+            problems.push(format!("vox offset {} too low for single file nifti1", vox_offset.trunc() as i64));
         }
         // qform_code and sform_code: level 30, set to 0.
         for code in [&mut self.qform_code, &mut self.sform_code] {
@@ -767,16 +786,6 @@ impl Header {
         match problems.into_iter().next() {
             Some(first) => Err(Error::Value(first)),
             None => Ok(()),
-        }
-    }
-
-    /// NIfTI-2's integer `vox_offset`: the stored one, unless `vox_offset`
-    /// has since been set to another value.
-    pub fn exact_offset(&self) -> i64 {
-        if self.vox_offset_exact as f64 == self.vox_offset {
-            self.vox_offset_exact
-        } else {
-            self.vox_offset as i64
         }
     }
 
@@ -977,10 +986,10 @@ mod tests {
         h.datatype = 4;
         h.bitpix = 16;
         h.pixdim = [1.0, 0.75, 0.875, 2.0, 1.0, 1.0, 1.0, 1.0];
-        h.vox_offset = version.single_offset();
-        if version == Version::Two {
-            h.vox_offset_exact = h.vox_offset as i64;
-        }
+        h.vox_offset = match version {
+            Version::One => VoxOffset::Float(version.single_offset()),
+            Version::Two => VoxOffset::Int(version.single_offset() as i64),
+        };
         h.scl_slope = 2.0;
         h.scl_inter = -1024.0;
         h.xyzt_units = 10;
@@ -1013,16 +1022,15 @@ mod tests {
     fn s02_2_a_nifti2_offset_survives_decode_and_encode() {
         // 2^53 + 1 has no f64: kept as the integer it is, and written back.
         let mut h = sample(Version::Two, false);
-        h.vox_offset_exact = (1 << 53) + 1;
-        h.vox_offset = h.vox_offset_exact as f64;
+        h.vox_offset = VoxOffset::Int((1 << 53) + 1);
         let block = h.encode();
         let back = Header::decode(&block, Version::Two).unwrap();
-        assert_eq!(back.exact_offset(), (1 << 53) + 1);
+        assert_eq!(back.vox_offset, VoxOffset::Int((1 << 53) + 1));
         assert_eq!(back.encode(), block);
-        // Set to another value, the float is what is meant.
+        // Any integer set is the one written, 2^53 beside 2^53 + 1 too.
         let mut moved = back.clone();
-        moved.vox_offset = 1024.0;
-        assert_eq!(Header::decode(&moved.encode(), Version::Two).unwrap().exact_offset(), 1024);
+        moved.vox_offset = VoxOffset::Int(1 << 53);
+        assert_eq!(Header::decode(&moved.encode(), Version::Two).unwrap().vox_offset, VoxOffset::Int(1 << 53));
     }
 
     #[test]
@@ -1062,7 +1070,7 @@ mod tests {
         h.magic = *b"ab\0\0";
         assert_eq!(h.check_fix().unwrap_err().message(), "magic string 'ab' is not valid");
         let mut h = sample(Version::One, false);
-        h.vox_offset = 100.0;
+        h.vox_offset = VoxOffset::Float(100.0);
         assert_eq!(h.check_fix().unwrap_err().message(), "vox offset 100 too low for single file nifti1");
         let mut h = sample(Version::Two, false);
         h.eol_check = [0; 4];

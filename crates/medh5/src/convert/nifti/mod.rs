@@ -24,7 +24,7 @@ mod read;
 use ndarray::Array2;
 use serde_json::{json, Value};
 
-pub use header::{Element, Header, Version};
+pub use header::{Element, Header, Version, VoxOffset};
 pub use import::{from_nifti, grid_axes, read_nifti};
 pub use read::Voxels;
 
