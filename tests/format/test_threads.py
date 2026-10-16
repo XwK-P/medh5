@@ -760,6 +760,48 @@ class TestOneThreadAtATime:
 
         assert hammered([edit] + [read] * 4, rounds=300) == 0
 
+    def test_a_timeline_reads_its_timepoints_in_one_step(self):
+        """One thread setting a series in one timepoint and then another,
+        while others read the document's timeline: a read holds the two equal
+        or one apart, as no moment had them otherwise."""
+        from medh5 import Timeline, Timepoint
+        from medh5.document import new_document
+
+        doc = new_document("s")
+        doc.timepoints = Timeline([Timepoint("tp0", 0), Timepoint("tp1", 1)])
+        timeline = doc.timepoints
+        first, second = timeline[0].series_uids, timeline[1].series_uids
+        count = iter(range(1, 10**9))
+
+        def edit() -> None:
+            n = next(count)
+            first["ct"] = f"1.{n}"
+            second["ct"] = f"1.{n}"
+
+        def read() -> None:
+            a, b = (
+                int(p.get("series_uids", {}).get("ct", "1.0")[2:])
+                for p in timeline.to_json()
+            )
+            assert a - 1 <= b <= a, (a, b)
+
+        assert hammered([edit] + [read] * 4, rounds=300) == 0
+
+    def test_setdefault_reads_no_default_it_does_not_keep(self):
+        """`setdefault` on a key the member holds returns what it holds and
+        never converts the default, as a dict never reads one it does not
+        keep: a default the document could not hold is no error there."""
+        from medh5.document import new_document
+
+        doc = new_document("s")
+        doc.extra["kept"] = 1
+        doc.extra["log"] = {"kept": 2}
+        assert doc.extra.setdefault("kept", object()) == 1
+        assert doc.extra["log"].setdefault("kept", object()) == 2
+        with pytest.raises(TypeError):
+            doc.extra["log"].setdefault("new", object())
+        assert "new" not in doc.extra["log"]
+
     def test_a_payload_reads_whole_while_its_dicts_change(self):
         """Threads adding and removing a payload's datasets and attributes
         while others describe it: each dict is read as it stands in one step,
@@ -872,3 +914,31 @@ class TestShared:
             t.join()
         assert not failed, failed[:3]
         assert not any(n.startswith("org.example.threads-") for n in labels.available())
+
+    def test_registering_runs_no_callers_code_under_the_registry_lock(self):
+        """A vocabulary is read as it stands before the registry's lock is
+        taken: a value in a class's `properties` whose conversion loads a
+        vocabulary itself (the caller's code) would otherwise wait for the
+        lock its own thread holds."""
+        from medh5 import labels
+        from medh5.labels import LabelClass, LabelSet
+
+        class Loads:
+            """A mapping that loads a vocabulary as it is read."""
+
+            def keys(self) -> list[str]:
+                labels.load("binary-foreground")
+                return ["k"]
+
+            def __getitem__(self, key: str) -> int:
+                return 1
+
+        ls = LabelSet("v", [LabelClass(1, "a", "A")])
+        ls[1].properties["x"] = Loads()
+        done = threading.Thread(
+            target=labels.register, args=("org.example.loads", ls), daemon=True
+        )
+        done.start()
+        done.join(timeout=10)
+        assert not done.is_alive(), "register waited for its own lock"
+        labels.unregister("org.example.loads")

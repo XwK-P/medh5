@@ -32,6 +32,7 @@ validator's W912 says so when they are missing.
 
 from __future__ import annotations
 
+import copy
 import os
 import threading
 from collections.abc import Sequence
@@ -87,8 +88,11 @@ def load_file(path: str | os.PathLike[str]) -> LabelSet:
 
 def register(name: str, label_set: LabelSet) -> LabelSet:
     """Make a vocabulary loadable by name for the rest of the process."""
+    # Taken as it stands before the lock: reading it runs the caller's code
+    # (a value in a class's `properties`), which may load or register too.
+    current = copy.copy(label_set) if isinstance(label_set, LabelSet) else label_set
     with _REGISTRY:
-        _core.registry_register(name, label_set)
+        _core.registry_register(name, current)
         _REGISTERED[name] = label_set
     return label_set
 

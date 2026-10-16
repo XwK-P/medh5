@@ -228,10 +228,15 @@ class Members(dict[str, Any]):
     def setdefault(self, key: str, default: Any = None) -> Any:
         if self._document is None:
             return super().setdefault(key, default)
-        # Converted first, so the caller's code runs outside the lock (a
-        # quality record is the engine's own); the look and the write are one
-        # step, so one default is the member.
+        # A default is converted only when the key is missing, and before
+        # the lock, so the caller's code runs outside it (a quality record is
+        # the engine's own); the look and the write are one step, so one
+        # default is the member.
         key = _key(key)
+        with _LOCK:
+            self._sync()
+            if key in self:
+                return self[key]
         value = default if self._field == "quality" else self._document._plain(default)
         with _LOCK:
             self._sync()
@@ -329,7 +334,13 @@ class _NestedDict(dict[str, Any]):
             self._changed()
 
     def setdefault(self, key: str, default: Any = None) -> Any:
-        key, value = _key(key), self._adopt(default)
+        # A default is converted only when the key is missing, as a dict
+        # never reads one it does not keep; outside the lock, as `Members`.
+        key = _key(key)
+        with _LOCK:
+            if key in self:
+                return self[key]
+        value = self._adopt(default)
         with _LOCK:
             if key not in self:
                 self._check()

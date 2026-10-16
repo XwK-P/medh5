@@ -641,7 +641,11 @@ impl Timeline {
     /// The timeline as it stands: its timepoints as edited.
     pub fn current(&self, py: Python<'_>) -> R<tl_engine::Timeline> {
         let Some(points) = self.points.get() else { return Ok(self.inner.clone()) };
-        let points = points.bind(py).iter().map(|p| Timepoint::arg(&p)).collect::<R<Vec<_>>>()?;
+        // Every timepoint in one step under the live views' lock, so that
+        // edits to two timepoints are read both or neither.
+        let points = crate::document::under_live_lock(py, || {
+            points.bind(py).iter().map(|p| Timepoint::arg(&p)).collect::<R<Vec<_>>>()
+        })?;
         Ok(tl_engine::Timeline::new(points)?)
     }
 }

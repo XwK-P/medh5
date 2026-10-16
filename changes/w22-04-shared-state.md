@@ -11,5 +11,5 @@
   (an index's `__index__`, an item's `__eq__`, a key's `__hash__`). A key
   JSON cannot spell is refused as it is given, leaving the member editable.
   `medh5.labels.describe()` no longer raises E305 for a vocabulary another
-  thread unregisters meanwhile, and a document's label set is read with every
-  class as it stood at one moment.
+  thread unregisters meanwhile, and a document's label set and timeline are
+  read with every class and timepoint as it stood at one moment.
