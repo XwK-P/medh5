@@ -26,6 +26,7 @@ from medh5.io.nifti import (  # noqa: E402
     read_nifti,
     require_nibabel,
     to_nifti,
+    write_nifti,
 )
 
 SHAPE_XYZ = (24, 20, 12)
@@ -1389,6 +1390,17 @@ class TestGridsAgreeInTimeAndUnits:
         _, geometry = read_nifti(out)
         assert geometry["time_values"] == pytest.approx([10.0, 12.5, 15.0])
         assert geometry["time_measured"]
+
+    def test_S3_2_a_time_axis_of_no_frames_states_no_times(self, tmp_path):
+        out = write_nifti(
+            np.zeros((2, 2, 2, 0), np.int16),
+            np.eye(4),
+            tmp_path / "e.nii",
+            time_values=[],
+        )
+        header = nib.load(str(out)).header
+        assert header.get_data_shape() == (2, 2, 2, 0)
+        assert float(header["toffset"]) == 0.0
 
     def test_S3_2_uneven_frames_go_to_a_sidecar_and_come_back(self, tmp_path):
         path = tmp_path / "s.medh5"

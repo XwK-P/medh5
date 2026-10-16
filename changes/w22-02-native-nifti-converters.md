@@ -36,3 +36,6 @@
   same times, a third stating other times replaced them, putting the second
   on a timeline it disagreed with; it is now refused, as two volumes stating
   different times always were.
+- **`write_nifti` writes a fourth axis of no frames given its empty
+  `time_values`.** 2.1.0 failed reading the first of no frame times
+  (`IndexError`); there is no first time to state, so the header states none.

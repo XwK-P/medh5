@@ -567,7 +567,10 @@ fn write_timing(
         if frames >= 2 {
             header.pixdim[4] = steps[0];
         }
-        header.toffset = time_values[0];
+        // A fourth axis of no frames has no first time to state.
+        if let Some(first) = time_values.first() {
+            header.toffset = *first;
+        }
         return Ok((if unit == "ms" { 16 } else { 8 }, None));
     }
     header.pixdim[4] = 0.0;
@@ -834,6 +837,13 @@ mod tests {
         assert_eq!((code, timing), (0, Some(vec![0.0, 1.0, 3.0])));
         assert_eq!(header.pixdim[4], 0.0);
         assert!(write_timing(&mut header, 2, &[0.0], None).is_err());
+        // No frames: nothing to state, and no first time to read.
+        let mut header = Header::new(Version::One);
+        assert_eq!(write_timing(&mut header, 0, &[], Some("ms")).unwrap(), (16, None));
+        assert_eq!((header.pixdim[4], header.toffset), (Header::new(Version::One).pixdim[4], 0.0));
+        let out = tempfile::tempdir().unwrap();
+        let options = WriteOptions { time_values: Some(Vec::new()), ..WriteOptions::default() };
+        write_nifti(&series(0, 0), &eye(), &out.path().join("empty.nii"), &options, None).unwrap();
     }
 
     /// The files of `dir`, by name, with their bytes.
