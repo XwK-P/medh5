@@ -712,7 +712,7 @@ class TestScrubRules:
     def test_a_rewritten_string_dataset_keeps_its_filters(self, tmp_path: Path):
         """Widening a fixed-length dataset kept its compression and dropped the
         rest: a checksummed column lost its Fletcher32 to a scrub."""
-        import hdf5plugin
+        hdf5plugin = pytest.importorskip("hdf5plugin")
 
         from medh5.curation import scrub
 
