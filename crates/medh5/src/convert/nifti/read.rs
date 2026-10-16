@@ -445,8 +445,13 @@ impl Image {
         if self.shape.is_empty() {
             return Ok(empty(vec![0]));
         }
-        let count: i128 = self.shape.iter().map(|v| i128::from(*v)).product();
-        let n_bytes = count * element.itemsize() as i128;
+        // NIfTI-2's seven 64-bit dimensions can name more bytes than even
+        // an i128 counts: that array is one no machine holds.
+        let n_bytes = self
+            .shape
+            .iter()
+            .try_fold(element.itemsize() as i128, |acc, v| acc.checked_mul(i128::from(*v)))
+            .ok_or_else(too_big)?;
         if n_bytes < 0 {
             return Err(Error::Value("negative count".into()));
         }
@@ -457,7 +462,7 @@ impl Image {
             // read, an empty array is `(0,)`.
             let mapped =
                 !compressed && self.offset > 0 && file.metadata().map(|m| m.len() >= self.offset).unwrap_or(false);
-            return Ok(empty(if mapped { self.shape.iter().map(|v| *v as usize).collect() } else { vec![0] }));
+            return Ok(empty(if mapped { self.dims()? } else { vec![0] }));
         }
         let wanted = u64::try_from(n_bytes).unwrap_or(u64::MAX);
         let bytes = if is_gzip(&self.image_name) {
@@ -478,9 +483,18 @@ impl Image {
                 self.image_name
             )));
         }
-        let shape = self.shape.iter().map(|v| *v as usize).collect();
-        Ok(Voxels { element, big_endian, shape, bytes })
+        Ok(Voxels { element, big_endian, shape: self.dims()?, bytes })
     }
+
+    /// The shape as an array's, refused where a dimension is not one.
+    fn dims(&self) -> Result<Vec<usize>> {
+        self.shape.iter().map(|v| usize::try_from(*v).map_err(|_| too_big())).collect()
+    }
+}
+
+/// numpy's refusal of an array larger than the address space.
+fn too_big() -> Error {
+    Error::Value("array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.".into())
 }
 
 /// Read `wanted` bytes or to the end, reserving no more than `available`
@@ -612,6 +626,24 @@ mod tests {
         std::fs::write(&path, gzip(&single(&h, &[1, 2, 3, 4]))).unwrap();
         let err = nifti(&path).read_voxels().unwrap_err();
         assert!(err.message().starts_with("Expected 70362301923326 bytes, got 4 bytes from"), "{err}");
+    }
+
+    #[test]
+    fn s02_2_a_count_no_integer_holds_is_refused() {
+        // 2^62 x 2^62 x 16 voxels of two bytes overflow an i128; checked,
+        // the count is refused rather than wrapped (to zero, an empty read).
+        let dir = tempfile::tempdir().unwrap();
+        let h = header(Version::Two, &[1 << 62, 1 << 62, 16]);
+        let path = dir.path().join("huge.nii");
+        std::fs::write(&path, single(&h, &[1, 2, 3, 4])).unwrap();
+        let err = nifti(&path).read_voxels().unwrap_err();
+        assert!(matches!(&err, Error::Value(m) if m.starts_with("array is too big")), "{err:?}");
+        // A zero dimension beside a negative one: empty, but no array's shape.
+        let h = header(Version::Two, &[0, -3, 2]);
+        let path = dir.path().join("negative.nii");
+        std::fs::write(&path, single(&h, &[])).unwrap();
+        let err = nifti(&path).read_voxels().unwrap_err();
+        assert!(matches!(&err, Error::Value(m) if m.starts_with("array is too big")), "{err:?}");
     }
 
     #[test]

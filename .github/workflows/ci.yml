@@ -101,11 +101,14 @@ jobs:
         run: |
           cargo build --locked -p medh5-cli -p medh5-python
           for f in target/debug/medh5 target/debug/lib_core.so; do
-            if ! nm "$f" | grep -q ' inflate$'; then
+            # Read whole, then searched: under pipefail, a `grep -q` that
+            # stops at the first match fails `nm` with SIGPIPE.
+            symbols=$(nm "$f")
+            if ! grep -q ' inflate$' <<<"$symbols"; then
               echo "::error::$f has no zlib symbol, so this check saw nothing"
               exit 1
             fi
-            if nm "$f" | grep -E ' [A-Za-z] gz[A-Za-z0-9_]*$'; then
+            if grep -E ' [A-Za-z] gz[A-Za-z0-9_]*$' <<<"$symbols"; then
               echo "::error::$f links zlib's gzip file interface"
               exit 1
             fi
