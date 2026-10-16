@@ -8,7 +8,8 @@
 # cover --- and the binary, archived with its licence, the notices of what it
 # links and its README, to cli/.  CI runs this on every
 # platform the project ships --- inside a manylinux_2_28 container on Linux, so
-# both run on any glibc from 2.28 --- and the release publishes what CI built.
+# both run on any glibc from 2.28, and for macOS x86_64 on Apple silicon --- and
+# the release publishes what CI built.
 set -euo pipefail
 
 target="$1"
@@ -57,11 +58,15 @@ else
   compatibility=()
 fi
 # The Rust rust-toolchain.toml pins, which rustup reads from the checkout, as
-# every cargo below does.
+# every cargo below does, with the standard library of the target: on Apple
+# silicon, x86_64-apple-darwin is a cross-build (a no-op for the host's own).
 rustup toolchain install --no-self-update
+rustup target add "$target"
 
 # (The `+` form: an empty array is "unbound" to the bash 3.2 macOS ships.)
-maturin build --release --locked --out dist --interpreter "$python" ${compatibility[@]+"${compatibility[@]}"}
+# Every build names its target, so every target's output is in
+# target/<target>/release, a cross-build's as much as a native one's.
+maturin build --release --locked --target "$target" --out dist --interpreter "$python" ${compatibility[@]+"${compatibility[@]}"}
 # Free-threaded CPython cannot load an abi3 extension, so it gets one built for
 # it: `-cp314-cp314t-<platform>.whl`.  Only PyO3 and the extension compile
 # again; the engine and HDF5 are the build above's.  The module still asks for
@@ -70,15 +75,34 @@ if [[ -z "${MEDH5_FT_PYTHON:-}" ]]; then
   echo "MEDH5_FT_PYTHON names no free-threaded Python to build the cp314t wheel with" >&2
   exit 1
 fi
-maturin build --release --locked --out dist --interpreter "$MEDH5_FT_PYTHON" ${compatibility[@]+"${compatibility[@]}"}
+maturin build --release --locked --target "$target" --out dist --interpreter "$MEDH5_FT_PYTHON" ${compatibility[@]+"${compatibility[@]}"}
 # The binary, from the same checkout and lock as the wheel.  Cargo reuses what
 # maturin compiled only where the two builds agree on target and flags; where
 # they do not, the graph compiles again, HDF5 included --- CI time, nothing else.
-cargo build --release --locked -p medh5-cli
+cargo build --release --locked --target "$target" -p medh5-cli
 
-exe=target/release/medh5
+exe="target/$target/release/medh5"
 if [[ -f "$exe.exe" ]]; then
   exe="$exe.exe"
+fi
+# Apple silicon runs x86_64 code too (Rosetta), so running what was built
+# proves nothing about its architecture: the binary's and each wheel's
+# extension's are read instead.
+if [[ "$target" == *-apple-darwin ]]; then
+  want="${target%%-*}"
+  if [[ "$want" == aarch64 ]]; then want=arm64; fi
+  unpacked=$(mktemp -d)
+  for wheel in dist/*.whl; do
+    "$python" -m zipfile -e "$wheel" "$unpacked/$(basename "$wheel")"
+  done
+  for built in "$exe" "$unpacked"/*/medh5/_core*.so; do
+    arch=$(lipo -archs "$built")
+    if [[ "$arch" != "$want" ]]; then
+      echo "$built is built for $arch, not $want" >&2
+      exit 1
+    fi
+  done
+  rm -r "$unpacked"
 fi
 "$exe" --version
 
