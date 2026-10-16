@@ -1,0 +1,15 @@
+{
+ "id": "export-dtype-bool",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "HeaderDataError",
+  "code": null,
+  "message": "data dtype \"bool\" not supported"
+ },
+ "files": [
+  "dtype-bool.medh5"
+ ]
+}

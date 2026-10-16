@@ -1,0 +1,202 @@
+{
+ "id": "import-scaled-float32",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "report": {
+  "source": "{corpus}/inputs/scaled-float32.nii.gz",
+  "converter": "from-nifti",
+  "outputs": [
+   "{out}/import-scaled-float32.medh5"
+  ],
+  "ok": true,
+  "counts": {
+   "info": 0,
+   "decision": 3,
+   "guess": 1,
+   "warning": 0
+  },
+  "notes": [
+   {
+    "kind": "coord_system",
+    "message": "NIfTI is RAS+; the grid was written in LPS (sign flip on the first two world axes, applied to the affine only)",
+    "severity": "decision",
+    "detail": {
+     "source": "RAS",
+     "target": "LPS"
+    }
+   },
+   {
+    "kind": "axis_order",
+    "message": "NIfTI (x, y, z) was reordered to (z, y, x), any trailing time axis moved in front of them, and the spacing, direction and axis names follow",
+    "severity": "decision",
+    "detail": {
+     "order": [
+      2,
+      1,
+      0
+     ]
+    }
+   },
+   {
+    "kind": "identity",
+    "message": "no subject_id was given and NIfTI states none, so the sample was written as a subject of its own (subject_id = 'import-scaled-float32'); pass subject_id= (--subject-id) to file it under its subject",
+    "severity": "guess",
+    "detail": {
+     "subject_id": "import-scaled-float32"
+    }
+   },
+   {
+    "kind": "value_scale",
+    "message": "image: scl_slope/scl_inter were stored as the image's rescale, not applied; read(physical=True) applies them and read() returns what the file stores (§4.2)",
+    "severity": "decision",
+    "detail": {
+     "image": "image",
+     "slope": 0.5,
+     "intercept": 1.0
+    }
+   }
+  ]
+ },
+ "sample": {
+  "root": {
+   "content_id": "sha256:2541ed4ed479bf9c1b3a06fe1d294bc6bbb1959d79cefb48489135f90671ed85",
+   "digest_algo": "sha256",
+   "generator": "medh5 2.1.0",
+   "medh5_kind": "sample",
+   "medh5_profiles": [
+    "core"
+   ],
+   "medh5_version": "1.0"
+  },
+  "meta": {
+   "identity": {
+    "sample_id": "import-scaled-float32",
+    "subject_id": "import-scaled-float32"
+   },
+   "timepoints": [
+    {
+     "id": "tp0",
+     "index": 0
+    }
+   ],
+   "provenance": {
+    "agents": [
+     {
+      "id": "s1",
+      "type": "software",
+      "name": "medh5",
+      "version": "2.1.0"
+     }
+    ],
+    "activities": [
+     {
+      "id": "act_import_1",
+      "type": "import",
+      "agent": "s1",
+      "tool": "medh5 convert from-nifti",
+      "inputs": [
+       "nifti:scaled-float32.nii.gz"
+      ],
+      "params": {
+       "coord_system": "LPS",
+       "transpose": true
+      }
+     }
+    ]
+   }
+  },
+  "objects": {
+   "annotations": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids/ref": {
+    "type": "group",
+    "attrs": {
+     "axis_kinds": [
+      "spatial",
+      "spatial",
+      "spatial"
+     ],
+     "axis_names": [
+      "z",
+      "y",
+      "x"
+     ],
+     "coord_system": "LPS",
+     "direction": [
+      [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      [
+       0.0,
+       -1.0,
+       0.0
+      ],
+      [
+       1.0,
+       0.0,
+       0.0
+      ]
+     ],
+     "origin": [
+      10.0,
+      20.0,
+      5.0
+     ],
+     "shape": [
+      2,
+      3,
+      4
+     ],
+     "spacing": [
+      2.0,
+      0.8999999761581421,
+      0.800000011920929
+     ],
+     "timepoint": "tp0",
+     "units": "mm"
+    }
+   },
+   "images": {
+    "type": "group",
+    "attrs": {}
+   },
+   "images/image": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:003ef4455858e2209bc6d3333a242bb24076cfff5a3a9333a2f8020c2ef71d9e",
+     "grid": "ref",
+     "modality": "OT",
+     "prov": "act_import_1",
+     "rescale_intercept": 1.0,
+     "rescale_slope": 0.5,
+     "value_type": "intensity"
+    },
+    "dtype": "<f4",
+    "shape": [
+     2,
+     3,
+     4
+    ]
+   },
+   "meta": {
+    "type": "dataset",
+    "attrs": {},
+    "dtype": "|O",
+    "shape": []
+   }
+  }
+ },
+ "outcome": "ok",
+ "files": [
+  "import-scaled-float32.medh5"
+ ]
+}

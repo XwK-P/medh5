@@ -1,0 +1,224 @@
+{
+ "id": "import-two-planes",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "report": {
+  "source": "{corpus}/inputs/plane-z50.nii.gz, {corpus}/inputs/slice.nii.gz",
+  "converter": "from-nifti",
+  "outputs": [
+   "{out}/import-two-planes.medh5"
+  ],
+  "ok": true,
+  "counts": {
+   "info": 0,
+   "decision": 3,
+   "guess": 1,
+   "warning": 0
+  },
+  "notes": [
+   {
+    "kind": "plane_as_volume",
+    "message": "A: the 2-D plane was imported as a one-slice 3-D grid, (x, y, 1), at z = 50 mm, its third axis the affine's third column (normal [0.0, 0.0, 1.0], 1 mm thick) (§3.6)",
+    "severity": "decision",
+    "detail": {
+     "file": "A",
+     "z": 50.0,
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "thickness": 1.0,
+     "units": "mm"
+    }
+   },
+   {
+    "kind": "coord_system",
+    "message": "NIfTI is RAS+; the grid was written in LPS (sign flip on the first two world axes, applied to the affine only)",
+    "severity": "decision",
+    "detail": {
+     "source": "RAS",
+     "target": "LPS"
+    }
+   },
+   {
+    "kind": "axis_order",
+    "message": "NIfTI (x, y, z) was reordered to (z, y, x), any trailing time axis moved in front of them, and the spacing, direction and axis names follow",
+    "severity": "decision",
+    "detail": {
+     "order": [
+      2,
+      1,
+      0
+     ]
+    }
+   },
+   {
+    "kind": "identity",
+    "message": "no subject_id was given and NIfTI states none, so the sample was written as a subject of its own (subject_id = 'import-two-planes'); pass subject_id= (--subject-id) to file it under its subject",
+    "severity": "guess",
+    "detail": {
+     "subject_id": "import-two-planes"
+    }
+   }
+  ]
+ },
+ "sample": {
+  "root": {
+   "content_id": "sha256:b3ab498f87ce6e7c540afa58151251539911ebb0b965cd41b158b2caae38f8c3",
+   "digest_algo": "sha256",
+   "generator": "medh5 2.1.0",
+   "medh5_kind": "sample",
+   "medh5_profiles": [
+    "core"
+   ],
+   "medh5_version": "1.0"
+  },
+  "meta": {
+   "identity": {
+    "sample_id": "import-two-planes",
+    "subject_id": "import-two-planes"
+   },
+   "timepoints": [
+    {
+     "id": "tp0",
+     "index": 0
+    }
+   ],
+   "provenance": {
+    "agents": [
+     {
+      "id": "s1",
+      "type": "software",
+      "name": "medh5",
+      "version": "2.1.0"
+     }
+    ],
+    "activities": [
+     {
+      "id": "act_import_1",
+      "type": "import",
+      "agent": "s1",
+      "tool": "medh5 convert from-nifti",
+      "inputs": [
+       "nifti:plane-z50.nii.gz",
+       "nifti:slice.nii.gz"
+      ],
+      "params": {
+       "coord_system": "LPS",
+       "transpose": true,
+       "plane_as_volume": true
+      }
+     }
+    ]
+   }
+  },
+  "objects": {
+   "annotations": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids/ref": {
+    "type": "group",
+    "attrs": {
+     "axis_kinds": [
+      "spatial",
+      "spatial",
+      "spatial"
+     ],
+     "axis_names": [
+      "z",
+      "y",
+      "x"
+     ],
+     "coord_system": "LPS",
+     "direction": [
+      [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      [
+       0.0,
+       -1.0,
+       0.0
+      ],
+      [
+       1.0,
+       0.0,
+       0.0
+      ]
+     ],
+     "origin": [
+      10.0,
+      20.0,
+      50.0
+     ],
+     "shape": [
+      1,
+      3,
+      4
+     ],
+     "spacing": [
+      1.0,
+      0.8999999761581421,
+      0.800000011920929
+     ],
+     "timepoint": "tp0",
+     "units": "mm"
+    }
+   },
+   "images": {
+    "type": "group",
+    "attrs": {}
+   },
+   "images/A": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:780c29dfad3d798fcb03c5d650cd058446768d495d44afb865e43bd3d305c17e",
+     "grid": "ref",
+     "modality": "OT",
+     "prov": "act_import_1",
+     "value_type": "intensity"
+    },
+    "dtype": "<i2",
+    "shape": [
+     1,
+     3,
+     4
+    ]
+   },
+   "images/B": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:9fc991e5df567fba688d3b5a5012693bd42add4009d764d56acff550cce8639e",
+     "grid": "ref",
+     "modality": "OT",
+     "prov": "act_import_1",
+     "value_type": "intensity"
+    },
+    "dtype": "<i2",
+    "shape": [
+     1,
+     3,
+     4
+    ]
+   },
+   "meta": {
+    "type": "dataset",
+    "attrs": {},
+    "dtype": "|O",
+    "shape": []
+   }
+  }
+ },
+ "outcome": "ok",
+ "files": [
+  "import-two-planes.medh5"
+ ]
+}

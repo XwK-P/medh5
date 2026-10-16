@@ -1,0 +1,67 @@
+{
+ "id": "read-plane-sheared.nii.gz",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "read": {
+  "geometry": {
+   "notes": [],
+   "spacing": [
+    0.800000011920929,
+    0.8999999761581421
+   ],
+   "origin": [
+    10.0,
+    20.0
+   ],
+   "direction": [
+    [
+     -1.0,
+     0.0
+    ],
+    [
+     0.0,
+     -1.0
+    ]
+   ],
+   "coord_system": "LPS",
+   "shape": [
+    4,
+    3
+   ],
+   "axis_order": [
+    0,
+    1
+   ],
+   "time_values": null,
+   "time_units": null,
+   "time_measured": false,
+   "leading_kind": "spatial",
+   "leading_stated": false,
+   "b_values": null,
+   "channel_field": null,
+   "channel_values": null,
+   "stated_by": null,
+   "squeezed": [],
+   "units": "mm",
+   "dtype": "int16",
+   "rescale": null,
+   "plane_as_volume": null,
+   "header": {
+    "descrip": "",
+    "scl_slope": null,
+    "scl_inter": null
+   }
+  },
+  "array": {
+   "dtype": "<i2",
+   "shape": [
+    4,
+    3
+   ],
+   "sha256": "a46b67c8fb1c4c35fdfc8387c647f8c442a84e1520334a92a127f740b4c1dd5c"
+  }
+ },
+ "outcome": "ok",
+ "files": []
+}

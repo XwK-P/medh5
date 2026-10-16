@@ -1,0 +1,207 @@
+{
+ "id": "import-plane-tilted-volume",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "report": {
+  "source": "{corpus}/inputs/plane-tilted.nii.gz",
+  "converter": "from-nifti",
+  "outputs": [
+   "{out}/import-plane-tilted-volume.medh5"
+  ],
+  "ok": true,
+  "counts": {
+   "info": 0,
+   "decision": 3,
+   "guess": 1,
+   "warning": 0
+  },
+  "notes": [
+   {
+    "kind": "plane_as_volume",
+    "message": "image: the 2-D plane was imported as a one-slice 3-D grid, (x, y, 1), at z = 0 mm, its third axis the affine's third column (normal [0.0, 0.34202015414019754, 0.9396926168497417], 1 mm thick) (§3.6)",
+    "severity": "decision",
+    "detail": {
+     "file": "image",
+     "z": 0.0,
+     "normal": [
+      0.0,
+      0.34202015414019754,
+      0.9396926168497417
+     ],
+     "thickness": 0.9999999995881268,
+     "units": "mm"
+    }
+   },
+   {
+    "kind": "coord_system",
+    "message": "NIfTI is RAS+; the grid was written in LPS (sign flip on the first two world axes, applied to the affine only)",
+    "severity": "decision",
+    "detail": {
+     "source": "RAS",
+     "target": "LPS"
+    }
+   },
+   {
+    "kind": "axis_order",
+    "message": "NIfTI (x, y, z) was reordered to (z, y, x), any trailing time axis moved in front of them, and the spacing, direction and axis names follow",
+    "severity": "decision",
+    "detail": {
+     "order": [
+      2,
+      1,
+      0
+     ]
+    }
+   },
+   {
+    "kind": "identity",
+    "message": "no subject_id was given and NIfTI states none, so the sample was written as a subject of its own (subject_id = 'import-plane-tilted-volume'); pass subject_id= (--subject-id) to file it under its subject",
+    "severity": "guess",
+    "detail": {
+     "subject_id": "import-plane-tilted-volume"
+    }
+   }
+  ]
+ },
+ "sample": {
+  "root": {
+   "content_id": "sha256:0f5d4b39d1728688d469c8b4050d6a358091e90e83ee29627cdeea8740c60a55",
+   "digest_algo": "sha256",
+   "generator": "medh5 2.1.0",
+   "medh5_kind": "sample",
+   "medh5_profiles": [
+    "core"
+   ],
+   "medh5_version": "1.0"
+  },
+  "meta": {
+   "identity": {
+    "sample_id": "import-plane-tilted-volume",
+    "subject_id": "import-plane-tilted-volume"
+   },
+   "timepoints": [
+    {
+     "id": "tp0",
+     "index": 0
+    }
+   ],
+   "provenance": {
+    "agents": [
+     {
+      "id": "s1",
+      "type": "software",
+      "name": "medh5",
+      "version": "2.1.0"
+     }
+    ],
+    "activities": [
+     {
+      "id": "act_import_1",
+      "type": "import",
+      "agent": "s1",
+      "tool": "medh5 convert from-nifti",
+      "inputs": [
+       "nifti:plane-tilted.nii.gz"
+      ],
+      "params": {
+       "coord_system": "LPS",
+       "transpose": true,
+       "plane_as_volume": true
+      }
+     }
+    ]
+   }
+  },
+  "objects": {
+   "annotations": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids/ref": {
+    "type": "group",
+    "attrs": {
+     "axis_kinds": [
+      "spatial",
+      "spatial",
+      "spatial"
+     ],
+     "axis_names": [
+      "z",
+      "y",
+      "x"
+     ],
+     "coord_system": "LPS",
+     "direction": [
+      [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      [
+       0.34202015414019754,
+       -0.9396926222649171,
+       0.0
+      ],
+      [
+       0.9396926168497417,
+       0.34202013926212527,
+       0.0
+      ]
+     ],
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "shape": [
+      1,
+      3,
+      4
+     ],
+     "spacing": [
+      0.9999999995881268,
+      0.8999999690709005,
+      0.800000011920929
+     ],
+     "timepoint": "tp0",
+     "units": "mm"
+    }
+   },
+   "images": {
+    "type": "group",
+    "attrs": {}
+   },
+   "images/image": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:2862e7d8468892cf683fb04def7312744af84e6180a27d0fe74e0d54511510e8",
+     "grid": "ref",
+     "modality": "OT",
+     "prov": "act_import_1",
+     "value_type": "intensity"
+    },
+    "dtype": "<i2",
+    "shape": [
+     1,
+     3,
+     4
+    ]
+   },
+   "meta": {
+    "type": "dataset",
+    "attrs": {},
+    "dtype": "|O",
+    "shape": []
+   }
+  }
+ },
+ "outcome": "ok",
+ "files": [
+  "import-plane-tilted-volume.medh5"
+ ]
+}

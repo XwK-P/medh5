@@ -1,0 +1,165 @@
+{
+ "id": "import-plane",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "report": {
+  "source": "{corpus}/inputs/plane.nii.gz",
+  "converter": "from-nifti",
+  "outputs": [
+   "{out}/import-plane.medh5"
+  ],
+  "ok": true,
+  "counts": {
+   "info": 0,
+   "decision": 1,
+   "guess": 1,
+   "warning": 0
+  },
+  "notes": [
+   {
+    "kind": "coord_system",
+    "message": "NIfTI is RAS+; the grid was written in LPS (sign flip on the first two world axes, applied to the affine only)",
+    "severity": "decision",
+    "detail": {
+     "source": "RAS",
+     "target": "LPS"
+    }
+   },
+   {
+    "kind": "identity",
+    "message": "no subject_id was given and NIfTI states none, so the sample was written as a subject of its own (subject_id = 'import-plane'); pass subject_id= (--subject-id) to file it under its subject",
+    "severity": "guess",
+    "detail": {
+     "subject_id": "import-plane"
+    }
+   }
+  ]
+ },
+ "sample": {
+  "root": {
+   "content_id": "sha256:47ebd4c682c9c6e32004f492aabec0eab76c024b08965b558e7a0ceedd4fa09c",
+   "digest_algo": "sha256",
+   "generator": "medh5 2.1.0",
+   "medh5_kind": "sample",
+   "medh5_profiles": [
+    "core"
+   ],
+   "medh5_version": "1.0"
+  },
+  "meta": {
+   "identity": {
+    "sample_id": "import-plane",
+    "subject_id": "import-plane"
+   },
+   "timepoints": [
+    {
+     "id": "tp0",
+     "index": 0
+    }
+   ],
+   "provenance": {
+    "agents": [
+     {
+      "id": "s1",
+      "type": "software",
+      "name": "medh5",
+      "version": "2.1.0"
+     }
+    ],
+    "activities": [
+     {
+      "id": "act_import_1",
+      "type": "import",
+      "agent": "s1",
+      "tool": "medh5 convert from-nifti",
+      "inputs": [
+       "nifti:plane.nii.gz"
+      ],
+      "params": {
+       "coord_system": "LPS",
+       "transpose": true
+      }
+     }
+    ]
+   }
+  },
+  "objects": {
+   "annotations": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids/ref": {
+    "type": "group",
+    "attrs": {
+     "axis_kinds": [
+      "spatial",
+      "spatial"
+     ],
+     "axis_names": [
+      "x",
+      "y"
+     ],
+     "coord_system": "LPS",
+     "direction": [
+      [
+       -1.0,
+       0.0
+      ],
+      [
+       0.0,
+       -1.0
+      ]
+     ],
+     "origin": [
+      10.0,
+      20.0
+     ],
+     "shape": [
+      4,
+      3
+     ],
+     "spacing": [
+      0.800000011920929,
+      0.8999999761581421
+     ],
+     "timepoint": "tp0",
+     "units": "mm"
+    }
+   },
+   "images": {
+    "type": "group",
+    "attrs": {}
+   },
+   "images/image": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:4bf9d719effdeecb8705a9160cfc1483061082bfb235ec4d6de626ddafd77a9b",
+     "grid": "ref",
+     "modality": "OT",
+     "prov": "act_import_1",
+     "value_type": "intensity"
+    },
+    "dtype": "<i2",
+    "shape": [
+     4,
+     3
+    ]
+   },
+   "meta": {
+    "type": "dataset",
+    "attrs": {},
+    "dtype": "|O",
+    "shape": []
+   }
+  }
+ },
+ "outcome": "ok",
+ "files": [
+  "import-plane.medh5"
+ ]
+}

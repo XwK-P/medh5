@@ -1,0 +1,15 @@
+{
+ "id": "seg-plain-no-mapping-assumed",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "mask 'liver' disagrees with grid 'g' on origin: it was drawn on another grid, and taking its voxels as this one's would put the labels where nobody drew them --- resample it onto the grid first, or pass assume_aligned=True if its header is what is wrong"
+ },
+ "files": [
+  "plain.medh5"
+ ]
+}

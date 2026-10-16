@@ -1,0 +1,13 @@
+{
+ "id": "import-two-times",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "'B' states frame times [1.0, 5.0, 9.0] s, the first volume [2.0, 2.5, 3.0] s; one grid has one set of `time_values` (§3.2), so convert them separately"
+ },
+ "files": []
+}

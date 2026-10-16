@@ -1,0 +1,293 @@
+{
+ "id": "masks-label-set-names",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "report": {
+  "source": "{corpus}/inputs/le-int16.nii.gz",
+  "converter": "from-nifti",
+  "outputs": [
+   "{out}/masks-label-set-names.medh5"
+  ],
+  "ok": true,
+  "counts": {
+   "info": 0,
+   "decision": 4,
+   "guess": 2,
+   "warning": 0
+  },
+  "notes": [
+   {
+    "kind": "coord_system",
+    "message": "NIfTI is RAS+; the grid was written in LPS (sign flip on the first two world axes, applied to the affine only)",
+    "severity": "decision",
+    "detail": {
+     "source": "RAS",
+     "target": "LPS"
+    }
+   },
+   {
+    "kind": "axis_order",
+    "message": "NIfTI (x, y, z) was reordered to (z, y, x), any trailing time axis moved in front of them, and the spacing, direction and axis names follow",
+    "severity": "decision",
+    "detail": {
+     "order": [
+      2,
+      1,
+      0
+     ]
+    }
+   },
+   {
+    "kind": "identity",
+    "message": "no subject_id was given and NIfTI states none, so the sample was written as a subject of its own (subject_id = 'masks-label-set-names'); pass subject_id= (--subject-id) to file it under its subject",
+    "severity": "guess",
+    "detail": {
+     "subject_id": "masks-label-set-names"
+    }
+   },
+   {
+    "kind": "label_set",
+    "message": "the masks were matched to label set 'organs' by the keys their names make; no class was minted",
+    "severity": "decision",
+    "detail": {
+     "label_set": "organs",
+     "ids": {
+      "GTV-1": 5,
+      "Liver": 1
+     }
+    }
+   },
+   {
+    "kind": "encoding",
+    "message": "2 mask(s) were measured and stored as 'layers'",
+    "severity": "decision",
+    "detail": {
+     "kind": "layers",
+     "overlapping": 1
+    }
+   },
+   {
+    "kind": "coverage",
+    "message": "annotated_class_ids was set to the masks supplied; NIfTI cannot say which classes were searched for and not found --- pass annotated_classes= (--annotated-classes) to say",
+    "severity": "guess",
+    "detail": {
+     "classes": [
+      "GTV-1",
+      "Liver"
+     ]
+    }
+   }
+  ]
+ },
+ "sample": {
+  "root": {
+   "content_id": "sha256:b63367303f5fe00d5ae28470d69ab6680d6bfff57bfdb62f998d8218270b3bc2",
+   "digest_algo": "sha256",
+   "generator": "medh5 2.1.0",
+   "medh5_kind": "sample",
+   "medh5_profiles": [
+    "core",
+    "seg"
+   ],
+   "medh5_version": "1.0"
+  },
+  "meta": {
+   "identity": {
+    "sample_id": "masks-label-set-names",
+    "subject_id": "masks-label-set-names"
+   },
+   "timepoints": [
+    {
+     "id": "tp0",
+     "index": 0
+    }
+   ],
+   "label_set": {
+    "id": "organs",
+    "version": "1.0.0",
+    "sha256": "d1faa5cfec47ea50d8d15b62e3df60b308ecb6d3aea7ed6ed4d43d8356036f30",
+    "form": "inline",
+    "classes": [
+     {
+      "id": 1,
+      "key": "liver",
+      "name": "Liver"
+     },
+     {
+      "id": 2,
+      "key": "lesion",
+      "name": "Lesion"
+     },
+     {
+      "id": 3,
+      "key": "spleen",
+      "name": "Spleen"
+     },
+     {
+      "id": 5,
+      "key": "gtv_1",
+      "name": "GTV-1"
+     }
+    ]
+   },
+   "provenance": {
+    "agents": [
+     {
+      "id": "s1",
+      "type": "software",
+      "name": "medh5",
+      "version": "2.1.0"
+     }
+    ],
+    "activities": [
+     {
+      "id": "act_import_1",
+      "type": "import",
+      "agent": "s1",
+      "tool": "medh5 convert from-nifti",
+      "inputs": [
+       "nifti:le-int16.nii.gz"
+      ],
+      "params": {
+       "coord_system": "LPS",
+       "transpose": true
+      }
+     }
+    ]
+   }
+  },
+  "objects": {
+   "annotations": {
+    "type": "group",
+    "attrs": {}
+   },
+   "annotations/seg": {
+    "type": "group",
+    "attrs": {
+     "annotated_class_ids": [
+      1,
+      5
+     ],
+     "class_ids": [
+      1,
+      5
+     ],
+     "closure": "explicit",
+     "grid": "ref",
+     "kind": "layers",
+     "prov": "act_import_1",
+     "task": "segmentation"
+    }
+   },
+   "annotations/seg/data": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:f8b194422a4536b1899544e39abb56822f367227bcb1e527f3fa0c9b0d4cfe9c"
+    },
+    "dtype": "|u1",
+    "shape": [
+     2,
+     2,
+     3,
+     4
+    ]
+   },
+   "annotations/seg/layer_class_ids": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:220de241b0d5025eb0f902547163d68c09abc2dd4c6c4dd48ebc516ee86ecba1"
+    },
+    "dtype": "<u2",
+    "shape": [
+     2,
+     1
+    ]
+   },
+   "grids": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids/ref": {
+    "type": "group",
+    "attrs": {
+     "axis_kinds": [
+      "spatial",
+      "spatial",
+      "spatial"
+     ],
+     "axis_names": [
+      "z",
+      "y",
+      "x"
+     ],
+     "coord_system": "LPS",
+     "direction": [
+      [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      [
+       0.0,
+       -1.0,
+       0.0
+      ],
+      [
+       1.0,
+       0.0,
+       0.0
+      ]
+     ],
+     "origin": [
+      10.0,
+      20.0,
+      5.0
+     ],
+     "shape": [
+      2,
+      3,
+      4
+     ],
+     "spacing": [
+      2.0,
+      0.8999999761581421,
+      0.800000011920929
+     ],
+     "timepoint": "tp0",
+     "units": "mm"
+    }
+   },
+   "images": {
+    "type": "group",
+    "attrs": {}
+   },
+   "images/CT": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:9d0d720dd5817653e204b7ad24f5b5afeb134103f06d01bd3123c2ed4fe988dc",
+     "grid": "ref",
+     "modality": "OT",
+     "prov": "act_import_1",
+     "value_type": "intensity"
+    },
+    "dtype": "<i2",
+    "shape": [
+     2,
+     3,
+     4
+    ]
+   },
+   "meta": {
+    "type": "dataset",
+    "attrs": {},
+    "dtype": "|O",
+    "shape": []
+   }
+  }
+ },
+ "outcome": "ok",
+ "files": [
+  "masks-label-set-names.medh5"
+ ]
+}

@@ -1,0 +1,13 @@
+{
+ "id": "import-two-kinds",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "these volumes share a grid but disagree about their non-spatial axis (CINE is time, DWI is channel); one grid states one set of `axis_kinds`, so convert them separately or pass `fourth_axis=` to settle it"
+ },
+ "files": []
+}

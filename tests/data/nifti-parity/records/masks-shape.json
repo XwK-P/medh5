@@ -1,0 +1,13 @@
+{
+ "id": "masks-shape",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "'liver' has shape (3, 3, 4), but the first volume has (2, 3, 4); resample before converting"
+ },
+ "files": []
+}

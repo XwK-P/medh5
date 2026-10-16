@@ -1,0 +1,15 @@
+{
+ "id": "export-class-unexamined",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "annotation 'partial' never examined 'lesion' (it is not in its annotated_class_ids), and a one-class mask's 0 would say it was examined and found absent; export a class it examined"
+ },
+ "files": [
+  "ct.medh5"
+ ]
+}

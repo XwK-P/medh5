@@ -1,0 +1,2 @@
+# The inputs are compared byte for byte: no line-ending conversion on checkout.
+inputs/** -text
