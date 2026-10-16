@@ -4,6 +4,7 @@
 //! Each step is 2.1.0's, in 2.1.0's order, because which of two problems a
 //! file is refused for is part of the contract (2.2.0 decision E3).
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use ndarray::{Array2, ArrayD};
@@ -243,10 +244,27 @@ fn time_axis(header: &Header, frames: usize, stamps: Option<&[f64]>, on_dim4: bo
 /// The existing file beside a NIfTI sharing its stem and ending in
 /// `suffix`; `None` when there is none, or `path` is no NIfTI name.
 fn sidecar(path: &Path, suffix: &str) -> Option<PathBuf> {
-    let name = path.file_name()?.to_string_lossy().into_owned();
-    let ending = NIFTI_SUFFIXES.iter().find(|s| name.ends_with(*s))?;
-    let candidate = path.with_file_name(format!("{}{suffix}", &name[..name.len() - ending.len()]));
+    let name = path.file_name()?;
+    let ending = NIFTI_SUFFIXES.iter().find(|s| name.to_string_lossy().ends_with(*s))?;
+    let candidate = path.with_file_name(swap_suffix(name, ending.len(), suffix));
     candidate.exists().then_some(candidate)
+}
+
+/// `name` less its last `cut` bytes, an ASCII suffix, then `suffix`.  On Unix
+/// the stem keeps the name's own bytes, so a name that is not UTF-8 finds its
+/// own sidecars, as 2.1.0 did through `surrogateescape`.
+fn swap_suffix(name: &OsStr, cut: usize, suffix: &str) -> OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let bytes = name.as_bytes();
+        OsString::from_vec([&bytes[..bytes.len() - cut], suffix.as_bytes()].concat())
+    }
+    #[cfg(not(unix))]
+    {
+        let name = name.to_string_lossy();
+        OsString::from(format!("{}{suffix}", &name[..name.len() - cut]))
+    }
 }
 
 /// A `.bval` file's b-values.
@@ -1335,6 +1353,31 @@ mod tests {
         assert_eq!(c_order(bytes.clone(), 2, &shape, &[3, 2, 1, 0]), bytes);
         let kept = c_order(bytes, 2, &shape, &[0, 1, 2, 3]);
         assert_eq!(&kept[..8], &[0, 1, 12, 13, 4, 5, 16, 17]);
+    }
+
+    #[test]
+    fn s4_5_sidecars_are_found_beside_their_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("dwi.nii.gz");
+        assert_eq!(sidecar(&image, ".bval"), None);
+        std::fs::write(dir.path().join("dwi.bval"), "0 1000\n").unwrap();
+        assert_eq!(sidecar(&image, ".bval"), Some(dir.path().join("dwi.bval")));
+        assert_eq!(sidecar(&dir.path().join("dwi.mha"), ".bval"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s4_5_a_name_in_another_encoding_finds_its_own_sidecars() {
+        // "caf\xe9": Latin-1, no UTF-8. Its sidecar is "caf\xe9.bval", not
+        // the lossy "caf\u{fffd}.bval".
+        use std::os::unix::ffi::OsStringExt;
+        let dir = tempfile::tempdir().unwrap();
+        let named =
+            |suffix: &str| dir.path().join(OsString::from_vec([b"caf\xe9".as_slice(), suffix.as_bytes()].concat()));
+        std::fs::write(named(".bval"), "0 1000\n").unwrap();
+        std::fs::write(named(".json"), "{}").unwrap();
+        assert_eq!(sidecar(&named(".nii.gz"), ".bval"), Some(named(".bval")));
+        assert_eq!(sidecar(&named(".nii"), ".json"), Some(named(".json")));
     }
 
     fn series(times: &[f64], measured: bool) -> Geometry {
