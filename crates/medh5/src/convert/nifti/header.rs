@@ -775,11 +775,10 @@ impl Header {
     /// the last, a negative one counts from the end, and 0 is the shape
     /// `(0,)`.
     pub fn raw_shape(&self) -> Vec<i64> {
-        let ndim = self.dim[0];
-        if ndim == 0 {
+        if self.dim[0] == 0 {
             return vec![0];
         }
-        py_slice(&self.dim, 1, ndim + 1).to_vec()
+        py_slice(&self.dim, 1, self.ndim_stop()).to_vec()
     }
 
     /// The voxel array's shape, with the FreeSurfer conventions for long
@@ -802,11 +801,17 @@ impl Header {
 
     /// `pixdim[1..=dim[0]]`, or `(1.0,)` for `dim[0] = 0`.
     pub fn zooms(&self) -> Vec<f64> {
-        let ndim = self.dim[0];
-        if ndim == 0 {
+        if self.dim[0] == 0 {
             return vec![1.0];
         }
-        py_slice(&self.pixdim, 1, ndim + 1).to_vec()
+        py_slice(&self.pixdim, 1, self.ndim_stop()).to_vec()
+    }
+
+    /// `dim[0] + 1`, the end of the slices above. A NIfTI-2 `dim[0]` is 64
+    /// bits, so `i64::MAX` saturates rather than overflow; any end past 8
+    /// slices to the last element, as Python's unbounded integers do.
+    fn ndim_stop(&self) -> i64 {
+        self.dim[0].saturating_add(1)
     }
 
     /// `scl_slope` and `scl_inter` as a scale, or `None` where the slope says
@@ -839,9 +844,8 @@ impl Header {
     /// voxel sizes on the diagonal, x flipped, and the volume's centre at the
     /// origin.
     pub fn base_affine(&self) -> [[f64; 4]; 4] {
-        let ndim = self.dim[0];
-        let dims = py_slice(&self.dim, 1, ndim + 1);
-        let pixdims = py_slice(&self.pixdim, 1, ndim + 1);
+        let dims = py_slice(&self.dim, 1, self.ndim_stop());
+        let pixdims = py_slice(&self.pixdim, 1, self.ndim_stop());
         let (mut shape, mut zooms) = ([1.0f64; 3], [1.0f64; 3]);
         for k in 0..dims.len().min(3) {
             shape[k] = dims[k] as f64;
@@ -1038,6 +1042,10 @@ mod tests {
         assert_eq!(h.data_shape().unwrap(), vec![4, 3, 2]);
         h.dim[0] = 0;
         assert_eq!(h.raw_shape(), vec![0]);
+        h.dim[0] = i64::MAX;
+        assert_eq!(h.raw_shape(), h.dim[1..].to_vec());
+        assert_eq!(h.zooms(), h.pixdim[1..].to_vec());
+        assert_eq!(h.base_affine()[0][0], -h.pixdim[1]);
         h.dim = [3, -1, 1, 1, 1, 1, 1, 1];
         h.glmin = 5;
         assert_eq!(h.data_shape().unwrap(), vec![5, 1, 1]);
