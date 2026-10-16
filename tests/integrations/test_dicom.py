@@ -954,6 +954,24 @@ class TestDicom:
             assert "PatientName" not in acquisition
             assert "PatientID" not in acquisition
 
+    def test_S4_5_a_classic_series_records_only_what_its_slices_agree_on(
+        self, tree, tmp_path
+    ):
+        """Tube-current modulation gives every slice its own current: the
+        series records none of them, and keeps what its slices share."""
+        from medh5.io.dicom import from_dicom
+
+        for index, path in enumerate(tree["ct0"]["paths"]):
+            ds = pydicom.dcmread(path)
+            ds.XRayTubeCurrent = 100 + 10 * index
+            ds.save_as(path)
+        report = from_dicom(tree["root"], tmp_path / "s.medh5")
+        with medh5.open(tmp_path / "s.medh5") as sample:
+            acquisition = sample.document.acquisition["CT_tp0"]
+        assert "XRayTubeCurrent" not in acquisition
+        assert acquisition["ConvolutionKernel"] == "B30f"
+        assert report.of_kind("acquisition")
+
     def test_S11_4_a_converted_file_says_it_is_not_de_identified(
         self, tree, tmp_path, capsys
     ):
@@ -1499,6 +1517,35 @@ class TestEnhancedMultiFrame:
         assert acquisition["RepetitionTime"] == 2200.0
         assert acquisition["FlipAngle"] == 9.0
         assert acquisition["EchoTime"] == 2.5
+
+    def test_S4_5_an_attribute_the_frames_disagree_on_is_not_recorded(self, tmp_path):
+        """One echo time per volume is a claim about every frame: frames
+        stating different ones, with no echo dimension to split them, leave
+        it unrecorded rather than recorded as the first frame's."""
+        from pydicom.dataset import Dataset
+
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path, "MR")
+        enhanced = _enhanced(classic["paths"], "MR")
+        timing = Dataset()
+        timing.RepetitionTime = 2200.0
+        enhanced.SharedFunctionalGroupsSequence[
+            0
+        ].MRTimingAndRelatedParametersSequence = [timing]
+        for index in range(6):
+            echo = Dataset()
+            echo.EffectiveEchoTime = 2.5 + index
+            _frame(enhanced, index).MREchoSequence = [echo]
+        _save(enhanced, tmp_path / "enhanced" / "mr.dcm")
+        out = tmp_path / "out.medh5"
+        report = from_dicom(tmp_path / "enhanced", out)
+        with medh5.open(out) as sample:
+            acquisition = sample.document.acquisition["MR_tp0"]
+        assert "EchoTime" not in acquisition
+        assert acquisition["RepetitionTime"] == 2200.0
+        (note,) = report.of_kind("acquisition")
+        assert "EchoTime" in note.message
 
     def test_a_concatenation_is_one_object(self, tmp_path):
         from medh5.io.dicom import scan_dicom

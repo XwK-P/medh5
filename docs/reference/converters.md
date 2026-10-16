@@ -223,9 +223,12 @@ report = from_dicom("/pet", "pet.medh5", per_slice_rescale="apply")
 ```
 
 **Tags are an explicit allow-list.** Imaging physics goes to `acquisition`;
-everything else stays out (§11.4). The importer does not de-identify, and
-writes no de-identification record: the report says so, and the validator
-reports such a file (`W903`).
+everything else stays out (§11.4). An attribute is recorded only when every
+slice states the same value: under tube-current modulation each slice has its
+own `XRayTubeCurrent`, and one value would misdescribe the rest, so the image
+records none and the report warns (`acquisition`). The importer does not
+de-identify, and writes no de-identification record: the report says so, and
+the validator reports such a file (`W903`).
 
 **Enhanced multi-frame objects are read as their stacks.** Enhanced and
 legacy-converted CT, MR and PET objects (PS3.3 C.7.6.16) are split into

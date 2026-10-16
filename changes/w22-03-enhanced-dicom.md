@@ -21,3 +21,8 @@
   another quantity. `value_units` is now the stated `RescaleType` (`HU` when
   none is stated), `US` gives `intensity` with no units, and a series whose
   slices state different types is refused.
+- **Acquisition attributes are recorded only where the slices agree.** A
+  series recorded its first slice's `XRayTubeCurrent`, `ExposureTime` or
+  `EchoTime` for the whole volume, even where the slices stated different
+  ones. An attribute the slices disagree on is now left out, with a warning
+  in the report.

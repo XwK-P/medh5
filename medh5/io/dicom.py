@@ -636,11 +636,7 @@ def _plan_series(
         "frame_uid": series.frame_uid,
         "rescale": rescale,
         "rescale_type": rescale_type,
-        "acquisition": {
-            tag: _scalar(getattr(slices[0], tag, None))
-            for tag in STORED_TAGS
-            if getattr(slices[0], tag, None) is not None
-        },
+        "acquisition": _acquisition(slices, series, report),
         "gaps": gaps,
     }
     return _Planned(
@@ -651,6 +647,37 @@ def _plan_series(
         rescales=rescales,
         frames=frames,
     )
+
+
+def _acquisition(
+    slices: Sequence[Any], series: Series, report: ConversionReport | None
+) -> dict[str, Any]:
+    """The :data:`STORED_TAGS` every slice of *series* agrees on (§4.5).
+
+    One value per volume is a claim about every slice, so an attribute the
+    slices state differently --- tube-current modulation's per-slice current,
+    an enhanced MR's per-frame echo time with no echo dimension to split on
+    --- is left out, with a warning, rather than recorded as the first
+    slice's.  It is not refused: the voxels do not depend on it.
+    """
+    out: dict[str, Any] = {}
+    varying = []
+    for tag in STORED_TAGS:
+        values = [_scalar(getattr(s, tag, None)) for s in slices]
+        if values[0] is None:
+            continue
+        if any(_differs(values[0], value) for value in values[1:]):
+            varying.append(tag)
+            continue
+        out[tag] = values[0]
+    if varying and report is not None:
+        report.warn(
+            "acquisition",
+            f"series {series.series_uid}: its slices state different values of "
+            f"{', '.join(varying)}, so the image records none of them",
+            {"series_uid": series.series_uid, "tags": varying},
+        )
+    return out
 
 
 def _frame_headers(series: Series) -> list[Any]:
