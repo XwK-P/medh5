@@ -655,7 +655,9 @@ fn seconds(geometry: &Geometry) -> Option<Vec<f64>> {
 
 /// Refuse a volume that does not share the first's grid (§3.2).  Frame
 /// times both state must agree; where only `other` states them, they are
-/// returned for the grid to take.
+/// returned for the grid to take, and where `other` states the times the
+/// grid assumed, the grid's own are returned: they are stated now, so a
+/// later volume stating others is a conflict, not a correction.
 fn same_grid(
     first: &Geometry,
     other: &Geometry,
@@ -679,6 +681,9 @@ fn same_grid(
     }
     let (Some(ours), Some(theirs)) = (seconds(first), seconds(other)) else { return Ok(None) };
     if allclose(&ours, &theirs, 1e-6, 1e-5) {
+        if other.time_measured && !first.time_measured {
+            return Ok(Some((first.time_values.clone().unwrap_or_default(), first.time_units.clone())));
+        }
         return Ok(None);
     }
     let times = |g: &Geometry| g.time_values.as_deref().map_or("None".into(), float_list);
@@ -703,6 +708,17 @@ fn same_grid(
         json!({"from": name, "time_units": other.time_units}),
     );
     Ok(Some((other.time_values.clone().unwrap_or_default(), other.time_units.clone())))
+}
+
+/// Add a volume to the grid the first began: refused where it does not
+/// share it, and the grid takes frame times it states.
+fn join_grid(first: &mut Geometry, other: &Geometry, name: &str, report: &mut ConversionReport) -> Result<()> {
+    if let Some((times, units)) = same_grid(first, other, name, report)? {
+        first.time_values = Some(times);
+        first.time_units = units;
+        first.time_measured = true;
+    }
+    Ok(())
 }
 
 /// Every volume on one grid must agree what its non-spatial axis is.
@@ -951,13 +967,7 @@ pub fn from_nifti(
         reshaped = note_plane(report, name, &geo) || reshaped;
         match &mut geometry {
             None => geometry = Some(geo.clone()),
-            Some(first) => {
-                if let Some((times, units)) = same_grid(first, &geo, name, report)? {
-                    first.time_values = Some(times);
-                    first.time_units = units;
-                    first.time_measured = true;
-                }
-            }
+            Some(first) => join_grid(first, &geo, name, report)?,
         }
         per_image.push((name.clone(), geo));
         arrays.push((name.clone(), voxels));
@@ -1325,6 +1335,50 @@ mod tests {
         assert_eq!(c_order(bytes.clone(), 2, &shape, &[3, 2, 1, 0]), bytes);
         let kept = c_order(bytes, 2, &shape, &[0, 1, 2, 3]);
         assert_eq!(&kept[..8], &[0, 1, 12, 13, 4, 5, 16, 17]);
+    }
+
+    fn series(times: &[f64], measured: bool) -> Geometry {
+        Geometry {
+            notes: Vec::new(),
+            spacing: vec![1.0; 3],
+            origin: vec![0.0; 3],
+            direction: vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0], vec![0.0, 0.0, 1.0]],
+            coord_system: "LPS".into(),
+            shape: vec![times.len(), 2, 2, 2],
+            axis_order: vec![3, 2, 1, 0],
+            time_values: Some(times.to_vec()),
+            time_units: Some("s".into()),
+            time_measured: measured,
+            leading_kind: "time".into(),
+            leading_stated: measured,
+            b_values: None,
+            channel_field: None,
+            channel_values: None,
+            stated_by: None,
+            squeezed: Vec::new(),
+            units: "mm".into(),
+            dtype: "int16".into(),
+            rescale: None,
+            plane_as_volume: None,
+            descrip: String::new(),
+        }
+    }
+
+    #[test]
+    fn s3_2_times_a_volume_states_stay_stated_when_the_grid_assumed_them() {
+        // A assumes 0, 1, 2; B states 0, 1, 2; C states 0, 2, 4. B and C
+        // disagree, so C is refused, not taken over B's stated times.
+        let mut report = ConversionReport::new("nifti", "a.nii.gz");
+        let mut grid = series(&[0.0, 1.0, 2.0], false);
+        join_grid(&mut grid, &series(&[0.0, 1.0, 2.0], true), "B", &mut report).unwrap();
+        assert!(grid.time_measured);
+        assert_eq!(grid.time_values.as_deref(), Some(&[0.0, 1.0, 2.0][..]));
+        let err = join_grid(&mut grid, &series(&[0.0, 2.0, 4.0], true), "C", &mut report).unwrap_err();
+        assert!(err.message().contains("'C' states frame times"), "{err:?}");
+        // Assumed times a later volume states otherwise are still taken.
+        let mut grid = series(&[0.0, 1.0, 2.0], false);
+        join_grid(&mut grid, &series(&[5.0, 7.0, 9.0], true), "B", &mut report).unwrap();
+        assert_eq!(grid.time_values.as_deref(), Some(&[5.0, 7.0, 9.0][..]));
     }
 
     #[test]
