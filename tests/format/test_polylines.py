@@ -262,3 +262,24 @@ class TestIdentity:
         [conflict] = [d for d in report.diagnostics if d.code == "W909"]
         assert "instance id 11" in conflict.message
         assert "'vessels'" in conflict.message and "'tip'" in conflict.message
+
+    def test_v1_2_S3_columns_shorter_than_the_offsets_are_E405(self, tmp_path):
+        """Read without validating, a column shorter than the offsets declare
+        is refused as E405, not read past."""
+        path = curves(tmp_path / "c.medh5")
+        for column, short in (
+            ("polyline_class_ids", np.array([1], np.uint16)),
+            ("polyline_plane", np.array([[0, 4]], np.int32)),
+            ("instance_ids", np.array([11], np.uint32)),
+        ):
+            target = tmp_path / f"{column}.medh5"
+            target.write_bytes(path.read_bytes())
+            with h5py.File(target, "r+") as handle:
+                group = handle["annotations/vessels"]
+                del group[column]
+                group[column] = short
+            with medh5.open(target) as s, pytest.raises(MEDH5ValidationError) as e:
+                s.annotations["vessels"].polylines()
+            assert e.value.code == "E405", column
+            with medh5.open(target) as s, pytest.raises(MEDH5ValidationError):
+                s.tracks()
