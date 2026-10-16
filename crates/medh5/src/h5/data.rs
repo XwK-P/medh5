@@ -567,6 +567,80 @@ fn vlen_text_bytes(ds: &hdf5::Dataset, rows: Option<(usize, usize)>) -> Result<u
     })
 }
 
+/// Refuse a variable-length string that a contiguous dataset states is
+/// longer than its file, before HDF5 reads any.
+///
+/// Each stored element states its string's length, up to 4 GiB, and names
+/// where the string is.  The length is the file's to state, and a string the
+/// file stores is no longer than the file, so a longer one is refused before
+/// anything is reserved for it, as a stored chunk is ([`super::window`]).
+///
+/// The elements are read from the file, as stored, only where that is
+/// exact: a contiguous dataset whose storage HDF5 has placed, in a file
+/// opened for reading through the default driver.  A file this process is
+/// writing may hold its newest bytes in HDF5's cache, and is not checked;
+/// nor are chunked or compact datasets, whose elements HDF5 alone reads.
+fn check_stored_lengths(ds: &hdf5::Dataset, n: usize) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    use crate::h5sys::{h5d, h5f, h5p};
+
+    // Elements read per pass: 64 KiB of them, at most.
+    const SLAB: usize = 4096;
+    let Ok(file) = ds.file() else { return Ok(()) };
+    if n == 0 || super::file::descriptor(&file).is_none() {
+        return Ok(());
+    }
+    let placed = super::locked(|| unsafe {
+        let mut intent = 0u32;
+        if h5f::H5Fget_intent(file.id(), &mut intent) < 0 || intent & h5f::H5F_ACC_RDWR != 0 {
+            return None;
+        }
+        let offset = h5d::H5Dget_offset(ds.id());
+        if offset == u64::MAX {
+            return None;
+        }
+        let plist = h5f::H5Fget_create_plist(file.id());
+        if plist < 0 {
+            return None;
+        }
+        let (mut address, mut length) = (0usize, 0usize);
+        let sized = h5p::H5Pget_sizes(plist, &mut address, &mut length);
+        h5p::H5Pclose(plist);
+        // An element is the string's length, then its heap object: the
+        // collection's address and the object's index.
+        (sized >= 0).then_some((offset, 4 + address + 4))
+    });
+    let Some((offset, element)) = placed else { return Ok(()) };
+    let Ok(mut stored) = std::fs::File::open(file.filename()) else { return Ok(()) };
+    let Ok(file_bytes) = stored.metadata().map(|m| m.len()) else { return Ok(()) };
+    if stored.seek(SeekFrom::Start(offset)).is_err() {
+        return Ok(());
+    }
+    let mut slab = vec![0u8; SLAB.min(n) * element];
+    let mut left = n;
+    while left > 0 {
+        let count = SLAB.min(left);
+        let bytes = &mut slab[..count * element];
+        // Storage the file stops short of is HDF5's to answer for, as it
+        // answers for the rest of a damaged dataset.
+        if stored.read_exact(bytes).is_err() {
+            return Ok(());
+        }
+        for stated in bytes.chunks_exact(element) {
+            let length = u64::from(u32::from_le_bytes([stated[0], stated[1], stated[2], stated[3]]));
+            if length > file_bytes {
+                return Err(Error::Io(format!(
+                    "{} cannot be read: it states a string of {length} bytes, and the file holds {file_bytes}",
+                    ds.name()
+                )));
+            }
+        }
+        left -= count;
+    }
+    Ok(())
+}
+
 /// The memory reading `n` strings costs once decoded: one `String` each and
 /// its text, held twice while it is decoded --- as HDF5 read it and as text.
 /// That is `text` bytes for variable-length strings (and a pointer each), and
@@ -640,6 +714,9 @@ pub fn for_each_string_slab(
     // as a whole read refuses it: a slab at a time, an 11 KiB file declaring
     // 2**58 strings was a read without end.
     ensure_allocatable(ds, &shape, width.unwrap_or(std::mem::size_of::<VarLenUnicode>()))?;
+    if width.is_none() {
+        check_stored_lengths(ds, shape.iter().product())?;
+    }
     let row: usize = shape[1..].iter().try_fold(1usize, |n, e| n.checked_mul(*e)).unwrap_or(usize::MAX);
     let per_row = decoded_bytes(row, width, 0).unwrap_or(usize::MAX).max(1);
     let mut step = (budget / per_row).clamp(1, shape[0]);
@@ -692,6 +769,9 @@ pub fn read_stored_strings(ds: &hdf5::Dataset) -> Result<Vec<Vec<u8>>> {
     // always was, so that a declared extent no machine holds is refused
     // before it is measured.
     ensure_allocatable(ds, &extents, width.unwrap_or(std::mem::size_of::<VarLenUnicode>()))?;
+    if let (None, Some(n)) = (width, n) {
+        check_stored_lengths(ds, n)?;
+    }
     let text = match width {
         None if n.is_some_and(|n| n > 0) => vlen_text_bytes(ds, None)?,
         _ => 0,
@@ -1326,5 +1406,39 @@ mod tests {
         assert_eq!(decoded_bytes(10, None, 100), Some(10 * (STRING_COST + 8) + 200));
         assert_eq!(decoded_bytes(usize::MAX, Some(1), 0), None);
         assert_eq!(decoded_bytes(1, None, usize::MAX), None);
+    }
+
+    /// A string's stored element states its length, which no string the
+    /// file stores exceeds the file's size by: a longer one is refused before
+    /// HDF5 reads, in a whole read and a slab at a time.
+    #[test]
+    fn s14_5_a_string_stated_longer_than_its_file_is_refused_unread() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.h5");
+        let values: Vec<String> = ["a", "bc", "def"].iter().map(|s| s.to_string()).collect();
+        let offsets = {
+            let file = crate::h5::file::marked(|| hdf5::File::create(&path)).unwrap();
+            let one = create_scalar_string(&file, "one", "{}").unwrap();
+            let rows = create_strings(&file, "rows", &values).unwrap();
+            create_strings(&file, "kept", &values).unwrap();
+            let offset =
+                |ds: &hdf5::Dataset| super::super::locked(|| unsafe { crate::h5sys::h5d::H5Dget_offset(ds.id()) });
+            (offset(&one), offset(&rows))
+        };
+        // The length of the scalar's string, and of the vector's last.
+        let stated = 0xFFFF_FF00u32.to_le_bytes();
+        let mut bytes = std::fs::read(&path).unwrap();
+        for at in [offsets.0 as usize, offsets.1 as usize + 2 * 16] {
+            bytes[at..at + 4].copy_from_slice(&stated);
+        }
+        std::fs::write(&path, &bytes).unwrap();
+
+        let file = crate::h5::file::open_read(&path).unwrap();
+        let refused = |err: Error| assert!(err.to_string().contains("states a string of 4294967040 bytes"), "{err}");
+        refused(read_stored_strings(&file.dataset("one").unwrap()).unwrap_err());
+        let rows = file.dataset("rows").unwrap();
+        refused(read_stored_strings(&rows).unwrap_err());
+        refused(for_each_string_slab(&rows, 1 << 20, &mut |_| Ok(())).unwrap_err());
+        assert_eq!(read_strings(&file.dataset("kept").unwrap()).unwrap(), values);
     }
 }
