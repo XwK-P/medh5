@@ -264,6 +264,8 @@ def _files(
         read("the mapping this command reads", "mapping")
         if (root := given("from_meds")) is not None:
             trees.append(("the MEDS dataset this command reads", root))
+        if (root := given("from_fhir_bulk")) is not None:
+            trees.append(("the FHIR bulk export this command reads", root))
     if out is not None:
         writes.append(("the output this command writes", out))
     return reads, writes, trees
@@ -682,10 +684,16 @@ def _clinical_augment(args: Any) -> int:
 
 
 def _clinical_augment_cohort(args: Any) -> int:
-    """``medh5 clinical augment-cohort --from-meds DIR --mapping MAP.csv``."""
-    from medh5.io.meds import augment_cohort_from_meds
-
-    mapping = _cohort_mapping(Path(args.mapping), meds=True)
+    """``medh5 clinical augment-cohort --from-meds DIR | --from-fhir-bulk DIR
+    --mapping MAP.csv``."""
+    if args.from_fhir_bulk:
+        given = [f"--{o.replace('_', '-')}" for o in _MEDS_ONLY if getattr(args, o)]
+        if given:
+            return _fail(
+                f"{', '.join(given)}: MEDS options, which --from-fhir-bulk does "
+                "not take"
+            )
+    mapping = _cohort_mapping(Path(args.mapping), meds=bool(args.from_meds))
     common = {
         "out_dir": args.out_dir,
         "clock": _given_clock(args),
@@ -693,16 +701,23 @@ def _clinical_augment_cohort(args: Any) -> int:
         "origin": args.origin,
         "texts": args.with_text,
     }
-    cohort = augment_cohort_from_meds(
-        args.from_meds,
-        mapping,
-        code_systems=_pairs(args.code_system, "code-system"),
-        kinds=_pairs(args.kind, "kind"),
-        day_precision=args.day_precision or (),
-        document_codes=args.document_code or (),
-        both_values=args.both_values or "refuse",
-        **common,
-    )
+    if args.from_meds:
+        from medh5.io.meds import augment_cohort_from_meds
+
+        cohort = augment_cohort_from_meds(
+            args.from_meds,
+            mapping,
+            code_systems=_pairs(args.code_system, "code-system"),
+            kinds=_pairs(args.kind, "kind"),
+            day_precision=args.day_precision or (),
+            document_codes=args.document_code or (),
+            both_values=args.both_values or "refuse",
+            **common,
+        )
+    else:
+        from medh5.io.fhir import augment_cohort_from_fhir
+
+        cohort = augment_cohort_from_fhir(args.from_fhir_bulk, mapping, **common)
     found = cohort.to_json()
     if args.report:
         _write_report(Path(args.report), json.dumps(found, indent=2) + "\n")

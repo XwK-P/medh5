@@ -785,6 +785,35 @@ class Fhir:
         return path
 
     @staticmethod
+    def of(subject: str) -> list[dict[str, Any]]:
+        """The kit's resources of ``Patient/p1``, as *subject*'s."""
+        import copy
+
+        found = []
+        for resource in Fhir.resources():
+            if (resource.get("subject") or {}).get("reference") == Fhir.SUBJECT:
+                resource = copy.deepcopy(resource)
+                resource["subject"] = {"reference": subject}
+                found.append(resource)
+        return found
+
+    @staticmethod
+    def write_bulk(root: Path, resources: Sequence[dict[str, Any]]) -> Path:
+        """A FHIR Bulk Data export at *root*: one NDJSON file per resource
+        type, each resource on a line in the order given.  Returns *root*."""
+        import json
+
+        root.mkdir(parents=True, exist_ok=True)
+        by_type: dict[str, list[str]] = {}
+        for resource in resources:
+            by_type.setdefault(resource["resourceType"], []).append(
+                json.dumps(resource) + "\n"
+            )
+        for kind, lines in by_type.items():
+            (root / f"{kind}.ndjson").write_text("".join(lines), encoding="utf-8")
+        return root
+
+    @staticmethod
     def sample(path: Path) -> Path:
         """An imaging-only sample (1.0), images ``CT_tp0`` and ``CT_tp1``."""
         return Meds.sample(path)

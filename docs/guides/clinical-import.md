@@ -104,12 +104,14 @@ assert result["events"] == 1 and not report.guesses
 
 ## A cohort
 
-A MEDS dataset holds many subjects. The cohort importer reads it once, rather
-than once per sample, and writes each subject into the sample a mapping
-names:
+A MEDS dataset or a FHIR Bulk Data export holds many subjects. The cohort
+importers read it once, rather than once per sample, and write each subject
+into the sample a mapping names:
 
 <!-- illustrative -->
 ```python
+from medh5.clinical import Clock
+from medh5.io.fhir import augment_cohort_from_fhir
 from medh5.io.meds import augment_cohort_from_meds
 
 cohort = augment_cohort_from_meds(
@@ -121,17 +123,27 @@ cohort = augment_cohort_from_meds(
 )
 for subject in cohort.refused:
     print(subject.subject, subject.error)
+
+bulk = augment_cohort_from_fhir(
+    "export/",                     # Observation.ndjson, DiagnosticReport.ndjson, ...
+    {"Patient/p1": "P-0001.medh5"},
+    clock=Clock.utc("ehr"),
+)
 ```
 
 Each subject is mapped exactly as the per-sample importer maps it alone, so
-its sample is the one `augment_from_meds` would write, and its entry in
-`cohort.subjects` carries the same augmentation and report. The batch changes
-the cost, never the answer. The dataset is opened once and read twice, a
-Parquet row group at a time: the subject column to count each mapped
-subject's rows, then the mapped subjects' rows, skipping row groups whose
-statistics hold none. A subject is imported as soon as its last row is read,
-so a dataset in MEDS order holds one row group and one subject in memory at a
-time.
+its sample is the one `augment_from_meds` or `augment_from_fhir` would write,
+and its entry in `cohort.subjects` carries the same augmentation and report.
+The batch changes the cost, never the answer:
+
+- **MEDS.** The dataset is opened once and read twice, a Parquet row group at
+  a time: the subject column to count each mapped subject's rows, then the
+  mapped subjects' rows, skipping row groups whose statistics hold none. A
+  subject is imported as soon as its last row is read, so a dataset in MEDS
+  order holds one row group and one subject in memory at a time.
+- **FHIR.** The NDJSON files are read once to find where each mapped
+  subject's Observations and DiagnosticReports are, then once per subject to
+  read them, in file and line order, as a Bundle of them would be read.
 
 A subject that refuses (no rows, a sample without a clock, ids already there)
 is listed in `cohort.refused` with its reason, and the others are still
@@ -197,6 +209,8 @@ sample path is the CSV's):
 medh5 clinical augment-cohort --from-meds meds/ --mapping cohort.csv \
     --timezone America/New_York --code-system LOINC=http://loinc.org \
     --out-dir imported/ --report cohort.import.json
+medh5 clinical augment-cohort --from-fhir-bulk export/ --mapping cohort.csv \
+    --clock-id ehr --clock utc
 ```
 
 It prints each subject's result and report; a refused subject is listed and

@@ -710,7 +710,7 @@ $ medh5 clinical augment-cohort --from-meds meds/ --mapping cohort.csv --timezon
 ```
 
 ```python
-from medh5.io.fhir import augment_from_fhir, read_fhir
+from medh5.io.fhir import augment_cohort_from_fhir, augment_from_fhir, read_fhir
 from medh5.io.meds import augment_cohort_from_meds, augment_from_meds, read_meds
 from medh5.io.report import CohortImport, SubjectImport
 ```
@@ -722,9 +722,10 @@ so the report holds no guess; free text and birth instants are imported only
 when asked. The mapping tables and refusals are in
 [Import from MEDS or FHIR](../guides/clinical-import.md).
 
-`augment_cohort_from_meds` imports a whole cohort from one MEDS dataset,
-read once, into the samples a mapping names, each subject exactly as
-`augment_from_meds` maps it alone. It returns a `CohortImport`: `subjects`, a `SubjectImport` per mapped
+`augment_cohort_from_meds` and `augment_cohort_from_fhir` (a FHIR Bulk Data
+export) import a whole cohort from one source, read once, into the samples a
+mapping names, each subject exactly as the per-sample importer maps it alone.
+They return a `CohortImport`: `subjects`, a `SubjectImport` per mapped
 subject (its augmentation and report, or the `error` it was refused with),
 `imported` and `refused`, and `report`, the notes on the source as a whole.
 

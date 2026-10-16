@@ -1156,18 +1156,23 @@ fn importer(cmd: Command) -> Command {
         .after_help("--from-meds and --from-fhir run in the Python package (MEDS needs pip install 'medh5[meds]').")
 }
 
-/// `clinical augment-cohort`: one MEDS dataset into the samples a mapping
-/// names, a subject each, in the Python package (W22-09).
+/// `clinical augment-cohort`: one MEDS dataset or FHIR bulk export into the
+/// samples a mapping names, a subject each, in the Python package (W22-09).
 fn cohort_importer() -> Command {
     let cmd = Command::new("augment-cohort")
-        .about("import a MEDS dataset into the samples a mapping names (1.1 §10)")
-        .arg(opt("from_meds", "from-meds", "import a MEDS dataset (its root, or one shard)").required(true))
+        .about("import a MEDS dataset or a FHIR bulk export into the samples a mapping names (1.1 §10)")
+        .arg(
+            opt("from_meds", "from-meds", "import a MEDS dataset (its root, or one shard)")
+                .required_unless_present("from_fhir_bulk")
+                .conflicts_with("from_fhir_bulk"),
+        )
+        .arg(opt("from_fhir_bulk", "from-fhir-bulk", "import a FHIR Bulk Data export: a directory of NDJSON files"))
         .arg(
             opt(
                 "mapping",
                 "mapping",
-                "a CSV with a subject,sample header: the MEDS subject_id whose records each sample takes (a relative \
-                 path is the CSV's)",
+                "a CSV with a subject,sample header: the MEDS subject_id or FHIR subject reference whose records each \
+                 sample takes (a relative path is the CSV's)",
             )
             .required(true),
         )

@@ -792,7 +792,7 @@ does.
 ### `medh5 clinical augment-cohort`
 
 ```
-medh5 clinical augment-cohort --from-meds DIR --mapping MAP.csv
+medh5 clinical augment-cohort (--from-meds DIR | --from-fhir-bulk DIR) --mapping MAP.csv
                               [--out-dir DIR] [--clock-id ID --clock {utc,shifted_utc,relative}]
                               [--origin ISO] [--timezone TZ] [--code-system PREFIX=URI]...
                               [--kind PREFIX=KIND]... [--day-precision PREFIX]...
@@ -800,11 +800,12 @@ medh5 clinical augment-cohort --from-meds DIR --mapping MAP.csv
                               [--both-values {refuse,numeric,text}] [--report FILE] [--json]
 ```
 
-A MEDS dataset into the samples `--mapping` names, each subject's records
-added to its sample as `clinical augment` adds one subject's: in place, or
-under the sample's name in `--out-dir`. The mapping is a CSV with the header
-`subject,sample`, a MEDS `subject_id` per row, and a relative sample path is
-the CSV's. The dataset is read once, not once per sample; see
+A MEDS dataset or a FHIR Bulk Data export (a directory of NDJSON files) into
+the samples `--mapping` names, each subject's records added to its sample as
+`clinical augment` adds one subject's: in place, or under the sample's name in
+`--out-dir`. The mapping is a CSV with the header `subject,sample`, a MEDS
+`subject_id` or a FHIR subject reference per row, and a relative sample path
+is the CSV's. The source is read once, not once per sample; see
 [Import from MEDS or FHIR](../guides/clinical-import.md#a-cohort). The other
 options are `clinical augment`'s, applied to every subject; without
 `--clock-id` and `--clock` each subject goes on its sample's own clock. A

@@ -280,3 +280,180 @@ def test_clinical_augment_from_fhir(tmp_path, capsys):
     assert "0 warning(s)" in capsys.readouterr().out
     with open_sample(other) as s:
         assert s.clinical.clock.reference == "relative"
+
+
+# -- a bulk export into a cohort (W22-09) -------------------------------------
+
+
+BULK = {"clock": Clock.utc("ehr"), "texts": True, "timezone": "UTC"}
+"""The options every bulk test imports with."""
+
+
+def _export(tmp_path, *subjects):
+    """A bulk export of the kit's resources (``Patient/p1``'s, one of
+    ``Patient/p2``, a ``Patient``) and *subjects*' copies of ``p1``'s, the
+    subjects' resources interleaved line by line."""
+    sources = [Fhir.resources(), *(Fhir.of(s) for s in subjects)]
+    resources = []
+    for i in range(max(map(len, sources))):
+        resources.extend(source[i] for source in sources if i < len(source))
+    return Fhir.write_bulk(tmp_path / "export", resources), resources
+
+
+def _of(resources, subject):
+    """*subject*'s Observations and DiagnosticReports, in the order a bulk
+    export holds them: by file name, then by line."""
+    mine = [
+        r
+        for r in resources
+        if (r.get("subject") or {}).get("reference") == subject
+        and r["resourceType"] in ("Observation", "DiagnosticReport")
+    ]
+    return sorted(mine, key=lambda r: r["resourceType"])
+
+
+def _content(path):
+    with open_sample(path) as sample:
+        return sample.content_id, sample.clinical.records().to_json()
+
+
+def test_a_bulk_export_import_equals_each_subjects_bundle_import(tmp_path):
+    from medh5.io.fhir import augment_cohort_from_fhir
+
+    export, resources = _export(tmp_path, "Patient/p3")
+    mapping = {
+        "Patient/p1": Fhir.sample(tmp_path / "one.medh5"),
+        "Patient/p3": Fhir.sample(tmp_path / "three.medh5"),
+    }
+    cohort = augment_cohort_from_fhir(export, mapping, out_dir=tmp_path / "out", **BULK)
+    assert [s.subject for s in cohort.imported] == list(mapping)
+    for found in cohort.subjects:
+        bundle = Fhir.write(
+            tmp_path / f"{found.subject[-2:]}.json", _of(resources, found.subject)
+        )
+        alone = tmp_path / f"alone-{found.subject[-2:]}.medh5"
+        result, report = augment_from_fhir(
+            mapping[found.subject], bundle, subject=found.subject, out=alone, **BULK
+        )
+        written = tmp_path / "out" / mapping[found.subject].name
+        assert _content(written) == _content(alone)
+        assert found.report.source == str(export)
+        assert found.report.outputs == [str(written)]
+        assert found.report.notes == report.notes
+        assert found.augment["events"] == result["events"]
+    # Two versions of one resource are still versions of one record.
+    with open_sample(tmp_path / "out" / "three.medh5") as sample:
+        events = sample.clinical.records().events
+        assert sum(e.record_id == "obs.creat" for e in events) == 2
+
+
+def test_a_resource_for_an_unmapped_subject_is_counted(tmp_path):
+    from medh5.io.fhir import augment_cohort_from_fhir
+
+    export, _ = _export(tmp_path, "Patient/p3", "Patient/p4")
+    sample = Fhir.sample(tmp_path / "s.medh5")
+    cohort = augment_cohort_from_fhir(export, {"Patient/p3": sample}, **BULK)
+    assert [s.subject for s in cohort.imported] == ["Patient/p3"]
+    (subjects,) = cohort.report.of_kind("subject")
+    # p1's nine and p4's nine, and p2's one: three subjects not read.
+    assert subjects.severity == "info"
+    assert subjects.detail == {"subjects": 3, "resources": 19}
+    (patient,) = cohort.report.of_kind("resource")
+    assert patient.detail == {"resourceType": "Patient", "resources": 1}
+    assert "19 Observation(s) and DiagnosticReport(s)" in str(cohort)
+
+
+def test_a_bulk_subject_that_refuses_leaves_the_others(tmp_path):
+    from medh5.io.fhir import augment_cohort_from_fhir
+
+    export, _ = _export(tmp_path)
+    mapping = {
+        "Patient/p9": Fhir.sample(tmp_path / "nine.medh5"),
+        "Patient/p1": Fhir.sample(tmp_path / "one.medh5"),
+    }
+    cohort = augment_cohort_from_fhir(export, mapping, **BULK)
+    (refused,) = cohort.refused
+    assert refused.subject == "Patient/p9"
+    assert "no Observation or DiagnosticReport of Patient/p9" in refused.error
+    assert [s.subject for s in cohort.imported] == ["Patient/p1"]
+    with open_sample(mapping["Patient/p9"]) as nine:
+        assert nine.clinical is None
+    # The sample's own clock, when none is given: p1's sample has one now.
+    again = augment_cohort_from_fhir(
+        export,
+        {"Patient/p2": mapping["Patient/p1"]},
+        **{k: v for k, v in BULK.items() if k != "clock"},
+    )
+    assert again.imported[0].augment["events"] == 1
+
+
+def test_a_bulk_export_is_read_as_ndjson(tmp_path):
+    from medh5.io.fhir import augment_cohort_from_fhir
+
+    sample = Fhir.sample(tmp_path / "s.medh5")
+    with pytest.raises(MEDH5ValidationError, match="not a FHIR bulk export"):
+        augment_cohort_from_fhir(tmp_path / "none", {"Patient/p1": sample}, **BULK)
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(MEDH5ValidationError, match=r"no FHIR bulk file"):
+        augment_cohort_from_fhir(tmp_path / "empty", {"Patient/p1": sample}, **BULK)
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "Observation.ndjson").write_text(
+        '{"resourceType": "Observation"}\n\n{', encoding="utf-8"
+    )
+    with pytest.raises(MEDH5ValidationError, match="line 3 of .* is not JSON"):
+        augment_cohort_from_fhir(broken, {"Patient/p1": sample}, **BULK)
+    (broken / "Observation.ndjson").write_text("[1]\n", encoding="utf-8")
+    with pytest.raises(
+        MEDH5ValidationError, match="line 1 of .* is not a FHIR resource"
+    ):
+        augment_cohort_from_fhir(broken, {"Patient/p1": sample}, **BULK)
+    with open_sample(sample) as found:
+        assert found.clinical is None
+
+
+def test_clinical_augment_cohort_from_fhir_bulk(tmp_path, capsys):
+    """`medh5 clinical augment-cohort --from-fhir-bulk`, a mapping CSV whose
+    paths are its own, and the MEDS options it does not take."""
+    import json
+
+    from medh5.cli import EXIT_ERROR, EXIT_OK, main
+
+    export, _ = _export(tmp_path, "Patient/p3")
+    Fhir.sample(tmp_path / "three.medh5")
+    mapping = tmp_path / "map.csv"
+    mapping.write_text("subject,sample\nPatient/p3,three.medh5\n", encoding="utf-8")
+    argv = [
+        "clinical", "augment-cohort", "--from-fhir-bulk", str(export),
+        "--mapping", str(mapping), "--clock-id", "ehr", "--clock", "utc",
+        "--timezone", "UTC", "--out-dir", str(tmp_path / "out"),
+    ]  # fmt: skip
+    assert main([*argv, "--kind", "LOINC=lab"]) == EXIT_ERROR
+    assert "--kind: MEDS options" in capsys.readouterr().err
+    # The kit's warnings (a Timing, a code in text only) exit 1.
+    assert main([*argv, "--json"]) == EXIT_ERROR
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["converter"] == "from-fhir" and printed["imported"] == 1
+    (subject,) = printed["subjects"]
+    assert subject["subject"] == "Patient/p3"
+    assert subject["augment"]["path"] == str(tmp_path / "out" / "three.medh5")
+    # Again into the same directory: refused, as an import over a file is.
+    assert main(argv) == EXIT_ERROR
+    assert "REFUSED  Patient/p3" in capsys.readouterr().out
+    mapping.write_text("patient,sample\nPatient/p3,three.medh5\n", encoding="utf-8")
+    assert main(argv) == EXIT_ERROR
+    assert "header subject,sample" in capsys.readouterr().err
+    mapping.write_text("subject,sample\nPatient/p3\n", encoding="utf-8")
+    assert main(argv) == EXIT_ERROR
+    assert "line 2 of" in capsys.readouterr().err
+    mapping.write_text(
+        "subject,sample\nPatient/p3,a\n\nPatient/p3,b\n", encoding="utf-8"
+    )
+    assert main(argv) == EXIT_ERROR
+    assert "line 4 of" in capsys.readouterr().err
+    # No warning, no refusal: exit 0, the text form.
+    clean = Fhir.write_bulk(tmp_path / "clean", Fhir.resources()[1:4])
+    Fhir.sample(tmp_path / "one.medh5")
+    mapping.write_text("subject,sample\nPatient/p1,one.medh5\n", encoding="utf-8")
+    assert main([*argv[:2], "--from-fhir-bulk", str(clean), *argv[4:]]) == EXIT_OK
+    assert "1 subject(s) imported, 0 refused" in capsys.readouterr().out

@@ -54,6 +54,7 @@ _LAZY: dict[str, str] = {
     "augment_cohort_from_meds": "medh5.io.meds",
     "read_fhir": "medh5.io.fhir",
     "augment_from_fhir": "medh5.io.fhir",
+    "augment_cohort_from_fhir": "medh5.io.fhir",
     "group_by_subject": "medh5.io.grouping",
     "SubjectGroup": "medh5.io.grouping",
 }

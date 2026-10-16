@@ -3075,6 +3075,7 @@ medh5.io.SubjectImport.report	field
 medh5.io.SubjectImport.sample	field
 medh5.io.SubjectImport.subject	field
 medh5.io.SubjectImport.to_json	method	()
+medh5.io.augment_cohort_from_fhir	function	(export_dir, mapping, *, out_dir=None, clock=None, timezone=None, origin=None, texts=False, prefer_systems=(), image_studies=None)
 medh5.io.augment_cohort_from_meds	function	(dataset, mapping, *, out_dir=None, clock=None, timezone=None, origin=None, code_system=None, code_systems=None, kinds=None, status='unknown', day_precision=(), document_codes=(), exclude_codes=('MEDS_BIRTH',), texts=False, both_values='refuse', columns=None)
 medh5.io.augment_from_fhir	function	(path, source, *, out=None, **options)
 medh5.io.augment_from_meds	function	(path, source, *, out=None, **options)
@@ -3119,6 +3120,7 @@ medh5.io.fhir	module
 medh5.io.fhir.COMPARATORS	constant	dict
 medh5.io.fhir.STATUSES	constant	dict
 medh5.io.fhir.UCUM	constant	str
+medh5.io.fhir.augment_cohort_from_fhir	function	(export_dir, mapping, *, out_dir=None, clock=None, timezone=None, origin=None, texts=False, prefer_systems=(), image_studies=None)
 medh5.io.fhir.augment_from_fhir	function	(path, source, *, out=None, **options)
 medh5.io.fhir.read_fhir	function	(source, *, subject, clock, timezone=None, origin=None, texts=False, prefer_systems=(), image_studies=None)
 medh5.io.from_dicom	function	(root, out, *, group_by='subject', modalities=None, series_uids=None, codec='balanced', report=None, per_slice_rescale='refuse')

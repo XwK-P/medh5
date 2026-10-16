@@ -61,8 +61,9 @@ from medh5.clinical import (
     utc_us,
 )
 from medh5.errors import MEDH5ValidationError
+from medh5.io import _clinical
 from medh5.io._clinical import Timeline, option_map, valid_id, wall_us
-from medh5.io.report import ConversionReport
+from medh5.io.report import CohortImport, ConversionReport
 
 UCUM = "http://unitsofmeasure.org"
 
@@ -725,4 +726,156 @@ def augment_from_fhir(
     return result, report
 
 
-__all__ = ["COMPARATORS", "STATUSES", "UCUM", "augment_from_fhir", "read_fhir"]
+def _bulk_files(export_dir: Path) -> list[Path]:
+    """The NDJSON files of a FHIR Bulk Data export, in name order."""
+    if not export_dir.is_dir():
+        raise MEDH5ValidationError(f"{export_dir} is not a FHIR bulk export directory")
+    found = sorted(export_dir.glob("*.ndjson"))
+    if not found:
+        raise MEDH5ValidationError(f"{export_dir} holds no FHIR bulk file (*.ndjson)")
+    return found
+
+
+def augment_cohort_from_fhir(
+    export_dir: str | os.PathLike[str],
+    mapping: Mapping[str, str | os.PathLike[str]],
+    *,
+    out_dir: str | os.PathLike[str] | None = None,
+    clock: Clock | None = None,
+    timezone: str | datetime.tzinfo | None = None,
+    origin: str | datetime.datetime | None = None,
+    texts: bool = False,
+    prefer_systems: Iterable[str] = (),
+    image_studies: Mapping[str, str] | None = None,
+) -> CohortImport:
+    """Import every subject *mapping* names from a FHIR Bulk Data export, each
+    into its sample.
+
+    *export_dir* holds the export's NDJSON files (``Observation.ndjson``,
+    ``DiagnosticReport.ndjson``, …: one resource per line, many patients);
+    *mapping* maps a subject reference (``Patient/123``) to the sample its
+    resources augment, in place or, with *out_dir*, into a file of the
+    sample's name there.  Each subject's Observations and DiagnosticReports,
+    in file and line order, are mapped exactly as :func:`read_fhir` maps a
+    Bundle of them, onto *clock* or, when it is ``None``, onto each sample's
+    own clinical clock: the batch changes the cost, never the answer.  The
+    other options are :func:`read_fhir`'s.
+
+    The files are streamed twice: once to find where each mapped subject's
+    resources are (a line's offset, not the resource), then once per subject
+    to read them, so one subject's resources are in memory at a time.
+    Resources of subjects the mapping does not name, and resource types the
+    profile does not read, are counted in ``info`` notes.  A subject that
+    refuses is reported in the result, and the others are still written.
+    """
+    root = Path(os.fspath(export_dir))
+    files = _bulk_files(root)
+    targets = _clinical.cohort_targets(mapping, out_dir)
+    source = os.fspath(export_dir)
+    cohort = CohortImport(
+        source=source,
+        converter="from-fhir",
+        report=ConversionReport(source=source, converter="from-fhir"),
+    )
+    lines: dict[str, list[tuple[int, int, int]]] = defaultdict(list)
+    others: Counter[str] = Counter()
+    elsewhere: Counter[str] = Counter()
+    for index, path in enumerate(files):
+        with path.open("rb") as stream:
+            offset = 0
+            for number, line in enumerate(stream, 1):
+                start, offset = offset, offset + len(line)
+                if not line.strip():
+                    continue
+                try:
+                    resource = json.loads(line)
+                except ValueError as exc:
+                    raise MEDH5ValidationError(
+                        f"line {number} of {path} is not JSON: {exc}"
+                    ) from None
+                if not isinstance(resource, Mapping):
+                    raise MEDH5ValidationError(
+                        f"line {number} of {path} is not a FHIR resource"
+                    )
+                kind = str(resource.get("resourceType"))
+                if kind not in _KINDS:
+                    others[kind] += 1
+                    continue
+                reference = (resource.get("subject") or {}).get("reference")
+                if isinstance(reference, str) and reference in mapping:
+                    lines[reference].append((index, start, len(line)))
+                else:
+                    elsewhere[str(reference)] += 1
+    _bulk_notes(cohort.report, others, elsewhere)
+    for subject, sample, out in targets:
+
+        def read(
+            on: Clock, subject: str = subject
+        ) -> tuple[ClinicalRecords, ConversionReport]:
+            resources = list(_bulk_read(files, lines.pop(subject, [])))
+            records, report = read_fhir(
+                resources,
+                subject=subject,
+                clock=on,
+                timezone=timezone,
+                origin=origin,
+                texts=texts,
+                prefer_systems=prefer_systems,
+                image_studies=image_studies,
+            )
+            report.source = source
+            return records, report
+
+        cohort.subjects.append(
+            _clinical.import_subject(subject, sample, out, clock, read)
+        )
+    return cohort
+
+
+def _bulk_read(
+    files: Sequence[Path], where: Sequence[tuple[int, int, int]]
+) -> Iterable[Any]:
+    """The resources at *where*: (file, offset, length) of each line."""
+    streams: dict[int, Any] = {}
+    try:
+        for index, start, length in where:
+            stream = streams.get(index)
+            if stream is None:
+                stream = streams[index] = files[index].open("rb")
+            stream.seek(start)
+            yield json.loads(stream.read(length))
+    finally:
+        for stream in streams.values():
+            stream.close()
+
+
+def _bulk_notes(
+    report: ConversionReport, others: Counter[str], elsewhere: Counter[str]
+) -> None:
+    if elsewhere:
+        report.add(
+            "subject",
+            f"{sum(elsewhere.values())} Observation(s) and DiagnosticReport(s) "
+            f"of {len(elsewhere)} subject(s) not in the mapping were not read",
+            detail={
+                "subjects": len(elsewhere),
+                "resources": sum(elsewhere.values()),
+            },
+        )
+    for kind, n in sorted(others.items()):
+        report.add(
+            "resource",
+            f"{n} {kind} resource(s) left out: this profile reads Observations "
+            "and DiagnosticReports",
+            detail={"resourceType": kind, "resources": n},
+        )
+
+
+__all__ = [
+    "COMPARATORS",
+    "STATUSES",
+    "UCUM",
+    "augment_cohort_from_fhir",
+    "augment_from_fhir",
+    "read_fhir",
+]

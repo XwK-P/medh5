@@ -640,6 +640,7 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
+| `augment_cohort_from_fhir` | function | Import every subject *mapping* names from a FHIR Bulk Data export, each into its sample. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `augment_cohort_from_meds` | function | Import every subject *mapping* names from one MEDS *dataset*, each into its sample, in one pass over the shards. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `augment_from_fhir` | function | `read_fhir` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `augment_from_meds` | function | `read_meds` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
@@ -710,6 +711,7 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
+| `augment_cohort_from_fhir` | function | Import every subject *mapping* names from a FHIR Bulk Data export, each into its sample. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `augment_from_fhir` | function | `read_fhir` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `COMPARATORS` | constant (`dict`) | `Quantity.comparator` -&gt; `value_comparator` (`ad` has none). | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `read_fhir` | function | The Observations and DiagnosticReports of *subject* (a reference, such as `Patient/123`) in *source*, as clinical records on *clock*, and what the conversion decided. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
