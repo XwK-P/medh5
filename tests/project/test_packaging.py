@@ -1609,6 +1609,29 @@ class TestDistribution:
         sdist = _jobs(CI.read_text(encoding="utf-8"))["sdist"]
         assert "rm -rf medh5" in sdist and "pytest tests/project" in sdist
 
+    def test_the_sdist_carries_the_tests_data(self):
+        """The shipped tests read `tests/data` (the ITK golden files, the NIfTI
+        parity corpus); left out, the parity test failed to collect from the
+        unpacked sdist."""
+        include = re.findall(
+            r'\{ path = "([^"]+)", format = "sdist" \}',
+            PYPROJECT.read_text(encoding="utf-8"),
+        )
+        data = [
+            p.relative_to(ROOT).as_posix()
+            for p in (ROOT / "tests" / "data").rglob("*")
+            if p.is_file()
+            and "__pycache__" not in p.parts
+            and not p.name.startswith(".")
+        ]
+        assert any("nifti-parity/inputs/" in path for path in data)
+        missing = [
+            path
+            for path in data
+            if not any(fnmatch.fnmatch(path, pattern) for pattern in include)
+        ]
+        assert not missing
+
     def test_a_damaged_file_is_reported_by_every_binary(self, tmp_path):
         """An HDF5 compiled without NDEBUG aborts on a damaged file; CI damages
         files for every platform's binary, and for a build from a copy of the

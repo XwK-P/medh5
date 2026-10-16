@@ -164,6 +164,19 @@ include = [
   { path = "docs/**/*.py", format = "sdist" },
   { path = "tests/**/*.py", format = "sdist" },
   { path = "tests/**/*.txt", format = "sdist" },
+  # The tests' data: the ITK golden files, and the NIfTI parity corpus ---
+  # what 2.1.0's converter did, which the engine's converter is held to.
+  { path = "tests/data/**/*.json", format = "sdist" },
+  { path = "tests/data/**/*.md", format = "sdist" },
+  { path = "tests/data/**/*.nii", format = "sdist" },
+  { path = "tests/data/**/*.gz", format = "sdist" },
+  { path = "tests/data/**/*.hdr", format = "sdist" },
+  { path = "tests/data/**/*.img", format = "sdist" },
+  { path = "tests/data/**/*.bval", format = "sdist" },
+  { path = "tests/data/**/*.mgh", format = "sdist" },
+  { path = "tests/data/**/*.medh5", format = "sdist" },
+  { path = "tests/data/**/*.tfm", format = "sdist" },
+  { path = "tests/data/**/*.mat", format = "sdist" },
   # What the shipped tests read about the project itself --- the workflows and
   # release scripts `tests/project` checks --- and what the documentation is
   # built with, so `pytest tests/project` and `mkdocs build` run from the
