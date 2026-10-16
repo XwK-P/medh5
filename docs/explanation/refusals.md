@@ -61,8 +61,8 @@ keeps its position.
 
 **A file that declares no geometry is refused.** `sform_code == qform_code == 0`
 is NIfTI stating that it carries no spatial mapping — voxel indices and nothing
-else. nibabel still hands back an affine, rebuilt from `pixdim`, and importing
-that mints a world grid nobody measured. `--assume-geometry` takes the fallback
+else. A reader can still rebuild an affine from `pixdim`, as nibabel does, and
+importing that mints a world grid nobody measured. `--assume-geometry` takes the fallback
 deliberately, and it is then recorded as a **guess** in the report.
 
 **An sform/qform disagreement is recorded, not resolved in silence.** When both

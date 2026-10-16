@@ -787,7 +787,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `import_seg_nifti` | function | Add NIfTI masks to an existing sample, checking they sit on its grid. | [Converters › NIfTI](converters.md#nifti) |
 | `RAS_TO_LPS` | constant (`ndarray`) | World-axis sign flip. |  |
 | `read_nifti` | function | One NIfTI file as `(array, geometry)` in MEDH5 conventions. | [Converters › NIfTI](converters.md#nifti) |
-| `require_nibabel` | function | Import nibabel, or raise an `ImportError` naming the extra to install. |  |
+| `require_nibabel` | function | Import nibabel, or raise an `ImportError` saying how to install it. |  |
 | `to_nifti` | function | Export one image, or one class of one annotation, as a NIfTI file. | [Converters › NIfTI](converters.md#nifti) |
 
 ## `medh5.io.nnunetv2` { #medh5-io-nnunetv2 }

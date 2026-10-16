@@ -3,9 +3,13 @@
 Every importer and exporter lives in `medh5.io` and behind `medh5 convert`.
 
 ```bash
-pip install "medh5[nifti,dicom]"        # reading
+pip install "medh5[dicom]"              # reading DICOM, DICOM SEG and RTSTRUCT
 pip install "medh5[dicomseg]"           # writing DICOM SEG (highdicom)
 ```
+
+NIfTI needs neither: the engine reads and writes it, so `medh5.io.nifti`, the
+ITK displacement fields and the nnU-Net exporter run with the package alone,
+and the standalone `medh5` binary converts NIfTI without Python.
 
 ## Conversion reports
 
