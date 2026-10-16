@@ -271,7 +271,7 @@ fn nifti_record(path: &Path) -> Value {
         ("bitpix", json!(h.bitpix)),
         ("slice_start", json!(h.slice_start)),
         ("pixdim", floats(&h.pixdim)),
-        ("vox_offset", float(h.vox_offset)),
+        ("vox_offset", float(h.vox_offset.as_f64())),
         ("scl_slope", float(h.scl_slope)),
         ("scl_inter", float(h.scl_inter)),
         ("slice_end", json!(h.slice_end)),
@@ -302,7 +302,7 @@ fn nifti_record(path: &Path) -> Value {
     let header: Map<String, Value> = fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
     let element = h.element().unwrap();
     let shape: Vec<usize> = h.data_shape().unwrap().iter().map(|v| *v as usize).collect();
-    let offset = h.vox_offset as usize;
+    let offset = h.vox_offset.as_i64() as usize;
     let size = shape.iter().product::<usize>() * element.itemsize();
     let voxels = &raw[offset..offset + size];
     let order = if !element.has_byte_order() {

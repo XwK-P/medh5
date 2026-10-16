@@ -20,7 +20,7 @@ use std::path::Path;
 
 use flate2::read::MultiGzDecoder;
 
-use super::header::{Element, Header, Version, NATIVE_BIG};
+use super::header::{Element, Header, Version, VoxOffset, NATIVE_BIG};
 use crate::{Error, Result};
 
 /// How much of a file is read to recognise it.
@@ -356,10 +356,10 @@ fn load_nifti(meta_name: &str, image_name: String, version: Version, single: boo
     header.check_fix()?;
     skip_extensions(&mut *stream, &header, single)?;
     let shape = header.data_shape()?;
-    let offset = match version {
-        Version::One => data_offset(header.vox_offset)?,
+    let offset = match header.vox_offset {
+        VoxOffset::Float(v) => data_offset(v)?,
         // A negative offset reads from the start, as seeking before it does.
-        Version::Two => header.exact_offset().max(0) as u64,
+        VoxOffset::Int(v) => v.max(0) as u64,
     };
     let slope_inter = header.slope_inter()?;
     Ok(Image { header, image_name, shape, offset, slope_inter })
@@ -384,7 +384,7 @@ fn skip_extensions(stream: &mut dyn Read, header: &Header, single: bool) -> Resu
     if flag.len() < 4 || flag[0] == 0 {
         return Ok(());
     }
-    let mut size: f64 = if single { header.vox_offset - (header.version.size() + 4) as f64 } else { -1.0 };
+    let mut size: f64 = if single { header.vox_offset.as_f64() - (header.version.size() + 4) as f64 } else { -1.0 };
     let swap = header.big_endian != NATIVE_BIG;
     while size >= 16.0 || size < 0.0 {
         let head = read_up_to(stream, 8).map_err(gzip_error)?;
@@ -546,7 +546,7 @@ mod tests {
         }
         h.datatype = 4;
         h.bitpix = 16;
-        h.vox_offset = if version == Version::One { 352.0 } else { 544.0 };
+        h.vox_offset = VoxOffset::Float(if version == Version::One { 352.0 } else { 544.0 });
         h
     }
 
@@ -595,7 +595,7 @@ mod tests {
         for (version, magic) in [(Version::One, *b"ni1\0"), (Version::Two, *b"ni2\0")] {
             let mut h = header(version, &[4, 3, 2]);
             h.magic = magic;
-            h.vox_offset = 0.0;
+            h.vox_offset = VoxOffset::Float(0.0);
             let stem = format!("pair{}", version.size());
             std::fs::write(dir.path().join(format!("{stem}.hdr")), h.encode()).unwrap();
             std::fs::write(dir.path().join(format!("{stem}.img")), &data).unwrap();
@@ -608,7 +608,7 @@ mod tests {
         std::fs::write(dir.path().join("UP.HDR"), {
             let mut h = header(Version::One, &[4, 3, 2]);
             h.magic = *b"ni1\0";
-            h.vox_offset = 0.0;
+            h.vox_offset = VoxOffset::Float(0.0);
             h.encode()
         })
         .unwrap();
@@ -684,7 +684,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut h = header(Version::One, &[2, 3, 4]);
         h.magic = *b"ni1\0";
-        h.vox_offset = 0.0;
+        h.vox_offset = VoxOffset::Float(0.0);
         let mut bytes = h.encode();
         bytes.extend_from_slice(&[1, 0, 0, 0]);
         bytes.extend_from_slice(&4i32.to_le_bytes());
@@ -774,7 +774,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let data = voxels(8);
         let mut h = header(Version::One, &[2, 2, 2]);
-        h.vox_offset = 352.0 + 32.0;
+        h.vox_offset = VoxOffset::Float(352.0 + 32.0);
         let mut file = h.encode();
         file.extend_from_slice(&[1, 0, 0, 0]);
         file.extend_from_slice(&32i32.to_ne_bytes());
@@ -786,7 +786,7 @@ mod tests {
         assert_eq!(nifti(&path).read_voxels().unwrap().bytes, data);
         // An extension longer than the file.
         file[352 + 4..352 + 8].copy_from_slice(&4000i32.to_ne_bytes());
-        h.vox_offset = 352.0 + 4096.0;
+        h.vox_offset = VoxOffset::Float(352.0 + 4096.0);
         file[..348].copy_from_slice(&h.encode());
         std::fs::write(&path, &file).unwrap();
         match load(&path) {

@@ -26,7 +26,7 @@ mod write;
 use ndarray::Array2;
 use serde_json::{json, Value};
 
-pub use header::{Element, Header, Version};
+pub use header::{Element, Header, Version, VoxOffset};
 pub use import::{from_nifti, grid_axes, import_seg_nifti, read_nifti, read_stored, StoredNifti};
 pub use read::Voxels;
 pub use write::{

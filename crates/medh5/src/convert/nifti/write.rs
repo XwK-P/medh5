@@ -20,7 +20,7 @@ use indexmap::IndexMap;
 use ndarray::{Array2, ArrayD, Axis, IxDyn};
 use serde_json::{json, Map, Value};
 
-use super::header::{Element, Header, Version, NIFTI1_SINGLE_OFFSET};
+use super::header::{Element, Header, Version, VoxOffset, NIFTI1_SINGLE_OFFSET};
 use super::qform::qform;
 use crate::array::{DType, NdArray};
 use crate::convert::report::ConversionReport;
@@ -341,7 +341,7 @@ fn image_header(dims: &[usize], element: Element, affine: &[[f64; 4]; 4]) -> Res
     header.pixdim[1..4].copy_from_slice(&q.zooms);
     [header.quatern_b, header.quatern_c, header.quatern_d] = q.quaternion;
     [header.qoffset_x, header.qoffset_y, header.qoffset_z] = q.offset;
-    header.vox_offset = NIFTI1_SINGLE_OFFSET;
+    header.vox_offset = VoxOffset::Float(NIFTI1_SINGLE_OFFSET);
     header.scl_slope = 1.0;
     header.scl_inter = 0.0;
     Ok(header)
