@@ -408,6 +408,7 @@ w.add_keypoints("landmarks", keypoints, keypoint_classes, class_ids, grid="ct")
 w.add_points("fiducials_tp0", points, grid="ct",
              correspondence="fiducials_tp1")   # the paired point set (§10.6)
 w.add_contours("rtstruct", polygons, grid="ct", space="world")
+w.add_polylines("vessels", polylines, grid="ct")  # open curves: format 1.2
 w.add_mesh("surface", vertices, faces, space="world", frame_uid="pseudo:frame-tp0")
 w.add_classification("response", {"progressive": 1.0}, scope="sample",
                      timepoints=["tp0", "tp1"])   # the interval, not one visit
@@ -520,6 +521,41 @@ only, and its other names keep the old version. A link in a directory anyone
 can write to, such as `/tmp`, that neither you nor the directory's owner owns
 is not followed: the amend is refused (`MEDH5FileError`), as the system would
 refuse to open the file through it.
+
+## Resampling
+
+```python
+from medh5.transforms import resample
+
+# The follow-up onto the baseline's grid, through the registration between them
+report = resample("case.medh5", "CT_tp1", onto="ct")
+report.images[0].image_id                # "CT_tp1_on_ct"
+
+# A coarser grid in the image's own frame, written to a new file
+report = resample("case.medh5", ["CT"], spacing=(3.0, 1.6, 1.6),
+                  grid_id="ct_coarse", interpolation="nearest",
+                  out="coarse.medh5")
+```
+
+| Signature | |
+|---|---|
+| `medh5.transforms.resample(path, image_ids, *, onto=None, spacing=None, grid_id=None, suffix=None, interpolation='linear', fill=0, dtype=None, out=None)` | Resample and record; returns a `ResampleReport` |
+
+`onto` names an existing grid; `spacing` (stored order, one value per spatial
+axis) with `grid_id` makes a new grid in the source's frame that keeps its
+voxel edges. Grids in one comparable frame are mapped by their affines, any
+other pair through the sample's transforms (§10.2), and a pair nothing relates
+is refused (`MEDH5ValidationError`), as is a target id already taken.
+`interpolation` is one of `RESAMPLE_INTERPOLATIONS`; `nearest` keeps the dtype,
+`linear` and `cubic` write `float32` unless `dtype` is given. Voxels whose
+source point lies outside the source take `fill`, and the output's
+`valid_mask` marks the ones holding data. JSON has no NaN, so a non-finite
+`fill` is recorded in the activity as Python spells it (`"nan"`, `"inf"`,
+`"-inf"`), which `float()` reads back. The `ResampleReport` carries the
+`activity_id` of the one `resample` activity, the target `grid_id` and whether
+it is `new_grid`, an entry per image (`ResampledImage`: `source`, `image_id`,
+`dtype`, `valid_mask`, `filled_voxels`), the transform path per source grid
+(`transforms`) and the new `content_id`. `medh5 resample` is the same call.
 
 ## Clinical history (format 1.1)
 

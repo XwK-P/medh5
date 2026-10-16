@@ -1,0 +1,13 @@
+{
+ "id": "masks-label-set-missing",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": "E402",
+  "message": "[E402] label set 'small' has no class for mask(s) ['lesion']: a mask is the class of the key its name makes, or of its name --- add the class, or rename the mask"
+ },
+ "files": []
+}

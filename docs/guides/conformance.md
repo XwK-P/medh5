@@ -30,7 +30,7 @@ shell:
 
 ```
 $ medh5 conformance publish suite/
-wrote the suite to suite/: 172 cases, see suite/README.md
+wrote the suite to suite/: 175 cases, see suite/README.md
 ```
 
 Everything an implementer needs is in that directory, `expected.json` and the code table
@@ -73,7 +73,7 @@ Three things trip implementers up:
   Shallower misses the defect the case exists for. Deeper is not safe either: most invalid cases
   were made by editing a valid file, so their stored digests cover the bytes before the edit, and
   an integrity pass adds a `content_id` mismatch the case never claimed. Those cases are marked
-  `"mutated": true`; 119 of the cases prove it.
+  `"mutated": true`; 121 of the cases prove it.
 - **A `.medh5c` case is a collection** (§2.2): it contains samples rather than being one.
   `"file_suffix"` says which.
 - **Verify the bytes first.** `SHA256SUMS` covers every published file, and a score over files that
@@ -92,7 +92,7 @@ assert (summary["passed"], summary["ok"]) == (4, True)
 
 ```
 $ medh5 conformance score suite/ results.json
-172/172 cases pass
+175/175 cases pass
 ```
 
 A case passes when the errors you reported equal its expected errors and the warnings its expected

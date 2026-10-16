@@ -1,0 +1,13 @@
+{
+ "id": "import-truncated-data-nii",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "OSError",
+  "code": null,
+  "message": "Expected 48 bytes, got 20 bytes from {corpus}/inputs/truncated-data.nii\n - could the file be damaged?"
+ },
+ "files": []
+}

@@ -152,12 +152,12 @@ def test_the_format_version_is_not_the_package_version():
     package minor bump against an unchanged format failed it.  1.x then held
     the package MAJOR equal to the format's; 2.0 is the architectural reset
     that broke that on purpose (a Rust engine, one format), so what has to
-    hold is that the newest format version is 1.1, the package version is a
+    hold is that the newest format version is 1.2, the package version is a
     well-formed release of its own, and the package MAJOR never trails the
     format MAJOR it writes.  A file is still written at the lowest version its
     content needs, so an imaging-only sample stays 1.0.
     """
-    assert medh5.__format_version__ == "1.1"
+    assert medh5.__format_version__ == "1.2"
     assert re.fullmatch(r"\d+\.\d+\.\d+(?:[.-]?[0-9A-Za-z.]+)?", _declared())
     package_major = int(_declared().split(".")[0])
     assert package_major >= int(medh5.__format_version__.split(".")[0])
@@ -174,7 +174,7 @@ def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
     build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
     # The targets ci.yml passes to build.yml, one job each.
     built = set(re.findall(r"^      target: (\S+)$", ci, re.M))
-    assert len(built) == 5
+    assert len(built) == 7
     assert set(brew.TARGETS.values()) <= built
     assert all(target in release for target in built)
     assert 'name="medh5-$version-$target"' in build
@@ -439,11 +439,11 @@ class TestRepositoryGates:
         assert floor
         version = tuple(map(int, pins["maturin_version"].split(".")))
         assert tuple(map(int, floor[1].split("."))) <= version < (int(floor[2]),)
-        for arch in ("x86_64", "aarch64"):
+        for arch in ("x86_64", "aarch64", "x86_64_musl", "aarch64_musl"):
             assert re.search(rf"^rustup_sha256_{arch}=[0-9a-f]{{64}}$", build, re.M)
-        assert "sha256sum --check" in build
+        assert '[[ "$actual" != "$digest" ]]' in build
         containers = re.findall(r"container: (\S+)", CI.read_text(encoding="utf-8"))
-        assert len(containers) == 2
+        assert len(containers) == 4
         for image in containers:
             assert re.fullmatch(r"quay\.io/pypa/[\w.-]+@sha256:[0-9a-f]{64}", image)
         built = []
@@ -473,6 +473,8 @@ class TestRepositoryGates:
         ]
         assert sorted(callers) == [
             "build-linux-aarch64",
+            "build-linux-musl-aarch64",
+            "build-linux-musl-x86_64",
             "build-linux-x86_64",
             "build-macos-arm64",
             "build-macos-x86_64",
@@ -576,13 +578,14 @@ class TestRepositoryGates:
         """The engine's Rust tests ran on Linux alone, `medh5.torch` never on
         Windows, the standalone binary's hand-over to Python nowhere, two of
         the five wheels only through the corpus, and no crate was built from
-        its package before the release published it."""
+        its package before the release published it.  The NIfTI parity test
+        runs off Linux too: 2.1.0's records hold on every platform (E3)."""
         jobs = _jobs(CI.read_text(encoding="utf-8"))
         assert (
             "cargo package --locked -p medh5-sys -p medh5 -p medh5-cli" in jobs["rust"]
         )
         platforms = jobs["rust-platforms"]
-        assert "cargo test -p medh5 --lib --locked" in platforms
+        assert "cargo test -p medh5 --lib --test nifti_parity --locked" in platforms
         assert "[windows-latest, macos-15]" in platforms
         extras = re.search(r"\[(dev,[\w,]+)\]", jobs["test-windows"])
         assert extras and "torch" in extras.group(1).split(",")
@@ -628,6 +631,8 @@ class TestRepositoryGates:
         entry names, when a value reads otherwise than it did for the newest
         h5py, and when a file was not read at all."""
         import h5py
+
+        pytest.importorskip("hdf5plugin")  # the script reads Blosc2 through it
 
         readers = _release_script("hdf5_readers.py")
         cases = tmp_path / "cases"
@@ -898,6 +903,26 @@ class TestRepositoryGates:
         assert "cargo install cargo-fuzz --version 0.13.2 --locked" in job
         assert 'cargo +"$FUZZ_TOOLCHAIN" fuzz run "$TARGET"' in job
         assert "upload-artifact" not in job
+        # The C libraries are instrumented as the Rust is, by the clang of the
+        # nightly's own LLVM, with HDF5's free lists off --- in the fuzz job,
+        # and in nothing that builds what ships.
+        cflags = "-fsanitize=address,fuzzer-no-link -DH5_USING_MEMCHECKER=1"
+        assert f"CFLAGS: {cflags}" in job
+        assert "ASAN_OPTIONS: detect_leaks=0" in job
+        assert 'llvm=$(rustc +"$FUZZ_TOOLCHAIN" -vV' in job
+        # What the targets exclude is tested in every run.
+        assert "rustc --edition 2021 --test src/lib.rs" in job
+        # Only the pinned key is trusted, not whatever else the file holds.
+        assert 'test "$primaries" = "$LLVM_KEY"' in job
+        assert '"clang-$llvm" "libclang-rt-$llvm-dev"' in job
+        assert 'echo "CC=clang-$llvm" >> "$GITHUB_ENV"' in job
+        workflows = (ROOT / ".github/workflows").glob("*.yml")
+        builds = [*workflows, *(ROOT / ".github/scripts").iterdir()]
+        for path in builds:
+            if path != FUZZ and path.is_file():
+                other = path.read_text(encoding="utf-8")
+                assert "fsanitize" not in other, path.name
+                assert "H5_USING_MEMCHECKER" not in other, path.name
         if (ROOT / "PKG-INFO").is_file():
             return  # the sdist carries no fuzz targets
         # Every target runs, in a workspace of its own: the root's lock and
@@ -983,7 +1008,7 @@ class TestDistribution:
             for name, job in jobs.items()
             if "uses: ./.github/workflows/build.yml" in job
         }
-        assert len(build_of) == 5
+        assert len(build_of) == 7
         downloading = 0
         for name, job in jobs.items():
             targets = set(re.findall(r"name: ci-(?:dist|cli)-([\w-]+)$", job, re.M))
@@ -997,7 +1022,7 @@ class TestDistribution:
             if targets:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
-        assert downloading == 15
+        assert downloading == 17
 
     def test_every_shipped_target_is_built_released_and_noticed(self):
         """The targets were listed four times --- the build jobs, the
@@ -1051,6 +1076,40 @@ class TestDistribution:
         # `dist/*.whl` now.
         for name, job in jobs.items():
             assert "dist/*.whl" not in job, name
+
+    def test_musl_gets_wheels_and_a_static_binary(self):
+        """Alpine and the other musl Linux built medh5 from source, which
+        takes a compiler, CMake and minutes.  Each architecture has musllinux
+        wheels and a binary that links musl statically, so it runs on any
+        Linux; the wheels are tested in the image that built them, and the
+        binary is checked to need no shared library."""
+        jobs = _jobs(CI.read_text(encoding="utf-8"))
+        build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
+        assert "--compatibility musllinux_1_2" in build
+        assert 'readelf -d "$exe" | grep -q NEEDED' in build
+        for arch in ("x86_64", "aarch64"):
+            target = f"{arch}-unknown-linux-musl"
+            caller = jobs[f"build-linux-musl-{arch}"]
+            assert f"      target: {target}\n" in caller
+            image = re.search(r"^      container: (\S+)$", caller, re.M)
+            assert image and image[1].startswith(f"quay.io/pypa/musllinux_1_2_{arch}@")
+            test = jobs[f"test-linux-musl-{arch}"]
+            # Tested in the image it was built in.
+            assert f"      IMAGE: {image[1]}\n" in test
+            assert f"bash .github/scripts/test-musl.sh {target}" in test
+        script = (ROOT / ".github/scripts/test-musl.sh").read_text(encoding="utf-8")
+        assert '!= "hdf5plugin"' in script and '"dev"' in script
+        assert "--image expects NAME=VALUE" in script
+        assert "pytest tests/ -v -rs" in script
+        # The checkout's own `medh5/` has no engine, and shadowed the
+        # installed one for the first import run from the checkout.
+        assert script.index("rm -rf medh5") < script.index("import medh5")
+        # The glibc host cannot install a musl wheel: those checks are the
+        # test job's.
+        steps = _jobs(BUILD.read_text(encoding="utf-8"))["build"].split("\n      - ")
+        for name in ("The wheel installs", "The binary hands the converters"):
+            (step,) = [s for s in steps if name in s]
+            assert "if: ${{ !endsWith(inputs.target, '-musl') }}" in step
 
     def test_macos_x86_64_is_cross_built_and_tested_on_every_run(self):
         """The Intel Mac build was the slowest job of every run (14 to 23
@@ -1640,6 +1699,29 @@ class TestDistribution:
             assert any(fnmatch.fnmatch(path, pattern) for pattern in include), path
         sdist = _jobs(CI.read_text(encoding="utf-8"))["sdist"]
         assert "rm -rf medh5" in sdist and "pytest tests/project" in sdist
+
+    def test_the_sdist_carries_the_tests_data(self):
+        """The shipped tests read `tests/data` (the ITK golden files, the NIfTI
+        parity corpus); left out, the parity test failed to collect from the
+        unpacked sdist."""
+        include = re.findall(
+            r'\{ path = "([^"]+)", format = "sdist" \}',
+            PYPROJECT.read_text(encoding="utf-8"),
+        )
+        data = [
+            p.relative_to(ROOT).as_posix()
+            for p in (ROOT / "tests" / "data").rglob("*")
+            if p.is_file()
+            and "__pycache__" not in p.parts
+            and not p.name.startswith(".")
+        ]
+        assert any("nifti-parity/inputs/" in path for path in data)
+        missing = [
+            path
+            for path in data
+            if not any(fnmatch.fnmatch(path, pattern) for pattern in include)
+        ]
+        assert not missing
 
     def test_a_damaged_file_is_reported_by_every_binary(self, tmp_path):
         """An HDF5 compiled without NDEBUG aborts on a damaged file; CI damages

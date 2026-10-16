@@ -1,0 +1,13 @@
+{
+ "id": "import-qform-not-rotation",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "ValueError",
+  "code": null,
+  "message": "w2 should be positive, but is -9.200001e-01"
+ },
+ "files": []
+}

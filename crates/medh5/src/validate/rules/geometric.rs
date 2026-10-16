@@ -182,8 +182,41 @@ pub(super) fn check_geometric(
         out.extend(offsets);
         out.extend(check_contour_roles(ctx, name, group, consistent && delimited)?);
     }
+    if kind == "polylines" {
+        out.extend(check_polylines(ctx, name, group, consistent)?);
+    }
     if kind == "mesh" {
         out.extend(check_mesh(ctx, name, group)?);
+    }
+    Ok(out)
+}
+
+/// 1.2 §3: `polyline_offsets` start at 0, never decrease and end at the
+/// vertex count (E408), and once they delimit the vertices, each polyline
+/// spans at least two of them (E404).
+fn check_polylines(ctx: &Context, name: &str, group: &Node, consistent: bool) -> Result<Vec<Diagnostic>> {
+    let mut out = check_offsets(ctx, name, group, "polyline_offsets", "vertices")?;
+    let Some(ds) = sub_dataset(group, "polyline_offsets") else { return Ok(out) };
+    let offsets: Vec<i64> = read_i64(&ds)?.iter().copied().collect();
+    let location = format!("/annotations/{name}/polyline_offsets");
+    if let Some(first) = offsets.first().filter(|first| **first != 0) {
+        out.push(ctx.err("E408", location, format!("first offset {first} != 0; polyline 0 starts at vertex 0")));
+    }
+    if !out.is_empty() || !consistent {
+        return Ok(out);
+    }
+    let short: Vec<usize> = offsets.windows(2).enumerate().filter(|(_, w)| w[1] - w[0] < 2).map(|(i, _)| i).collect();
+    if let Some(first) = short.first() {
+        out.push(ctx.err(
+            "E404",
+            format!("/annotations/{name}"),
+            format!(
+                "{} polyline(s) span fewer than two vertices, first polyline {first} with {}; a polyline joins each \
+                 vertex to the next, so it has at least two (1.2 §3)",
+                short.len(),
+                offsets[first + 1] - offsets[*first]
+            ),
+        ));
     }
     Ok(out)
 }

@@ -103,6 +103,8 @@ compiled extension the modules re-export from, not an API of its own.
 | `open_annotation` | function | The reader class for an annotation handle's `kind`. |  |
 | `PointsAnnotation` | class | A point set: landmarks, seeds, or half a correspondence (§8.5). |  |
 | `Polygon` | class | One planar polygon handed to `encode_contours`. | [Annotation kinds › Contours](annotations.md#contours) |
+| `Polyline` | class | One open curve handed to `add_polylines` (format 1.2 §3): ordered `(V, S)` vertices, each joined to the next, the last not joined to the first. | [Annotation kinds › Polylines](annotations.md#polylines) |
+| `PolylinesAnnotation` | class | Open curves with an offset table (format 1.2 §3): vessel centrelines, catheter and applicator paths, RTSTRUCT's open contours. | [Annotation kinds › Polylines](annotations.md#polylines) |
 | `READERS` | constant (`dict`) | `kind` -&gt; reader class, for every kind. |  |
 | `RESERVED_KINDS` | constant (`tuple`) | Kinds a 1.0 writer must not write (spec §16). |  |
 | `SCOPES` | constant (`tuple`) |  |  |
@@ -165,6 +167,8 @@ compiled extension the modules re-export from, not an API of its own.
 | `ObbAnnotation` | class | Oriented boxes: centre, full edge lengths, rotation (§8.3). |  |
 | `PointsAnnotation` | class | A point set: landmarks, seeds, or half a correspondence (§8.5). |  |
 | `Polygon` | class | One planar polygon handed to `encode_contours`. | [Annotation kinds › Contours](annotations.md#contours) |
+| `Polyline` | class | One open curve handed to `add_polylines` (format 1.2 §3): ordered `(V, S)` vertices, each joined to the next, the last not joined to the first. | [Annotation kinds › Polylines](annotations.md#polylines) |
+| `PolylinesAnnotation` | class | Open curves with an offset table (format 1.2 §3): vessel centrelines, catheter and applicator paths, RTSTRUCT's open contours. | [Annotation kinds › Polylines](annotations.md#polylines) |
 | `ROTATION_TOL` | constant (`float`) |  |  |
 | `SPACES` | constant (`tuple`) |  |  |
 | `VISIBILITY` | constant (`dict`) |  |  |
@@ -1091,6 +1095,10 @@ compiled extension the modules re-export from, not an API of its own.
 | `linear_part` | function | Return a grid's `direction @ diag(spacing)`: the `(S, S)` map from index to world displacement. |  |
 | `linear_sample` | function | Interpolate `(C, *spatial)` data multilinearly at `(N, S)` continuous indices: an `(N, C)` array. |  |
 | `refuse_outside` | function | Raise `MEDH5ValidationError` if any of the `inside` flags is false: `extrapolation='error'`. |  |
+| `resample` | function | Resample images of the sample at *path* onto another grid, and record it. | [Python API › Resampling](python-api.md#resampling) |
+| `RESAMPLE_INTERPOLATIONS` | constant (`tuple`) |  | [Python API › Resampling](python-api.md#resampling) |
+| `ResampledImage` | class | One image a resample wrote. | [Python API › Resampling](python-api.md#resampling) |
+| `ResampleReport` | class | What `resample` wrote. | [Python API › Resampling](python-api.md#resampling) |
 | `resolve_between` | function | The transform relating two frame uids, or `None` when none does. |  |
 | `sample_field` | function | Interpolate a field at `(N, S)` continuous indices with the declared `interpolation` (§10.4). |  |
 | `SPEC_TRANSFORM_ATTRS` | constant (`tuple`) |  |  |

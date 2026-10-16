@@ -1,0 +1,15 @@
+{
+ "id": "seg-plain-untransposed",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": "E405",
+  "message": "[E405] mask 'liver' has shape (4, 3, 2), but grid 'g' is (2, 3, 4)"
+ },
+ "files": [
+  "plain.medh5"
+ ]
+}

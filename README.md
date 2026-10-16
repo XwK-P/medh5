@@ -16,9 +16,11 @@ keypoints, contours, meshes, classification, registration between visits,
 provenance and quality records, and per-object integrity digests — and, from
 format **1.1**, the clinical history around the images, with *when each fact
 became known*, so a model trained at a cutoff reads only what was available
-then. Format versions [**1.0**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/) and
-[**1.1**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/), with normative specifications and a
-[172-case conformance suite](https://medh5.readthedocs.io/en/stable/spec/conformance/) any implementation can run.
+then, and from **1.2**, open curves. Format versions
+[**1.0**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/),
+[**1.1**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/) and
+[**1.2**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.2/), with normative specifications and a
+[175-case conformance suite](https://medh5.readthedocs.io/en/stable/spec/conformance/) any implementation can run.
 
 ```python
 import medh5
@@ -41,9 +43,9 @@ pip install medh5
 That is all most people need: the Python package and the `medh5` command line,
 enough to create, read, validate and inspect files. HDF5 and its compression
 filters are built in, so NumPy is the only other dependency. pip downloads it
-ready-built for Python 3.10 and later on Linux (x86_64, ARM64), macOS (Intel,
-Apple silicon) and Windows (x64). Python 3.10 is still supported past its end
-of life; dropping it will be announced one release ahead.
+ready-built for Python 3.10 and later on Linux (x86_64, ARM64; glibc or musl),
+macOS (Intel, Apple silicon) and Windows (x64). Python 3.10 is still supported
+past its end of life; dropping it will be announced one release ahead.
 
 Add an extra for each tool you connect medh5 to:
 
@@ -81,7 +83,8 @@ guides, the Python and CLI reference, and the normative specifications.
 [Python API](https://medh5.readthedocs.io/en/stable/reference/python-api/) ·
 [CLI](https://medh5.readthedocs.io/en/stable/reference/cli/) ·
 Specification [1.0](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/),
-[1.1](https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/) and the
+[1.1](https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/),
+[1.2](https://medh5.readthedocs.io/en/stable/spec/medh5-1.2/) and the
 [task and cache contract](https://medh5.readthedocs.io/en/stable/spec/task-cache-1/)
 
 ## What the format is for
@@ -93,7 +96,7 @@ Specification [1.0](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/),
 - **Absence is not silence** — a class examined and not found is recorded as
   such, which is a different training signal from one nobody examined.
 - **Every claim is checkable** — per-object digests, a Merkle `content_id` that
-  survives recompression, a stable diagnostic-code table, and a 172-case
+  survives recompression, a stable diagnostic-code table, and a 175-case
   conformance corpus.
 - **Reading a patch is fast** — a 64³ multi-class patch in ~2.3 ms, and O(1)
   foreground sampling once `build_index()` has run.

@@ -346,6 +346,63 @@ fn polygons_of(obj: &Bound<'_, PyAny>) -> R<Vec<PolygonArg>> {
     Ok(out)
 }
 
+/// An open curve as given, its class not yet resolved (as `PolygonArg`).
+struct PolylineArg {
+    class: ClassKey,
+    vertices: numpy::ndarray::ArrayD<f64>,
+    plane: Option<(i64, i64)>,
+}
+
+/// Open curves (1.2 §3): each item's `vertices`, `class_id` (an id or a
+/// label-set key) and optional `plane` `(axis, index)`; `instance_ids`, one
+/// per curve, when given.
+fn polylines_of(obj: &Bound<'_, PyAny>) -> R<Vec<PolylineArg>> {
+    let mut out = Vec::new();
+    for item in obj.try_iter()? {
+        let item = item?;
+        let vertices = f64_array(&item.getattr("vertices")?)?;
+        let class = class_key(&item.getattr("class_id")?)?;
+        let mut plane = None;
+        if let Ok(p) = item.getattr("plane") {
+            if !p.is_none() {
+                let v = i64_vec(&p)?;
+                if v.len() != 2 {
+                    return Err(medh5::Error::coded("E405", "a polyline's plane is (axis, index)").into());
+                }
+                plane = Some((v[0], v[1]));
+            }
+        }
+        out.push(PolylineArg { class, vertices, plane });
+    }
+    Ok(out)
+}
+
+fn polylines(
+    writer: &EngineWriter,
+    given: Vec<PolylineArg>,
+    instance_ids: Option<Vec<u64>>,
+) -> R<Vec<medh5::annotations::Polyline>> {
+    let mut out = Vec::new();
+    for arg in given {
+        let mut line = medh5::annotations::Polyline::new(arg.vertices, writer.class_id(&arg.class)?);
+        if let Some((axis, index)) = arg.plane {
+            line = line.plane(axis, index);
+        }
+        out.push(line);
+    }
+    if let Some(ids) = instance_ids {
+        if ids.len() != out.len() {
+            return Err(medh5::Error::coded(
+                "E405",
+                format!("instance_ids has {} entries for {} polylines; give one for each", ids.len(), out.len()),
+            )
+            .into());
+        }
+        out = out.into_iter().zip(ids).map(|(line, id)| line.instance_id(id)).collect();
+    }
+    Ok(out)
+}
+
 /// Classification rows as columns (§9): a mapping `class -> value`, or rows
 /// `(class, value[, scope_id[, scheme, scheme_value]])`.
 pub struct Rows<'py> {
@@ -1364,6 +1421,43 @@ impl SampleWriter {
         Ok(Group::wrap(group))
     }
 
+    /// Open curves (1.2 §3): centrelines, catheter and applicator paths,
+    /// RTSTRUCT's open contours.  A sample holding one is written at format
+    /// 1.2.
+    #[pyo3(signature = (ann_id, polylines, *, grid=None, space="index", frame_uid=None, instance_ids=None,
+        annotated_classes=None, closure="explicit", timepoints=None, prov=None, quality=None, derived_from=None,
+        task="other", codec=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn add_polylines(
+        &self,
+        py: Python<'_>,
+        ann_id: &str,
+        polylines: &Bound<'_, PyAny>,
+        grid: Option<&str>,
+        space: &str,
+        frame_uid: Option<&str>,
+        instance_ids: Option<&Bound<'_, PyAny>>,
+        annotated_classes: Option<&Bound<'_, PyAny>>,
+        closure: &str,
+        timepoints: Option<&Bound<'_, PyAny>>,
+        prov: Option<&Bound<'_, PyAny>>,
+        quality: Option<&Bound<'_, PyAny>>,
+        derived_from: Option<&Bound<'_, PyAny>>,
+        task: &str,
+        codec: Option<&str>,
+    ) -> R<Group> {
+        let ids = is_given(instance_ids).map(|i| u64s(&i)).transpose()?;
+        let given = polylines_of(polylines)?;
+        let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
+        let at = placement(grid, Some(space), frame_uid);
+        // Every class against the one label set the write holds (E4).
+        let mut held = self.writer()?;
+        let found = self::polylines(&held, given, ids)?;
+        let writer = &mut *held;
+        let group = py.detach(move || writer.add_polylines(ann_id, &found, &at, &options))?;
+        Ok(Group::wrap(group))
+    }
+
     /// A triangle surface mesh (§8.7); `space` defaults to `world`.
     #[pyo3(signature = (ann_id, vertices, faces, *, grid=None, space="world", frame_uid=None, normals=None,
         vertex_class_ids=None, mesh_offsets=None, mesh_class_ids=None, annotated_classes=None, closure="explicit",
@@ -1698,15 +1792,17 @@ fn amend(py: Python<'_>, path: PathBuf, codec: Option<String>) -> R<SampleWriter
     Ok(SampleWriter::of(inner))
 }
 
-/// The `medh5_version` a commit writes: the lowest version `profiles` need
-/// (`1.0`, or `1.1` with `clinical`), and never below `source`, the version
-/// an amended file already declared (1.1 §2.3).  An amendment that removes
-/// the clinical profile (`drop_clinical`) passes no `source`: the imaging
-/// projection is written at the lowest version what remains needs (1.1 §2.1).
+/// The `medh5_version` a commit writes: the lowest version `profiles` and
+/// annotation `kinds` need (`1.0`; `1.1` with `clinical`; `1.2` with a
+/// `polylines` annotation), and never below `source`, the version an amended
+/// file already declared (1.1 §2.3).  An amendment that removes the clinical
+/// profile (`drop_clinical`), or the last `polylines` annotation, passes no
+/// `source`: what remains is written at the lowest version it needs (1.1
+/// §2.1, 1.2 §2.1).
 #[pyfunction]
-#[pyo3(signature = (source, profiles = Vec::new()))]
-fn written_version(source: Option<&str>, profiles: Vec<String>) -> String {
-    medh5::sample::writer::written_version(source, &profiles)
+#[pyo3(signature = (source, profiles = Vec::new(), *, kinds = Vec::new()))]
+fn written_version(source: Option<&str>, profiles: Vec<String>, kinds: Vec<String>) -> String {
+    medh5::sample::writer::written_version_for_content(source, &profiles, &kinds)
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

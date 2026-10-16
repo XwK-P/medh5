@@ -75,7 +75,22 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// behind, passes no `source`, so the imaging projection is written at the
 /// lowest version what remains needs.
 pub fn written_version(source: Option<&str>, profiles: &[String]) -> String {
-    let needed = crate::version::required_for(profiles);
+    let none: [&str; 0] = [];
+    written_version_for_content(source, profiles, &none)
+}
+
+/// [`written_version`], for content declaring `profiles` and holding
+/// annotations of `kinds`: 1.2 once it holds a `polylines` annotation (1.2
+/// §2), and never below `source`.  An amendment that removes the last
+/// `polylines` annotation passes no `source` (1.2 §2.1), as one removing the
+/// clinical profile does: what remains is written at the lowest version it
+/// needs.
+pub fn written_version_for_content<S: AsRef<str>, K: AsRef<str>>(
+    source: Option<&str>,
+    profiles: &[S],
+    kinds: &[K],
+) -> String {
+    let needed = crate::version::required_for_content(profiles, kinds);
     match source {
         Some(v) if crate::version::support(v) == crate::version::Support::Full => {
             crate::version::later(v, needed).to_string()
@@ -206,6 +221,10 @@ pub struct SampleWriter {
     declared_profiles: BTreeSet<String>,
     default_timeline: bool,
     source_version: Option<String>,
+    /// The kinds of the annotations the amended file held: an amendment that
+    /// removes the last of a kind a later minor added lowers the version
+    /// (1.2 §2.1).
+    source_kinds: BTreeSet<String>,
     pub(crate) document: SampleDocument,
     /// The clinical records, once written to or changed in this writer.
     pub(crate) clinical: Option<ClinicalRecords>,
@@ -582,6 +601,7 @@ impl SampleWriter {
             declared_profiles: profiles.iter().cloned().collect(),
             default_timeline: true,
             source_version: None,
+            source_kinds: BTreeSet::new(),
             document: SampleDocument::new(identity?, Timeline::single("tp0")?),
             clinical: None,
             compact: false,
@@ -807,6 +827,7 @@ impl SampleWriter {
                 }
             }
         }
+        self.source_kinds = self.annotation_kinds.values().cloned().collect();
         if let Some(ts) = ops::child_group(&root, "transforms") {
             for name in ops::members(&ts)? {
                 if let Some(g) = ops::child_group(&ts, &name) {
@@ -1169,13 +1190,7 @@ impl SampleWriter {
         modality: &str,
         options: ImageOptions,
     ) -> Result<hdf5::Dataset> {
-        validate_id(image_id, "image id")?;
-        if self.images.contains_key(image_id) {
-            return Err(Error::invalid(format!("image {} already exists", repr_str(image_id))));
-        }
-        let value_type = options.value_type.clone().unwrap_or_else(|| "intensity".into());
-        super::image::check_value_type(&value_type)?;
-        let target = self.grid_ref(grid)?.clone();
+        let (target, value_type) = self.check_image(image_id, grid, &options)?;
         let shape: Vec<i64> = data.shape().iter().map(|v| *v as i64).collect();
         if shape != target.shape {
             return Err(Error::coded(
@@ -1189,6 +1204,57 @@ impl SampleWriter {
                 ),
             ));
         }
+        let chunks = self.chunks_for(&target, data.dtype().itemsize(), 0)?;
+        let layout = dataset_layout(
+            &data.shape(),
+            data.dtype().itemsize(),
+            &self.profile(options.codec.as_deref())?,
+            Role::Image,
+            Some(chunks),
+        );
+        let parent = self.group("images")?;
+        let node = data::create(&parent, image_id, data, &layout)?;
+        self.finish_image(&parent, node, image_id, grid, modality, value_type, options)
+    }
+
+    /// An image of `dtype` on `grid`, created empty for the caller to fill
+    /// region by region ([`data::write_region`]), with its chunk shape: what
+    /// a derivation too large to hold whole writes ([`crate::transforms::resample`]).
+    /// The commit digests what the regions wrote.
+    pub(crate) fn create_image(
+        &mut self,
+        image_id: &str,
+        dtype: crate::array::DType,
+        grid: &str,
+        modality: &str,
+        options: ImageOptions,
+    ) -> Result<(hdf5::Dataset, Option<Vec<usize>>)> {
+        let (target, value_type) = self.check_image(image_id, grid, &options)?;
+        let shape = target.shape_usize();
+        let chunks = self.chunks_for(&target, dtype.itemsize(), 0)?;
+        let layout = dataset_layout(
+            &shape,
+            dtype.itemsize(),
+            &self.profile(options.codec.as_deref())?,
+            Role::Image,
+            Some(chunks),
+        );
+        let parent = self.group("images")?;
+        let node = data::create_empty(&parent, image_id, dtype, &shape, &layout)?;
+        let chunks = layout.chunks.clone();
+        Ok((self.finish_image(&parent, node, image_id, grid, modality, value_type, options)?, chunks))
+    }
+
+    /// Refuse an image the sample cannot take before anything is written:
+    /// its grid and `value_type`, and the grid's channel names.
+    fn check_image(&self, image_id: &str, grid: &str, options: &ImageOptions) -> Result<(Grid, String)> {
+        validate_id(image_id, "image id")?;
+        if self.images.contains_key(image_id) {
+            return Err(Error::invalid(format!("image {} already exists", repr_str(image_id))));
+        }
+        let value_type = options.value_type.clone().unwrap_or_else(|| "intensity".into());
+        super::image::check_value_type(&value_type)?;
+        let target = self.grid_ref(grid)?.clone();
         if let Some(names) = &options.channel_names {
             let ok = match target.channel_axis() {
                 Some(axis) => names.len() as i64 == target.shape[axis],
@@ -1201,16 +1267,21 @@ impl SampleWriter {
                 ));
             }
         }
-        let chunks = self.chunks_for(&target, data.dtype().itemsize(), 0)?;
-        let layout = dataset_layout(
-            &data.shape(),
-            data.dtype().itemsize(),
-            &self.profile(options.codec.as_deref())?,
-            Role::Image,
-            Some(chunks),
-        );
-        let parent = self.group("images")?;
-        let node = data::create(&parent, image_id, data, &layout)?;
+        Ok((target, value_type))
+    }
+
+    /// Write an image dataset's attributes and register it.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_image(
+        &mut self,
+        parent: &hdf5::Group,
+        node: hdf5::Dataset,
+        image_id: &str,
+        grid: &str,
+        modality: &str,
+        value_type: String,
+        options: ImageOptions,
+    ) -> Result<hdf5::Dataset> {
         let mut values: Vec<(&str, Option<AttrValue>)> = vec![
             ("grid", Some(AttrValue::Str(grid.into()))),
             ("modality", Some(AttrValue::Str(modality.into()))),
@@ -1225,7 +1296,7 @@ impl SampleWriter {
             ("prov", options.prov.map(AttrValue::Str)),
         ];
         values.retain(|(_, v)| v.is_some());
-        self.or_unlink(&parent, image_id, attrs::write_all(&node, &values))?;
+        self.or_unlink(parent, image_id, attrs::write_all(&node, &values))?;
         self.images.insert(image_id.to_string(), (grid.to_string(), modality.to_string()));
         self.image_multiscale.insert(image_id.to_string(), false);
         Ok(node)
@@ -1509,6 +1580,10 @@ impl SampleWriter {
     fn has_task(&self, task: &str) -> Result<bool> {
         let anns = self.group("annotations")?;
         for name in ops::members(&anns)? {
+            // A curve serves no profile, whatever task it states (1.2 §3).
+            if self.annotation_kinds.get(&name).is_some_and(|k| k == "polylines") {
+                continue;
+            }
             if let Some(g) = ops::child_group(&anns, &name) {
                 if attrs::get_str(&g, "task")?.as_deref() == Some(task) {
                     return Ok(true);
@@ -1800,6 +1875,22 @@ impl SampleWriter {
         result.map(Some)
     }
 
+    /// The `medh5_version` the commit writes ([`written_version_for_content`]).
+    ///
+    /// The amended file's version is kept unless the amendment removed the
+    /// last annotation of a kind that version added (1.2 §2.1): the file was
+    /// at that version for the kind, and without it what remains is written
+    /// at the lowest version it needs, as after removing the clinical profile.
+    fn version_written(&self, profiles: &[String]) -> String {
+        let kinds: Vec<&str> = self.annotation_kinds.values().map(String::as_str).collect();
+        let removed = self.source_kinds.iter().any(|k| {
+            crate::annotations::header::kind_since(k).is_some_and(|since| since != crate::version::BASE_VERSION)
+                && !kinds.contains(&k.as_str())
+        });
+        let source = self.source_version.as_deref().filter(|_| !removed);
+        written_version_for_content(source, profiles, &kinds)
+    }
+
     /// What a commit refuses before it changes anything, and the profiles it
     /// declares.
     fn check_commit(&self) -> Result<Vec<String>> {
@@ -1833,7 +1924,7 @@ impl SampleWriter {
             }
         }
         self.write_clinical()?;
-        let version = written_version(self.source_version.as_deref(), profiles);
+        let version = self.version_written(profiles);
         let algo = self.digest_algo.clone();
         attrs::write(&root, "medh5_version", &AttrValue::Str(version))?;
         attrs::write(&root, "medh5_kind", &AttrValue::Str("sample".into()))?;

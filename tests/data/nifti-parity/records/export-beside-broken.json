@@ -1,0 +1,17 @@
+{
+ "id": "export-beside-broken",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "{out}/x.json is not a JSON object, and this export writes its per-volume fields there; move it aside first"
+ },
+ "files": [
+  "echo.medh5",
+  "x.bval",
+  "x.json"
+ ]
+}

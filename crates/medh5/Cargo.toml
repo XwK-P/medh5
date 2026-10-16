@@ -12,6 +12,9 @@ documentation = "https://docs.rs/medh5"
 readme = "README.md"
 keywords = ["medical-imaging", "hdf5", "segmentation", "registration", "dataset"]
 categories = ["science", "encoding", "data-structures"]
+# The NIfTI parity test reads its corpus from the repository's tests/data,
+# which the crate does not carry.
+exclude = ["tests/nifti_parity.rs"]
 
 [dependencies]
 medh5-sys.workspace = true
@@ -28,6 +31,8 @@ hex.workspace = true
 regex.workspace = true
 thiserror.workspace = true
 jsonschema.workspace = true
+flate2.workspace = true
+unicode-normalization.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

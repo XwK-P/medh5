@@ -1,0 +1,13 @@
+{
+ "id": "read-no-mapping.nii.gz-transpose=False",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "'{corpus}/inputs/no-mapping.nii.gz' declares no spatial mapping (sform_code = qform_code = 0), so it has no world geometry to import; nibabel's fallback affine is built from pixdim and is not a measurement. Pass assume_geometry=True (CLI: --assume-geometry) to accept that fallback deliberately, and it will be recorded as a guess."
+ },
+ "files": []
+}

@@ -14,11 +14,12 @@ use medh5::array::DType;
 use medh5::transforms::apply;
 use medh5::transforms::encode as enc;
 use medh5::transforms::model;
+use medh5::transforms::resample as rs;
 use medh5::transforms::resolve;
 
 use crate::annotations::AnnotationPayload;
-use crate::convert::{array_to_py, attr_to_py, dtype_arg, f64_array, py_to_attr, py_to_nd, strings};
-use crate::errors::R;
+use crate::convert::{array_to_py, attr_to_py, dtype_arg, f64_array, json_to_py, py_to_attr, py_to_nd, strings};
+use crate::errors::{path_error, R};
 use crate::geometry::grid_arg;
 use crate::reader::TransformHandle;
 
@@ -506,6 +507,47 @@ fn frames_of_timepoint<'py>(py: Python<'py>, grids: &Bound<'py, PyAny>, timepoin
     Ok(PyTuple::new(py, resolve::frames_of_timepoint(&map, timepoint))?)
 }
 
+// -- resampling ---------------------------------------------------------------------------
+
+/// Resample images of a sample onto another grid, recorded as one `resample`
+/// activity; the report as plain data (`medh5.transforms.resample` builds its
+/// `ResampleReport` from it).
+#[pyfunction]
+#[pyo3(signature = (
+    path, image_ids, *, onto=None, spacing=None, grid_id=None, suffix=None, interpolation="linear", fill=0.0,
+    dtype=None, out=None
+))]
+#[allow(clippy::too_many_arguments)]
+fn resample<'py>(
+    py: Python<'py>,
+    path: std::path::PathBuf,
+    image_ids: Vec<String>,
+    onto: Option<String>,
+    spacing: Option<Vec<f64>>,
+    grid_id: Option<String>,
+    suffix: Option<String>,
+    interpolation: &str,
+    fill: f64,
+    dtype: Option<&Bound<'py, PyAny>>,
+    out: Option<std::path::PathBuf>,
+) -> R<Bound<'py, PyAny>> {
+    let mut plan = rs::ResamplePlan::from_options(image_ids, onto, spacing, grid_id)?
+        .with_interpolation(interpolation)
+        .with_fill(fill);
+    if let Some(suffix) = suffix {
+        plan = plan.with_suffix(suffix);
+    }
+    if let Some(d) = dtype.filter(|d| !d.is_none()) {
+        plan = plan.with_dtype(dtype_arg(d)?);
+    }
+    if let Some(out) = out {
+        plan = plan.with_out(out);
+    }
+    let at = path.clone();
+    let result = py.detach(move || rs::resample(&path, &plan)).map_err(|e| path_error(e, &at))?;
+    Ok(json_to_py(py, &result.to_json())?)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TransformHeader>()?;
     for f in [
@@ -529,6 +571,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(frame_graph, m)?,
         wrap_pyfunction!(resolve_between, m)?,
         wrap_pyfunction!(frames_of_timepoint, m)?,
+        wrap_pyfunction!(resample, m)?,
     ] {
         m.add_function(f)?;
     }
@@ -542,5 +585,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SUPPORTED_ORDERS", PyTuple::new(py, model::SUPPORTED_ORDERS)?)?;
     m.add("DEFAULT_ORDER", model::DEFAULT_ORDER)?;
     m.add("FLOAT16_SAFE_VOXELS", model::FLOAT16_SAFE_VOXELS)?;
+    m.add("RESAMPLE_INTERPOLATIONS", PyTuple::new(py, rs::RESAMPLE_INTERPOLATIONS)?)?;
     Ok(())
 }

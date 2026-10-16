@@ -158,6 +158,13 @@ archive member only to resolve a reference, and nothing refers to one. `nm` on
 2.0.2 the release profile strips symbols, so repeat the check on a build with
 `CARGO_PROFILE_RELEASE_STRIP=none`.
 
+Nor will anything gain a reason to. From 2.2.0 the NIfTI converter is the
+engine's, and a `.nii.gz` file is inflated in Rust (`flate2` over
+`miniz_oxide`), never by zlib, and never past the bytes its header implies.
+CI's `rust` job builds the native binary and the extension with their symbol
+tables and runs `nm` on both: it fails on any `gz*` symbol, and on finding no
+zlib symbol at all, which would mean it looked at nothing.
+
 A scanner that finds zlib 1.3.2 in the binary (its version string is there,
 for `deflateInit_` to check) or in a bill of materials built from `Cargo.lock`
 still reports it. [`vex/medh5.openvex.json`](vex/medh5.openvex.json) states

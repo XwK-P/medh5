@@ -1,0 +1,13 @@
+{
+ "id": "import-five",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "a 5-D NIfTI has 2 axes beyond (x, y, z); only a single trailing time axis converts without a decision about what the others mean --- convert the volumes separately, or declare the axes"
+ },
+ "files": []
+}

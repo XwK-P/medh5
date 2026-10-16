@@ -1,0 +1,13 @@
+{
+ "id": "read-not-gzip.nii.gz",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "{corpus}/inputs/not-gzip.nii.gz is not a NIfTI file: File {corpus}/inputs/not-gzip.nii.gz is not a gzip file"
+ },
+ "files": []
+}

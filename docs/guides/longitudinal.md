@@ -99,8 +99,9 @@ Each visit answers with one observation: the object's mask, where an
 (`obb`, whose volume its rotation leaves alone). A detection beside a
 segmentation of the same lesion is the common case, and a box's volume is its
 bounding box's, so the mask is the measurement. A landmark (`points`, with the
-`instance_ids` §10.6 asks of trackable points) marks the object without
-measuring it, and answers only where nothing else saw it. Two masks of one
+`instance_ids` §10.6 asks of trackable points) or a curve (`polylines`, format
+1.2) marks the object without measuring it, and answers only where nothing
+else saw it. Two masks of one
 visit — two raters — are not one answer: `at`, `volume`, `volumes` and
 `relative_change` refuse rather than pick a rater, and `observations_at()`
 lists every observation of the visit (each with its annotation's `kind`) for

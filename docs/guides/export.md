@@ -145,6 +145,22 @@ medh5 convert to-rtstruct case.medh5 contours out.dcm \
 Every row needs a class (`E402` otherwise), and a class in both annotations is
 refused: an ROI is drawn as areas or as points, not both.
 
+**Curves go out as open ROIs.** `--curves ANN` (`curves=`) writes a `polylines`
+annotation ([format 1.2](../spec/medh5-1.2.md) §3) — the one an import with
+`--open-curves polylines` made, or centrelines of your own — one ROI per class,
+each polyline an `OPEN_PLANAR` contour where it records the grid plane it lies
+in and an `OPEN_NONPLANAR` one where it does not. Its `RTROIInterpretedType`
+is left empty: whether a curve is an applicator channel or a vessel is not
+something the annotation records.
+
+```bash
+medh5 convert to-rtstruct case.medh5 contours out.dcm \
+    --curves contours_curves --source ct/1.dcm --source ct/2.dcm ...
+```
+
+As for points, every polyline needs a class, and a class the curves share with
+the contours or the points is refused.
+
 Each ROI takes its class's display name and the label set's colour for it, and
 text beyond ASCII is written as UTF-8 under `SpecificCharacterSet` `ISO_IR 192`.
 The names are used only when every class exported has its own, and each fits

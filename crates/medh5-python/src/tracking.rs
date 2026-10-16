@@ -70,8 +70,8 @@ impl Observation {
         &self.0.annotation
     }
     /// The annotation's kind: `instances` (a mask), `boxes`, `obb`, or
-    /// `points` (presence only).  Not one of the 1.x dataclass's fields, so
-    /// its shape and `repr` are unchanged.
+    /// `points` or `polylines` (presence only).  Not one of the 1.x
+    /// dataclass's fields, so its shape and `repr` are unchanged.
     #[getter]
     fn kind(&self) -> &str {
         &self.0.kind

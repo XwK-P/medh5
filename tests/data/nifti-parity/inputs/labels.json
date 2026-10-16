@@ -1,0 +1,1 @@
+{"id": "organs", "version": "1.0.0", "classes": [{"id": 1, "key": "liver", "name": "Liver"}, {"id": 2, "key": "lesion", "name": "Lesion"}, {"id": 3, "key": "spleen", "name": "Spleen"}, {"id": 5, "key": "gtv_1", "name": "GTV-1"}]}
