@@ -531,7 +531,7 @@ def _geometry_names() -> dict[str, Any]:
     outward = tetrahedron - tetrahedron.mean(axis=0)
     field = np.zeros((3, *SHAPE), dtype=np.float32)
     field[0] = 0.5
-    from medh5.annotations.geometric import Polygon
+    from medh5.annotations.geometric import Polygon, Polyline
 
     return {
         # Points in millimetres, for transforms and TRE.
@@ -558,6 +558,8 @@ def _geometry_names() -> dict[str, Any]:
         "xyz": xyz,
         "hole": hole,
         "polygons": [Polygon(vertices=xyz, class_id=1)],
+        # Open curves in index space (format 1.2 §3).
+        "polylines": [Polyline(np.array([[2.0, 2.0, 2.0], [2.0, 6.0, 3.0]]), 1)],
         "vertices": tetrahedron,
         "faces": np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]),
         "normals": outward / np.linalg.norm(outward, axis=1, keepdims=True),

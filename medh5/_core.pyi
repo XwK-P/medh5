@@ -20,7 +20,7 @@ import numpy.typing as npt
 from typing_extensions import Self, disjoint_base
 
 from medh5.annotations.base import VoxelAnnotation
-from medh5.annotations.geometric import Polygon
+from medh5.annotations.geometric import Polygon, Polyline
 from medh5.annotations.voxel import InstanceInput
 
 __all__ = [
@@ -2343,12 +2343,16 @@ def write_atomic(path: str | os.PathLike[str], data: str | bytes) -> None:
     """
     ...
 
-def written_version(source: str | None, profiles: Sequence[str] = ...) -> str:
-    """The `medh5_version` a commit writes: the lowest version `profiles` need
-    (`1.0`, or `1.1` with `clinical`), and never below `source`, the version
-    an amended file already declared (1.1 §2.3).  An amendment that removes
-    the clinical profile (`drop_clinical`) passes no `source`: the imaging
-    projection is written at the lowest version what remains needs (1.1 §2.1).
+def written_version(
+    source: str | None, profiles: Sequence[str] = ..., *, kinds: Sequence[str] = ...
+) -> str:
+    """The `medh5_version` a commit writes: the lowest version `profiles` and
+    annotation `kinds` need (`1.0`; `1.1` with `clinical`; `1.2` with a
+    `polylines` annotation), and never below `source`, the version an amended
+    file already declared (1.1 §2.3).  An amendment that removes the clinical
+    profile (`drop_clinical`), or the last `polylines` annotation, passes no
+    `source`: what remains is written at the lowest version it needs (1.1
+    §2.1, 1.2 §2.1).
     """
     ...
 
@@ -2531,6 +2535,14 @@ class AnnotationHandle:
     def polygon(self, index: int) -> Any: ...
     def polygons(self) -> list[Any]:
         """Every polygon as `(vertices, class_id, (axis, index), role)`."""
+        ...
+    def polyline(self, index: int) -> Any: ...
+    @property
+    def polyline_offsets(self) -> Any: ...
+    @property
+    def polyline_planes(self) -> Any: ...
+    def polylines(self) -> list[Any]:
+        """Every polyline as `(vertices, class_id, (axis, index))` (1.2 §3)."""
         ...
     @property
     def position_of(self) -> dict[Any, Any]: ...
@@ -3166,8 +3178,8 @@ class Observation:
     @property
     def kind(self) -> str:
         """The annotation's kind: `instances` (a mask), `boxes`, `obb`, or
-        `points` (presence only).  Not one of the 1.x dataclass's fields, so
-        its shape and `repr` are unchanged.
+        `points` or `polylines` (presence only).  Not one of the 1.x
+        dataclass's fields, so its shape and `repr` are unchanged.
         """
         ...
     def to_json(self) -> dict[str, Any]: ...
@@ -3783,6 +3795,29 @@ class SampleWriter:
         codec: str | None = None,
     ) -> Group:
         """A point set: landmarks, seeds, or half a correspondence (§8.5)."""
+        ...
+    def add_polylines(
+        self,
+        ann_id: str,
+        polylines: Sequence[Polyline],
+        *,
+        grid: str | None = None,
+        space: str = "index",
+        frame_uid: str | None = None,
+        instance_ids: Sequence[int] | None = None,
+        annotated_classes: str | Sequence[int | str] | None = None,
+        closure: str = "explicit",
+        timepoints: Sequence[str] | None = None,
+        prov: Activity | str | None = None,
+        quality: str | Mapping[str, Any] | None = None,
+        derived_from: Sequence[str] | None = None,
+        task: str = "other",
+        codec: str | None = None,
+    ) -> Group:
+        """Open curves (1.2 §3): centrelines, catheter and applicator paths,
+        RTSTRUCT's open contours.  A sample holding one is written at format
+        1.2.
+        """
         ...
     def add_pyramid(
         self,

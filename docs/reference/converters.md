@@ -403,8 +403,11 @@ The import, same-named ROIs included, is walked through in
 $ medh5 convert from-rtstruct plan.dcm case.medh5 --id contours
 $ medh5 convert from-rtstruct plan.dcm case.medh5 --rasterize
 $ medh5 convert from-rtstruct plan.dcm case.medh5 --points-id markers
+$ medh5 convert from-rtstruct plan.dcm case.medh5 --open-curves polylines
 $ medh5 convert to-rtstruct case.medh5 contours out.dcm \
     --points markers --source ct/1.dcm --source ct/2.dcm ...
+$ medh5 convert to-rtstruct case.medh5 contours out.dcm \
+    --curves contours_curves --source ct/1.dcm --source ct/2.dcm ...
 ```
 
 <!-- illustrative -->
@@ -424,7 +427,8 @@ and absent. The mask is annotation `<id>_mask` unless `--mask-id ID`
 of at most 16 characters. A longer one is refused before anything is read; it
 was written, and the file was not valid DICOM.
 
-**Areas import as contours, markers as points.** A medh5 contour is a closed
+**Areas import as contours, markers as points, curves as polylines on
+request.** A medh5 contour is a closed
 polygon, so an ROI drawn as `CLOSED_PLANAR` contours imports, and so does one
 drawn as `CLOSEDPLANAR_XOR` contours that are nested or apart on every slice,
 where their exclusive-or is the holes the import marks. Exclusive-or contours
@@ -439,10 +443,21 @@ alone writes no contours annotation. An explicit `annotated_classes=` list
 is split between the two: a class drawn as points is examined in the points
 annotation, every other class it names in the contours one; `all` applies to
 the contours only. An ROI of `OPEN_PLANAR` or `OPEN_NONPLANAR` contours — a
-brachytherapy applicator — is left out with a warning per type
-(`contour_type`), so no class is minted or marked examined for it:
-`--open-curves omit` (`open_curves="omit"`) is the only value until open
-curves arrive as `polylines` in 2.2.0. An ROI mixing areas with points or
+brachytherapy applicator, a vessel centreline — is left out by default with a
+warning per type (`contour_type`), so no class is minted or marked examined
+for it (`--open-curves omit`, `open_curves="omit"`). `--open-curves polylines`
+(`open_curves="polylines"`) imports it as rows of a `polylines` annotation
+([format 1.2](../spec/medh5-1.2.md) §3), `--curves-id ID` (`curves_id=`,
+`<id>_curves` by default): one polyline per contour, in the grid's world
+coordinates and the contours' frame, of the ROI's class, with `task` `other`.
+An `OPEN_PLANAR` curve records the grid plane it lies in, found along any
+axis to the slice tolerance below; one in no plane (a decision,
+`curve_plane`) and every `OPEN_NONPLANAR` curve have `axis = -1`. A curve of
+fewer than two points is dropped with a warning, and `annotated_classes=` is
+split as for points. The option is opt-in because the import amends the
+sample and **a polylines annotation writes it at format 1.2**, which a 1.1
+reader reads as its projection, leaving the curves out (`W913`); the report
+records the raise as a `version` decision. An ROI mixing areas with points or
 curves is refused. A contour stating no type is read as `CLOSED_PLANAR`, on a
 recorded guess, and one of fewer than three points is dropped with a warning.
 
@@ -507,7 +522,10 @@ the overlap, so two contours of one class that cross on a plane are a warning
 such a reader matters. `--points ANN` (`points=`) also writes a `points`
 annotation, one ROI per class of `POINT` contours of one point each, with
 `RTROIInterpretedType` `MARKER` (contour ROIs are `ORGAN`); a row with no
-class (`E402`) and a class in both annotations are refused.
+class (`E402`) and a class in both annotations are refused. `--curves ANN`
+(`curves=`) writes a `polylines` annotation the same way, a polyline per
+contour: `OPEN_PLANAR` where it records a grid plane, `OPEN_NONPLANAR` where
+it does not, with an empty `RTROIInterpretedType`.
 
 ### nnU-Net v2
 
@@ -710,11 +728,13 @@ procedure is [Migrate from 0.x](../guides/migrate-0x.md).
 ```
 $ medh5 clinical augment case.medh5 --from-meds meds/ --meds-subject 1001 --clock-id ehr --clock utc --timezone UTC
 $ medh5 clinical augment case.medh5 --from-fhir bundle.json --fhir-subject Patient/p1
+$ medh5 clinical augment-cohort --from-meds meds/ --mapping cohort.csv --timezone UTC
 ```
 
 ```python
-from medh5.io.fhir import augment_from_fhir, read_fhir
-from medh5.io.meds import augment_from_meds, read_meds
+from medh5.io.fhir import augment_cohort_from_fhir, augment_from_fhir, read_fhir
+from medh5.io.meds import augment_cohort_from_meds, augment_from_meds, read_meds
+from medh5.io.report import CohortImport, SubjectImport
 ```
 
 One subject's clinical history, added to a sample's clinical profile (format
@@ -723,6 +743,13 @@ DiagnosticReports. No zone, origin, unit, code or availability is invented,
 so the report holds no guess; free text and birth instants are imported only
 when asked. The mapping tables and refusals are in
 [Import from MEDS or FHIR](../guides/clinical-import.md).
+
+`augment_cohort_from_meds` and `augment_cohort_from_fhir` (a FHIR Bulk Data
+export) import a whole cohort from one source, read once, into the samples a
+mapping names, each subject exactly as the per-sample importer maps it alone.
+They return a `CohortImport`: `subjects`, a `SubjectImport` per mapped
+subject (its augmentation and report, or the `error` it was refused with),
+`imported` and `refused`, and `report`, the notes on the source as a whole.
 
 `medh5.io.meds.COLUMNS` names the MEDS columns the importer reads,
 `medh5.io.meds.BOTH_VALUES` the choices for a row holding both values, and

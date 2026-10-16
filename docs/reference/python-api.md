@@ -408,6 +408,7 @@ w.add_keypoints("landmarks", keypoints, keypoint_classes, class_ids, grid="ct")
 w.add_points("fiducials_tp0", points, grid="ct",
              correspondence="fiducials_tp1")   # the paired point set (§10.6)
 w.add_contours("rtstruct", polygons, grid="ct", space="world")
+w.add_polylines("vessels", polylines, grid="ct")  # open curves: format 1.2
 w.add_mesh("surface", vertices, faces, space="world", frame_uid="pseudo:frame-tp0")
 w.add_classification("response", {"progressive": 1.0}, scope="sample",
                      timepoints=["tp0", "tp1"])   # the interval, not one visit

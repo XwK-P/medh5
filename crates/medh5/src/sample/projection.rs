@@ -72,7 +72,7 @@ pub fn annotation_value(group: &hdf5::Group) -> Result<Option<Later>> {
     if RESERVED_KINDS.contains(&kind.as_str()) {
         return Ok(Some(Later { what: "kind", value: kind, met: Met::First }));
     }
-    let known = kinds(crate::version::LATEST_VERSION).unwrap_or_default();
+    let known = kinds(crate::version::implemented()).unwrap_or_default();
     if let Some(found) = later("kind", &kind, known, Met::First) {
         return Ok(Some(found));
     }

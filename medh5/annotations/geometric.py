@@ -1,5 +1,5 @@
-"""Geometric annotations: boxes, oriented boxes, keypoints, points, contours
-and meshes (spec §8).
+"""Geometric annotations: boxes, oriented boxes, keypoints, points, contours,
+meshes (spec §8) and, from format 1.2, polylines (1.2 §3).
 
 **Boxes sit at voxel edges, indices at voxel centres**: ``[a, b]`` is the
 slice ``a+0.5 : b+0.5``.  The conversions here --- ``as_slices``,
@@ -325,6 +325,57 @@ class ContoursAnnotation(GeometricAnnotation):
         return found
 
 
+@dataclass(slots=True)
+class Polyline:
+    """One open curve handed to ``add_polylines`` (format 1.2 §3): ordered
+    ``(V, S)`` vertices, each joined to the next, the last not joined to the
+    first.  A polyline has at least two vertices and encloses nothing."""
+
+    vertices: npt.NDArray[Any]
+    class_id: int | str
+    """A class id, or a key of the sample's label set."""
+
+    plane: tuple[int, int] = (-1, 0)
+    """``(axis, index)`` of the grid plane it lies in; ``axis = -1`` for none."""
+
+
+class PolylinesAnnotation(GeometricAnnotation):
+    """Open curves with an offset table (format 1.2 §3): vessel centrelines,
+    catheter and applicator paths, RTSTRUCT's open contours.  Never
+    rasterised: a polylines annotation satisfies neither ``seg`` nor ``det``.
+    """
+
+    __slots__ = ()
+
+    @property
+    def vertices(self) -> npt.NDArray[np.float32]:
+        return self._need("vertices", np.float32)
+
+    @property
+    def offsets(self) -> npt.NDArray[np.int64]:
+        return np.asarray(self._handle.polyline_offsets, dtype=np.int64)
+
+    @property
+    def planes(self) -> npt.NDArray[np.int32]:
+        """``(M, 2)`` ``(axis, index)`` per polyline; ``(-1, 0)`` when none
+        is stored."""
+        found: npt.NDArray[np.int32] = self._handle.polyline_planes
+        return found
+
+    def polyline(self, index: int) -> npt.NDArray[np.float32]:
+        """Polyline *index*'s ``(V, S)`` vertices, in order."""
+        found: npt.NDArray[np.float32] = self._handle.polyline(int(index))
+        return found
+
+    def polylines(self) -> Iterator[Polyline]:
+        for vertices, class_id, plane in self._handle.polylines():
+            yield Polyline(
+                vertices=vertices,
+                class_id=int(class_id),
+                plane=(int(plane[0]), int(plane[1])),
+            )
+
+
 class MeshAnnotation(GeometricAnnotation):
     """A triangle surface mesh, optionally several submeshes (§8.7)."""
 
@@ -363,6 +414,7 @@ GEOMETRIC_READERS: dict[str, Any] = {
     "points": PointsAnnotation,
     "contours": ContoursAnnotation,
     "mesh": MeshAnnotation,
+    "polylines": PolylinesAnnotation,
 }
 
 __all__ = [
@@ -379,6 +431,8 @@ __all__ = [
     "ObbAnnotation",
     "PointsAnnotation",
     "Polygon",
+    "Polyline",
+    "PolylinesAnnotation",
     "check_slice_index",
     "check_space",
     "encode_boxes",

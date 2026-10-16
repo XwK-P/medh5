@@ -228,3 +228,23 @@ workstream first checks that the 2.1.0 pieces it builds on are on `main`
 - **No new code, no format change, no corpus change.** Refusals are
   `MEDH5ValidationError`s with messages, as the converters' are. The output is
   an ordinary 1.0 (or 1.1) sample, written at the version its content needs.
+
+## E12 macOS on Intel is dropped
+
+- **Where.** `.github/workflows/{ci,build,release}.yml`,
+  `.github/scripts/{homebrew_formula,third_party_notices}.py`,
+  `docs/install.md`, `README.md`, `CONTRIBUTING.md`. W22-05 item 5.
+- **Decision.** 2.2.0 publishes no macOS x86_64 wheel, binary or Homebrew
+  archive, and CI builds and tests none. Apple silicon is unchanged, on
+  `macos-15` (the move off `macos-14` that 05.2 made stays). The maintainer
+  decided on 2026-10-16, after 05.2 had cross-built the target on Apple silicon
+  (#70); this supersedes 05.2. It is not announced a minor ahead, as E5's
+  Python floor would be: it takes effect in 2.2.0.
+- **What an Intel Mac gets.** pip finds no wheel and builds from the source
+  distribution (Rust, a C compiler and CMake; untested there), or installs 2.1.
+  The Homebrew formula refuses on Intel (`depends_on arch: :arm64` inside
+  `on_macos`) rather than pointing at an archive no release has.
+- **Context.** PyTorch has published no macOS x86_64 wheel since 2.2, so
+  `medh5[torch]` never installed there and its test job ran without it; the
+  wheel was tested only under Rosetta; GitHub's last Intel macOS image retires
+  in 2027.

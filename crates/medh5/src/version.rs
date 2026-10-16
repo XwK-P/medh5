@@ -1,17 +1,18 @@
 //! Format versions: what this engine reads, validates and writes (1.1 §2).
 //!
-//! `medh5_version` is `MAJOR.MINOR`.  This engine implements **1.0 and 1.1**,
-//! and keeps three capabilities apart (1.1 §2.2):
+//! `medh5_version` is `MAJOR.MINOR`.  This engine implements **1.0, 1.1 and
+//! 1.2**, and keeps three capabilities apart (1.1 §2.2):
 //!
-//! - **reading** --- any 1.x file opens; a minor above 1.1 is read as its
+//! - **reading** --- any 1.x file opens; a minor above 1.2 is read as its
 //!   *supported projection*, the objects this engine knows;
-//! - **validating** --- 1.0 and 1.1 fully; a higher minor only as a projection,
+//! - **validating** --- 1.0 to 1.2 fully; a higher minor only as a projection,
 //!   reported as such (W913), never as conformance;
 //! - **amending** --- only what it can preserve: a higher minor, or a profile
 //!   this engine does not implement, is refused before anything is written.
 //!
 //! A writer emits the *lowest* version its content needs: 1.0 for an imaging
-//! sample, 1.1 once it carries the `clinical` profile.  Migrating a 1.0 sample
+//! sample, 1.1 once it carries the `clinical` profile, 1.2 once it holds a
+//! `polylines` annotation ([`required_for_content`]).  Migrating a 1.0 sample
 //! to 1.1 changes its `content_id`, because the version is part of what that
 //! address covers (1.0 §13.2).
 
@@ -26,12 +27,39 @@ pub const FORMAT_VERSIONS: [&str; 2] = ["1.0", "1.1"];
 /// A slice, so a later engine implementing another version answers with a
 /// longer one and no caller's type changes.
 pub fn format_versions() -> &'static [&'static str] {
-    &["1.0", "1.1"]
+    &["1.0", "1.1", "1.2"]
 }
 /// The version an imaging-only sample is written in.
 pub const BASE_VERSION: &str = "1.0";
 /// The newest version this engine implements (`medh5::FORMAT_VERSION`).
-pub const LATEST_VERSION: &str = "1.1";
+pub const LATEST_VERSION: &str = "1.2";
+
+#[cfg(test)]
+thread_local! {
+    /// The version a test of this crate reads files as ([`read_as`]).
+    static READ_AS: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// The newest version this engine implements: [`LATEST_VERSION`] --- or, in
+/// this crate's own tests, the older one a test reads files as
+/// ([`read_as`]), so a test can be the reader an earlier release was.
+pub(crate) fn implemented() -> &'static str {
+    #[cfg(test)]
+    if let Some(version) = READ_AS.with(std::cell::Cell::get) {
+        return version;
+    }
+    LATEST_VERSION
+}
+
+/// Run `f` as an engine implementing up to `version` reads and validates
+/// files: a 1.1 reader, for a test of what 2.1.0 makes of a 1.2 file.
+#[cfg(test)]
+pub(crate) fn read_as<T>(version: &'static str, f: impl FnOnce() -> T) -> T {
+    let before = READ_AS.with(|c| c.replace(Some(version)));
+    let out = f();
+    READ_AS.with(|c| c.set(before));
+    out
+}
 
 /// What this engine can do with a file of a given version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,10 +87,11 @@ pub fn parse(version: &str) -> Option<(u32, u32)> {
 /// implements.  The readers refuse the file this calls unsupported
 /// ([`crate::sample::require_major`]), so the two cannot disagree.
 pub fn support(version: &str) -> Support {
-    if version.split('.').next() != LATEST_VERSION.split('.').next() {
+    let latest = implemented();
+    if version.split('.').next() != latest.split('.').next() {
         return Support::Unsupported;
     }
-    match (parse(version), parse(LATEST_VERSION)) {
+    match (parse(version), parse(latest)) {
         (Some((_, minor)), Some((_, latest))) if minor <= latest => Support::Full,
         // A higher minor, or one this engine cannot parse (`1.x`, `1.0 `):
         // still major 1, read as what this engine knows.
@@ -103,12 +132,27 @@ pub fn later<'a>(a: &'a str, b: &'a str) -> &'a str {
 }
 
 /// The lowest version that can declare every one of `profiles`.
+///
+/// Profiles only: a sample's annotation kinds can need a later version too,
+/// which [`required_for_content`] adds.
 pub fn required_for<S: AsRef<str>>(profiles: &[S]) -> &'static str {
     if profiles.iter().any(|p| p.as_ref() == crate::clinical::PROFILE) {
         crate::clinical::MIN_VERSION
     } else {
         BASE_VERSION
     }
+}
+
+/// The lowest version that can hold content declaring `profiles` and
+/// annotations of `kinds` (1.1 §2.1, 1.2 §2): 1.0 for imaging, 1.1 with the
+/// `clinical` profile, 1.2 with a `polylines` annotation.  A kind no
+/// version this engine implements defines needs nothing: it is the
+/// writer's refusal (E401), not a version.
+pub fn required_for_content<S: AsRef<str>, K: AsRef<str>>(profiles: &[S], kinds: &[K]) -> &'static str {
+    kinds
+        .iter()
+        .filter_map(|k| crate::annotations::header::kind_since(k.as_ref()))
+        .fold(required_for(profiles), |needed, since| later(needed, since))
 }
 
 /// Refuse to amend a file this engine cannot preserve (1.1 §2.3).
@@ -162,21 +206,25 @@ mod tests {
     #[test]
     fn s2_2_the_later_minor_is_one_past_the_newest() {
         assert_eq!(next_minor("1.1").as_deref(), Some("1.2"));
+        assert_eq!(later_minor(), "1.3");
         assert_eq!(next_minor("1.9").as_deref(), Some("1.10"));
         assert_eq!(next_minor("1").as_deref(), Some("1.1"));
         assert_eq!(next_minor("1.x"), None);
         assert_eq!(format_versions().last(), Some(&LATEST_VERSION));
         assert_eq!(support(&later_minor()), Support::Projection);
         assert!(format_versions().iter().all(|v| support(v) == Support::Full));
-        #[allow(deprecated)] // the deprecated array must keep answering what the function does
+        // The deprecated array keeps its length, which is its type, and so
+        // 1.1's answer: the function is the one that grows.
+        #[allow(deprecated)]
         let array = FORMAT_VERSIONS;
-        assert_eq!(&array[..], format_versions());
+        assert_eq!(&array[..], &format_versions()[..2]);
     }
 
     #[test]
     fn s2_2_versions_are_full_projection_or_unsupported() {
         assert_eq!(support("1.0"), Support::Full);
         assert_eq!(support("1.1"), Support::Full);
+        assert_eq!(support("1.2"), Support::Full);
         assert_eq!(support("1"), Support::Full);
         assert_eq!(support(&later_minor()), Support::Projection);
         assert_eq!(support("1.10"), Support::Projection);
@@ -188,6 +236,19 @@ mod tests {
         assert_eq!(later("1.1", "1.0"), "1.1");
         assert_eq!(required_for(&["core", "seg"]), "1.0");
         assert_eq!(required_for(&["core", "clinical"]), "1.1");
+    }
+
+    /// 1.2 §2: the version follows the content --- profiles and kinds.
+    #[test]
+    fn v1_2_s2_1_the_version_follows_profiles_and_kinds() {
+        let none: [&str; 0] = [];
+        assert_eq!(required_for_content(&["core"], &none), "1.0");
+        assert_eq!(required_for_content(&["core"], &["labelmap", "contours", "points"]), "1.0");
+        assert_eq!(required_for_content(&["core", "clinical"], &["mesh"]), "1.1");
+        assert_eq!(required_for_content(&["core"], &["boxes", "polylines"]), "1.2");
+        assert_eq!(required_for_content(&["core", "clinical"], &["polylines"]), "1.2");
+        // An unknown kind is the writer's refusal, not a version.
+        assert_eq!(required_for_content(&["core"], &["spline"]), "1.0");
     }
 
     /// `parse` trimmed, and the readers compare the major as text: a file

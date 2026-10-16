@@ -376,11 +376,13 @@ pub fn check_profiles(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut kinds = BTreeSet::new();
     let mut tasks = BTreeSet::new();
     for (_, g) in ctx.children("annotations")? {
-        if let Some(k) = str_attr(loc(&g), "kind")? {
-            kinds.insert(k);
-        }
-        if let Some(t) = str_attr(loc(&g), "task")? {
+        let kind = str_attr(loc(&g), "kind")?;
+        // A curve is no detection, whatever task it states (1.2 §3).
+        if let Some(t) = str_attr(loc(&g), "task")?.filter(|_| kind.as_deref() != Some("polylines")) {
             tasks.insert(t);
+        }
+        if let Some(k) = kind {
+            kinds.insert(k);
         }
     }
     let declared: BTreeSet<&str> = ctx.profiles.iter().map(String::as_str).collect();

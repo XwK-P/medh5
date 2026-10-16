@@ -121,13 +121,21 @@ class TestManifest:
         build_corpus(tmp_path, names=[c.name for c in valid])
         for case in valid:
             for sample in _samples_of(tmp_path / f"{case.name}{case.suffix}"):
-                # Written at the lowest version the content needs (1.1 §2.3):
-                # 1.0 for imaging, 1.1 with the clinical profile --- and the
-                # higher-minor case is a projection, read as what is known.
+                # Written at the lowest version the content needs (1.1 §2.3,
+                # 1.2 §2.1): 1.0 for imaging, 1.1 with the clinical profile,
+                # 1.2 with a polylines annotation --- and the higher-minor
+                # case is a projection, read as what is known.
                 if "W913" in case.warnings:
                     assert sample.support == "projection", case.name
                 else:
-                    expected = "1.1" if "clinical" in sample.profiles else "1.0"
+                    kinds = {a.kind for a in sample.annotations.values()}
+                    expected = (
+                        "1.2"
+                        if "polylines" in kinds
+                        else "1.1"
+                        if "clinical" in sample.profiles
+                        else "1.0"
+                    )
                     assert sample.version == expected, case.name
                     assert sample.support == "full", case.name
                 assert len(sample.images) >= 1
@@ -406,7 +414,7 @@ class TestCodeRevisions:
         """A code is allocated without a format version: every code reports
         the rules of a version this engine implements, and a sample is still
         written at the lowest version its content needs."""
-        assert {c.since for c in CODES.values()} <= {"1.0", medh5.FORMAT_VERSION}
+        assert {c.since for c in CODES.values()} <= {"1.0", "1.1", medh5.FORMAT_VERSION}
         path = tmp_path / "s.medh5"
         write_sample(path)
         with h5py.File(path, "r") as handle:
@@ -941,7 +949,8 @@ class TestBoundedScore:
             expected = record["expect_errors"] + record["expect_warnings"]
             latest = max(
                 [CODES[c].since for c in expected]
-                + ["1.1" if "(1.1)" in record["clause"] else "1.0"]
+                + re.findall(r"\((1\.\d+)\)", record["clause"])
+                + ["1.0"]
             )
             assert record["format_version"] == latest, record["name"]
         # A file's declared version is not the case's: these two declare 1.0
@@ -952,7 +961,7 @@ class TestBoundedScore:
         ):
             assert case_by_name(name).format_version == "1.1", name
         versions = {c.format_version for c in CASES}
-        assert versions == {"1.0", "1.1"}
+        assert versions == {"1.0", "1.1", "1.2"}
 
     def test_S2_2_a_1_0_implementation_is_scored_on_the_cases_addressed_to_1_0(
         self, tmp_path, capsys

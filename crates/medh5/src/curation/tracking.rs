@@ -38,7 +38,7 @@ pub struct Observation {
     pub timepoint: String,
     pub annotation: String,
     /// The annotation's kind: `instances` (a mask), `boxes`, `obb`, or
-    /// `points` (presence only).
+    /// `points` or `polylines` (presence only).
     pub kind: String,
     pub index: usize,
     pub instance_id: u64,
@@ -139,8 +139,9 @@ impl Track {
     /// The observations that measure the object at `timepoint`: its masks
     /// (`instances`), or --- where no mask saw it --- its boxes, axis-aligned
     /// or oriented.  A box beside a mask of the same object is a detection of
-    /// it, and its volume is its bounding box's.  A point marks the object
-    /// and measures nothing, so it answers only where nothing else saw it.
+    /// it, and its volume is its bounding box's.  A point or a curve marks the
+    /// object and measures nothing, so it answers only where nothing else saw
+    /// it.
     pub fn measurements_at(&self, timepoint: &str) -> Vec<&Observation> {
         let seen = self.observations_at(timepoint);
         for kinds in [&["instances"][..], &["boxes", "obb"]] {
@@ -391,9 +392,17 @@ impl Tracking {
     }
 }
 
-/// The kinds a track joins.  A mask or a box measures the object it
-/// follows; a point marks it (§10.6), and says only that it was there.
+/// The kinds a track joins in a 1.0 or 1.1 file.  A mask or a box measures
+/// the object it follows; a point marks it (§10.6), and says only that it was
+/// there.  [`tracked_kinds`] adds 1.2's `polylines`.
 pub const TRACKED_KINDS: [&str; 4] = ["instances", "boxes", "obb", "points"];
+
+/// The kinds a track joins: [`TRACKED_KINDS`] and 1.2's `polylines`, whose
+/// `instance_ids` are those of the other kinds (1.2 §3, 1.0 §7.4).  A curve,
+/// like a point, marks the object it traces and measures nothing.
+pub fn tracked_kinds() -> &'static [&'static str] {
+    &["instances", "boxes", "obb", "points", "polylines"]
+}
 
 /// Whether an annotation declares object identity a join can trust: a
 /// `boxes` annotation without `instance_ids` numbers its rows positionally.
@@ -412,11 +421,11 @@ pub fn carries_instance_ids(ann: &Annotation) -> Result<bool> {
 /// reads is reported, never fatal.
 fn unjoinable(ann: &Annotation) -> Option<String> {
     let kind = ann.kind();
-    if !TRACKED_KINDS.contains(&kind) {
+    if !tracked_kinds().contains(&kind) {
         return Some(format!(
             "a {} annotation is neither measured nor marked by a track (they join {})",
             repr_str(kind),
-            crate::json::repr_list(&TRACKED_KINDS)
+            crate::json::repr_list(tracked_kinds())
         ));
     }
     if kind == "points" && matches!(ann.optional_dataset("class_ids"), Ok(None)) {
@@ -437,8 +446,8 @@ fn ignores_part(ann: &Annotation) -> bool {
 }
 
 /// The rows of a joinable annotation, each with the axis-aligned box a join
-/// compares: a mask's or a box's own, an oriented box's enclosing box, and a
-/// point's degenerate `[p, p]`.
+/// compares: a mask's or a box's own, an oriented box's enclosing box, a
+/// point's degenerate `[p, p]`, and the box enclosing a curve's vertices.
 fn objects(ann: &Annotation) -> Result<Vec<Instance>> {
     let bboxes: Vec<Array2<f32>> = match ann.kind() {
         "obb" => ann.obb_as_aabb()?.outer_iter().map(|b| b.mapv(|v| v as f32)).collect(),
@@ -446,6 +455,22 @@ fn objects(ann: &Annotation) -> Result<Vec<Instance>> {
             let points = ann.read_as::<f32>("points")?.into_dimensionality::<ndarray::Ix2>()?;
             points.outer_iter().map(|p| Array2::from_shape_fn((p.len(), 2), |(k, _)| p[k])).collect()
         }
+        "polylines" => ann
+            .polylines()?
+            .iter()
+            .map(|line| {
+                let columns = line.vertices.shape().get(1).copied().unwrap_or(0);
+                Array2::from_shape_fn((columns, 2), |(k, end)| {
+                    let column = line.vertices.index_axis(ndarray::Axis(1), k);
+                    let bound = if end == 0 {
+                        column.iter().copied().fold(f64::INFINITY, f64::min)
+                    } else {
+                        column.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+                    };
+                    bound as f32
+                })
+            })
+            .collect(),
         _ => return ann.instances(),
     };
     let n = bboxes.len();
@@ -482,7 +507,7 @@ fn objects(ann: &Annotation) -> Result<Vec<Instance>> {
 ///
 /// `oriented` is an oriented box's product of edge lengths, along its own
 /// axes: a rotation moves the box, not its volume.  In index space each
-/// length is in voxels.  A point measures nothing.
+/// length is in voxels.  A point or a curve measures nothing.
 fn measure(
     obj: &Instance,
     grid: Option<&Grid>,
@@ -490,7 +515,7 @@ fn measure(
     oriented: Option<f64>,
 ) -> Result<(Option<f64>, Option<u64>)> {
     let space = ann.header.space.clone().unwrap_or_else(|| "index".into());
-    if ann.kind() == "points" {
+    if matches!(ann.kind(), "points" | "polylines") {
         return Ok((None, None));
     }
     if let Some(product) = oriented {

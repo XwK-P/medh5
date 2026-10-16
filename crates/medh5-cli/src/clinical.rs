@@ -32,6 +32,7 @@ pub fn dispatch(argv: &[String], name: &str, m: &ArgMatches, ctx: &mut Ctx) -> C
         ("clinical", Some(("select", sub))) => select_cmd(sub, ctx),
         ("clinical", Some(("export", sub))) => export(sub, ctx),
         ("clinical", Some(("augment", sub))) => augment(argv, sub, ctx),
+        ("clinical", Some(("augment-cohort", sub))) => augment_cohort(argv, sub, ctx),
         ("clinical", Some(("strip", sub))) => strip(sub, ctx),
         ("task", Some(("new", sub))) => task_new(sub, ctx),
         ("task", Some(("validate", sub))) => task_validate(sub, ctx),
@@ -41,7 +42,9 @@ pub fn dispatch(argv: &[String], name: &str, m: &ArgMatches, ctx: &mut Ctx) -> C
         ("cache", Some(("validate", sub))) => cache_validate(sub, ctx),
         ("cache", Some(("info", sub))) => cache_info(sub, ctx),
         ("cache", Some(("ls", sub))) => cache_ls(sub, ctx),
-        ("clinical", _) => return Ok(ctx.usage("usage: medh5 clinical {show|select|export|augment|strip}")),
+        ("clinical", _) => {
+            return Ok(ctx.usage("usage: medh5 clinical {show|select|export|augment|augment-cohort|strip}"))
+        }
         ("task", _) => return Ok(ctx.usage("usage: medh5 task {new|validate|preflight|reconcile|repin}")),
         _ => return Ok(ctx.usage("usage: medh5 cache {info|ls|validate}")),
     };
@@ -267,6 +270,27 @@ fn export(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 const NO_IMPORTER: &str = "--from-meds and --from-fhir import in the Python package: install it (`pip install \
                            'medh5[meds]'` for MEDS) and run `medh5 clinical augment` from it, or point MEDH5_PYTHON at \
                            an interpreter that has it";
+
+/// What `clinical augment-cohort` says when no Python package can import.
+const NO_COHORT_IMPORTER: &str = "clinical augment-cohort imports in the Python package: install it (`pip install \
+                                  'medh5[meds]'` for MEDS) and run it from there, or point MEDH5_PYTHON at an \
+                                  interpreter that has it";
+
+/// `clinical augment-cohort`: the importers are Python's, always.
+fn augment_cohort(argv: &[String], m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let root = crate::app::command();
+    let command = root
+        .find_subcommand("clinical")
+        .and_then(|c| c.find_subcommand("augment-cohort"))
+        .expect("the grammar defines clinical augment-cohort");
+    let parsed = crate::convert::parsed_args(command, m);
+    let host = ctx.host;
+    let (out, err) = ctx.streams();
+    Ok(match host.convert(argv, "clinical-augment-cohort", &parsed, out, err) {
+        Some(code) => code,
+        None => ctx.fail(NO_COHORT_IMPORTER),
+    })
+}
 
 fn augment(argv: &[String], m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     if get_str(m, "from_meds").is_some() || get_str(m, "from_fhir").is_some() {

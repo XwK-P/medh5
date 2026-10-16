@@ -104,6 +104,13 @@ fn columns(kind: &str) -> &'static [(&'static str, &'static [Dim])] {
             ("contour_plane", &[M, Is(2)]),
             ("contour_role", &[M]),
         ],
+        "polylines" => &[
+            ("polyline_offsets", &[Plus1('M')]),
+            ("vertices", &[V, S]),
+            ("polyline_class_ids", &[M]),
+            ("polyline_plane", &[M, Is(2)]),
+            ("instance_ids", &[M]),
+        ],
         "mesh" => &[
             ("vertices", &[V, Is(3)]),
             ("faces", &[Var('F'), Is(3)]),
@@ -128,6 +135,7 @@ fn noun(kind: &str, symbol: char) -> &'static str {
         ("keypoints", 'K') => "keypoint slot(s)",
         (_, 'K') => "assertion(s)",
         ("contours", 'M') => "polygon(s)",
+        ("polylines", 'M') => "polyline(s)",
         (_, 'M') => "mesh(es)",
         (_, 'V') => "vertices",
         (_, 'F') => "faces",
@@ -358,7 +366,7 @@ pub(crate) fn table_problems(
 pub fn ranked(kind: &str, space: Option<&str>) -> bool {
     match kind {
         "instances" => true,
-        "boxes" | "obb" | "keypoints" | "points" | "contours" => space.unwrap_or("index") == "index",
+        "boxes" | "obb" | "keypoints" | "points" | "contours" | "polylines" => space.unwrap_or("index") == "index",
         _ => false,
     }
 }

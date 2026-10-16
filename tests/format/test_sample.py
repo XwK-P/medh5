@@ -86,7 +86,7 @@ class TestWriteRead:
             # Imaging alone needs 1.0, and a writer writes the lowest version
             # its content needs (1.1 §2.3); FORMAT_VERSION is the newest.
             assert sample.version == "1.0"
-            assert medh5.FORMAT_VERSION == "1.1"
+            assert medh5.FORMAT_VERSION == "1.2"
             assert sample.kind == "sample"
             image = sample.images["CT_tp0"]
             assert image.shape == SHAPE

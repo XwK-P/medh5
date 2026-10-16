@@ -103,6 +103,8 @@ compiled extension the modules re-export from, not an API of its own.
 | `open_annotation` | function | The reader class for an annotation handle's `kind`. |  |
 | `PointsAnnotation` | class | A point set: landmarks, seeds, or half a correspondence (§8.5). |  |
 | `Polygon` | class | One planar polygon handed to `encode_contours`. | [Annotation kinds › Contours](annotations.md#contours) |
+| `Polyline` | class | One open curve handed to `add_polylines` (format 1.2 §3): ordered `(V, S)` vertices, each joined to the next, the last not joined to the first. | [Annotation kinds › Polylines](annotations.md#polylines) |
+| `PolylinesAnnotation` | class | Open curves with an offset table (format 1.2 §3): vessel centrelines, catheter and applicator paths, RTSTRUCT's open contours. | [Annotation kinds › Polylines](annotations.md#polylines) |
 | `READERS` | constant (`dict`) | `kind` -&gt; reader class, for every kind. |  |
 | `RESERVED_KINDS` | constant (`tuple`) | Kinds a 1.0 writer must not write (spec §16). |  |
 | `SCOPES` | constant (`tuple`) |  |  |
@@ -165,6 +167,8 @@ compiled extension the modules re-export from, not an API of its own.
 | `ObbAnnotation` | class | Oriented boxes: centre, full edge lengths, rotation (§8.3). |  |
 | `PointsAnnotation` | class | A point set: landmarks, seeds, or half a correspondence (§8.5). |  |
 | `Polygon` | class | One planar polygon handed to `encode_contours`. | [Annotation kinds › Contours](annotations.md#contours) |
+| `Polyline` | class | One open curve handed to `add_polylines` (format 1.2 §3): ordered `(V, S)` vertices, each joined to the next, the last not joined to the first. | [Annotation kinds › Polylines](annotations.md#polylines) |
+| `PolylinesAnnotation` | class | Open curves with an offset table (format 1.2 §3): vessel centrelines, catheter and applicator paths, RTSTRUCT's open contours. | [Annotation kinds › Polylines](annotations.md#polylines) |
 | `ROTATION_TOL` | constant (`float`) |  |  |
 | `SPACES` | constant (`tuple`) |  |  |
 | `VISIBILITY` | constant (`dict`) |  |  |
@@ -640,9 +644,12 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
+| `augment_cohort_from_fhir` | function | Import every subject *mapping* names from a FHIR Bulk Data export, each into its sample. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
+| `augment_cohort_from_meds` | function | Import every subject *mapping* names from one MEDS *dataset*, each into its sample, in one pass over the shards. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `augment_from_fhir` | function | `read_fhir` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `augment_from_meds` | function | `read_meds` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `build_label_set` | function | Mint one label set covering a whole cohort's mask names and box labels. | [Converters › 0.x files](converters.md#0x-files) |
+| `CohortImport` | class | A cohort import: each mapped subject's result, in mapping order, and the notes on the source as a whole (the subjects no mapping names). | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `ConversionReport` | class | Every note from one conversion, plus what it produced. |  |
 | `convert_world` | function | Re-express a 3-D index→world affine between RAS and LPS. |  |
 | `from_dicom` | function | Convert a DICOM tree into one sample per subject (or per study). | [Converters › DICOM](converters.md#dicom) |
@@ -665,6 +672,7 @@ compiled extension the modules re-export from, not an API of its own.
 | `scan_dicom` | function | Walk a directory tree and collect its image series. | [Converters › DICOM](converters.md#dicom) |
 | `Series` | class | One DICOM series, resolved into a volume and its geometry. |  |
 | `SubjectGroup` | class | Occasions belonging to one subject, in timepoint order. |  |
+| `SubjectImport` | class | One subject of a cohort import: the sample its records went into, or why they did not. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `to_dicom_seg` | function | Export one voxel annotation as a DICOM SEG against its source slices. | [Converters › DICOM SEG](converters.md#dicom-seg) |
 | `to_itk_transform` | function | Write transform *transform_id* of *sample* as ITK reads it: its linear part to *out* (`.tfm`, `.txt` or `.mat`), and a displacement field applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors* convention, required. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `to_nifti` | function | Export one image, or one class of one annotation, as a NIfTI file. | [Converters › NIfTI](converters.md#nifti) |
@@ -707,6 +715,7 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
+| `augment_cohort_from_fhir` | function | Import every subject *mapping* names from a FHIR Bulk Data export, each into its sample. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `augment_from_fhir` | function | `read_fhir` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `COMPARATORS` | constant (`dict`) | `Quantity.comparator` -&gt; `value_comparator` (`ad` has none). | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `read_fhir` | function | The Observations and DiagnosticReports of *subject* (a reference, such as `Patient/123`) in *source*, as clinical records on *clock*, and what the conversion decided. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
@@ -759,6 +768,7 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
+| `augment_cohort_from_meds` | function | Import every subject *mapping* names from one MEDS *dataset*, each into its sample, in one pass over the shards. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `augment_from_meds` | function | `read_meds` *source* and add the records to the sample at *path* (`medh5.clinical.augment`), in place or into *out*: the augment report and the conversion's. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `BIRTH` | constant (`str`) | The MEDS code of a subject's birth. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `BOTH_VALUES` | constant (`tuple`) |  | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
@@ -793,10 +803,12 @@ compiled extension the modules re-export from, not an API of its own.
 
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
+| `CohortImport` | class | A cohort import: each mapped subject's result, in mapping order, and the notes on the source as a whole (the subjects no mapping names). | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `ConversionReport` | class | Every note from one conversion, plus what it produced. |  |
 | `merge_reports` | function | One report over a whole cohort. |  |
 | `Note` | class | One thing a conversion did that the source did not fully determine. |  |
 | `SEVERITIES` | constant (`tuple`) | `decision` was determined by the data; `guess` was not. |  |
+| `SubjectImport` | class | One subject of a cohort import: the sample its records went into, or why they did not. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 
 ## `medh5.io.rtstruct` { #medh5-io-rtstruct }
 

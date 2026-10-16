@@ -45,8 +45,9 @@ import datetime
 import json
 import os
 import re
+import sqlite3
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -61,8 +62,9 @@ from medh5.clinical import (
     utc_us,
 )
 from medh5.errors import MEDH5ValidationError
+from medh5.io import _clinical
 from medh5.io._clinical import Timeline, option_map, valid_id, wall_us
-from medh5.io.report import ConversionReport
+from medh5.io.report import CohortImport, ConversionReport
 
 UCUM = "http://unitsofmeasure.org"
 
@@ -579,7 +581,7 @@ def read_fhir(
         if kind not in _KINDS:
             others[kind] += 1
             continue
-        if (resource.get("subject") or {}).get("reference") != subject:
+        if _subject_of(resource, f"a {kind}") != subject:
             elsewhere += 1
             continue
         if not resource.get("id"):
@@ -725,4 +727,232 @@ def augment_from_fhir(
     return result, report
 
 
-__all__ = ["COMPARATORS", "STATUSES", "UCUM", "augment_from_fhir", "read_fhir"]
+def _subject_of(resource: Mapping[str, Any], what: str) -> Any:
+    """The reference of *resource*'s ``subject``, or ``None`` without one; a
+    ``subject`` that is not a Reference (an object) is refused."""
+    found = resource.get("subject")
+    if not found:
+        return None
+    if not isinstance(found, Mapping):
+        raise MEDH5ValidationError(
+            f"{what} has a subject that is not a FHIR Reference: {found!r}"
+        )
+    return found.get("reference")
+
+
+def _bulk_files(export_dir: Path) -> list[Path]:
+    """The NDJSON files of a FHIR Bulk Data export, in name order."""
+    if not export_dir.is_dir():
+        raise MEDH5ValidationError(f"{export_dir} is not a FHIR bulk export directory")
+    found = sorted(export_dir.glob("*.ndjson"))
+    if not found:
+        raise MEDH5ValidationError(f"{export_dir} holds no FHIR bulk file (*.ndjson)")
+    return found
+
+
+def augment_cohort_from_fhir(
+    export_dir: str | os.PathLike[str],
+    mapping: Mapping[str, str | os.PathLike[str]],
+    *,
+    out_dir: str | os.PathLike[str] | None = None,
+    clock: Clock | None = None,
+    timezone: str | datetime.tzinfo | None = None,
+    origin: str | datetime.datetime | None = None,
+    texts: bool = False,
+    prefer_systems: Iterable[str] = (),
+    image_studies: Mapping[str, str] | None = None,
+) -> CohortImport:
+    """Import every subject *mapping* names from a FHIR Bulk Data export, each
+    into its sample.
+
+    *export_dir* holds the export's NDJSON files (``Observation.ndjson``,
+    ``DiagnosticReport.ndjson``, …: one resource per line, many patients);
+    *mapping* maps a subject reference (``Patient/123``) to the sample its
+    resources augment, in place or, with *out_dir*, into a file of the
+    sample's name there.  Each subject's Observations and DiagnosticReports,
+    in file and line order, are mapped exactly as :func:`read_fhir` maps a
+    Bundle of them, onto *clock* or, when it is ``None``, onto each sample's
+    own clinical clock: the batch changes the cost, never the answer.  The
+    other options are :func:`read_fhir`'s.
+
+    The files are streamed twice: once to find where each mapped subject's
+    resources are (a line's offset, not the resource), then once per subject
+    to read them, so one subject's resources are in memory at a time.  The
+    index of where they are, and of the subjects not read, is kept in a
+    temporary database on disk, so memory does not grow with the export.
+    Resources of subjects the mapping does not name, and resource types the
+    profile does not read, are counted in ``info`` notes.  A subject that
+    refuses is reported in the result, and the others are still written.
+    """
+    root = Path(os.fspath(export_dir))
+    files = _bulk_files(root)
+    targets = _clinical.cohort_targets(mapping, out_dir, root)
+    # One tuple for every subject: a generator would serve only the first.
+    prefer = tuple(prefer_systems)
+    source = os.fspath(export_dir)
+    cohort = CohortImport(
+        source=source,
+        converter="from-fhir",
+        report=ConversionReport(source=source, converter="from-fhir"),
+    )
+    with _BulkIndex(mapping) as index:
+        for n, path in enumerate(files):
+            index.scan(n, path)
+        index.notes(cohort.report)
+        for subject, sample, out in targets:
+
+            def read(
+                on: Clock, subject: str = subject
+            ) -> tuple[ClinicalRecords, ConversionReport]:
+                resources = list(_bulk_read(files, index.lines(subject)))
+                records, report = read_fhir(
+                    resources,
+                    subject=subject,
+                    clock=on,
+                    timezone=timezone,
+                    origin=origin,
+                    texts=texts,
+                    prefer_systems=prefer,
+                    image_studies=image_studies,
+                )
+                report.source = source
+                return records, report
+
+            cohort.subjects.append(
+                _clinical.import_subject(subject, sample, out, clock, read)
+            )
+    return cohort
+
+
+class _BulkIndex:
+    """Where each mapped subject's lines are in a bulk export, and how many
+    resources of each subject the mapping does not name: in a temporary
+    database on disk (SQLite's, removed when it closes), so that what is held
+    in memory is the mapping and a bounded buffer, never a row per resource
+    or per subject of the export."""
+
+    BUFFER = 1_000
+    """Rows gathered before they are written to the database."""
+
+    def __init__(self, subjects: Iterable[str]) -> None:
+        self._subjects = {subject: n for n, subject in enumerate(subjects)}
+        self._db = sqlite3.connect("")
+        self._db.executescript(
+            "PRAGMA cache_size = -2048; PRAGMA temp_store = FILE;"
+            "CREATE TABLE line (subject INTEGER, file INTEGER, start INTEGER,"
+            " length INTEGER);"
+        )
+        self._lines: list[tuple[int, int, int, int]] = []
+        self._elsewhere = _clinical.Tally()
+        self._others: Counter[str] = Counter()
+        self._indexed = False
+
+    def __enter__(self) -> _BulkIndex:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._db.close()
+        self._elsewhere.__exit__()
+
+    def scan(self, number: int, path: Path) -> None:
+        """Index the lines of *path*, the export's file *number*."""
+        with path.open("rb") as stream:
+            offset = 0
+            for line_number, line in enumerate(stream, 1):
+                start, offset = offset, offset + len(line)
+                if not line.strip():
+                    continue
+                try:
+                    resource = json.loads(line)
+                except ValueError as exc:
+                    raise MEDH5ValidationError(
+                        f"line {line_number} of {path} is not JSON: {exc}"
+                    ) from None
+                if not isinstance(resource, Mapping):
+                    raise MEDH5ValidationError(
+                        f"line {line_number} of {path} is not a FHIR resource"
+                    )
+                kind = str(resource.get("resourceType"))
+                if kind not in _KINDS:
+                    self._others[kind] += 1
+                    continue
+                reference = _subject_of(
+                    resource, f"the {kind} on line {line_number} of {path}"
+                )
+                subject = (
+                    self._subjects.get(reference)
+                    if isinstance(reference, str)
+                    else None
+                )
+                if subject is not None:
+                    self._lines.append((subject, number, start, len(line)))
+                    if len(self._lines) >= self.BUFFER:
+                        self._flush()
+                else:
+                    self._elsewhere.add(str(reference))
+
+    def _flush(self) -> None:
+        self._db.executemany("INSERT INTO line VALUES (?, ?, ?, ?)", self._lines)
+        self._lines.clear()
+
+    def notes(self, report: ConversionReport) -> None:
+        """Count, in *report*, what the export holds that is not read."""
+        _bulk_notes(report, self._others, *self._elsewhere.counts())
+
+    def lines(self, subject: str) -> Iterator[tuple[int, int, int]]:
+        """*subject*'s lines, as (file, offset, length), in file and line
+        order."""
+        if not self._indexed:
+            self._flush()
+            self._db.execute("CREATE INDEX line_subject ON line (subject)")
+            self._indexed = True
+        return self._db.execute(
+            "SELECT file, start, length FROM line WHERE subject = ? ORDER BY rowid",
+            (self._subjects[subject],),
+        )
+
+
+def _bulk_read(
+    files: Sequence[Path], where: Iterable[tuple[int, int, int]]
+) -> Iterable[Any]:
+    """The resources at *where*: (file, offset, length) of each line."""
+    streams: dict[int, Any] = {}
+    try:
+        for index, start, length in where:
+            stream = streams.get(index)
+            if stream is None:
+                stream = streams[index] = files[index].open("rb")
+            stream.seek(start)
+            yield json.loads(stream.read(length))
+    finally:
+        for stream in streams.values():
+            stream.close()
+
+
+def _bulk_notes(
+    report: ConversionReport, others: Counter[str], subjects: int, resources: int
+) -> None:
+    if resources:
+        report.add(
+            "subject",
+            f"{resources} Observation(s) and DiagnosticReport(s) "
+            f"of {subjects} subject(s) not in the mapping were not read",
+            detail={"subjects": subjects, "resources": resources},
+        )
+    for kind, n in sorted(others.items()):
+        report.add(
+            "resource",
+            f"{n} {kind} resource(s) left out: this profile reads Observations "
+            "and DiagnosticReports",
+            detail={"resourceType": kind, "resources": n},
+        )
+
+
+__all__ = [
+    "COMPARATORS",
+    "STATUSES",
+    "UCUM",
+    "augment_cohort_from_fhir",
+    "augment_from_fhir",
+    "read_fhir",
+]
