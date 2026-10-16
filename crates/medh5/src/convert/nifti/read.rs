@@ -409,11 +409,13 @@ fn skip_extensions(stream: &mut dyn Read, header: &Header, single: bool) -> Resu
         };
         let esize = word(0);
         let wanted = esize - 8;
-        let got = if wanted < 0 {
-            skip(stream, u64::MAX).map_err(gzip_error)? as i64
-        } else {
-            skip(stream, wanted as u64).map_err(gzip_error)? as i64
-        };
+        // nibabel read a negative count as "the rest of the file", which can
+        // never be one, and then refused the extension: refused here without
+        // inflating the rest, which a small gzip stream can make enormous.
+        if wanted < 0 {
+            return Err(Error::Value("failed to read extension content".into()));
+        }
+        let got = skip(stream, wanted as u64).map_err(gzip_error)? as i64;
         if got != wanted {
             return Err(Error::Value("failed to read extension content".into()));
         }
@@ -656,6 +658,31 @@ mod tests {
         std::fs::write(&path, single(&h, &[])).unwrap();
         let err = nifti(&path).read_voxels().unwrap_err();
         assert!(matches!(&err, Error::Value(m) if m.starts_with("array is too big")), "{err:?}");
+    }
+
+    #[test]
+    fn s02_2_an_extension_shorter_than_its_header_is_refused_unread() {
+        // A gzip'd header file with an extension of size 4 (< 8), then a
+        // stream that inflates to 64 MiB and is cut short: refused for the
+        // extension, not for the cut, which only reading on would find.
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = header(Version::One, &[2, 3, 4]);
+        h.magic = *b"ni1\0";
+        h.vox_offset = 0.0;
+        let mut bytes = h.encode();
+        bytes.extend_from_slice(&[1, 0, 0, 0]);
+        bytes.extend_from_slice(&4i32.to_le_bytes());
+        bytes.extend_from_slice(&0i32.to_le_bytes());
+        let mut enc = GzEncoder::new(Vec::new(), Compression::best());
+        enc.write_all(&bytes).unwrap();
+        enc.write_all(&vec![0u8; 64 << 20]).unwrap();
+        let whole = enc.finish().unwrap();
+        std::fs::write(dir.path().join("x.hdr.gz"), &whole[..whole.len() - 64]).unwrap();
+        std::fs::write(dir.path().join("x.img.gz"), gzip(&voxels(48))).unwrap();
+        match load(&dir.path().join("x.hdr.gz")) {
+            Err(LoadError::Broken(Error::Value(m))) => assert_eq!(m, "failed to read extension content"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
