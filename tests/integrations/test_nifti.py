@@ -1369,6 +1369,15 @@ class TestGridsAgreeInTimeAndUnits:
         (taken,) = [n for n in report.of_kind("time_values") if "takes them" in str(n)]
         assert taken.detail["from"] == "B"
 
+    def test_S3_2_times_one_volume_states_bind_the_next(self, tmp_path):
+        """B states the frame indices A assumed; C states others. B's times are
+        stated, so C conflicts with them rather than replacing them."""
+        a = self._series(tmp_path / "a.nii.gz", step=None)
+        b = self._series(tmp_path / "b.nii.gz", step=1.0, offset=0.0)
+        c = self._series(tmp_path / "c.nii.gz", step=2.0, offset=0.0)
+        with pytest.raises(MEDH5ValidationError, match="'C' states frame times"):
+            from_nifti({"A": a, "B": b, "C": c}, tmp_path / "s.medh5")
+
     def test_S3_2_an_export_states_its_units_and_frame_times(self, tmp_path):
         source = self._series(tmp_path / "a.nii.gz", step=2.5, offset=10.0)
         from_nifti({"A": source}, tmp_path / "s.medh5")

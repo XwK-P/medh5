@@ -31,3 +31,8 @@
   `scl_slope`, 2.1.0 tested only each voxel's real part, so a voxel such as
   `0+1i` was dropped from the mask; a voxel is now in the mask when either
   physical part is non-zero, as it already was unscaled.
+- **Frame times one volume states bind the volumes after it.** When the
+  first volume assumed its frame indices as times and a second stated those
+  same times, a third stating other times replaced them, putting the second
+  on a timeline it disagreed with; it is now refused, as two volumes stating
+  different times always were.
