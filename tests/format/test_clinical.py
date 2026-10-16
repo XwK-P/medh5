@@ -64,7 +64,7 @@ class TestVersions:
         assert codes(history, "integrity") == []
 
     def test_S2_1_the_lowest_version_a_content_needs(self):
-        assert medh5.FORMAT_VERSION == "1.1"
+        assert medh5.FORMAT_VERSION == "1.2"
         from medh5._core import written_version
 
         assert written_version(None, ["core"]) == "1.0"

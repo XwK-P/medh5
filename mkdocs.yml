@@ -186,6 +186,7 @@ nav:
   - Specification:
       - Format specification 1.0: spec/medh5-1.0.md
       - Format specification 1.1 (clinical): spec/medh5-1.1.md
+      - Format specification 1.2 (open curves): spec/medh5-1.2.md
       - Task and cache contract 1: spec/task-cache-1.md
       - Conformance suite: spec/conformance.md
 

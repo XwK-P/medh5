@@ -152,12 +152,12 @@ def test_the_format_version_is_not_the_package_version():
     package minor bump against an unchanged format failed it.  1.x then held
     the package MAJOR equal to the format's; 2.0 is the architectural reset
     that broke that on purpose (a Rust engine, one format), so what has to
-    hold is that the newest format version is 1.1, the package version is a
+    hold is that the newest format version is 1.2, the package version is a
     well-formed release of its own, and the package MAJOR never trails the
     format MAJOR it writes.  A file is still written at the lowest version its
     content needs, so an imaging-only sample stays 1.0.
     """
-    assert medh5.__format_version__ == "1.1"
+    assert medh5.__format_version__ == "1.2"
     assert re.fullmatch(r"\d+\.\d+\.\d+(?:[.-]?[0-9A-Za-z.]+)?", _declared())
     package_major = int(_declared().split(".")[0])
     assert package_major >= int(medh5.__format_version__.split(".")[0])

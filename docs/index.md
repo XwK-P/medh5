@@ -41,10 +41,11 @@ twenty minutes, start to finish, then
 
 **Writing your own reader?** The specifications are normative:
 [1.0](spec/medh5-1.0.md) for the format, [1.1](spec/medh5-1.1.md) for the
-clinical profile and for how a reader opens a later minor version, and the
+clinical profile and for how a reader opens a later minor version,
+[1.2](spec/medh5-1.2.md) for open curves, and the
 separately versioned [task and cache contract](spec/task-cache-1.md) for the
 companions training builds on. The [conformance suite](spec/conformance.md) is
-172 cases you can run against your implementation, and the
+175 cases you can run against your implementation, and the
 [diagnostic codes](reference/diagnostic-codes.md) are the stable contract
 between the two.
 
@@ -72,7 +73,7 @@ signal from a class nobody examined. See
 
 **Every claim is checkable.** Per-object SHA-256 over decompressed content and a
 Merkle `content_id` that survives recompression; a validator with a
-[stable diagnostic-code table](reference/diagnostic-codes.md); and a 172-case
+[stable diagnostic-code table](reference/diagnostic-codes.md); and a 175-case
 conformance corpus, at least one case per code, that any implementation can run.
 
 **What was known, when.** From format 1.1 a sample may carry the subject's
@@ -128,13 +129,14 @@ Every command is in the [CLI reference](reference/cli.md).
 
 ## Versioning
 
-The **format** is versioned by `medh5_version`: [1.0](spec/medh5-1.0.md), and
+The **format** is versioned by `medh5_version`: [1.0](spec/medh5-1.0.md);
 [1.1](spec/medh5-1.1.md), which adds the optional `clinical` profile and
-nothing else. A sample is written at the lowest version its content needs, so
-imaging-only data is still 1.0. A minor version may add optional objects,
+nothing else; and [1.2](spec/medh5-1.2.md), which adds the `polylines`
+annotation kind and nothing else. A sample is written at the lowest version its
+content needs, so imaging-only data is still 1.0. A minor version may add optional objects,
 profiles, encodings and diagnostic codes; it may not change what an existing
 one means, and a reader opens a later minor as a projection — validated for
-what it knows, never amended. See spec §16 and 1.1 §2.
+what it knows, never amended. See spec §16, 1.1 §2 and 1.2 §2.
 
 The **package** follows semantic versioning from 1.0.0. `medh5.__version__` is
 the package; `medh5.FORMAT_VERSION` is the newest format it writes.

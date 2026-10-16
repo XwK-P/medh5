@@ -37,7 +37,8 @@ What everything is, rather than how to do anything. For task-shaped answers, see
 | **[Runnable examples](../examples/index.md)** | A complete sample written by following the specification, plus the benchmark scripts. |
 
 The [specification](../spec/medh5-1.0.md) — with [1.1](../spec/medh5-1.1.md)
-for the clinical profile, and the separately versioned
+for the clinical profile, [1.2](../spec/medh5-1.2.md) for open curves, and the
+separately versioned
 [task and cache contract](../spec/task-cache-1.md) — is the normative
 statement of all of it. Where this section and the specification disagree, one
 of them is a bug.
