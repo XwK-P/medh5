@@ -910,6 +910,26 @@ class TestRepositoryGates:
         assert "cargo install cargo-fuzz --version 0.13.2 --locked" in job
         assert 'cargo +"$FUZZ_TOOLCHAIN" fuzz run "$TARGET"' in job
         assert "upload-artifact" not in job
+        # The C libraries are instrumented as the Rust is, by the clang of the
+        # nightly's own LLVM, with HDF5's free lists off --- in the fuzz job,
+        # and in nothing that builds what ships.
+        cflags = "-fsanitize=address,fuzzer-no-link -DH5_USING_MEMCHECKER=1"
+        assert f"CFLAGS: {cflags}" in job
+        assert "ASAN_OPTIONS: detect_leaks=0" in job
+        assert 'llvm=$(rustc +"$FUZZ_TOOLCHAIN" -vV' in job
+        # What the targets exclude is tested in every run.
+        assert "rustc --edition 2021 --test src/lib.rs" in job
+        # Only the pinned key is trusted, not whatever else the file holds.
+        assert 'test "$primaries" = "$LLVM_KEY"' in job
+        assert '"clang-$llvm" "libclang-rt-$llvm-dev"' in job
+        assert 'echo "CC=clang-$llvm" >> "$GITHUB_ENV"' in job
+        workflows = (ROOT / ".github/workflows").glob("*.yml")
+        builds = [*workflows, *(ROOT / ".github/scripts").iterdir()]
+        for path in builds:
+            if path != FUZZ and path.is_file():
+                other = path.read_text(encoding="utf-8")
+                assert "fsanitize" not in other, path.name
+                assert "H5_USING_MEMCHECKER" not in other, path.name
         if (ROOT / "PKG-INFO").is_file():
             return  # the sdist carries no fuzz targets
         # Every target runs, in a workspace of its own: the root's lock and
