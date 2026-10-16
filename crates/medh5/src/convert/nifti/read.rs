@@ -758,11 +758,12 @@ mod tests {
             let bytes = single(&h, &voxels(data / 2));
             let path = dir.path().join(if gz { "neg.nii.gz" } else { "neg.nii" });
             std::fs::write(&path, if gz { gzip(&bytes) } else { bytes }).unwrap();
-            let err = nifti(&path).read_voxels().unwrap_err();
+            let image = nifti(&path);
+            let err = image.read_voxels().unwrap_err();
             match data {
                 4 => assert!(matches!(&err, Error::Value(m) if m == "negative dimensions are not allowed"), "{err:?}"),
                 _ => {
-                    let source = if gz { String::new() } else { path.to_string_lossy().into_owned() };
+                    let source = if gz { String::new() } else { image.image_name.clone() };
                     let message = format!("Expected 4 bytes, got 2 bytes from {source}\n - could the file be damaged?");
                     assert!(matches!(&err, Error::Io(m) if *m == message), "{err:?}");
                 }
