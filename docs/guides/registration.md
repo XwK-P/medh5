@@ -256,7 +256,8 @@ to_itk_transform("case.medh5", "back.tfm", transform_id="syn",
 
 ITK's LPS millimetres are re-expressed in each grid's coordinate system and
 units. A composite's components are stored in reverse (ITK applies the last
-first). An ANTs affine and warp become the warp into an intermediate frame,
+first). A B-spline becomes a `bspline` on a grid of its lattice, which maps
+points as ITK does. An ANTs affine and warp become the warp into an intermediate frame,
 the affine out of it, and a `composite` between the two grids' frames, which
 earns `reg`. `vectors` is required with a field, because the field's file does
 not say whether its vectors are LPS or RAS. See

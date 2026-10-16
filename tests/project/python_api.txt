@@ -3112,10 +3112,22 @@ medh5.io.ConversionReport.source	field
 medh5.io.ConversionReport.to_json	method	()
 medh5.io.ConversionReport.warn	method	(kind, message, detail=None)
 medh5.io.ConversionReport.warnings	property
-medh5.io.ItkTransform	class	(name, matrix, components=()) bases=
+medh5.io.ItkBSpline	class	(order, size, origin, spacing, direction, coefficients) bases=
+medh5.io.ItkBSpline.coefficients	field
+medh5.io.ItkBSpline.direction	field
+medh5.io.ItkBSpline.fixed_parameters	property
+medh5.io.ItkBSpline.name	property
+medh5.io.ItkBSpline.order	field
+medh5.io.ItkBSpline.origin	field
+medh5.io.ItkBSpline.parameters	property
+medh5.io.ItkBSpline.size	field
+medh5.io.ItkBSpline.spacing	field
+medh5.io.ItkTransform	class	(name, matrix, components=(), bspline=None) bases=
+medh5.io.ItkTransform.bspline	field
 medh5.io.ItkTransform.components	field
 medh5.io.ItkTransform.dimension	property
 medh5.io.ItkTransform.is_composite	property
+medh5.io.ItkTransform.is_linear	property
 medh5.io.ItkTransform.matrix	field
 medh5.io.ItkTransform.name	field
 medh5.io.Note	class	(kind, message, severity='info', detail=<factory>) bases=
@@ -3223,10 +3235,22 @@ medh5.io.grouping.note_instance_ids	function	(group, log)
 medh5.io.grouping.output_name	function	(group, used, *, safe=None)
 medh5.io.import_seg_nifti	function	(path, masks, *, ann_id='seg', grid=None, coord_system=None, transpose=True, annotated_classes='all_given', assume_aligned=False, assume_geometry=False, report=None, plane_as_volume=False)
 medh5.io.itk	module
-medh5.io.itk.ItkTransform	class	(name, matrix, components=()) bases=
+medh5.io.itk.ItkBSpline	class	(order, size, origin, spacing, direction, coefficients) bases=
+medh5.io.itk.ItkBSpline.coefficients	field
+medh5.io.itk.ItkBSpline.direction	field
+medh5.io.itk.ItkBSpline.fixed_parameters	property
+medh5.io.itk.ItkBSpline.name	property
+medh5.io.itk.ItkBSpline.order	field
+medh5.io.itk.ItkBSpline.origin	field
+medh5.io.itk.ItkBSpline.parameters	property
+medh5.io.itk.ItkBSpline.size	field
+medh5.io.itk.ItkBSpline.spacing	field
+medh5.io.itk.ItkTransform	class	(name, matrix, components=(), bspline=None) bases=
+medh5.io.itk.ItkTransform.bspline	field
 medh5.io.itk.ItkTransform.components	field
 medh5.io.itk.ItkTransform.dimension	property
 medh5.io.itk.ItkTransform.is_composite	property
+medh5.io.itk.ItkTransform.is_linear	property
 medh5.io.itk.ItkTransform.matrix	field
 medh5.io.itk.ItkTransform.name	field
 medh5.io.itk.from_itk_transform	function	(path, sample, *, transform_id, fixed, moving, warp=None, vectors=None, inverse_warp=None, report=None)

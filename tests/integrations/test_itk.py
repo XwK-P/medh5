@@ -399,7 +399,8 @@ class TestRead:
             "fixed": "fixed",
             "moving": "moving",
         }
-        with pytest.raises(MEDH5ValidationError, match="medh5 2.2"):
+        # A 4x4x4 lattice takes 3 x 64 coefficients, and the file gives 3.
+        with pytest.raises(MEDH5ValidationError, match="takes 192 parameters"):
             from_itk_transform(DATA / "bspline.tfm", path, **args)
         h5 = tmp_path / "t.h5"
         h5.write_bytes(b"\x89HDF\r\n\x1a\n")
@@ -721,6 +722,266 @@ class TestItkHdf5:
         assert len(read_itk_transform(out).components) == 2
 
 
+LATTICE = (6, 7, 5)
+"""A B-spline lattice's control points per ITK axis, x first."""
+
+OBLIQUE = np.array(
+    [
+        [np.cos(0.3), -np.sin(0.3), 0.0],
+        [np.sin(0.3), np.cos(0.3), 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+)
+
+
+def _lattice(
+    direction: np.ndarray = OBLIQUE,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """A lattice's origin, spacing and direction in LPS millimetres."""
+    return np.array([-20.0, 10.0, 5.0]), np.array([12.0, 9.0, 8.0]), direction
+
+
+def _nodes(
+    origin: np.ndarray, spacing: np.ndarray, direction: np.ndarray
+) -> np.ndarray:
+    """The lattice's control points in LPS, ``(*reversed(LATTICE), 3)``: z, y,
+    x, as ITK's parameters order them (x fastest)."""
+    zyx = np.stack(
+        np.meshgrid(*[np.arange(n) for n in LATTICE[::-1]], indexing="ij"), -1
+    )
+    return origin + (zyx[..., ::-1] * spacing) @ direction.T
+
+
+def _bspline_tfm(
+    path: Path,
+    coefficients: np.ndarray,
+    *,
+    order: int = 3,
+    direction: np.ndarray = OBLIQUE,
+    name: str | None = None,
+) -> Path:
+    """An ITK text file of one ``BSplineTransform`` on :data:`LATTICE`,
+    written by hand as ITK writes one: the fixed parameters are the size,
+    origin, spacing and direction (row-major), the parameters one block per
+    LPS component, x fastest."""
+    origin, spacing, direction = _lattice(direction)
+    fixed = [*LATTICE, *origin, *spacing, *direction.ravel()]
+    suffix = "" if order == 3 else f"_{order}"
+    kind = name or f"BSplineTransform_double_3_3{suffix}"
+    path.write_text(
+        "#Insight Transform File V1.0\n#Transform 0\n"
+        f"Transform: {kind}\n"
+        "Parameters: " + " ".join(repr(float(v)) for v in coefficients.ravel()) + "\n"
+        "FixedParameters: " + " ".join(repr(float(v)) for v in fixed) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+AFFINE_FIELD = np.array([[0.02, -0.01, 0.0], [0.01, 0.03, -0.02], [0.0, 0.01, -0.01]])
+"""``u(x) = A x + b`` in LPS: a B-spline whose coefficients are ``A p + b``
+at the control points ``p`` reproduces it exactly wherever every tap is on
+the lattice (B-splines of order 1 and 3 reproduce linear functions)."""
+
+AFFINE_OFFSET = np.array([1.5, -2.0, 0.75])
+
+
+def _affine_coefficients(direction: np.ndarray = OBLIQUE) -> np.ndarray:
+    nodes = _nodes(*_lattice(direction))
+    values = nodes @ AFFINE_FIELD.T + AFFINE_OFFSET
+    return np.moveaxis(values, -1, 0)  # (3, z, y, x)
+
+
+def _inside(order: int, direction: np.ndarray = OBLIQUE) -> np.ndarray:
+    """LPS points where every tap of an order-*order* spline is on the
+    lattice: continuous indices in ``[1, n - 2)`` for order 3."""
+    origin, spacing, direction = _lattice(direction)
+    low, high = (
+        (1.0, np.array(LATTICE) - 2.01)
+        if order == 3
+        else (0.0, np.array(LATTICE) - 1.01)
+    )
+    rng = np.random.default_rng(3)
+    index = low + rng.random((40, 3)) * (high - low)
+    return origin + (index * spacing) @ direction.T
+
+
+class TestBSpline:
+    """ITK's ``BSplineTransform`` stored as 1.0 §10.5's ``bspline``; refused
+    before 2.2.  The hand-checkable case is a spline that reproduces an
+    affine displacement exactly; `TestItkCrossCheck` holds random ones to
+    SimpleITK."""
+
+    @pytest.mark.parametrize("order", [1, 3])
+    @pytest.mark.parametrize(
+        ("coord_system", "units"), [("LPS", "mm"), ("RAS", "mm"), ("RAS", "m")]
+    )
+    def test_S10_5_a_bspline_imports_as_the_bspline_kind(
+        self, tmp_path, order, coord_system, units
+    ):
+        tfm = _bspline_tfm(tmp_path / "b.tfm", _affine_coefficients(), order=order)
+        scale = 0.001 if units == "m" else 1.0
+        path = _pair(
+            tmp_path / "b.medh5", coord_system=coord_system, units=units, scale=scale
+        )
+        report = from_itk_transform(
+            tfm, path, transform_id="reg", fixed="fixed", moving="moving"
+        )
+        assert report.ok, report.format(verbose=True)
+        [note] = report.of_kind("bspline")
+        assert note.detail == {"grid": "reg_cp", "order": order, "size": [*LATTICE]}
+        lps = _inside(order)
+        expected_lps = lps + lps @ AFFINE_FIELD.T + AFFINE_OFFSET
+        h = np.array([-1.0, -1.0, 1.0]) if coord_system == "RAS" else np.ones(3)
+        h = h * (1000.0 if units == "m" else 1.0)
+        with medh5.open(path) as s:
+            t = s.transforms["reg"]
+            assert t.kind == "bspline" and t.order == order
+            assert t.cp_grid_id == "reg_cp"
+            cp = s.grids["reg_cp"]
+            assert cp.spatial_shape == LATTICE[::-1]
+            assert cp.frame_uid == s.grids["fixed"].frame_uid
+            assert (cp.coord_system, cp.units) == (coord_system, units)
+            mapped = np.asarray(t.transform_points(lps / h))
+        assert np.allclose(mapped * h, expected_lps, atol=1e-9)
+        result = validate_file(path)
+        assert not result.errors, result.diagnostics
+        assert "reg" in result.profiles
+
+    @pytest.mark.parametrize("suffix", [".tfm", ".h5"])
+    def test_a_bspline_round_trips(self, tmp_path, suffix):
+        coefficients = np.random.default_rng(5).normal(0.0, 3.0, (3, *LATTICE[::-1]))
+        tfm = _bspline_tfm(tmp_path / "b.tfm", coefficients)
+        path = _pair(tmp_path / "b.medh5", coord_system="RAS")
+        from_itk_transform(
+            tfm, path, transform_id="reg", fixed="fixed", moving="moving"
+        )
+        out = tmp_path / f"out{suffix}"
+        report = to_itk_transform(path, out, transform_id="reg")
+        assert report.outputs == [str(out)]
+        back = read_itk_transform(out).bspline
+        original = read_itk_transform(tfm).bspline
+        assert back is not None and original is not None
+        assert back.order == 3 and back.size == LATTICE
+        for field in ("origin", "spacing", "direction", "coefficients"):
+            assert np.allclose(getattr(back, field), getattr(original, field)), field
+
+    def test_S10_5_a_composite_applies_the_bspline_first(self, tmp_path):
+        """ITK lists the B-spline last and applies it first; the affine of
+        `affine.tfm` follows it, from an intermediate frame."""
+        bspline = _bspline_tfm(tmp_path / "b.tfm", _affine_coefficients())
+        affine = (DATA / "affine.tfm").read_text().split("#Transform 0\n", 1)[1]
+        spline = bspline.read_text().split("#Transform 0\n", 1)[1]
+        composite = tmp_path / "c.tfm"
+        composite.write_text(
+            "#Insight Transform File V1.0\n#Transform 0\n"
+            "Transform: CompositeTransform_double_3_3\n"
+            f"#Transform 1\n{affine}#Transform 2\n{spline}",
+            encoding="utf-8",
+        )
+        path = _pair(tmp_path / "c.medh5")
+        report = from_itk_transform(
+            composite, path, transform_id="reg", fixed="fixed", moving="moving"
+        )
+        assert report.ok, report.format(verbose=True)
+        matrix = read_itk_transform(DATA / "affine.tfm").matrix
+        lps = _inside(3)
+        warped = lps + lps @ AFFINE_FIELD.T + AFFINE_OFFSET
+        with medh5.open(path) as s:
+            reg = s.transforms["reg"]
+            assert [c.transform_id for c in reg.components()] == [
+                "reg.bspline",
+                "reg.affine",
+            ]
+            assert s.transforms["reg.bspline"].to_frame == "pseudo:reg.mid"
+            mapped = np.asarray(reg.transform_points(lps))
+        assert np.allclose(mapped, _apply(matrix, warped), atol=1e-9)
+        assert not validate_file(path).errors
+        out = tmp_path / "out.tfm"
+        to_itk_transform(path, out, transform_id="reg")
+        back = read_itk_transform(out)
+        assert [p.name for p in back.components] == [
+            "AffineTransform_double_3_3",
+            "BSplineTransform_double_3_3",
+        ]
+        assert not back.is_linear and np.allclose(back.matrix, matrix)
+
+    def test_S10_5_what_a_bspline_cannot_be_imported_as_is_refused(self, tmp_path):
+        args: dict[str, Any] = {
+            "transform_id": "reg",
+            "fixed": "fixed",
+            "moving": "moving",
+        }
+        c = _affine_coefficients()
+        with pytest.raises(MEDH5ValidationError, match="order 2"):
+            read_itk_transform(_bspline_tfm(tmp_path / "o2.tfm", c, order=2))
+        v3 = _bspline_tfm(
+            tmp_path / "v3.tfm", c, name="BSplineDeformableTransform_double_3_3"
+        )
+        with pytest.raises(MEDH5ValidationError, match="ITKv3"):
+            read_itk_transform(v3)
+        with pytest.raises(MEDH5ValidationError, match="not orthonormal"):
+            read_itk_transform(
+                _bspline_tfm(tmp_path / "d.tfm", c, direction=2 * np.eye(3))
+            )
+        with pytest.raises(MEDH5ValidationError, match="not an ITK transform type"):
+            read_itk_transform(
+                _bspline_tfm(tmp_path / "a.tfm", c, name="AffineTransform_double_3_3_1")
+            )
+        # Listed first in the composite, so applied last: its lattice would be
+        # a grid in an intermediate frame.
+        spline = (
+            _bspline_tfm(tmp_path / "b.tfm", c)
+            .read_text()
+            .split("#Transform 0\n", 1)[1]
+        )
+        affine = (DATA / "affine.tfm").read_text().split("#Transform 0\n", 1)[1]
+        late = tmp_path / "late.tfm"
+        late.write_text(
+            "#Insight Transform File V1.0\n#Transform 0\n"
+            "Transform: CompositeTransform_double_3_3\n"
+            f"#Transform 1\n{spline}#Transform 2\n{affine}",
+            encoding="utf-8",
+        )
+        path = _pair(tmp_path / "r.medh5")
+        with pytest.raises(MEDH5ValidationError, match="step 2 of 2"):
+            from_itk_transform(late, path, **args)
+        with pytest.raises(MEDH5ValidationError, match="and so is a warp"):
+            from_itk_transform(
+                tmp_path / "b.tfm",
+                path,
+                warp=_warp(tmp_path / "w.nii.gz", (1.0, 0.0, 0.0)),
+                vectors="lps",
+                **args,
+            )
+        mixed = tmp_path / "m.medh5"
+        with medh5.create(mixed, sample_id="s", codec="portable") as w:
+            for role, cs in (("fixed", "LPS"), ("moving", "RAS")):
+                w.add_grid(
+                    role,
+                    shape=SHAPE,
+                    spacing=(1, 1, 1),
+                    coord_system=cs,
+                    frame_uid=role,
+                )
+                w.add_image(role, np.zeros(SHAPE, np.int16), grid=role, modality="CT")
+        with pytest.raises(MEDH5ValidationError, match="the fixed grid's convention"):
+            from_itk_transform(tmp_path / "b.tfm", mixed, **args)
+        with medh5.open(path) as s:
+            assert not s.transforms and "reg_cp" not in s.grids, "nothing was written"
+        from_itk_transform(tmp_path / "b.tfm", path, **args)
+        with pytest.raises(MEDH5ValidationError, match="holds a B-spline"):
+            to_itk_transform(path, tmp_path / "out.mat", transform_id="reg")
+        assert not (tmp_path / "out.mat").exists()
+        with pytest.raises(MEDH5ValidationError, match="already holds"):
+            from_itk_transform(
+                tmp_path / "b.tfm", path, **{**args, "transform_id": "reg"}
+            )
+        bspline = read_itk_transform(tmp_path / "b.tfm")
+        with pytest.raises(MEDH5ValidationError, match="is a B-spline"):
+            write_itk_transform(tmp_path / "b.mat", bspline)
+
+
 class TestItkCrossCheck:
     """Against SimpleITK's own reading and writing (CI's `test-itk` job)."""
 
@@ -794,6 +1055,43 @@ class TestItkCrossCheck:
             for point in _points():
                 p = tuple(float(v) for v in point)
                 assert np.allclose(theirs.TransformPoint(p), original.TransformPoint(p))
+
+    @pytest.mark.parametrize("order", [1, 3])
+    @pytest.mark.parametrize("coord_system", ["LPS", "RAS"])
+    def test_a_bspline_imports_exactly(self, tmp_path, order, coord_system):
+        """The plan's bar: the stored ``bspline`` maps every point of the
+        transform's domain, its boundary included, within 1e-6 mm of
+        SimpleITK --- an oblique lattice, coefficients of a few millimetres.
+        It measures about 1e-14 mm."""
+        sitk = self.sitk
+        rng = np.random.default_rng(order)
+        image = sitk.Image([16, 16, 16], sitk.sitkFloat32)
+        image.SetOrigin((-20.0, 10.0, 5.0))
+        image.SetSpacing((4.0, 50.0 / 15, 2.0))
+        image.SetDirection(OBLIQUE.ravel().tolist())
+        theirs = sitk.BSplineTransformInitializer(image, [4, 5, 3], order=order)
+        theirs.SetParameters(rng.normal(0.0, 4.0, len(theirs.GetParameters())).tolist())
+        tfm = tmp_path / "b.h5"
+        sitk.WriteTransform(theirs, str(tfm))
+        path = _pair(tmp_path / "b.medh5", coord_system=coord_system)
+        from_itk_transform(
+            tfm, path, transform_id="reg", fixed="fixed", moving="moving"
+        )
+        lines = [np.linspace(0, 15, 17)] * 3
+        index = np.stack(np.meshgrid(*lines, indexing="ij"), -1).reshape(-1, 3)
+        lps = np.array(
+            [image.TransformContinuousIndexToPhysicalPoint(p.tolist()) for p in index]
+        )
+        expected = np.array([theirs.TransformPoint(p.tolist()) for p in lps])
+        flip = np.array([-1.0, -1.0, 1.0]) if coord_system == "RAS" else np.ones(3)
+        with medh5.open(path) as s:
+            mapped = np.asarray(s.transforms["reg"].transform_points(lps * flip)) * flip
+        assert np.abs(mapped - expected).max() <= 1e-6
+        out = tmp_path / "out.tfm"
+        to_itk_transform(path, out, transform_id="reg")
+        back = sitk.ReadTransform(str(out))
+        written = np.array([back.TransformPoint(p.tolist()) for p in lps])
+        assert np.abs(written - expected).max() <= 1e-6
 
     def test_the_vector_convention_simpleitk_writes(self, tmp_path):
         """Pinned for this SimpleITK: a vector image is written as NIfTI's
