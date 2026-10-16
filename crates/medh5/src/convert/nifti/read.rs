@@ -524,11 +524,11 @@ impl Image {
             return Ok(empty(if mapped { self.dims()? } else { vec![0] }));
         }
         let wanted = u64::try_from(n_bytes).unwrap_or(u64::MAX);
+        // nibabel named the file it read from, and a gzip stream's name is
+        // empty (its `DeterministicGzipFile` wraps an opened file).
+        let source = if compressed { "" } else { self.image_name.as_str() };
         let short = |got: u64| {
-            Error::Io(format!(
-                "Expected {n_bytes} bytes, got {got} bytes from {}\n - could the file be damaged?",
-                self.image_name
-            ))
+            Error::Io(format!("Expected {n_bytes} bytes, got {got} bytes from {source}\n - could the file be damaged?"))
         };
         if self.shape.iter().any(|v| *v < 0) {
             // Negative extents in pairs count positive bytes: nibabel read
@@ -761,7 +761,11 @@ mod tests {
             let err = nifti(&path).read_voxels().unwrap_err();
             match data {
                 4 => assert!(matches!(&err, Error::Value(m) if m == "negative dimensions are not allowed"), "{err:?}"),
-                _ => assert!(matches!(&err, Error::Io(m) if m.starts_with("Expected 4 bytes, got 2 bytes")), "{err:?}"),
+                _ => {
+                    let source = if gz { String::new() } else { path.to_string_lossy().into_owned() };
+                    let message = format!("Expected 4 bytes, got 2 bytes from {source}\n - could the file be damaged?");
+                    assert!(matches!(&err, Error::Io(m) if *m == message), "{err:?}");
+                }
             }
         }
         let mut h = header(Version::Two, &[-1, -(1 << 29)]);
