@@ -600,9 +600,13 @@ impl CacheWriterHandle {
     }
     /// Write the manifest and its checksum; returns the checksum.
     fn commit(&self, py: Python<'_>) -> R<String> {
-        let writer =
-            self.inner.write()?.take().ok_or_else(|| medh5::Error::invalid("this cache writer has finished"))?;
-        Ok(py.detach(move || writer.commit())?)
+        // Held across the write, as `add`'s is: a call meanwhile is refused,
+        // not told the writer has finished before it has.
+        let mut held = self.inner.write()?;
+        let writer = held.take().ok_or_else(|| medh5::Error::invalid("this cache writer has finished"))?;
+        let checksum = py.detach(move || writer.commit());
+        drop(held);
+        Ok(checksum?)
     }
     /// Discard the half-written cache.
     fn abort(&self) -> R<()> {

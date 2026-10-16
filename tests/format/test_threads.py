@@ -386,6 +386,66 @@ class TestOneThreadAtATime:
         assert f"a CacheWriterHandle {BUSY}" in str(error)
         handle.abort()
 
+    def test_a_write_resolves_its_classes_against_one_label_set(self, tmp_path: Path):
+        """A label set another thread swaps in lands before or after a
+        write's class names are resolved, never between two of them: every
+        polygon of one call has the one class."""
+        from medh5.labels import LabelClass, LabelSet
+        from tests.helpers import SHAPE
+
+        swapped = [
+            LabelSet(
+                "t",
+                version="1.0.0",
+                classes=[
+                    LabelClass(liver, "liver", "Liver"),
+                    LabelClass(3 - liver, "spleen", "Spleen"),
+                ],
+            )
+            for liver in (1, 2)
+        ]
+        square = np.array([[4.0, 2, 2], [4, 2, 9], [4, 9, 9], [4, 9, 2]])
+        polygons = [Polygon(square, class_id="liver", plane=(0, 4))] * 2_000  # type: ignore[arg-type]
+        done = threading.Event()
+        failed: list[BaseException] = []
+        written: list[str] = []
+
+        with medh5.create(tmp_path / "w.medh5", codec="portable") as w:
+            w.label_set(swapped[0])
+            w.add_grid("ct", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="ct", modality="CT")
+
+            def swap() -> None:
+                for k in itertools.count():
+                    if done.is_set():
+                        return
+                    try:
+                        w.label_set(swapped[k % 2])
+                    except medh5.MEDH5Error as e:
+                        if BUSY not in str(e):  # pragma: no cover - the failure
+                            failed.append(e)
+                            return
+
+            thread = threading.Thread(target=swap)
+            thread.start()
+            try:
+                for k in range(10):
+                    try:
+                        w.add_contours(f"rt{k}", polygons, grid="ct")
+                    except medh5.MEDH5Error as e:
+                        assert BUSY in str(e)
+                    else:
+                        written.append(f"rt{k}")
+            finally:
+                done.set()
+                thread.join()
+            assert not failed, failed
+        assert written
+        with medh5.open(tmp_path / "w.medh5") as s:
+            for ann_id in written:
+                classes = {p.class_id for p in s.annotations[ann_id].polygons()}
+                assert len(classes) == 1, (ann_id, classes)
+
     def test_two_threads_on_one_patch_draw_get_a_medh5_error(
         self, tmp_path: Path, label_set: Any
     ):

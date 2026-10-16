@@ -276,7 +276,10 @@ fn mask_arg(obj: &Bound<'_, PyAny>, what: &str) -> R<ndarray::ArrayD<bool>> {
 
 /// `class_id` resolves a class key against the writer's label set, taking
 /// the writer's lock only for the lookup, never while the items are read.
-fn instance_inputs(class_id: impl Fn(&ClassKey) -> R<i64>, obj: &Bound<'_, PyAny>) -> R<Vec<InstanceInput>> {
+/// Instances as given, each with its class key: the keys are resolved under
+/// the lock the write holds, so a label set changed by another thread cannot
+/// land between two of them (E4).
+fn instance_inputs(obj: &Bound<'_, PyAny>) -> R<Vec<(ClassKey, InstanceInput)>> {
     let mut out = Vec::new();
     for item in obj.try_iter()? {
         let item = item?;
@@ -288,24 +291,41 @@ fn instance_inputs(class_id: impl Fn(&ClassKey) -> R<i64>, obj: &Bound<'_, PyAny
         };
         let class = get("class_id")?.ok_or_else(|| PyTypeError::new_err("an instance needs class_id"))?;
         let instance_id = get("instance_id")?.ok_or_else(|| PyTypeError::new_err("an instance needs instance_id"))?;
-        out.push(InstanceInput {
-            class_id: class_id(&class_key(&class)?)?,
-            instance_id: instance_id.extract::<u64>()?,
-            mask: get("mask")?.map(|m| mask_arg(&m, "an instance's mask")).transpose()?,
-            bbox: get("box")?.map(|b| f64_vec(&b)).transpose()?,
-            crop: get("crop")?.map(|c| mask_arg(&c, "an instance's crop")).transpose()?,
-            score: get("score")?.map(|s| s.extract::<f64>()).transpose()?,
-        });
+        out.push((
+            class_key(&class)?,
+            InstanceInput {
+                class_id: 0,
+                instance_id: instance_id.extract::<u64>()?,
+                mask: get("mask")?.map(|m| mask_arg(&m, "an instance's mask")).transpose()?,
+                bbox: get("box")?.map(|b| f64_vec(&b)).transpose()?,
+                crop: get("crop")?.map(|c| mask_arg(&c, "an instance's crop")).transpose()?,
+                score: get("score")?.map(|s| s.extract::<f64>()).transpose()?,
+            },
+        ));
     }
     Ok(out)
 }
 
-fn polygons_of(class_id: impl Fn(&ClassKey) -> R<i64>, obj: &Bound<'_, PyAny>) -> R<Vec<Polygon>> {
+/// A polygon as given, its class not yet resolved (as `instance_inputs`).
+struct PolygonArg {
+    class: ClassKey,
+    vertices: numpy::ndarray::ArrayD<f64>,
+    plane: (i64, i64),
+    role: String,
+}
+
+impl PolygonArg {
+    fn resolve(self, class_id: impl Fn(&ClassKey) -> medh5::Result<i64>) -> R<Polygon> {
+        Ok(Polygon::new(self.vertices, class_id(&self.class)?, self.plane, &self.role)?)
+    }
+}
+
+fn polygons_of(obj: &Bound<'_, PyAny>) -> R<Vec<PolygonArg>> {
     let mut out = Vec::new();
     for item in obj.try_iter()? {
         let item = item?;
         let vertices = f64_array(&item.getattr("vertices")?)?;
-        let class_id = class_id(&class_key(&item.getattr("class_id")?)?)?;
+        let class = class_key(&item.getattr("class_id")?)?;
         let plane: (i64, i64) = match item.getattr("plane") {
             Ok(p) if !p.is_none() => {
                 let v = i64_vec(&p)?;
@@ -320,7 +340,7 @@ fn polygons_of(class_id: impl Fn(&ClassKey) -> R<i64>, obj: &Bound<'_, PyAny>) -
             Ok(r) if !r.is_none() => r.extract()?,
             _ => "outer".into(),
         };
-        out.push(Polygon::new(vertices, class_id, plane, &role)?);
+        out.push(PolygonArg { class, vertices, plane, role });
     }
     Ok(out)
 }
@@ -955,6 +975,8 @@ impl SampleWriter {
             )
             .into());
         }
+        // Instance classes are resolved with the write, under its lock.
+        let mut keys = None;
         let source = if labelmap.is_some() {
             None
         } else if let Some(m) = is_given(masks) {
@@ -971,7 +993,9 @@ impl SampleWriter {
             }
             Some(SegmentationSource::Probabilities(out))
         } else if let Some(i) = is_given(instances) {
-            Some(SegmentationSource::Instances(instance_inputs(|k| Ok(self.state()?.class_id(k)?), &i)?))
+            let (classes, given): (Vec<_>, Vec<_>) = instance_inputs(&i)?.into_iter().unzip();
+            keys = Some(classes);
+            Some(SegmentationSource::Instances(given))
         } else {
             return Err(medh5::Error::invalid(
                 "add_segmentation needs one of masks=, probabilities=, instances= or labelmap=",
@@ -988,8 +1012,13 @@ impl SampleWriter {
             common: common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?,
         };
         let (kind, stats) = match (source, labelmap) {
-            (Some(source), _) => {
+            (Some(mut source), _) => {
                 let mut held = self.writer()?;
+                if let (SegmentationSource::Instances(given), Some(keys)) = (&mut source, keys) {
+                    for (instance, key) in given.iter_mut().zip(&keys) {
+                        instance.class_id = held.class_id(key)?;
+                    }
+                }
                 let writer = &mut *held;
                 py.detach(move || writer.add_segmentation(ann_id, grid, source, options))?
             }
@@ -1317,10 +1346,12 @@ impl SampleWriter {
         task: &str,
         codec: Option<&str>,
     ) -> R<Group> {
-        let found = polygons_of(|k| Ok(self.state()?.class_id(k)?), polygons)?;
+        let given = polygons_of(polygons)?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
         let at = placement(grid, Some(space), frame_uid);
+        // Every class against the one label set the write holds (E4).
         let mut held = self.writer()?;
+        let found = given.into_iter().map(|p| p.resolve(|k| held.class_id(k))).collect::<R<Vec<_>>>()?;
         let writer = &mut *held;
         let group = py.detach(move || writer.add_contours(ann_id, &found, at, options))?;
         Ok(Group::wrap(group))
@@ -1405,11 +1436,13 @@ impl SampleWriter {
         codec: Option<&str>,
     ) -> R<Group> {
         let rows = assertion_rows(labels)?;
-        let class_ids =
-            rows.classes.iter().map(|c| Ok(self.state()?.class_id(&class_key(c)?)?)).collect::<R<Vec<_>>>()?;
-        let assertions = assertion_columns(rows, class_ids, scope_ids, schemes, scheme_values)?;
+        let keys = rows.classes.iter().map(class_key).collect::<PyResult<Vec<_>>>()?;
+        let mut assertions = assertion_columns(rows, Vec::new(), scope_ids, schemes, scheme_values)?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, None, codec)?;
-        let group = self.writer()?.add_classification(ann_id, assertions, scope, multilabel, grid, options)?;
+        // The classes against one label set, the one the write holds (E4).
+        let mut held = self.writer()?;
+        assertions.class_ids = keys.iter().map(|k| held.class_id(k)).collect::<medh5::Result<Vec<_>>>()?;
+        let group = held.add_classification(ann_id, assertions, scope, multilabel, grid, options)?;
         Ok(Group::wrap(group))
     }
 
