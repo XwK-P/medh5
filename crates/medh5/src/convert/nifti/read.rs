@@ -356,7 +356,10 @@ fn load_nifti(meta_name: &str, image_name: String, version: Version, single: boo
     header.check_fix()?;
     skip_extensions(&mut *stream, &header, single)?;
     let shape = header.data_shape()?;
-    let offset = data_offset(header.vox_offset)?;
+    let offset = match version {
+        Version::One => data_offset(header.vox_offset)?,
+        Version::Two => exact_offset(&block, header.big_endian),
+    };
     let slope_inter = header.slope_inter()?;
     Ok(Image { header, image_name, shape, offset, slope_inter })
 }
@@ -371,6 +374,15 @@ fn data_offset(value: f64) -> Result<u64> {
     }
     // A negative offset reads from the start, as seeking before it does.
     Ok(value.trunc().max(0.0) as u64)
+}
+
+/// A NIfTI-2 `vox_offset`, an integer, read from the header's bytes: the
+/// header's `f64` holds every offset exactly only up to 2^53.
+fn exact_offset(block: &[u8], big_endian: bool) -> u64 {
+    let raw: [u8; 8] = block[168..176].try_into().expect("a NIfTI-2 header holds its offset");
+    let value = if big_endian { i64::from_be_bytes(raw) } else { i64::from_le_bytes(raw) };
+    // A negative offset reads from the start, as seeking before it does.
+    value.max(0) as u64
 }
 
 /// Step over the header extensions, checking each is whole: up to
@@ -644,6 +656,23 @@ mod tests {
         std::fs::write(&path, single(&h, &[])).unwrap();
         let err = nifti(&path).read_voxels().unwrap_err();
         assert!(matches!(&err, Error::Value(m) if m.starts_with("array is too big")), "{err:?}");
+    }
+
+    #[test]
+    fn s02_2_a_nifti2_offset_is_read_exactly() {
+        // 2^53 + 1 has no f64: the offset is the header's integer, not its
+        // nearest double.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("far.nii");
+        for big in [false, true] {
+            let mut h = header(Version::Two, &[2, 3, 4]);
+            h.big_endian = big;
+            let mut bytes = single(&h, &voxels(24));
+            let far: i64 = (1 << 53) + 1;
+            bytes[168..176].copy_from_slice(&if big { far.to_be_bytes() } else { far.to_le_bytes() });
+            std::fs::write(&path, &bytes).unwrap();
+            assert_eq!(nifti(&path).offset, (1 << 53) + 1);
+        }
     }
 
     #[test]

@@ -4,11 +4,14 @@ Run under the released 2.1.0, in a virtual environment of its own, from the
 repository root::
 
     python -m venv /tmp/medh5-2.1.0
-    /tmp/medh5-2.1.0/bin/pip install "medh5[nifti]==2.1.0" h5py
+    /tmp/medh5-2.1.0/bin/pip install "medh5[nifti]==2.1.0" \
+        nibabel==5.4.2 numpy==2.5.4 h5py
     /tmp/medh5-2.1.0/bin/python tests/data/nifti-parity/record.py
 
-It refuses to run under any other version: the records are the contract the
-native converter is held to (2.2.0 decision E3), so they must be 2.1.0's.
+It refuses to run under any other version of medh5, nibabel or NumPy: the
+records are the contract the native converter is held to (2.2.0 decision
+E3), so they must be 2.1.0's, and a later nibabel or NumPy could change a
+header, a refusal or an input while medh5 still said 2.1.0.
 
 Each case in ``cases.json`` runs in a directory of its own, and its record,
 ``records/<id>.json``, holds what came out:
@@ -53,6 +56,8 @@ from medh5.io.report import ConversionReport
 HERE = Path(__file__).resolve().parent
 RECORDS = HERE / "records"
 VERSION = "2.1.0"
+#: What the records were made with, beside medh5 itself.
+PINNED = {"medh5": VERSION, "nibabel": "5.4.2", "numpy": "2.5.4"}
 
 
 def plain(value: Any) -> Any:
@@ -232,8 +237,15 @@ def outcome(case: dict[str, Any], out: Path) -> dict[str, Any]:
 
 
 def main() -> None:
-    if medh5.__version__ != VERSION:
-        sys.exit(f"record.py runs under medh5 {VERSION}, not {medh5.__version__}")
+    found = {
+        "medh5": medh5.__version__,
+        "nibabel": nib.__version__,
+        "numpy": np.__version__,
+    }
+    if found != PINNED:
+        wanted = ", ".join(f"{k} {v}" for k, v in PINNED.items())
+        got = ", ".join(f"{k} {v}" for k, v in found.items())
+        sys.exit(f"record.py runs under {wanted}, not {got}")
     table = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))
     if RECORDS.exists():
         shutil.rmtree(RECORDS)

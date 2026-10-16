@@ -34,12 +34,14 @@ other difference a later change makes on purpose is listed by case in its
 
 ## Recording again
 
-Only to add cases, and only under 2.1.0 (`record.py` refuses any other
-version):
+Only to add cases, and only with what the records were made with: medh5
+2.1.0, nibabel 5.4.2 and NumPy 2.5.4 (`record.py` refuses any other version
+of the three, since a later nibabel or NumPy could change a header, a
+refusal or an input under the same medh5):
 
 ```sh
 python -m venv /tmp/medh5-2.1.0
-/tmp/medh5-2.1.0/bin/pip install "medh5[nifti]==2.1.0" h5py
+/tmp/medh5-2.1.0/bin/pip install "medh5[nifti]==2.1.0" nibabel==5.4.2 numpy==2.5.4 h5py
 /tmp/medh5-2.1.0/bin/python tests/data/nifti-parity/make_inputs.py
 /tmp/medh5-2.1.0/bin/python tests/data/nifti-parity/record.py
 ```

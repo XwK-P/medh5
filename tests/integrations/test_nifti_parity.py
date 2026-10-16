@@ -150,6 +150,7 @@ class TestTheCorpus:
             record = _record(case_id)
             assert record["id"] == case_id
             assert record["generator"] == "medh5 2.1.0", case_id
+            assert (record["nibabel"], record["numpy"]) == ("5.4.2", "2.5.4"), case_id
             assert record["outcome"] in ("ok", "refused"), case_id
             sample = record.get("sample")
             if sample is not None:
