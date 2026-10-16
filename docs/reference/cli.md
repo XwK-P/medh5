@@ -46,8 +46,8 @@ not begun. `medh5 dataset stats --workers` is threads in one process, and
 reads only.
 
 A command that changes a file in place — `fix`, `index build`, `seg convert`,
-`scrub --apply`, `recompress` without `--out`, `dataset split --write-claims`,
-`clinical augment` without `--out` — writes the new version beside it and
+`scrub --apply`, `recompress` without `--out`, `resample` without `--out`,
+`dataset split --write-claims`, `clinical augment` without `--out` — writes the new version beside it and
 renames it over the old (§14.4). Through a symbolic link, the file the link
 names is rewritten and the link kept; a file with several hard links is
 replaced at the path given only, and its other names keep the old version —
@@ -660,6 +660,43 @@ medh5 migrate PATH... -o OUTDIR [options]
 ```
 
 See [Migrate from 0.x](../guides/migrate-0x.md) for the two-pass procedure.
+
+## Derivations
+
+### `medh5 resample`
+
+```
+medh5 resample PATH --image ID [--image ID ...] --onto GRID [--suffix S] [--interpolation linear|nearest|cubic] [--fill V] [--dtype T] [--out FILE] [--json]
+medh5 resample PATH --image ID --spacing S1,S2[,S3] --grid-id NEW [--suffix S] [--interpolation linear|nearest|cubic] [--fill V] [--dtype T] [--out FILE] [--json]
+```
+
+Resample images onto another grid and record the derivation. `--onto` names a
+grid the sample already has; `--spacing` with `--grid-id` makes a new one in
+the source's frame of reference, one spacing per spatial axis in stored order
+(`z,y,x` for a 3D grid), covering the source's extent from voxel edge to voxel
+edge. Each image is written beside its source as `<id><suffix>`, the suffix
+`_on_<grid>` unless `--suffix` gives one; an id already taken is refused before
+anything is written.
+
+Geometry is never assumed. Two grids in one frame whose affines can be compared
+(§3.3) are mapped through them; two in different frames are mapped through the
+sample's transforms (§10.2), the transform evaluated at the target's voxels and
+the source sampled where it lands. Grids in one frame that cannot be compared
+(`W917`), a grid that names no frame, and frames no transform relates are
+refused, with the reason.
+
+`linear` (the default), `nearest` or `cubic` interpolate the stored values, so
+the rescale carries over. `nearest` keeps the dtype; `linear` and `cubic`
+write `float32` unless `--dtype` names another, rounded half to even and
+clipped to it. A voxel whose source point falls outside the source takes
+`--fill` (default 0). When any voxel holds no data, a mask `<output>_valid` is
+written as the output's `valid_mask` (§4.4); a source's own `valid_mask`
+carries over into it, its nearest voxel deciding. One `resample`
+activity names the inputs, the target, the transform path and the
+interpolation, and every object written names it in `prov`. Without `--out`
+the file is amended in place; with it, the result is a new file, and an
+existing one is refused. The command and `medh5.transforms.resample` write the
+same bytes.
 
 ## Storage
 
