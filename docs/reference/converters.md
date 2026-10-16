@@ -238,7 +238,9 @@ position, a stack that is not a regular grid, and a stack whose
 `InStackPositionNumber` runs against its positions are refused with the
 reason. Frames with different rescales follow `per_slice_rescale`. A
 concatenation's instances are joined by `ConcatenationUID` in
-`InConcatenationNumber` order, and one missing a part is refused. Enhanced
+`InConcatenationNumber` order, and one missing a part is refused: the parts
+are counted against `InConcatenationTotalNumber`, and where that optional
+total is absent their numbers must run from 1 without a gap. Enhanced
 ultrasound volumes and other multi-frame objects are skipped with a warning,
 and an object that carries a patient position but is not an image — an RT
 Dose grid — with a note.

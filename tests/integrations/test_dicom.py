@@ -1430,6 +1430,37 @@ class TestEnhancedMultiFrame:
         with pytest.raises(MEDH5ValidationError, match="concatenation .* 1 of its 2"):
             from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
 
+    def test_a_concatenation_split_between_its_stacks_imports_each(self, tmp_path):
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        for index in range(6):
+            content = _frame(enhanced, index).FrameContentSequence[0]
+            content.StackID = "1" if index < 3 else "2"
+            content.InStackPositionNumber = index % 3 + 1
+        # One part holds the first stack's frames, the other the second's:
+        # each stack is complete, and so is the object.
+        _concatenation(enhanced, tmp_path / "enhanced", split=3)
+        from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+        with medh5.open(tmp_path / "out.medh5") as sample:
+            assert sorted(sample.images) == ["CT_1_tp0", "CT_2_tp0"]
+
+    def test_a_concatenation_with_no_total_is_held_to_numbers_from_one(self, tmp_path):
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        parts = _concatenation(enhanced, tmp_path / "enhanced", split=4)
+        for path in parts:
+            part = pydicom.dcmread(path)
+            del part.InConcatenationTotalNumber  # optional (Type 3)
+            part.save_as(path)
+        from_dicom(tmp_path / "enhanced", tmp_path / "whole.medh5")
+        parts[0].unlink()
+        with pytest.raises(MEDH5ValidationError, match=r"numbered \[2\]"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
     def test_an_enhanced_ultrasound_volume_is_still_skipped(self, tmp_path):
         from pydicom.uid import EnhancedUSVolumeStorage
 

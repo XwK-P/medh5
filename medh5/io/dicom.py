@@ -409,7 +409,9 @@ def _object_series(parts: Sequence[tuple[str, Any]]) -> list[Series]:
             frame_uid=_text(getattr(header, "FrameOfReferenceUID", None)),
             birth_date=_text(getattr(header, "PatientBirthDate", None)),
             sex=_text(getattr(header, "PatientSex", None)),
-            paths=list(dict.fromkeys(path for path, _ in frames)),
+            # Every part, though a stack's frames may lie in some of them:
+            # a concatenation is checked whole (``_check_concatenation``).
+            paths=[path for path, _ in parts],
             frames=frames,
             stack=label if len(stacks) > 1 else None,
         )
@@ -687,12 +689,20 @@ def _check_concatenation(series: Series, headers: Sequence[Any]) -> None:
             f"number(s) {sorted({n for n in numbers if numbers.count(n) > 1})} "
             "more than once; remove the duplicate files"
         )
-    if total and numbers != list(range(1, total + 1)):
+    # InConcatenationTotalNumber is optional; without it, the numbers must
+    # still run from 1 without a gap, and only a missing last part goes unseen.
+    expected = list(range(1, (total or len(numbers)) + 1))
+    if numbers != expected:
+        found = (
+            f"{len(numbers)} of its {total} instances"
+            if total
+            else f"{len(numbers)} instance(s), with no total stated"
+        )
         raise MEDH5ValidationError(
             f"series {series.series_uid}: concatenation {uid} was found as "
-            f"{len(numbers)} of its {total} instances (numbers {numbers}). The "
-            "frames of one object are split across them, and the missing ones' "
-            "are not here to place; import the complete concatenation"
+            f"{found}, numbered {numbers}. The frames of one object are split "
+            "across them, and the missing ones' are not here to place; import "
+            "the complete concatenation"
         )
 
 
