@@ -524,7 +524,30 @@ impl Image {
             return Ok(empty(if mapped { self.dims()? } else { vec![0] }));
         }
         let wanted = u64::try_from(n_bytes).unwrap_or(u64::MAX);
-        let bytes = if is_gzip(&self.image_name) {
+        let short = |got: u64| {
+            Error::Io(format!(
+                "Expected {n_bytes} bytes, got {got} bytes from {}\n - could the file be damaged?",
+                self.image_name
+            ))
+        };
+        if self.shape.iter().any(|v| *v < 0) {
+            // Negative extents in pairs count positive bytes: nibabel read
+            // them, and numpy refused the shape.  Counted here, never held.
+            let got = if compressed {
+                let mut stream = MultiGzDecoder::new(BufReader::new(file));
+                skip(&mut stream, self.offset).map_err(gzip_error)?;
+                io::copy(&mut stream.take(wanted), &mut io::sink()).map_err(gzip_error)?
+            } else {
+                let length = file.metadata().map(|m| m.len()).unwrap_or(0);
+                length.saturating_sub(self.offset).min(wanted)
+            };
+            return Err(if got == wanted {
+                Error::Value("negative dimensions are not allowed".into())
+            } else {
+                short(got)
+            });
+        }
+        let bytes = if compressed {
             let mut stream = MultiGzDecoder::new(BufReader::new(file));
             skip(&mut stream, self.offset).map_err(gzip_error)?;
             read_capped(&mut stream, wanted, None).map_err(gzip_error)?
@@ -536,11 +559,7 @@ impl Image {
             read_capped(&mut BufReader::new(file), wanted, Some(available))?
         };
         if bytes.len() as u64 != wanted {
-            return Err(Error::Io(format!(
-                "Expected {n_bytes} bytes, got {} bytes from {}\n - could the file be damaged?",
-                bytes.len(),
-                self.image_name
-            )));
+            return Err(short(bytes.len() as u64));
         }
         Ok(Voxels { element, big_endian, shape: self.dims()?, bytes })
     }
@@ -726,6 +745,31 @@ mod tests {
         let path = dir.path().join("empty.nii");
         std::fs::write(&path, single(&h, &[])).unwrap();
         assert_eq!(nifti(&path).read_voxels().unwrap().shape, vec![1 << 40, 4, 0]);
+    }
+
+    #[test]
+    fn s02_2_negative_extents_in_pairs_are_counted_not_read() {
+        // (-1, -2) int16 counts 4 bytes: there, numpy's refusal of the shape;
+        // short, nibabel's of the read.  A gzip'd NIfTI-2 (-1, -2^29) float32 counts
+        // 2 GiB, which is inflated and dropped, not held.
+        let dir = tempfile::tempdir().unwrap();
+        let h = header(Version::One, &[-1, -2]);
+        for (data, gz) in [(4, false), (4, true), (2, false), (2, true)] {
+            let bytes = single(&h, &voxels(data / 2));
+            let path = dir.path().join(if gz { "neg.nii.gz" } else { "neg.nii" });
+            std::fs::write(&path, if gz { gzip(&bytes) } else { bytes }).unwrap();
+            let err = nifti(&path).read_voxels().unwrap_err();
+            match data {
+                4 => assert!(matches!(&err, Error::Value(m) if m == "negative dimensions are not allowed"), "{err:?}"),
+                _ => assert!(matches!(&err, Error::Io(m) if m.starts_with("Expected 4 bytes, got 2 bytes")), "{err:?}"),
+            }
+        }
+        let mut h = header(Version::Two, &[-1, -(1 << 29)]);
+        (h.datatype, h.bitpix) = (16, 32);
+        let path = dir.path().join("big.nii.gz");
+        std::fs::write(&path, gzip(&single(&h, &[]))).unwrap();
+        let err = nifti(&path).read_voxels().unwrap_err();
+        assert!(matches!(&err, Error::Io(m) if m.starts_with("Expected 2147483648 bytes, got 0 bytes")), "{err:?}");
     }
 
     #[test]
