@@ -1064,19 +1064,24 @@ class TestDistribution:
         assert runners == {"macos-15"}, runners
         build = jobs["build-macos-x86_64"]
         assert re.search(r"^      runner: macos-15$", build, re.M)
-        assert re.search(r"^      python-architecture: x64$", build, re.M)
+        assert re.search(r"^      rosetta: true$", build, re.M)
+        # setup-python's macOS Pythons are universal2: an `x64` one still runs
+        # its arm64 half, unless the shell that starts it runs under Rosetta.
         test = jobs["test-macos-x86_64"]
         assert re.search(r"^    runs-on: macos-15$", test, re.M)
-        assert re.search(r"^          architecture: x64$", test, re.M)
+        assert "        shell: arch -x86_64 /bin/bash -eo pipefail {0}\n" in test
         assert "platform.machine() == 'x86_64'" in test
         assert re.search(r"^    needs: build-macos-x86_64$", test, re.M)
         # The gate accepts no skip but the one `changes` asks for.
         gate = jobs["ci-ok"]
         assert "build-macos-x86_64" not in gate.split("steps:", 1)[1]
         assert "EVENT" not in gate
-        # The build's Pythons are the caller's architecture, both of them.
+        # The build's two checks of the wheel run under Rosetta too.
         workflow = BUILD.read_text(encoding="utf-8")
-        assert workflow.count("architecture: ${{ inputs.python-architecture }}") == 2
+        assert "ROSETTA: ${{ inputs.rosetta && 'x86_64' || '' }}" in workflow
+        reexec = 'then exec arch -"$ROSETTA" /bin/bash -eo pipefail "$0"; fi'
+        assert workflow.count(reexec) == 2
+        assert "architecture:" not in workflow
 
     def test_every_build_names_its_target(self):
         """build-dist.sh built for its host alone: it passed no `--target`, and
