@@ -135,10 +135,15 @@ struct Hits {
     ids: Vec<(usize, usize)>,
 }
 
-/// A name in DICOM's `Family^Given` form anywhere in a text.
+/// A name in DICOM's `Family^Given` form anywhere in a text, through every
+/// further component (`Smith^Alice^Beth^Dr`, `Smith^^Beth`): a redaction
+/// that left a middle name would leave it where no rule finds it again.
 fn name_spans(text: &str) -> Vec<(usize, usize)> {
     static CELL: OnceLock<Regex> = OnceLock::new();
-    regex(&CELL, r"[\p{L}][\p{L}'-]*\^[\p{L}][\p{L}'-]*").find_iter(text).map(|m| (m.start(), m.end())).collect()
+    regex(&CELL, r"[\p{L}][\p{L}'-]*(?:\^[\p{L}'-]*)*?\^[\p{L}][\p{L}'-]*(?:\^[\p{L}'-]*)*")
+        .find_iter(text)
+        .map(|m| (m.start(), m.end()))
+        .collect()
 }
 
 /// A date in a locale's order (`31.01.2020`, `01/31/2020`) anywhere in a text.
@@ -928,7 +933,10 @@ mod tests {
     #[test]
     fn s6_names_and_locale_dates_are_found_inside_text() {
         assert_eq!(name_spans("Seen with Smith^Alice today"), vec![(10, 21)]);
-        assert!(name_spans("a ^ b, 2^10").is_empty());
+        assert!(name_spans("a ^ b, 2^10, 1.8 m^2").is_empty());
+        assert_eq!(name_spans("by Smith^Alice^Beth^Dr."), vec![(3, 22)]);
+        assert_eq!(name_spans("by Smith^^Beth, ok"), vec![(3, 14)]);
+        assert_eq!(name_spans("Yamada^Tarou=山田^太郎"), vec![(0, 12), (13, 26)]);
         assert_eq!(locale_spans("on 31.01.2020 and 12/31/2020, not 131.01.2020"), vec![(3, 13), (18, 28)]);
         let h = hits("MRN-42 on 2020-01-31, uid 1.2.840.10008.1", &["MRN-42".to_string()]);
         assert_eq!((h.ids.len(), h.dates.len(), h.uids.len()), (1, 1, 1));
@@ -974,6 +982,9 @@ mod tests {
         let id = ["MRN-2020-01-31".to_string()];
         assert_eq!(redacted("see MRN-2020-01-31.", &edits("see MRN-2020-01-31.", &id)), "see [ID].");
         assert_eq!(redacted("Doe^Jo2020-01-31", &edits("Doe^Jo2020-01-31", &[])), "[NAME][DATE]");
+        // A name is replaced through its last component, the middle name too.
+        let text = "by Smith^Alice^Beth^Dr, and Doe^^Jo.";
+        assert_eq!(redacted(text, &edits(text, &[])), "by [NAME], and [NAME].");
     }
 
     #[test]

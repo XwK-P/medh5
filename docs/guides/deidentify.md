@@ -400,7 +400,8 @@ report.uid_map["event:rep_v2"]    # the new id of event rep_v2
 
 **Or redact what the rules find.** `--redact-text` (`redact_text=True`)
 rewrites each hit of the `clinical_text` rules — names, dates, UIDs and the
-sample's ids — as its placeholder, `[NAME]`, `[DATE]` or `[ID]`:
+sample's ids — as its placeholder, `[NAME]`, `[DATE]` or `[ID]`. A name is
+replaced through its last component, so `Smith^Alice^Beth` is one `[NAME]`:
 
 <!-- illustrative -->
 ```bash
