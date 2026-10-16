@@ -631,6 +631,8 @@ class TestRepositoryGates:
         h5py, and when a file was not read at all."""
         import h5py
 
+        pytest.importorskip("hdf5plugin")  # the script reads Blosc2 through it
+
         readers = _release_script("hdf5_readers.py")
         cases = tmp_path / "cases"
         cases.mkdir()
