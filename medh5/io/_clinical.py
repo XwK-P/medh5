@@ -214,12 +214,20 @@ def option_map(
 def cohort_targets(
     mapping: Mapping[Any, str | os.PathLike[str]],
     out_dir: str | os.PathLike[str] | None,
+    source: str | os.PathLike[str],
 ) -> list[tuple[Any, Path, Path | None]]:
     """Each mapped subject, the sample it augments, and where the result is
-    written: the sample itself, or a file of its name in *out_dir*."""
+    written: the sample itself, or a file of its name in *out_dir*, which
+    may not lie inside *source*, the dataset or export the import reads."""
     if not mapping:
         raise MEDH5ValidationError("the mapping names no subject to import")
     out = None if out_dir is None else Path(os.fspath(out_dir))
+    if out is not None and _inside(out, Path(os.fspath(source))):
+        raise MEDH5ValidationError(
+            f"out_dir {out} is inside {os.fspath(source)}, which this import "
+            "reads: a sample written there could replace a file it reads, so "
+            "write the samples outside it"
+        )
     targets = []
     for subject, sample in mapping.items():
         path = Path(os.fspath(sample))
@@ -243,6 +251,14 @@ def cohort_targets(
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
     return targets
+
+
+def _inside(path: Path, tree: Path) -> bool:
+    """Whether *path* is *tree* or lies inside it, once both are resolved."""
+    try:
+        return path.resolve().is_relative_to(tree.resolve())
+    except (OSError, RuntimeError):  # RuntimeError: a link loop
+        return False
 
 
 def file_identity(path: Path) -> Any:

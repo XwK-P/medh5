@@ -416,6 +416,52 @@ def test_a_bulk_index_is_kept_out_of_memory(tmp_path):
     assert peak(wide, 24) - whole < 0.5, whole
 
 
+def test_a_bulk_import_reads_its_options_once_for_every_subject(tmp_path):
+    """`prefer_systems` given as a generator serves every subject, not only
+    the first, as each subject's own import would be given it."""
+    from medh5.io.fhir import augment_cohort_from_fhir
+
+    def obs(subject):
+        return {
+            "resourceType": "Observation", "id": "creat", "status": "final",
+            "subject": {"reference": subject},
+            "code": {"coding": [
+                {"system": "http://example.org/local", "code": "CR"},
+                {"system": Fhir.LOINC, "code": "2160-0"},
+            ]},
+            "effectiveDateTime": "2020-03-01T08:15:00Z",
+        }  # fmt: skip
+
+    subjects = ["Patient/a", "Patient/b"]
+    export = Fhir.write_bulk(tmp_path / "export", [obs(s) for s in subjects])
+    mapping = {s: Fhir.sample(tmp_path / f"{s[-1]}.medh5") for s in subjects}
+    cohort = augment_cohort_from_fhir(
+        export, mapping, prefer_systems=(s for s in [Fhir.LOINC]), **BULK
+    )
+    assert [s.subject for s in cohort.imported] == subjects
+    for sample in mapping.values():
+        with open_sample(sample) as found:
+            (event,) = found.clinical.records().events
+            assert (event.code_system, event.code) == (Fhir.LOINC, "2160-0")
+
+
+def test_a_bulk_import_writes_nothing_inside_its_export(tmp_path):
+    """A sample named like a file of the export, written into the export,
+    would replace what the import reads: refused before anything is."""
+    from medh5.io.fhir import augment_cohort_from_fhir
+
+    export, _ = _export(tmp_path)
+    sample = Fhir.sample(tmp_path / "Observation.ndjson")
+    before = (export / "Observation.ndjson").read_bytes()
+    for out_dir in (export, export / "sub"):
+        with pytest.raises(MEDH5ValidationError, match="inside .*which this import"):
+            augment_cohort_from_fhir(
+                export, {"Patient/p1": sample}, out_dir=out_dir, **BULK
+            )
+    assert (export / "Observation.ndjson").read_bytes() == before
+    assert not (export / "sub").exists()
+
+
 def test_a_verbose_cohort_shows_each_subjects_notes(tmp_path):
     from medh5.io.fhir import augment_cohort_from_fhir
 

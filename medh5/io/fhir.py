@@ -786,7 +786,9 @@ def augment_cohort_from_fhir(
     """
     root = Path(os.fspath(export_dir))
     files = _bulk_files(root)
-    targets = _clinical.cohort_targets(mapping, out_dir)
+    targets = _clinical.cohort_targets(mapping, out_dir, root)
+    # One tuple for every subject: a generator would serve only the first.
+    prefer = tuple(prefer_systems)
     source = os.fspath(export_dir)
     cohort = CohortImport(
         source=source,
@@ -810,7 +812,7 @@ def augment_cohort_from_fhir(
                     timezone=timezone,
                     origin=origin,
                     texts=texts,
-                    prefer_systems=prefer_systems,
+                    prefer_systems=prefer,
                     image_studies=image_studies,
                 )
                 report.source = source

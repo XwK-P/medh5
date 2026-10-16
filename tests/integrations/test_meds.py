@@ -542,6 +542,9 @@ def test_a_cohort_never_writes_two_subjects_to_one_sample(tmp_path):
         with pytest.raises(MEDH5ValidationError, match="both be written to"):
             augment_cohort_from_meds(dataset, mapping, out_dir=out_dir, **COHORT)
     assert not out.exists()
+    # Nor into the dataset, whose files it reads.
+    with pytest.raises(MEDH5ValidationError, match="inside .*which this import"):
+        augment_cohort_from_meds(dataset, {1: a}, out_dir=dataset / "data", **COHORT)
     for path in (sample, a, b):
         with open_sample(path) as found:
             assert found.clinical is None

@@ -680,7 +680,7 @@ def augment_cohort_from_meds(
             raise MEDH5ValidationError(
                 f"the mapping's key {key!r} is not a MEDS subject_id (an integer)"
             )
-    targets = _clinical.cohort_targets(mapping, out_dir)
+    targets = _clinical.cohort_targets(mapping, out_dir, dataset)
     rules = _Rules.of(
         code_systems=code_systems,
         kinds=kinds,

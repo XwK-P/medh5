@@ -155,7 +155,7 @@ dataset of millions of them costs no memory for it. `cohort.to_json()` is the
 whole result. A sample holds one subject, so a mapping that would write two
 subjects to one file (the same sample twice, a link to it, two samples of one
 name into `out_dir`, or of names that differ only in case) is refused before
-anything is written.
+anything is written, as is an `out_dir` inside the dataset or export.
 
 ## The report
 
