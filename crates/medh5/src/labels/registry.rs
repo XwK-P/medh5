@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use serde_json::{json, Value};
 
@@ -45,7 +45,7 @@ pub fn bundled() -> impl Iterator<Item = (&'static str, &'static str)> {
 /// Every vocabulary name [`load`] accepts, bundled and registered, sorted.
 pub fn available() -> Vec<String> {
     let mut names: Vec<String> = BUNDLED.iter().map(|(n, _)| n.to_string()).collect();
-    names.extend(extra().lock().unwrap().keys().cloned());
+    names.extend(extra().lock().unwrap_or_else(PoisonError::into_inner).keys().cloned());
     names.sort();
     names.dedup();
     names
@@ -71,7 +71,7 @@ pub fn labelset_from_doc(doc: &Value) -> Result<LabelSet> {
 
 /// Load a bundled or registered vocabulary by name.
 pub fn load(name: &str) -> Result<LabelSet> {
-    if let Some(found) = extra().lock().unwrap().get(name) {
+    if let Some(found) = extra().lock().unwrap_or_else(PoisonError::into_inner).get(name) {
         return Ok(found.clone());
     }
     let Some((_, text)) = BUNDLED.iter().find(|(n, _)| *n == name) else {
@@ -91,13 +91,13 @@ pub fn load_file(path: &Path) -> Result<LabelSet> {
 
 /// Make a vocabulary loadable by name for the rest of the process.
 pub fn register(name: &str, label_set: LabelSet) -> LabelSet {
-    extra().lock().unwrap().insert(name.to_string(), label_set.clone());
+    extra().lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string(), label_set.clone());
     label_set
 }
 
 /// Drop a registered vocabulary; bundled ones cannot be removed.
 pub fn unregister(name: &str) {
-    extra().lock().unwrap().remove(name);
+    extra().lock().unwrap_or_else(PoisonError::into_inner).remove(name);
 }
 
 /// Name -> `{id, version, classes, sha256}`, for `medh5 labels registry list`.

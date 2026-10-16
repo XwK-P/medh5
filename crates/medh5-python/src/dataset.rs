@@ -7,7 +7,7 @@
 //! runs here, on the engine's types rebuilt from that JSON.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use indexmap::IndexMap;
 use pyo3::prelude::*;
@@ -37,7 +37,7 @@ impl CollectionHandle {
     }
 
     fn with<T>(&self, f: impl FnOnce(&coll::Collection) -> medh5::Result<T>) -> R<T> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let c = guard.as_ref().ok_or_else(|| medh5::Error::File("this collection has been closed".into()))?;
         Ok(f(c)?)
     }
@@ -50,13 +50,14 @@ impl CollectionHandle {
         self.path.clone()
     }
     fn close(&self) {
-        if let Some(mut c) = self.inner.lock().unwrap().take() {
+        let taken = self.inner.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(mut c) = taken {
             c.close();
         }
     }
     #[getter]
     fn is_open(&self) -> bool {
-        self.inner.lock().unwrap().is_some()
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner).is_some()
     }
     fn keys(&self) -> R<Vec<String>> {
         self.with(|c| c.keys())

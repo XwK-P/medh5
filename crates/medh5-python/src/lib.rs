@@ -25,7 +25,6 @@ mod deprecation;
 pub mod document;
 pub mod errors;
 pub mod exclusive;
-pub mod exclusive;
 pub mod files;
 pub mod geometry;
 pub mod integrity;
@@ -53,6 +52,8 @@ pub mod writer;
 // free-threaded interpreter must turn the GIL back on when it imports us.
 #[pymodule(gil_used = true)]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    #[cfg(Py_GIL_DISABLED)]
+    medh5::h5::on_wait(wait_detached);
     m.add("__version__", medh5::VERSION)?;
     m.add("__format_version__", medh5::FORMAT_VERSION)?;
     labels::register(m)?;
@@ -79,4 +80,32 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     preflight::register(m)?;
     files::register(m)?;
     Ok(())
+}
+
+/// How a thread waits for HDF5's lock another thread holds, on free-threaded
+/// CPython: detached from the interpreter, for the wait and the calls it was
+/// waiting to make.  Attached, it would hold up every stop-the-world pause ---
+/// a collection, say --- until the other thread's HDF5 call ended.  The engine
+/// asks only a thread that does not hold the lock already, so no thread ever
+/// waits to take the interpreter back while holding HDF5's lock.  With the
+/// GIL, the waiting thread holds nothing another needs: the holder of HDF5's
+/// lock runs detached, and lets it go before it attaches again.
+#[cfg(Py_GIL_DISABLED)]
+fn wait_detached(run: &mut dyn FnMut()) {
+    // Detached already (a long call lets go of the interpreter first).
+    // SAFETY: reads this thread's state only, and never fails.
+    if unsafe { pyo3::ffi::PyThreadState_GetUnchecked() }.is_null() {
+        return run();
+    }
+    struct Calls<'a>(&'a mut dyn FnMut());
+    // SAFETY: what runs is the engine's HDF5 calls, which touch nothing of
+    // Python's, on this same thread.
+    unsafe impl Send for Calls<'_> {}
+    let calls = Calls(run);
+    // SAFETY: the check above says this thread is attached.
+    let py = unsafe { Python::assume_attached() };
+    py.detach(move || {
+        let calls = calls;
+        (calls.0)()
+    });
 }

@@ -444,6 +444,52 @@ class TestShared:
     process-wide registries."""
 
     @pytest.mark.parametrize("threads", [8])
+    def test_one_sample_read_from_eight_threads(
+        self, tmp_path: Path, label_set: Any, threads: int
+    ):
+        """Every thread reads what one thread alone reads: the image whole and
+        by region, every annotation's planes, and the digests verified."""
+        from tests.helpers import SHAPE, block, write_sample
+
+        path = write_sample(
+            tmp_path / "s.medh5",
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2)), 2: block(SHAPE, (1, 1, 1))},
+            index=True,
+        )
+        with medh5.open(path) as s:
+            image = s.images["CT_tp0"]
+            names = list(s.annotations)
+            regions = [
+                tuple(slice(i, i + 4) for _ in SHAPE) for i in range(min(SHAPE) - 4)
+            ]
+            whole = image.read()
+            planes = {n: s.annotations[n].dense() for n in names}
+            barrier = threading.Barrier(threads)
+            failed: list[BaseException] = []
+
+            def read(k: int) -> None:
+                barrier.wait()
+                try:
+                    for i in range(50):
+                        roi = regions[(k + i) % len(regions)]
+                        assert np.array_equal(image.read(roi), whole[roi])
+                        name = names[(k + i) % len(names)]
+                        assert np.array_equal(s.annotations[name].dense(), planes[name])
+                        if i % 10 == k % 10:
+                            assert np.array_equal(s.images["CT_tp0"].read(), whole)
+                            assert not s.verify().mismatched
+                except BaseException as e:  # pragma: no cover - the failure
+                    failed.append(e)
+
+            workers = [threading.Thread(target=read, args=(k,)) for k in range(threads)]
+            for t in workers:
+                t.start()
+            for t in workers:
+                t.join()
+            assert not failed, failed[:3]
+
+    @pytest.mark.parametrize("threads", [8])
     def test_registries_are_safe_across_threads(self, label_set: Any, threads: int):
         """Threads registering, loading and dropping vocabularies meet only
         what one of them registered under a name, or no name at all."""

@@ -4,7 +4,7 @@
 //! `medh5/annotations/` and `medh5/transforms.py` wrap these; everything the
 //! facades answer is computed here, by the engine.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ndarray::{ArrayD, IxDyn};
 use pyo3::prelude::*;
@@ -229,14 +229,18 @@ impl AnnotationHandle {
         name: &'static str,
         make: impl FnOnce() -> R<Bound<'py, PyAny>>,
     ) -> R<Bound<'py, PyAny>> {
-        if let Some(found) = self.columns.lock().unwrap().get(name) {
+        if let Some(found) = self.columns.lock().unwrap_or_else(PoisonError::into_inner).get(name) {
             return Ok(found.bind(py).clone());
         }
         let value = make()?;
         if !value.is_none() {
             value.getattr("flags")?.setattr("writeable", false)?;
         }
-        self.columns.lock().unwrap().entry(name).or_insert_with(|| value.clone().unbind());
+        self.columns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(name)
+            .or_insert_with(|| value.clone().unbind());
         Ok(value)
     }
 }
@@ -1331,7 +1335,7 @@ impl SampleHandle {
     /// The engine sample, refused once closed --- by `close()`, or, for a
     /// collection member, by closing its collection.
     pub fn sample(&self) -> R<Arc<EngineSample>> {
-        let sample = self.inner.lock().unwrap().clone().ok_or_else(closed)?;
+        let sample = self.inner.lock().unwrap_or_else(PoisonError::into_inner).clone().ok_or_else(closed)?;
         medh5::h5::alive(&sample.root)?;
         Ok(sample)
     }
@@ -1364,7 +1368,10 @@ impl SampleHandle {
     /// members, and what was read from this one --- stays open until the
     /// collection is closed.
     fn close(&self) {
-        if let Some(sample) = self.inner.lock().unwrap().take() {
+        // Taken out first: the file closes with the lock let go, so a thread
+        // asking for the sample meanwhile is refused rather than kept waiting.
+        let taken = self.inner.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(sample) = taken {
             if !self.abandoned.load(std::sync::atomic::Ordering::Acquire) {
                 let _ = sample.close_file();
             }
@@ -1395,7 +1402,7 @@ impl SampleHandle {
     /// collection member, once its collection is closed.
     #[getter]
     fn is_open(&self) -> bool {
-        self.inner.lock().unwrap().as_ref().is_some_and(|s| s.is_open())
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_some_and(|s| s.is_open())
     }
     /// `repr()`; a closed sample says so rather than raising, as a closed
     /// dataset does: debuggers, loggers and test reports all ask.

@@ -121,7 +121,7 @@ fn static_names(names: Vec<String>) -> Vec<&'static str> {
     use std::collections::HashMap;
     use std::sync::Mutex;
     static INTERNED: Mutex<Option<HashMap<String, &'static str>>> = Mutex::new(None);
-    let mut guard = INTERNED.lock().unwrap();
+    let mut guard = INTERNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let table = guard.get_or_insert_with(HashMap::new);
     names.into_iter().map(|n| *table.entry(n.clone()).or_insert_with(|| Box::leak(n.into_boxed_str()))).collect()
 }
