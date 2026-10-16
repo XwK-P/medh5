@@ -1392,6 +1392,9 @@ class TestEnhancedMultiFrame:
             for index in range(1, 6):
                 plane = _frame(enhanced, index).PlanePositionSequence[0]
                 plane.ImagePositionPatient = list(first.ImagePositionPatient)
+        for index in range(6):
+            # Each time point is a stack of one plane, its first.
+            _frame(enhanced, index).FrameContentSequence[0].InStackPositionNumber = 1
         self._dimensions(
             enhanced,
             [0x00209128, 0x00200032],  # temporal, position
@@ -1400,6 +1403,9 @@ class TestEnhancedMultiFrame:
         _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
         stacks = scan_dicom(tmp_path / "enhanced")
         assert [s.n_slices for s in stacks] == [1] * 6
+        out = self._imported(tmp_path / "enhanced", tmp_path / "out.medh5")
+        with medh5.open(out) as sample:
+            assert len(sample.images) == 6
 
     @pytest.mark.parametrize("shift", [0.0, 0.25])
     def test_a_dimension_repeating_positions_splits_them_into_stacks(
