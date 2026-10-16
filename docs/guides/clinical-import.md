@@ -222,7 +222,8 @@ medh5 clinical augment-cohort --from-fhir-bulk export/ --mapping cohort.csv \
 
 It prints each subject's result and report; a refused subject is listed and
 the others written. It exits 1 when a subject was refused or a report holds a
-warning.
+warning. Neither `--out-dir` nor `--report` may lie inside the dataset or
+export it reads, and `--report` may not name a sample it reads or writes.
 
 The importers run in the Python package. The standalone binary hands them to
 Python, as it hands over `medh5 convert`.

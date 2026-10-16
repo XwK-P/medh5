@@ -159,9 +159,11 @@ def _collision(command: str, args: Mapping[str, Any]) -> str | None:
     Paths are compared resolved and, where both exist, as one file, so
     ``sub/../ct.nii.gz``, a link to it and a hard link are the file itself.  A
     report is not written inside a tree the command reads or the nnU-Net
-    dataset it writes, whose files are the dataset's.
+    dataset it writes, whose files are the dataset's; no output is written
+    inside a clinical dataset or export the command reads, whose files it
+    reads while it writes.
     """
-    reads, writes, trees = _files(command, args)
+    reads, writes, trees, sealed = _files(command, args)
     report = args.get("report")
     if report:
         for what, path in (*reads, *writes):
@@ -177,17 +179,29 @@ def _collision(command: str, args: Mapping[str, Any]) -> str | None:
         for what, path in reads:
             if _same_file(out, path):
                 return f"the output {out} is {what}; name another file to write"
+        for what, path in sealed:
+            if _inside(out, path):
+                return (
+                    f"the output {out} is inside {what} ({path}); write it outside it"
+                )
     return None
 
 
 def _files(
     command: str, args: Mapping[str, Any]
-) -> tuple[list[tuple[str, Path]], list[tuple[str, Path]], list[tuple[str, Path]]]:
-    """What a converter command reads, writes, and reads as a whole tree, as
-    ``(what, path)`` pairs --- named from its arguments, before it runs."""
+) -> tuple[
+    list[tuple[str, Path]],
+    list[tuple[str, Path]],
+    list[tuple[str, Path]],
+    list[tuple[str, Path]],
+]:
+    """What a converter command reads, writes, reads as a whole tree, and
+    reads as a tree no output may be written inside, as ``(what, path)``
+    pairs --- named from its arguments, before it runs."""
     reads: list[tuple[str, Path]] = []
     writes: list[tuple[str, Path]] = []
     trees: list[tuple[str, Path]] = []
+    sealed: list[tuple[str, Path]] = []
 
     def given(key: str) -> Path | None:
         value = args.get(key)
@@ -260,6 +274,7 @@ def _files(
         read("the FHIR Bundle this command imports", "from_fhir")
         if (root := given("from_meds")) is not None:
             trees.append(("the MEDS dataset this command reads", root))
+            sealed.append(("the MEDS dataset this command reads", root))
     elif command == "clinical-augment-cohort":
         read("the mapping this command reads", "mapping")
         # Each sample the mapping names is amended in place, or read and
@@ -282,11 +297,13 @@ def _files(
                     writes.append((f"{whose} writes", out_dir / sample.name))
         if (root := given("from_meds")) is not None:
             trees.append(("the MEDS dataset this command reads", root))
+            sealed.append(("the MEDS dataset this command reads", root))
         if (root := given("from_fhir_bulk")) is not None:
             trees.append(("the FHIR bulk export this command reads", root))
+            sealed.append(("the FHIR bulk export this command reads", root))
     if out is not None:
         writes.append(("the output this command writes", out))
-    return reads, writes, trees
+    return reads, writes, trees, sealed
 
 
 def _same_file(first: Path, second: Path) -> bool:

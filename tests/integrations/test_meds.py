@@ -712,6 +712,12 @@ def test_clinical_augment_cohort_from_meds(tmp_path, capsys):
     assert main(cased) == EXIT_ERROR
     assert "which this command writes" in capsys.readouterr().err
     assert not fresh.exists()
+    # Nor is a sample written inside the dataset, among the files it reads.
+    shards = dataset / "data"
+    within = [*argv[:-4], "--out-dir", str(shards), "--report", str(report)]
+    assert main(within) == EXIT_ERROR
+    assert "is inside the MEDS dataset this command reads" in capsys.readouterr().err
+    assert not (shards / "s1.medh5").exists()
     with open_sample(tmp_path / "s1.medh5") as s:
         assert s.clinical is None
     # One source, and a mapping.

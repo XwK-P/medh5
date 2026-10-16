@@ -516,6 +516,15 @@ def test_clinical_augment_cohort_from_fhir_bulk(tmp_path, capsys):
     # Again into the same directory: refused, as an import over a file is.
     assert main(argv) == EXIT_ERROR
     assert "REFUSED  Patient/p3" in capsys.readouterr().out
+    # A sample named like a file of the export is not written over it.
+    Fhir.sample(tmp_path / "Observation.ndjson")
+    mapping.write_text(
+        "subject,sample\nPatient/p3,Observation.ndjson\n", encoding="utf-8"
+    )
+    before = (export / "Observation.ndjson").read_bytes()
+    assert main([*argv[:-1], str(export)]) == EXIT_ERROR
+    assert "inside the FHIR bulk export this command reads" in capsys.readouterr().err
+    assert (export / "Observation.ndjson").read_bytes() == before
     mapping.write_text("patient,sample\nPatient/p3,three.medh5\n", encoding="utf-8")
     assert main(argv) == EXIT_ERROR
     assert "header subject,sample" in capsys.readouterr().err
