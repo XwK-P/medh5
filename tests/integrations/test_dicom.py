@@ -1375,9 +1375,13 @@ class TestEnhancedMultiFrame:
         assert series.n_slices == 6 and series.stack is None
         self._imported(tmp_path / "enhanced", tmp_path / "out.medh5")
 
-    def test_a_dimension_repeating_positions_splits_them_into_stacks(self, tmp_path):
-        """Two time points of three planes: the temporal index tells the
-        repeated positions apart, and a per-frame acquisition number beside
+    @pytest.mark.parametrize("shift", [0.0, 0.25])
+    def test_a_dimension_repeating_positions_splits_them_into_stacks(
+        self, tmp_path, shift
+    ):
+        """Two time points of three planes: the temporal index tells them
+        apart, even where motion shifts the second's planes so that no
+        position repeats exactly, and a per-frame acquisition number beside
         it does not split them further."""
         from medh5.io.dicom import scan_dicom
 
@@ -1386,7 +1390,8 @@ class TestEnhancedMultiFrame:
         for index in range(3, 6):
             source = _frame(enhanced, index - 3).PlanePositionSequence[0]
             plane = _frame(enhanced, index).PlanePositionSequence[0]
-            plane.ImagePositionPatient = list(source.ImagePositionPatient)
+            x, y, z = (float(v) for v in source.ImagePositionPatient)
+            plane.ImagePositionPatient = [x, y + shift, z]
         self._dimensions(
             enhanced,
             [0x00209128, 0x00209156, 0x00200032],  # temporal, acquisition, position

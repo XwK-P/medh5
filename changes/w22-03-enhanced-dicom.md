@@ -3,8 +3,8 @@
 
 - **Enhanced multi-frame DICOM imports.** Enhanced and legacy-converted CT,
   MR and PET objects, skipped with a warning until now, are split into stacks
-  — by `StackID` and, where positions repeat, the dimensions of
-  `DimensionIndexSequence` that tell stacks apart — and each stack imports
+  — by `StackID` and the dimensions of `DimensionIndexSequence` that tell
+  stacks apart, such as a time point — and each stack imports
   as the classic series it would have been: the same grid and the same
   values, placed by the frames' functional groups and decoded one frame at a
   time. Per-frame rescales follow

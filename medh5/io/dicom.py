@@ -374,11 +374,10 @@ def _object_series(parts: Sequence[tuple[str, Any]]) -> list[Series]:
 
     *parts* are the object's instances --- one, or a concatenation's ---
     as ``(path, header)``, joined in ``InConcatenationNumber`` order.  Frames
-    are told apart by ``StackID``, and, where frames of one ``StackID``
-    repeat a position, by the dimensions of the object's
-    ``DimensionIndexSequence`` that tell the repeats apart (a temporal
-    position, an echo: :func:`_separating`); a stack is ordered later, by
-    geometry.
+    are told apart by ``StackID`` and by the dimensions of the object's
+    ``DimensionIndexSequence`` whose values each span several planes (a
+    temporal position, an echo: :func:`_separating`); a stack is ordered
+    later, by geometry.
     """
     parts = sorted(parts, key=lambda part: _number(part[1], "InConcatenationNumber"))
     header = parts[0][1]
@@ -455,20 +454,16 @@ def _separating(
     """Which of the dimensions in *values* (one tuple per frame of a
     ``StackID``) tell its stacks apart.
 
-    None, where no two frames share a position: the frames are one stack,
-    whatever else the object indexes them by (``FrameAcquisitionNumber``
-    numbers every frame).  Where positions repeat, a dimension tells stacks
-    apart when a value of it is shared by frames at different positions ---
-    a time point holds every plane --- and not when each of its values sits
-    at one position, as a per-frame or per-plane number does.  With a
-    position unknown, every dimension is kept, as before positions were
-    read.
+    A dimension tells stacks apart when a value of it is shared by frames at
+    different positions --- a time point or an echo holds every plane, even
+    where motion shifts the planes of one from those of the next --- and not
+    when each of its values sits at one position, as a per-frame or
+    per-plane number (``FrameAcquisitionNumber``) does.  With a position
+    unknown, every dimension is kept, as before positions were read.
     """
     count = len(values[0]) if values else 0
     if any(position is None for position in positions):
         return list(range(count))
-    if len(set(positions)) == len(positions):
-        return []
     keep = []
     for d in range(count):
         places: dict[Any, set[Any]] = {}
