@@ -11,16 +11,17 @@
 
 ## Session prompt
 
-> Implement workstream W22-04 (free-threading) of medh5 2.2.0 in this repository.
-> First read `plans/README.md`, `plans/2.2.0/README.md` and
-> `plans/2.2.0/decisions.md` (E4), then `plans/2.2.0/w22-04-free-threading.md` in
-> full. Work from the latest `main` on `w22/free-threading`; land the four pull
-> requests in order. `gil_used = false` is the last change, made only when every
-> audit item is done and the free-threaded stress job passes. A concurrent misuse
-> must be refused deterministically, never deadlock and never race. HDF5 handles
-> must not cross `fork`. Write tests first, run the local gate from `CLAUDE.md` and
-> the suite on a free-threaded 3.14t interpreter with `PYTHON_GIL=0`, add
-> fragments, open `W22-04: …` pull requests, and do not merge.
+> Implement workstream W22-04 (free-threading) of medh5 2.2.0 in this
+> repository. First read `plans/README.md`, `plans/2.2.0/README.md` and
+> `plans/2.2.0/decisions.md` (E4), then `plans/2.2.0/w22-04-free-threading.md`
+> in full. Work from the latest `main` on `w22/free-threading`; land the four
+> items in order, as one pull request. `gil_used = false` is the last change,
+> made only when every audit item is done and the free-threaded stress job
+> passes. A concurrent misuse must be refused deterministically, never deadlock
+> and never race. HDF5 handles must not cross `fork`. Write tests first, run the
+> local gate from `CLAUDE.md` and the suite on a free-threaded 3.14t interpreter
+> with `PYTHON_GIL=0`, add fragments, open a `W22-04: …` pull request, and arm
+> auto-merge only as plans/README.md's "Review before the queue" says.
 
 ## Pull requests
 
@@ -35,15 +36,18 @@
 
 ### 04.1 Mutable pyclasses (PR 1)
 
-- **State at 2.1.0 (planned).** `#[pymodule(gil_used = true)]` (`lib.rs`, held by a
-  `test_packaging` test). At 2.0.2 five pyclasses take `&mut self`:
-  `SampleDocument` (`document.rs`), `AnnotationPayload` (`annotations.rs`),
-  `Provenance` (`curation.rs`), `SampleWriter` (`writer.rs`), `CacheWriterHandle`
-  (`clinical.rs`). 2.1.0 adds two: `StagedFileHandle` (`files.rs`, W21-05) and
-  `PatchDraws` (W21-06), seven in all; recount with `rg "&mut self"
-  crates/medh5-python/src` before starting, since any other 2.1.0 pyclass that
-  takes `&mut self` joins the list. A `SampleWriter` used by a second thread
-  raises `RuntimeError: Already borrowed` (2.0.2 documents it).
+- **State at 2.1.0** (checked at v2.1.0). `#[pymodule(gil_used = true)]`
+  (`lib.rs`, held by a `test_packaging` test). Seven pyclasses are not
+  `frozen`: `SampleDocument` (`document.rs`), `AnnotationPayload`
+  (`annotations.rs`), `Provenance` (`curation.rs`), `SampleWriter`
+  (`writer.rs`), `CacheWriterHandle` (`clinical.rs`), `StagedFileHandle`
+  (`files.rs`) and `PatchDraws` (`sampling.rs`, whose `__next__` takes
+  `PyRefMut`, so `rg "&mut self"` misses it). Recount with `rg "#\[pyclass"
+  crates/medh5-python/src | rg -v frozen` before starting. Beside the
+  methods, the `try_borrow_mut` sites (`SampleWriter`'s setters in
+  `writer.rs`, `curation.rs`'s provenance edit) change too. A `SampleWriter`
+  used by a second thread raises `RuntimeError: Already borrowed` (2.0.2
+  documents it).
 - **Change.** Each becomes `frozen` with an inner `Mutex`; every method takes the
   lock with `try_lock`, and a second thread gets a `MEDH5Error` ("a writer is used
   by one thread at a time"). Never hold the lock across a call into Python.
@@ -55,7 +59,9 @@
 
 - **Change.** `medh5/torch/handles.py`: `_ensure_owner` checks then acts outside
   the lock; use `os.register_at_fork(after_in_child=...)` plus the lock.
-  `medh5/labels.py` `_REGISTERED` and the registry in `_live.py`: a lock. The lazy
+  `medh5/labels.py` `_REGISTERED`: a lock. `_live.py` has no registry; its
+  shared state is each anchor's token, checked and then replaced
+  (`_Anchor.rewrite`), which needs the document's lock around both. The lazy
   `if self._x is None` caches in `sample.py` and `task.py`: benign duplicate work;
   document it in a comment.
 - **Tests.** `test_handle_cache_survives_parallel_leases` (under
@@ -65,8 +71,10 @@
 
 - **Change.** Check every `PyOnceLock` static, the `checked_files` `Mutex`
   (`h5/ops.rs`) and the atomic counters (fine as they are), and that no Rust mutex
-  is held across a call into Python; the 29 frozen pyclasses hold an `Arc` and
-  `SampleHandle` a `Mutex`. Detach before `locked()` (`h5/mod.rs`): a thread blocked
+  is held across a call into Python. There are 38 frozen pyclasses (28
+  declared directly, 10 through `record_class!` in `curation.rs`); the records
+  hold values and JSON, the handles an `Arc`, and `SampleHandle` a `Mutex`.
+  Detach before `locked()` (`h5/mod.rs`): a thread blocked
   there while attached stalls stop-the-world under free-threading; confirm no
   Python callback (`__fspath__`, `__array__`, a progress hook) runs while the HDF5
   lock is held. c-blosc2 contexts in `b2nd_slice.c` must be per call with

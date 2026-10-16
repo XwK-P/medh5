@@ -6,7 +6,7 @@
 | Size | L overall: PR 1 M, PR 2 M–L, PR 3 M |
 | Lands after | v2.1.0 released |
 | Builds on (2.1.0) | `version::format_versions()`, `annotations::kinds(version)`, `version::next_minor` (W21-02 PR 1); RTSTRUCT points and `--open-curves omit` (W21-13 PR 3); the code-table revision rule (D1) |
-| Owns | `docs/spec/medh5-1.2.md` (new), `crates/medh5/src/version.rs`, the `polylines` encoder, reader and validator rules, `medh5/annotations/geometric.py` (`Polyline`), the RTSTRUCT open-curve paths |
+| Owns | `docs/spec/medh5-1.2.md` (new), `crates/medh5/src/version.rs`, `crates/medh5/src/annotations/header.rs`, the `polylines` encoder, reader and validator rules, `medh5/annotations/geometric.py` (`Polyline`), the RTSTRUCT open-curve paths |
 | Decisions | E1, E2, E9 |
 
 ## Session prompt
@@ -16,14 +16,15 @@
 > `plans/2.2.0/decisions.md` (E1, E2, E9), then
 > `plans/2.2.0/w22-01-format-1.2.md` in full. Check that 2.1.0's version
 > accessors and `next_minor` are on `main` (W21-02 PR 1). Work from the latest
-> `main` on `w22/format-1.2`; land the three pull requests in order. This is a
-> format version: 1.2 may add only what a 1.1 reader already skips (a new kind),
-> a sample is written at 1.2 only when its content needs it, and a 1.1 reader
-> must read a 1.2 file as its projection with W913.
-> Write tests first (including a 2.1.0 reader reading a 2.2.0 file, through the
-> 1.1 projection tests), write the specification as E1 gives it, run the local
-> gate from `CLAUDE.md` (both conformance runs), add fragments, open `W22-01: …`
-> pull requests, and do not merge.
+> `main` on `w22/format-1.2`; land the three items in order, as one pull request
+> (`plans/2.2.0/README.md`, Workstreams). This is a format version: 1.2 may add
+> only what a 1.1 reader already skips (a new kind), a sample is written at 1.2
+> only when its content needs it, and a 1.1 reader must read a 1.2 file as its
+> projection with W913. Write tests first (including a 2.1.0 reader reading a
+> 2.2.0 file, through the 1.1 projection tests), write the specification as E1
+> gives it, run the local gate from `CLAUDE.md` (both conformance runs), add
+> fragments, open `W22-01: …` pull requests, and arm auto-merge only as
+> plans/README.md's "Review before the queue" says.
 
 ## Pull requests
 
@@ -37,15 +38,25 @@
 
 ### 01.1 1.2 exists, and the version follows the content (PR 1, E2)
 
-- **State at 2.1.0 (planned).** `version::format_versions()` is `["1.0", "1.1"]`;
-  `required_for` (`version.rs`) and `written_version` (`sample/writer.rs`) look at
-  profiles only; "a later minor" is `next_minor` of the newest supported version,
-  so the W913 case and companion fixture T306 write "1.2".
-- **Change.** `format_versions()` gains "1.2"; `annotations::kinds("1.2")` is 1.1's
-  kinds plus `polylines` (the deprecated arrays keep 1.1's content).
+- **State at 2.1.0** (checked at v2.1.0). `version::format_versions()` is
+  `["1.0", "1.1"]` (`version.rs`), and `LATEST_VERSION` ("1.1") drives
+  `support()` and Python's `FORMAT_VERSION`; `required_for` (`version.rs`) and
+  `written_version` (`sample/writer.rs`, `pub` and bound to Python in
+  `_core.pyi`) look at profiles only; `annotations::kinds(version)` exists, but
+  `is_known_kind` and `geometric_kinds` (`annotations/header.rs`) hard-code
+  1.0's lists; the deprecated `version::FORMAT_VERSIONS: [&str; 2]` and the
+  kind arrays are arrays. "A later minor" is `next_minor` of the newest
+  supported version, so the W913 case and companion fixture T306 write "1.2"
+  (`conformance/clinical.rs`, `companion.rs`).
+- **Change.** `format_versions()` gains "1.2" and `LATEST_VERSION` becomes
+  "1.2"; `annotations::kinds("1.2")` is 1.1's kinds plus `polylines`, and
+  `is_known_kind` and `geometric_kinds` answer by version through it (the
+  deprecated arrays keep their length and 1.1's content: an array's length is
+  its type).
   `version::required_for_content(profiles: &[&str], kinds: &[&str]) -> &'static
-  str` (a new function; `required_for` keeps its signature and its answer for
-  profiles); the writer uses it, so a sample is written at 1.2 only when it holds
+  str` (a new function; `required_for` and `written_version` keep their
+  signatures and their answers for profiles); the writer uses it, so a sample
+  is written at 1.2 only when it holds
   a polylines annotation, and an amendment removing the last one lowers the
   version (1.1 §2.1's rule for the clinical profile, applied to the kind). The
   projection (`sample/projection.rs`) already drops unknown kinds as W913: a test
@@ -71,9 +82,12 @@
   - Rust: `#[non_exhaustive] pub struct Polyline` with `Polyline::new(vertices,
     class_id)` and builders `plane(axis, index)`, `instance_id(id)`;
     `encode_polylines`; `SampleWriter::add_polylines(&mut self, ann_id: &str,
-    polylines: &[Polyline], options: GeometricOptions) -> Result<hdf5::Group>`
-    (use the existing geometric options type if it is `#[non_exhaustive]`, else a
-    new `PolylineOptions`).
+    polylines: &[Polyline], placement: &Placement, options:
+    &AnnotationOptions) -> Result<hdf5::Group>`, taking the `Placement` and
+    `AnnotationOptions` the other geometric writers take
+    (`writer_annotations.rs`). There is no `GeometricOptions`; neither type is
+    `#[non_exhaustive]`, so neither gains a field (plans/README.md, Rust API),
+    and a polyline's own data is on `Polyline`.
   - Python: `medh5.annotations.geometric.Polyline(vertices, class_id, plane=(-1,
     0))`; `add_polylines(ann_id, polylines, *, grid=None, space="index",
     frame_uid=None, instance_ids=None, annotated_classes=None,
@@ -97,9 +111,13 @@
 
 ### 01.3 RTSTRUCT open curves import and export as polylines (PR 3)
 
-- **State at 2.1.0 (planned).** `from_rtstruct(..., open_curves="omit")` skips
-  OPEN_PLANAR and OPEN_NONPLANAR ROIs with a warning naming the option; POINT ROIs
-  become `points`.
+- **State at 2.1.0** (checked at v2.1.0). `from_rtstruct(..., open_curves="omit")`
+  (`_OPEN_CURVES = ("omit",)`, `medh5/io/rtstruct.py`) skips OPEN_PLANAR and
+  OPEN_NONPLANAR ROIs with a warning naming the option; POINT ROIs become
+  `points`. Three messages promise the change: `from_rtstruct`'s refusal of
+  another value ("open curves arrive as `polylines` (format 1.2) in medh5
+  2.2.0"), its `contour_type` warning, and the `--open-curves` help in
+  `crates/medh5-cli/src/app.rs`; reword each to the option that now exists.
 - **Change.** `open_curves="polylines"` (CLI `--open-curves polylines`) imports
   them as a polylines annotation (id `f"{ann_id}_curves"`, or `curves_id=`),
   OPEN_PLANAR contours with their `polyline_plane`, OPEN_NONPLANAR with `axis =

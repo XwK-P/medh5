@@ -4,7 +4,7 @@
 |---|---|
 | Branch | `w22/resample` |
 | Size | L overall: PR 1 M–L, PR 2 M |
-| Lands after | v2.1.0 released; PR 2 after W22-02 PR 4 |
+| Lands after | v2.1.0 released; PR 2 after W22-02's last pull request (items 4–6). Lane F does W22-03 between the two |
 | Builds on (2.1.0) | `transform_between` and its visit refusal (D28), the inverse of a chain (W21-07), the SciPy-exact cubic sampler (`transforms/apply.rs`), every write through one replace routine (D23), the agreement and torch refusals that name a grid mismatch |
 | Owns | `crates/medh5/src/transforms/resample.rs` (new), its bindings, `medh5.transforms.resample`, the `medh5 resample` command, `docs/guides/resample.md` (new); touches the refusal messages in `medh5/io/`, `medh5/torch/datasets.py`, `medh5/_monai_readers.py` and `crates/medh5/src/curation/agreement.rs` |
 | Decisions | E11 |
@@ -15,14 +15,16 @@
 > 2.2.0 in this repository. First read `plans/README.md`,
 > `plans/2.2.0/README.md` and `plans/2.2.0/decisions.md` (E11), then
 > `plans/2.2.0/w22-10-resample.md` in full, then 1.0 §3, §4.4, §10.2 and §11.1.
-> Work from the latest `main` on `w22/resample`; land the two pull requests in
-> order. Geometry is never invented: without a transform path the command
-> refuses, and a box or contour that a transform would bend is refused, never
-> approximated. Converters and loaders keep refusing to resample; only their
-> messages change, to name the command. Nothing here is specification text, a
-> new code or a format change; if the work seems to need one, stop and ask.
-> Write tests first, run the local gate from `CLAUDE.md`, add fragments, open
-> `W22-10: …` pull requests, and do not merge.
+> Work from the latest `main` on `w22/resample`; land the two items as two pull
+> requests, the second from `w22/resample-2` once W22-02's last pull request has
+> merged; lane F does W22-03 in between. Geometry is never invented: without a
+> transform path the command refuses, and a box or contour that a transform
+> would bend is refused, never approximated. Converters and loaders keep
+> refusing to resample; only their messages change, to name the command. Nothing
+> here is specification text, a new code or a format change; if the work seems
+> to need one, stop and ask. Write tests first, run the local gate from
+> `CLAUDE.md`, add fragments, open `W22-10: …` pull requests, and arm auto-merge
+> only as plans/README.md's "Review before the queue" says.
 
 ## Pull requests
 
@@ -35,14 +37,24 @@
 
 ### 10.1 Images onto a grid, recorded (PR 1, E11)
 
-- **State at 2.1.0.** Nothing resamples. The converters refuse disagreeing grids
-  (`medh5/io/nifti.py`, "resample before converting"), the torch loader refuses
-  mixed grids (`medh5/torch/datasets.py`, `timepoint=` or "resample the volumes
-  onto a common grid first"), and agreement refuses annotations on different
-  grids (`curation/agreement.rs`). The engine samples displacement fields
+- **State at 2.1.0** (checked at v2.1.0). Nothing resamples. The NIfTI
+  converter refuses disagreeing grids (`_same_grid` in `medh5/io/nifti.py`,
+  "resample before converting", which the nnU-Net converter reuses rather
+  than having a refusal of its own), the torch loader refuses mixed grids
+  (`medh5/torch/datasets.py`, `timepoint=` or "resample the volumes onto a
+  common grid first"), and agreement refuses annotations on different grids
+  twice, as E101 (`voxel_with` and `check_same_space` in
+  `curation/agreement.rs`). The DICOM converter's messages that mention
+  resampling (`medh5/io/dicom.py`) are about irregular gaps, gantry tilt and
+  per-slice geometry, which a resample onto a grid cannot repair.
+  `add_segmentation(labelmap=…)` (#60) writes a labelmap without one mask per
+  class. The engine samples displacement fields
   linearly and cubically (`transforms/apply.rs`: `linear_sample`,
-  `cubic_sample`), and `Sample::transform_between` resolves a path between
-  grids. The provenance vocabulary already holds `resample`
+  `cubic_sample`), and `Sample::transform_between_as(source, target,
+  Some(KeyKind::Grid))` resolves a path between grids. Plain
+  `transform_between` reads a key as a timepoint first, and answers `None`
+  also when a side has no frame, so the resampler names its keys as grids
+  and tells the two `None`s apart. The provenance vocabulary already holds `resample`
   (`curation/provenance.rs`).
 - **Change.** `transforms::resample(source, plan) -> Result<Resampled>` in the
   engine:
@@ -58,7 +70,8 @@
     index. When the two grids are physically comparable (1.0 §3.3 rule 4:
     one `frame_uid`, one `coord_system`, one S; `Grid::comparable_with`) the
     affines alone map it. Otherwise it goes through
-    `transform_between(target grid, source grid)` (§10.2's convention: evaluate
+    `transform_between_as(target grid, source grid, Some(KeyKind::Grid))`
+    (§10.2's convention: evaluate
     T at the fixed grid's points and sample the moving image there). Two grids
     that name one frame but are not comparable (W917: another `coord_system`
     or S) are refused, since `transform_between` answers "same frame" for them
@@ -182,10 +195,17 @@
 ### 10.4 Refusals name the command (PR 2)
 
 - **Change.** The messages that tell a user to "resample first" now give the
-  command to run. These are the NIfTI and DICOM converters' grid refusals,
-  `import_seg_nifti`, the nnU-Net converter, the torch loader's mixed-grid
-  refusal, the MONAI reader's channel refusal, and agreement's different-grids
-  refusal. Behaviour does not change: every one still refuses.
+  command to run. These are the NIfTI converter's grid refusals (`_same_grid`,
+  which the nnU-Net converter shares) and `import_seg_nifti`'s, reworded where
+  they live after W22-02, in the engine's `convert/nifti/`; the torch loader's
+  mixed-grid refusal; the MONAI reader's channel refusal; and agreement's two
+  different-grids refusals. The DICOM messages about gaps, tilt and per-slice
+  geometry stay as they are: `medh5 resample` does not repair those.
+  Behaviour does not change: every one still refuses.
+- **W22-02's parity test.** It holds every NIfTI refusal to 2.1.0's text, so
+  each reworded message is added to its list of allowed differences by name,
+  with this item as the reason; the records themselves are not re-recorded
+  (they must stay 2.1.0's). The changelog entry lists the new wording.
 - **Tests.** Each refusal's test asserts the command appears in its message.
   `STALE_CLAIMS` gains nothing, because no page said medh5 resamples.
 - **Changelog.** A sentence in 10.1's Added entry: the refusals now name the

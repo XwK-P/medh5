@@ -38,31 +38,71 @@ is to put there.
 - `main` is the line of the next minor release. A patch line (`release/2.0`)
   exists only once a patch is needed (see [the 2.0.x line](#the-20x-line)).
 - A workstream works on `w21/<name>` (2.1.0) or `w22/<name>` (2.2.0), cut from
-  the latest `main`, or on the branch its session was assigned; the pull
-  request's title starts with the workstream id (`W21-02: …`).
-- In 2.1.0, from W21-01 on, a workstream lands as **one pull request** holding
-  every item its file lists, in that order, at least one commit per item. A
-  workstream file's "PR n" is item n of that pull request, and an edge naming
-  "W21-05 PR 1" means the pull request that holds that item. The one
-  exception is an *enabler*: a first item that other lanes wait on lands
-  alone, ahead of the rest of its workstream (the release's README names
-  them). W21-00 (phase 0) keeps its eight pull requests. Every item still
-  writes its own fragment, and an item that may be backported stays one commit,
-  so it can be cherry-picked from the branch.
+  the latest `main`; the pull request's title starts with the workstream id
+  (`W21-02: …`). A workstream that lands as several pull requests pushes each
+  from its own branch (`w22/<name>`, `w22/<name>-2`, …), so the next one can
+  open while the last sits in the queue. A lane's brief names every branch its
+  workstreams need, and the session may push all of them. (In 2.1.0 each
+  session had one assigned branch; two lanes had to ask for a second, and a
+  third held a finished workstream back until its first merged.)
+- From 2.1.0's W21-01 on, a workstream lands as **one pull request**
+  holding every item its file lists, in that order, at least one commit per
+  item. A workstream file's "PR n" is item n of that pull request, and an edge
+  naming "W21-05 PR 1" means the pull request that holds that item. The
+  exceptions are named in the release's README: an *enabler*, a first item
+  that other lanes wait on, lands alone, ahead of the rest of its workstream;
+  and a workstream whose items another lane waits on, or too large to review
+  as one, lands in the groups the README gives. W21-00 (phase 0) kept its
+  eight pull requests. Every item still writes its own fragment, and an item
+  that may be backported stays one commit, so it can be cherry-picked from the
+  branch.
 - The pull request's description lists its items, each with what it changed
   and the "Done when" it meets, so a reviewer can take it an item at a time.
-- `main` takes pull requests through GitHub's merge queue. The coordinator
-  enables auto-merge on a green pull request, and the queue squash-merges it
-  after testing it on top of `main` and of the pull requests ahead of it, so
-  the merged tree is the tested tree. Until the queue is on, the coordinator
-  squash-merges one at a time, each pull request rebased on the latest `main`
-  and green after the rebase. A workstream never merges its own pull request,
-  and never merges another workstream's branch into its own.
-- Rebase on `main` when it conflicts, and before asking for a merge.
-  Regenerate generated files after a rebase instead of merging them by hand
-  (see [Generated files](#generated-files-and-stated-counts)). A pull request
-  the queue drops (a conflict, or red CI on the merged tree) is fixed on its
-  branch and enabled again.
+- `main` takes pull requests through GitHub's merge queue, which squash-merges
+  each after testing it on top of `main` and of the pull requests ahead of it,
+  so the merged tree is the tested tree. It needs `ci-ok`, not an approving
+  review: every 2.1.0 pull request merged without one, so a session never
+  tells the maintainer a pull request "needs your approval". A workstream never
+  merges another workstream's branch into its own.
+- **Review before the queue.** Open the pull request ready for review, not as
+  a draft, once its items pass the local gate: Codex reviews a draft only when
+  it is marked ready (in 2.1.0, five and eight hours late). Then:
+  1. Wait for Codex's review of the head commit, and check it completed. In
+     2.1.0 it failed silently on six pull requests and never ran on six more,
+     so twelve merged with no automated review. If it failed, ask again with
+     an `@codex review` comment.
+  2. Fix or answer every finding, then arm auto-merge, which enqueues the
+     pull request once CI is green.
+  3. A queued pull request cannot be pushed to, and only the maintainer can
+     remove it from the queue. A finding that arrives while it is queued goes
+     into a follow-up pull request at once (`W22-07 review: …`, as #63 was),
+     unless the queue drops it first.
+- **When the queue drops a pull request** (a conflict, or red CI on the merged
+  tree), fix it in the same turn: bring `main` in (merge it, or rebase a branch
+  you created), regenerate the generated files instead of merging them by hand
+  (see [Generated files](#generated-files-and-stated-counts)), run the local
+  gate, push and re-arm auto-merge. A pull request is not finished until it
+  has merged.
+
+### Waiting and waking
+
+In 2.1.0 lanes sat idle for hours with a dropped pull request or a merged edge
+and nothing to wake them: W21-06 (#55) from 07:32 to 15:47, W21-16 from 16:10
+until a relay said W21-09 had merged. A session cannot count on a GitHub
+event arriving, so:
+
+- While it owns an open pull request, or waits on another lane's, a session
+  keeps a check-in scheduled (about every 30 to 45 minutes) and on each one
+  looks at the pull request's queue state, CI and conflicts, and acts.
+- A session waiting on an edge subscribes to the pull request that holds it,
+  so its merge wakes the session, and codes ahead meanwhile.
+- The coordinator runs an hourly sweep over every open pull request and every
+  lane: a dropped pull request, a red head, or a lane quiet for more than an
+  hour with work open gets a nudge, and a merged edge is relayed to the lanes
+  waiting on it.
+- Six lanes running at once share one account's usage limit; in 2.1.0 all six
+  stopped together for two to three and a half hours. Start each lane on the
+  pull request other lanes wait on.
 
 ### The local gate
 
@@ -218,6 +258,14 @@ Classify each entry as 2.0.2 did:
 Each entry opens with a bold sentence that states the change as a fact, then
 one to three sentences. No `---` (write `—`), lines of at most 80 columns.
 
+An entry that promises something about a later release ("will require",
+"the last line to support", "removed in") states a decision the maintainer
+settled, and names it; a plan's own proposal is not enough. 2.1.0's D36 put
+"medh5 2.2.0 will require Python 3.11" into the release pull request's
+changelog, README and install page before anyone had decided it, and it was
+withdrawn an hour before the tag. The release checklist lists every such
+sentence for the maintainer to confirm.
+
 ### Tests and documentation
 
 `CLAUDE.md` ("Testing patterns", "Documentation") holds. In addition:
@@ -254,7 +302,17 @@ result:
 
 Most conflicts come from a few files. Each has an owner; another workstream
 touches it only for the smallest change its item needs (a call site, a
-registration), and says so in the pull request.
+registration), and says so in the pull request. The table below is 2.1.0's;
+a release's README gives its own.
+
+Four files are touched by nearly every pull request that adds an API or a
+command, and in 2.1.0 they caused most of the merge queue's drops:
+`tests/project/python_api.txt` and `medh5/_core.pyi` (14 of 24 pull
+requests each), `docs/reference/cli.md` (14) and `crates/medh5-cli/src/app.rs`
+(13). They have no owner. After bringing `main` in, regenerate the snapshot,
+re-merge the other three by hand keeping both sides' entries in order, and run
+the tests that compare them (`test_typing.py`, `test_docs_examples.py`)
+before pushing.
 
 | File | Owner (2.1.0) | Others touch it for |
 |---|---|---|
