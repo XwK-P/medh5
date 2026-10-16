@@ -279,16 +279,21 @@ impl Provenance {
         let activities = objects.iter().map(|a| activity_arg(a.bind(py).as_any())).collect::<R<Vec<_>>>()?;
         Ok(prov_engine::Provenance::new(agents, activities)?)
     }
+}
 
+impl ProvenanceState {
     /// Make a change to the document's provenance, for a document's
-    /// provenance; whether there was one to make it to.
+    /// provenance; whether there was one to make it to.  The caller holds
+    /// this provenance's lock across the change and its own update, so a
+    /// second thread is refused rather than writing the document in one
+    /// order and this graph in the other.  The document's lock is the
+    /// engine's, and no Python runs under either.
     fn write_through(
         &self,
         py: Python<'_>,
         change: impl FnOnce(&mut prov_engine::Provenance) -> medh5::Result<()>,
     ) -> R<bool> {
-        let document = self.state.read()?.document.as_ref().map(|d| d.clone_ref(py));
-        let Some(document) = document else { return Ok(false) };
+        let Some(document) = &self.document else { return Ok(false) };
         let document = document.bind(py).cast::<crate::document::SampleDocument>().map_err(PyErr::from)?;
         document.get().edit(py, |d| change(&mut d.provenance))??;
         Ok(true)
@@ -352,8 +357,10 @@ impl Provenance {
     fn add_agent<'py>(&self, agent: &Bound<'py, PyAny>, replace: bool) -> R<Bound<'py, PyAny>> {
         let value = agent_arg(agent)?;
         // The document first: what it refuses is refused here too.
-        let written = self.write_through(agent.py(), |p| p.add_agent(value.clone(), replace).map(drop))?;
-        self.state.write()?.inner.add_agent(value.clone(), replace || written)?;
+        let mut state = self.state.write()?;
+        let written = state.write_through(agent.py(), |p| p.add_agent(value.clone(), replace).map(drop))?;
+        state.inner.add_agent(value.clone(), replace || written)?;
+        drop(state);
         Ok(match agent.cast::<Agent>() {
             Ok(given) => given.clone().into_any(),
             Err(_) => Bound::new(agent.py(), Agent::wrap(value))?.into_any(),
@@ -366,8 +373,8 @@ impl Provenance {
     fn add_activity(&self, activity: &Bound<'_, PyAny>, replace: bool) -> R<Py<Activity>> {
         let py = activity.py();
         let value = activity_arg(activity)?;
-        let written = self.write_through(py, |p| p.add_activity(value.clone(), replace).map(drop))?;
         let mut state = self.state.write()?;
+        let written = state.write_through(py, |p| p.add_activity(value.clone(), replace).map(drop))?;
         state.objects(py)?;
         let at = state.inner.activities().position(|a| a.id == value.id);
         state.inner.add_activity(value.clone(), replace || written)?;

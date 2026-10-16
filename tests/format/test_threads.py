@@ -438,6 +438,26 @@ class TestOneThreadAtATime:
         assert len(payload.class_ids) == 1
         assert len(prov.agents) <= threads * 50
 
+    @pytest.mark.parametrize("threads", [8])
+    def test_a_documents_provenance_agrees_with_its_document(self, threads: int):
+        """Threads replacing one agent of a document's provenance: the graph
+        and the document end with the same agent, the last one not refused,
+        because the provenance is held across both writes."""
+        from medh5.curation import Agent
+        from medh5.document import new_document
+
+        doc = new_document("s")
+        prov = doc.provenance
+
+        def replace(k: int) -> Callable[[], None]:
+            count = iter(range(10**9))
+            return lambda: prov.add_agent(
+                Agent("a", "software", f"t{k}.{next(count)}"), replace=True
+            )
+
+        hammered([replace(k) for k in range(threads)], rounds=200)
+        assert prov.to_json()["agents"] == doc.provenance.to_json()["agents"]
+
 
 class TestShared:
     """What threads may share: an open sample, read from many at once, and the
