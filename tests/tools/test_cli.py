@@ -1861,6 +1861,110 @@ class TestTransforms:
         assert "W911" not in out.out
 
 
+class TestResample:
+    """`resample`: images onto another grid, recorded (§10.2, §11.1)."""
+
+    def test_the_command_and_the_function_write_the_same_file(self, capsys, tmp_path):
+        from medh5.transforms import resample
+
+        by_command = write_sample(tmp_path / "a.medh5")
+        by_function = tmp_path / "b.medh5"
+        by_function.write_bytes(by_command.read_bytes())
+        argv = ["--image", "CT_tp0", "--spacing", "3,1.6,1.6", "--grid-id", "half"]
+        code, out = run(capsys, "resample", str(by_command), *argv, "--fill", "-1024")
+        assert code == EXIT_OK, out.err
+        assert "'half'" in out.out and "CT_tp0 -> CT_tp0_on_half" in out.out
+        resample(
+            by_function, "CT_tp0", spacing=(3, 1.6, 1.6), grid_id="half", fill=-1024
+        )
+        with medh5.open(by_command) as a, medh5.open(by_function) as b:
+            assert a.content_id == b.content_id
+            (activity,) = a.document.provenance.activities_by_type("resample")
+            assert activity.tool == "medh5 resample"
+
+    def test_json_is_the_report(self, capsys, tmp_path):
+        path = write_sample(tmp_path / "s.medh5")
+        code, out = run(
+            capsys,
+            "resample",
+            str(path),
+            "--image",
+            "CT_tp0",
+            "--onto",
+            "ct_tp0",
+            "--interpolation",
+            "nearest",
+            "--suffix",
+            "_copy",
+            "--json",
+        )
+        assert code == EXIT_OK, out.err
+        report = json.loads(out.out)
+        assert report["grid_id"] == "ct_tp0" and not report["new_grid"]
+        assert report["images"] == [
+            {
+                "source": "CT_tp0",
+                "image_id": "CT_tp0_copy",
+                "dtype": "int16",
+                "valid_mask": None,
+                "filled_voxels": 0,
+            }
+        ]
+        assert report["written"] == ["images/CT_tp0_copy"]
+
+    def test_a_dtype_and_a_new_file(self, capsys, tmp_path):
+        path = write_sample(tmp_path / "s.medh5")
+        out_path = tmp_path / "out.medh5"
+        code, out = run(
+            capsys,
+            "resample",
+            str(path),
+            "--image",
+            "CT_tp0",
+            "--onto",
+            "ct_tp0",
+            "--dtype",
+            "int16",
+            "-o",
+            str(out_path),
+        )
+        assert code == EXIT_OK, out.err
+        with medh5.open(out_path) as s:
+            assert s.images["CT_tp0_on_ct_tp0"].dtype == np.int16
+        with medh5.open(path) as s:
+            assert "CT_tp0_on_ct_tp0" not in s.images
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--image", "CT_tp0"],
+            ["--image", "CT_tp0", "--onto", "ct_tp0", "--spacing", "1,1,1"],
+            ["--image", "CT_tp0", "--spacing", "1,1,1"],
+            ["--image", "CT_tp0", "--onto", "ct_tp0", "--grid-id", "n"],
+            ["--image", "CT_tp0", "--spacing", "1,0,1", "--grid-id", "n"],
+            ["--image", "CT_tp0", "--onto", "ct_tp0", "--interpolation", "lanczos"],
+            ["--image", "CT_tp0", "--onto", "ct_tp0", "--dtype", "complex64"],
+            ["--onto", "ct_tp0"],
+        ],
+    )
+    def test_a_usage_error_exits_2(self, capsys, tmp_path, argv):
+        path = write_sample(tmp_path / "s.medh5")
+        code, out = run(capsys, "resample", str(path), *argv)
+        assert code == EXIT_USAGE
+        assert out.err
+
+    def test_a_refusal_exits_1_with_the_message(self, capsys, tmp_path):
+        """Two visits, two frames, and no transform between them."""
+        path = write_sample(tmp_path / "s.medh5", timepoints=("tp0", "tp1"))
+        before = path.read_bytes()
+        code, out = run(
+            capsys, "resample", str(path), "--image", "CT_tp1", "--onto", "ct_tp0"
+        )
+        assert code == EXIT_ERROR
+        assert out.err.startswith("medh5: no transform path relates frame")
+        assert path.read_bytes() == before
+
+
 class TestCuration:
     """Shards, provenance, agreement and the split audit (§2.2, §11, §12.3)."""
 
@@ -1901,7 +2005,6 @@ class TestCuration:
             ["seg", "convert", "{}", "organs_tp0", "--to", "bitmask"],
             ["agree", "{}", "organs_tp0", "organs_tp0"],
             ["fix", "{}"],
-            ["scrub", "{}"],
         ],
     )
     def test_S2_2_a_command_on_one_sample_names_the_way_to_a_member(

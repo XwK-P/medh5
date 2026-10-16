@@ -705,6 +705,53 @@ unsafe fn release_all(fid: crate::h5sys::h5i::hid_t) -> Option<String> {
 #[cfg(test)]
 pub(crate) type RenameHook = Box<dyn FnMut(&Path)>;
 
+/// The HDF5 file identifiers open on `path` in this process.
+#[cfg(test)]
+pub(crate) fn open_on(path: &Path) -> usize {
+    use crate::h5sys::h5f;
+    use crate::h5sys::h5i::hid_t;
+    let want = path.to_string_lossy().into_owned();
+    super::locked(|| unsafe {
+        let all = h5f::H5F_OBJ_ALL as hid_t;
+        let count = h5f::H5Fget_obj_count(all, h5f::H5F_OBJ_FILE);
+        let mut ids = vec![0 as hid_t; count.max(0) as usize];
+        let found = h5f::H5Fget_obj_ids(all, h5f::H5F_OBJ_FILE, ids.len(), ids.as_mut_ptr());
+        ids.iter()
+            .take(found.max(0) as usize)
+            .filter(|&&id| {
+                let mut buf = vec![0u8; 4096];
+                let n = h5f::H5Fget_name(id, buf.as_mut_ptr().cast(), buf.len());
+                n > 0 && buf[..n as usize] == *want.as_bytes()
+            })
+            .count()
+    })
+}
+
+/// The HDF5 identifiers of every kind --- files, groups, datasets,
+/// attributes --- open on `path` in this process.  A group outlives the file
+/// identifier it was opened through, and keeps the file open, so a count of
+/// file identifiers alone misses it.
+#[cfg(test)]
+pub(crate) fn held_on(path: &Path) -> usize {
+    use crate::h5sys::h5f;
+    use crate::h5sys::h5i::hid_t;
+    let want = path.to_string_lossy().into_owned();
+    super::locked(|| unsafe {
+        let all = h5f::H5F_OBJ_ALL as hid_t;
+        let count = h5f::H5Fget_obj_count(all, h5f::H5F_OBJ_ALL);
+        let mut ids = vec![0 as hid_t; count.max(0) as usize];
+        let found = h5f::H5Fget_obj_ids(all, h5f::H5F_OBJ_ALL, ids.len(), ids.as_mut_ptr());
+        ids.iter()
+            .take(found.max(0) as usize)
+            .filter(|&&id| {
+                let mut buf = vec![0u8; 4096];
+                let n = h5f::H5Fget_name(id, buf.as_mut_ptr().cast(), buf.len());
+                n > 0 && buf[..n as usize] == *want.as_bytes()
+            })
+            .count()
+    })
+}
+
 /// Run `hook` on the target just before every commit's rename on this
 /// thread, or no longer with `None`.
 #[cfg(test)]
@@ -1396,27 +1443,6 @@ mod tests {
             std::os::unix::fs::symlink(&file, &link).unwrap();
             assert!(same_file(&link, &hard));
         }
-    }
-
-    /// The HDF5 file identifiers open on `path` in this process.
-    fn open_on(path: &Path) -> usize {
-        use crate::h5sys::h5f;
-        use crate::h5sys::h5i::hid_t;
-        let want = path.to_string_lossy().into_owned();
-        super::super::locked(|| unsafe {
-            let all = h5f::H5F_OBJ_ALL as hid_t;
-            let count = h5f::H5Fget_obj_count(all, h5f::H5F_OBJ_FILE);
-            let mut ids = vec![0 as hid_t; count.max(0) as usize];
-            let found = h5f::H5Fget_obj_ids(all, h5f::H5F_OBJ_FILE, ids.len(), ids.as_mut_ptr());
-            ids.iter()
-                .take(found.max(0) as usize)
-                .filter(|&&id| {
-                    let mut buf = vec![0u8; 4096];
-                    let n = h5f::H5Fget_name(id, buf.as_mut_ptr().cast(), buf.len());
-                    n > 0 && buf[..n as usize] == *want.as_bytes()
-                })
-                .count()
-        })
     }
 
     /// The source of a rewrite in place is closed before the rename.

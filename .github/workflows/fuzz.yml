@@ -39,6 +39,18 @@ jobs:
     name: fuzz (${{ matrix.target }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # The C libraries --- HDF5, C-Blosc2 and the codecs --- are instrumented
+    # as the Rust is: AddressSanitizer, and libFuzzer's coverage (the targets
+    # link libFuzzer itself).  HDF5 keeps freed blocks on free lists of its
+    # own, where the sanitizer cannot see them used after they are freed:
+    # H5_USING_MEMCHECKER turns the lists off.  It is defined here because
+    # hdf5-metno-src does not forward HDF5_ENABLE_USING_MEMCHECKER to HDF5's
+    # CMake.  CFLAGS only: libFuzzer is C++, and is not instrumented.
+    env:
+      CFLAGS: -fsanitize=address,fuzzer-no-link -DH5_USING_MEMCHECKER=1
+      # With its free lists off, the blocks HDF5 leaves behind when a call
+      # fails are leaks the sanitizer reports as the process exits.
+      ASAN_OPTIONS: detect_leaks=0
     strategy:
       fail-fast: false
       matrix:
@@ -50,6 +62,36 @@ jobs:
       - run: rustup toolchain install --no-self-update
       - run: rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal --no-self-update
       - run: cargo install cargo-fuzz --version 0.13.2 --locked
+      # The C is compiled by the clang of the nightly's own LLVM, from
+      # apt.llvm.org (its key checked against the fingerprint the site
+      # publishes), so the C and the Rust share one sanitizer runtime.
+      - name: Install the nightly's clang
+        env:
+          LLVM_KEY: 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+        run: |
+          llvm=$(rustc +"$FUZZ_TOOLCHAIN" -vV | sed -n 's/^LLVM version: \([0-9]*\)\..*/\1/p')
+          release=$(lsb_release -cs)
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o llvm.asc
+          # The file must hold that key and no other: apt would trust every
+          # primary key in it.  A primary's fingerprint is the first after
+          # its `pub` line; the rest are its subkeys'.
+          primaries=$(gpg --show-keys --with-colons llvm.asc \
+            | awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print $10; p = 0 }')
+          test "$primaries" = "$LLVM_KEY"
+          sudo install -D -m 644 llvm.asc /etc/apt/keyrings/llvm.asc
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] https://apt.llvm.org/$release/ llvm-toolchain-$release-$llvm main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "clang-$llvm" "libclang-rt-$llvm-dev"
+          rm llvm.asc
+          echo "CC=clang-$llvm" >> "$GITHUB_ENV"
+      # What the targets keep off HDF5's endless paths is tested on its own,
+      # with no dependency to build.
+      - name: Test the exclusions
+        working-directory: fuzz
+        run: |
+          rustc --edition 2021 --test src/lib.rs -o "$RUNNER_TEMP/exclusions"
+          "$RUNNER_TEMP/exclusions"
       # Each run saves the corpus it grew under its own key, and the next
       # restores the newest of its target's.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -66,9 +108,8 @@ jobs:
           cargo +"$FUZZ_TOOLCHAIN" fuzz build seed
           target/x86_64-unknown-linux-gnu/release/seed corpus/open_validate
       # A pull request's run is a smoke test; the schedule runs 40 minutes.
-      # Leaks are not checked: HDF5 keeps freed blocks on its own free lists,
-      # and leaves some behind when a call fails, which LeakSanitizer reports
-      # on nearly every malformed file.
+      # Leaks are not checked: HDF5 leaves blocks behind when a call fails,
+      # which LeakSanitizer reports on nearly every malformed file.
       - name: Fuzz
         working-directory: fuzz
         env:

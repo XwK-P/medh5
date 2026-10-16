@@ -26,6 +26,7 @@ mod dataset;
 mod inspect;
 mod labels;
 mod perf;
+mod resample;
 mod scrub;
 mod seg;
 mod workers;
@@ -242,6 +243,7 @@ pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host:
         "convert" => convert::convert(args, sub, &mut ctx),
         "migrate" => convert::migrate(sub, &mut ctx),
         "recompress" | "bench" => perf::dispatch(name, sub, &mut ctx),
+        "resample" => resample::run(sub, &mut ctx),
         "conformance" => conformance::dispatch(sub, &mut ctx),
         "clinical" | "task" | "cache" => clinical::dispatch(args, name, sub, &mut ctx),
         _ => Ok(EXIT_USAGE),

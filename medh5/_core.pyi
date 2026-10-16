@@ -155,6 +155,7 @@ __all__ = [
     "QualityRecord",
     "REASONS",
     "RELATIONS",
+    "RESAMPLE_INTERPOLATIONS",
     "RESERVED_KINDS",
     "RESOLVED",
     "RFC3339_REGEX",
@@ -503,6 +504,7 @@ __all__ = [
     "registry_register",
     "registry_unregister",
     "relative_path",
+    "resample",
     "resolve_between",
     "resolve_profile_name",
     "rules_for",
@@ -678,6 +680,7 @@ QUALITY_FIELDS: frozenset[str]
 QUALITY_STATUS: tuple[str, ...]
 REASONS: tuple[str, ...]
 RELATIONS: tuple[str, ...]
+RESAMPLE_INTERPOLATIONS: tuple[str, ...]
 RESERVED_KINDS: tuple[str, ...]
 RESOLVED: str
 RFC3339_REGEX: str
@@ -1899,6 +1902,24 @@ def relative_path(node: Any, root: Group | None = None) -> str:
     """An object's path relative to a sample root (the file root by default)."""
     ...
 
+def resample(
+    path: str | os.PathLike[str],
+    image_ids: list[str],
+    *,
+    onto: str | None = None,
+    spacing: list[float] | None = None,
+    grid_id: str | None = None,
+    suffix: str | None = None,
+    interpolation: str = "linear",
+    fill: float = 0.0,
+    dtype: Any | None = None,
+    out: str | os.PathLike[str] | None = None,
+) -> Any:
+    """Resample images of a sample onto another grid, recorded as one `resample`
+    activity; the report as plain data (`medh5.transforms.resample` builds its
+    `ResampleReport` from it)."""
+    ...
+
 def resolve_between(
     transforms: Any, from_frame: str, to_frame: str
 ) -> TransformHandle | None:
@@ -1971,6 +1992,8 @@ def scrub_apply(
     out: str | os.PathLike[str] | None = None,
     out_dir: str | os.PathLike[str] | None = None,
     attest_text: str | None = None,
+    redact_text: bool = False,
+    skip_refused: bool = False,
 ) -> dict[Any, Any]:
     """Act on the actionable findings and write the §11.4 attestation.  The
     report's fields.
@@ -1990,6 +2013,8 @@ def scrub_check(
     out: str | os.PathLike[str] | None = None,
     out_dir: str | os.PathLike[str] | None = None,
     attest_text: str | None = None,
+    redact_text: bool = False,
+    skip_refused: bool = False,
 ) -> None:
     """Refuse what these options cannot do, before any file is read
     (`ScrubOptions::check`).

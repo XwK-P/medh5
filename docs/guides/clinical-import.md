@@ -161,7 +161,8 @@ Python, as it hands over `medh5 convert`.
 
 `medh5 scrub` examines the clinical profile: it moves a `utc` clock's times by
 the date shift, re-mints the ids from the salt, and finds names, dates, UIDs
-and record numbers in the text. It does not rewrite text: a document must be
+and record numbers in the text. `--redact-text` replaces what those rules find
+with placeholders, as new documents; the rest of a document must be
 de-identified by a tool that handles free text and attested with
 `--attest-text`, or `--apply` refuses the sample (see
 [De-identify and publish](deidentify.md#4-a-clinical-sample)). This is why

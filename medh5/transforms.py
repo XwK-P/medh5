@@ -19,7 +19,9 @@ identically (§10.4--§10.6).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -37,6 +39,7 @@ LAST_ROW_TOL: float = _core.LAST_ROW_TOL
 FLOAT16_SAFE_VOXELS: float = _core.FLOAT16_SAFE_VOXELS
 SUPPORTED_ORDERS: tuple[int, ...] = _core.SUPPORTED_ORDERS
 DEFAULT_ORDER: int = _core.DEFAULT_ORDER
+RESAMPLE_INTERPOLATIONS: tuple[str, ...] = _core.RESAMPLE_INTERPOLATIONS
 
 TransformHeader = _core.TransformHeader
 """The attribute header every transform carries (spec §10.1)."""
@@ -434,12 +437,137 @@ def frames_of_timepoint(grids: Mapping[str, Grid], timepoint: str) -> tuple[str,
     return tuple(_core.frames_of_timepoint(grids, timepoint))
 
 
+# -- resampling, a recorded derivation (§10.2, §4.4, §11.1) -------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ResampledImage:
+    """One image a resample wrote."""
+
+    source: str
+    """The image resampled."""
+    image_id: str
+    """The image written."""
+    dtype: str
+    """The dtype written."""
+    valid_mask: str | None = None
+    """Its ``valid_mask`` (§4.4), written when any voxel holds no data."""
+    filled_voxels: int = 0
+    """Target voxels whose source point lay outside the source, which took
+    the fill value (spatial voxels, counted once whatever the channels)."""
+
+
+@dataclass(frozen=True, slots=True)
+class ResampleReport:
+    """What :func:`resample` wrote."""
+
+    path: str
+    """The file written: the source, amended, or ``out``."""
+    activity_id: str
+    """The ``resample`` activity every output names in its ``prov``."""
+    grid_id: str
+    """The target grid."""
+    new_grid: bool = False
+    """Whether the resample wrote the target grid."""
+    images: tuple[ResampledImage, ...] = ()
+    transforms: dict[str, list[str]] = field(default_factory=dict)
+    """The transform ids on each path, by source grid, for the source grids
+    reached through a transform; an inverted step is ``T⁻¹``.  A grid sharing
+    the target's frame (§3.3 rule 4) is mapped by the affines alone."""
+    written: tuple[str, ...] = ()
+    """Every object written, as a path in the sample (``images/CT_on_ref``)."""
+    filled_voxels: int = 0
+    """The sum of every image's ``filled_voxels``."""
+    content_id: str | None = None
+    """The written file's ``content_id``."""
+
+    @classmethod
+    def from_json(cls, doc: Mapping[str, Any]) -> ResampleReport:
+        return cls(
+            path=str(doc["path"]),
+            activity_id=str(doc["activity_id"]),
+            grid_id=str(doc["grid_id"]),
+            new_grid=bool(doc.get("new_grid", False)),
+            images=tuple(
+                ResampledImage(
+                    source=str(i["source"]),
+                    image_id=str(i["image_id"]),
+                    dtype=str(i["dtype"]),
+                    valid_mask=i.get("valid_mask"),
+                    filled_voxels=int(i.get("filled_voxels", 0)),
+                )
+                for i in doc.get("images") or ()
+            ),
+            transforms={
+                str(k): [str(t) for t in v]
+                for k, v in (doc.get("transforms") or {}).items()
+            },
+            written=tuple(str(w) for w in doc.get("written") or ()),
+            filled_voxels=int(doc.get("filled_voxels", 0)),
+            content_id=doc.get("content_id"),
+        )
+
+
+def resample(
+    path: str | os.PathLike[str],
+    image_ids: str | Sequence[str],
+    *,
+    onto: str | None = None,
+    spacing: Sequence[float] | None = None,
+    grid_id: str | None = None,
+    suffix: str | None = None,
+    interpolation: str = "linear",
+    fill: float = 0,
+    dtype: npt.DTypeLike | None = None,
+    out: str | os.PathLike[str] | None = None,
+) -> ResampleReport:
+    """Resample images of the sample at *path* onto another grid, and record it.
+
+    Give exactly one target: *onto*, an existing grid of the sample, or
+    *spacing* (one value per spatial axis, in stored order) with *grid_id*, a
+    new grid in the source's frame that covers the same extent edge to edge.
+    Grids sharing a frame of reference are mapped by their affines; any
+    other pair through the sample's transforms (§10.2), and a pair no
+    transform relates is refused --- alignment is never assumed.
+
+    Each image is written beside its source as ``<id><suffix>`` (``suffix``
+    defaults to ``_on_<target grid>``), interpolated ``linear`` (default),
+    ``nearest`` or ``cubic`` on its stored values, so its rescale carries
+    over.  ``nearest`` keeps the dtype; ``linear`` and ``cubic`` write
+    ``float32`` unless *dtype* is given, rounded half to even and clipped.
+    A voxel whose source point lies outside the source takes *fill*, and the
+    image's ``valid_mask`` (§4.4) marks the voxels holding data; a non-finite
+    *fill* is recorded as Python spells it (``"nan"``, ``"inf"``).  One
+    ``resample`` activity records the inputs, the target, the transform path
+    and the interpolation, and every object written names it.
+
+    ``out=None`` amends *path* (copy-on-write); otherwise the result is a new
+    file, and an existing *out* is refused.
+    """
+    ids = [image_ids] if isinstance(image_ids, str) else list(image_ids)
+    return ResampleReport.from_json(
+        _core.resample(
+            os.fspath(path),
+            ids,
+            onto=onto,
+            spacing=None if spacing is None else [float(v) for v in spacing],
+            grid_id=grid_id,
+            suffix=suffix,
+            interpolation=interpolation,
+            fill=float(fill),
+            dtype=dtype,
+            out=None if out is None else os.fspath(out),
+        )
+    )
+
+
 __all__ = [
     "DEFAULT_ORDER",
     "EXTRAPOLATIONS",
     "FLOAT16_SAFE_VOXELS",
     "INTERPOLATIONS",
     "LAST_ROW_TOL",
+    "RESAMPLE_INTERPOLATIONS",
     "SPEC_TRANSFORM_ATTRS",
     "SUPPORTED_ORDERS",
     "TRANSFORM_KINDS",
@@ -451,6 +579,8 @@ __all__ = [
     "DisplacementTransform",
     "IdentityTransform",
     "InverseTransform",
+    "ResampleReport",
+    "ResampledImage",
     "Transform",
     "TransformHeader",
     "basis",
@@ -469,6 +599,7 @@ __all__ = [
     "linear_part",
     "linear_sample",
     "refuse_outside",
+    "resample",
     "resolve_between",
     "sample_field",
     "target_registration_error",
