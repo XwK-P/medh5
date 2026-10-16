@@ -197,8 +197,9 @@ DICOM](../guides/import-dicom.md#3-expect-refusals-and-read-them) sets out the
 policy.
 
 **Modality LUT is stored, not applied.** `RescaleSlope` and `RescaleIntercept`
-become the image's `rescale`, so `read(physical=True)` gives HU and `read()`
-gives what the scanner stored. A CT's `value_units` is HU unless its
+become the image's `rescale`, so `read(physical=True)` gives the rescaled
+values, in the image's `value_units`, and `read()` gives what the scanner
+stored; the `value_scale` decision names those units. A CT's `value_units` is HU unless its
 `RescaleType` names another quantity — a derived or multi-energy CT may hold
 `MGML` or `Z_EFF` — and then it is that; `US` (unspecified) makes the image
 `intensity` with no units. A classic CT omits its type only when it is HU,
@@ -237,15 +238,17 @@ the validator reports such a file (`W903`).
 **Enhanced multi-frame objects are read as their stacks.** Enhanced and
 legacy-converted CT, MR and PET objects (PS3.3 C.7.6.16) are split into
 stacks by `StackID` and by the dimensions of `DimensionIndexSequence` that
-tell acquisitions apart. A temporal position, a cardiac phase, an echo time or
-a diffusion weighting always does, even when each of its values holds one
-plane; any other dimension does when its values are shared by frames at
-different positions (even where motion shifts one acquisition's planes from
-the next's). A dimension that numbers frames or planes
-(`FrameAcquisitionNumber`) splits nothing. Each stack becomes a series, with `Series.frames` naming its
-`(file, frame index)` pairs and `Series.stack` the stack where an object
-holds several, and is imported as a classic series would be: every frame
-read as a slice whose position, orientation, pixel spacing, rescale and
+tell acquisitions apart. A temporal position, a cardiac or respiratory phase,
+an echo time or a diffusion weighting always does, even when each of its
+values holds one plane, and so does any dimension taken from the
+temporal-position, cardiac- or respiratory-synchronization, echo or diffusion
+functional group; any other dimension does when its values are shared by
+frames at different positions (even where motion shifts one acquisition's
+planes from the next's). A dimension that numbers frames or planes
+(`FrameAcquisitionNumber`) splits nothing. Each stack becomes a series, with
+`Series.frames` naming its `(file, frame index)` pairs and `Series.stack` the
+stack where an object holds several, and is imported as a classic series
+would be: every frame read as a slice whose position, orientation, pixel spacing, rescale and
 acquisition attributes come from its own functional groups, else the shared
 ones, else the object's top level (an enhanced MR's `EffectiveEchoTime` is
 its `EchoTime`). Frames are decoded one at a time. A frame that states no

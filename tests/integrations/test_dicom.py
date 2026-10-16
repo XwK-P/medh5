@@ -1337,17 +1337,22 @@ class TestEnhancedMultiFrame:
             assert np.array_equal(np.sort(both, axis=None), np.sort(volume, axis=None))
 
     @staticmethod
-    def _dimensions(enhanced: Any, pointers: list[int], values: Any) -> None:
-        """Give *enhanced* a ``DimensionIndexSequence`` of *pointers*, and
-        frame *i* the index values ``values(i)``."""
+    def _dimensions(
+        enhanced: Any, pointers: list[int], values: Any, groups: Any = None
+    ) -> None:
+        """Give *enhanced* a ``DimensionIndexSequence`` of *pointers* (in
+        the functional *groups*, else ``FrameContentSequence``), and frame
+        *i* the index values ``values(i)``."""
         from pydicom.dataset import Dataset
         from pydicom.sequence import Sequence
 
         items = []
-        for pointer in pointers:
+        for n, pointer in enumerate(pointers):
             item = Dataset()
             item.DimensionIndexPointer = pointer
-            item.FunctionalGroupPointer = 0x00209111  # FrameContentSequence
+            item.FunctionalGroupPointer = (
+                groups[n] if groups is not None else 0x00209111
+            )
             items.append(item)
         enhanced.DimensionIndexSequence = Sequence(items)
         for index in range(int(enhanced.NumberOfFrames)):
@@ -1375,9 +1380,17 @@ class TestEnhancedMultiFrame:
         assert series.n_slices == 6 and series.stack is None
         self._imported(tmp_path / "enhanced", tmp_path / "out.medh5")
 
+    @pytest.mark.parametrize(
+        ("pointer", "group"),
+        [
+            (0x00209128, 0x00209111),  # TemporalPositionIndex, FrameContent
+            (0x00209241, 0x00189118),  # NominalPercentageOfCardiacPhase
+            (0x00209252, 0x00189118),  # a cardiac timing unlisted, by its group
+        ],
+    )
     @pytest.mark.parametrize("same_place", [True, False])
     def test_a_temporal_index_splits_single_plane_time_points(
-        self, tmp_path, same_place
+        self, tmp_path, same_place, pointer, group
     ):
         """A single-plane time series: each time point holds one frame, so
         no value spans planes, and the temporal index still tells them apart
@@ -1397,8 +1410,9 @@ class TestEnhancedMultiFrame:
             _frame(enhanced, index).FrameContentSequence[0].InStackPositionNumber = 1
         self._dimensions(
             enhanced,
-            [0x00209128, 0x00200032],  # temporal, position
+            [pointer, 0x00200032],  # an acquisition, then position
             lambda i: [i + 1, 1],
+            groups=[group, 0x00209113],  # ..., PlanePositionSequence
         )
         _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
         stacks = scan_dicom(tmp_path / "enhanced")
@@ -1579,6 +1593,8 @@ class TestEnhancedMultiFrame:
     ):
         """A CT's rescale gives HU unless ``RescaleType`` says otherwise
         (C.8.15.3.10): a material map in mg/ml is not HU, and ``US`` is no unit."""
+        from medh5.io.dicom import from_dicom
+
         classic = self._classic(tmp_path)
         for path in classic["paths"]:
             ds = pydicom.dcmread(path)
@@ -1590,10 +1606,15 @@ class TestEnhancedMultiFrame:
         shared.PixelValueTransformationSequence[0].RescaleType = rescale_type
         _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
         for name in ("classic", "enhanced"):
-            out = self._imported(tmp_path / name, tmp_path / f"{name}.medh5")
+            out = tmp_path / f"{name}.medh5"
+            report = from_dicom(tmp_path / name, out)
             with medh5.open(out) as sample:
                 image = sample.images["CT_tp0"]
                 assert (image.value_type, image.value_units) == (value_type, units)
+            # The decision names the units the values are in, not HU.
+            (scale,) = report.of_kind("value_scale")
+            assert f"({units or 'no units'})" in scale.message
+            assert "HU" not in scale.message
 
     @pytest.mark.parametrize(
         ("modality", "stated", "expected"),

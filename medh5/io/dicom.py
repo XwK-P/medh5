@@ -19,7 +19,8 @@ otherwise puts every label at the wrong depth.
 
 **Values.**  ``RescaleSlope``/``RescaleIntercept`` are stored, not applied
 (§4.2), so ``read()`` returns what the file stored and ``read(physical=True)``
-returns HU.  A converter that bakes the rescale in makes the two indistinguishable
+returns the rescaled values --- HU, for a CT whose ``RescaleType`` names no
+other quantity.  A converter that bakes the rescale in makes the two indistinguishable
 afterwards.  The one exception is asked for: a series whose slices each state
 their own rescale (ordinary in PET) has no one modality LUT to store, and
 ``per_slice_rescale="apply"`` stores its physical values instead, saying so.
@@ -231,14 +232,34 @@ _ACQUISITIONS = frozenset(
         0x00209128,  # TemporalPositionIndex
         0x0020930D,  # TemporalPositionTimeOffset
         0x00209153,  # NominalCardiacTriggerDelayTime
+        0x00209154,  # NominalCardiacTriggerTimePriorToRPeak
+        0x00209241,  # NominalPercentageOfCardiacPhase
+        0x00189236,  # CardiacCyclePosition
+        0x00209255,  # NominalRespiratoryTriggerDelayTime
+        0x00189214,  # RespiratoryCyclePosition
         0x00189082,  # EffectiveEchoTime
         0x00189087,  # DiffusionBValue
         0x00189089,  # DiffusionGradientOrientation
     }
 )
 """Dimensions each of whose values is one acquisition of the planes --- a
-time point, a cardiac phase, an echo, a diffusion weighting --- so they
-tell stacks apart however many planes a value holds (C.7.6.16.2.2)."""
+time point, a cardiac or respiratory phase, an echo, a diffusion weighting
+--- so they tell stacks apart however many planes a value holds
+(C.7.6.16.2.2)."""
+
+
+_ACQUISITION_GROUPS = frozenset(
+    {
+        0x00209310,  # TemporalPositionSequence
+        0x00189118,  # CardiacSynchronizationSequence
+        0x00209253,  # RespiratorySynchronizationSequence
+        0x00189114,  # MREchoSequence
+        0x00189117,  # MRDiffusionSequence
+    }
+)
+"""Functional groups whose every attribute times or weights one acquisition:
+a dimension pointing into one is an acquisition whatever attribute it names,
+so a timing attribute :data:`_ACQUISITIONS` does not list still splits."""
 
 
 _POSITIONAL = frozenset({0x00209057, 0x00200032})
@@ -396,17 +417,18 @@ def _object_series(parts: Sequence[tuple[str, Any]]) -> list[Series]:
     """
     parts = sorted(parts, key=lambda part: _number(part[1], "InConcatenationNumber"))
     header = parts[0][1]
-    pointers = [
-        int(getattr(item, "DimensionIndexPointer", 0) or 0)
-        for item in getattr(header, "DimensionIndexSequence", [])
-    ]
+    items = list(getattr(header, "DimensionIndexSequence", []))
+    pointers = [int(getattr(item, "DimensionIndexPointer", 0) or 0) for item in items]
+    groups = [int(getattr(item, "FunctionalGroupPointer", 0) or 0) for item in items]
     dimensions = [
         index
         for index, pointer in enumerate(pointers)
         if pointer not in (_POSITIONAL | {_STACK_ID})
     ]
     acquisitions = {
-        d for d, index in enumerate(dimensions) if pointers[index] in _ACQUISITIONS
+        d
+        for d, index in enumerate(dimensions)
+        if pointers[index] in _ACQUISITIONS or groups[index] in _ACQUISITION_GROUPS
     }
     found: list[tuple[str, int, tuple[Any, ...], tuple[float, ...] | None]] = []
     for path, part in parts:
@@ -1713,11 +1735,22 @@ def _write_subject(
                 )
             if not written:
                 raise _NothingWritten
+            # What the rescale gives is each image's value_units: HU for a
+            # CT unless its RescaleType names another quantity.
+            units = sorted(
+                {
+                    _values(e.modality, p.geometry["rescale_type"])["value_units"]
+                    or "no units"
+                    for o in planned
+                    for e, p in o
+                }
+            )
             log.decision(
                 "value_scale",
                 "RescaleSlope/Intercept were stored, not applied; "
-                "read(physical=True) returns HU and read() returns stored values "
-                "(§4.2)"
+                "read(physical=True) returns the rescaled values, in each image's "
+                f"value_units ({', '.join(units)}), and read() returns stored "
+                "values (§4.2)"
                 + (
                     f"; except in series {', '.join(applied)}, whose per-slice "
                     "rescale was applied (per_slice_rescale)"
