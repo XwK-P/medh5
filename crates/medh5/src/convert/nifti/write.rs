@@ -173,17 +173,28 @@ pub fn nifti_target(path: &Path) -> Result<PathBuf> {
     if path.is_dir() {
         return Err(Error::invalid(format!(
             "{} is a directory; name the .nii or .nii.gz file to write",
-            py_path(path)
+            pathlib_str(path)
         )));
     }
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     if !NIFTI_SUFFIXES.iter().any(|s| name.ends_with(s)) {
         return Err(Error::invalid(format!(
             "{} is not a NIfTI file name: an export writes one ending in .nii or .nii.gz",
-            py_path(path)
+            pathlib_str(path)
         )));
     }
     Ok(path.to_path_buf())
+}
+
+/// `str(pathlib.Path(path))`, as 2.1.0 named a target: on Windows, with
+/// its own separator.
+fn pathlib_str(path: &Path) -> String {
+    let shown = py_path(path);
+    if cfg!(windows) {
+        shown.replace('/', "\\")
+    } else {
+        shown
+    }
 }
 
 /// The file beside a NIfTI file sharing its stem and ending in `suffix`,
@@ -536,7 +547,7 @@ fn volume_statements(sidecar: &Path, needed: bool) -> Result<Option<Map<String, 
         Some(map) => Ok(Some(map)),
         None if needed => Err(Error::invalid(format!(
             "{} is not a JSON object, and this export writes its per-volume fields there; move it aside first",
-            py_path(sidecar)
+            pathlib_str(sidecar)
         ))),
         None => Ok(None),
     }
@@ -760,7 +771,7 @@ pub fn write_nifti(
                     "the frames are unevenly spaced, which one NIfTI temporal step cannot state; their times were \
                      written to {name} as VolumeTiming"
                 ),
-                json!({"sidecar": py_path(&sidecar), "frames": frames}),
+                json!({"sidecar": pathlib_str(&sidecar), "frames": frames}),
             );
         }
     }
