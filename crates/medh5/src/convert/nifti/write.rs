@@ -366,7 +366,7 @@ fn numpy_str(m: &[[f64; 4]; 4]) -> String {
     let exp_size = parts.iter().map(|p| p.2.unsigned_abs().to_string().len().max(2)).max().unwrap_or(0);
     let pad_right = if scientific { exp_size + 2 + precision } else { precision };
     if finite.len() != values.len() {
-        let neginf = values.iter().any(|v| *v == f64::NEG_INFINITY) as usize;
+        let neginf = values.contains(&f64::NEG_INFINITY) as usize;
         pad_left = pad_left.max((3 + neginf).saturating_sub(pad_right + 1));
     }
     let cell = |v: f64| -> String {
