@@ -70,7 +70,12 @@ jobs:
           llvm=$(rustc +"$FUZZ_TOOLCHAIN" -vV | sed -n 's/^LLVM version: \([0-9]*\)\..*/\1/p')
           release=$(lsb_release -cs)
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o llvm.asc
-          gpg --show-keys --with-colons llvm.asc | grep -q "^fpr:::::::::$LLVM_KEY:$"
+          # The file must hold that key and no other: apt would trust every
+          # primary key in it.  A primary's fingerprint is the first after
+          # its `pub` line; the rest are its subkeys'.
+          primaries=$(gpg --show-keys --with-colons llvm.asc \
+            | awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print $10; p = 0 }')
+          test "$primaries" = "$LLVM_KEY"
           sudo install -D -m 644 llvm.asc /etc/apt/keyrings/llvm.asc
           echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] https://apt.llvm.org/$release/ llvm-toolchain-$release-$llvm main" \
             | sudo tee /etc/apt/sources.list.d/llvm.list

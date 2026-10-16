@@ -905,6 +905,8 @@ class TestRepositoryGates:
         assert f"CFLAGS: {cflags}" in job
         assert "ASAN_OPTIONS: detect_leaks=0" in job
         assert 'llvm=$(rustc +"$FUZZ_TOOLCHAIN" -vV' in job
+        # Only the pinned key is trusted, not whatever else the file holds.
+        assert 'test "$primaries" = "$LLVM_KEY"' in job
         assert '"clang-$llvm" "libclang-rt-$llvm-dev"' in job
         assert 'echo "CC=clang-$llvm" >> "$GITHUB_ENV"' in job
         workflows = (ROOT / ".github/workflows").glob("*.yml")
