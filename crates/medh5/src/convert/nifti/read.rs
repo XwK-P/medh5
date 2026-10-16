@@ -480,8 +480,22 @@ impl Image {
         let element = self.element();
         let big_endian = self.header.big_endian;
         let empty = |shape: Vec<usize>| Voxels { element, big_endian, shape, bytes: Vec::new() };
+        let compressed = is_gzip(&self.image_name);
         if self.shape.is_empty() {
-            return Ok(empty(vec![0]));
+            // A shape of no dimensions is numpy's scalar: one element.  Where
+            // numpy maps it (an uncompressed file holding the element), it is
+            // read, and 2.1.0's `ascontiguousarray` made it `(1,)`; elsewhere
+            // nibabel read nothing, and an empty read is `(0,)`.
+            let mut file = File::open(&self.image_path).map_err(|e| open_error(&e, &self.image_name))?;
+            let item = element.itemsize() as u64;
+            let length = file.metadata().map(|m| m.len()).unwrap_or(0);
+            if compressed || length < self.offset.saturating_add(item) {
+                return Ok(empty(vec![0]));
+            }
+            file.seek(SeekFrom::Start(self.offset))?;
+            let mut bytes = vec![0; element.itemsize()];
+            file.read_exact(&mut bytes)?;
+            return Ok(Voxels { element, big_endian, shape: vec![1], bytes });
         }
         // NIfTI-2's seven 64-bit dimensions can name more bytes than even
         // an i128 counts: that array is one no machine holds.
@@ -498,7 +512,6 @@ impl Image {
         if n_bytes > isize::MAX as i128 {
             return Err(too_big());
         }
-        let compressed = is_gzip(&self.image_name);
         let file = File::open(&self.image_path).map_err(|e| open_error(&e, &self.image_name))?;
         if n_bytes == 0 {
             // A file mapped from a non-zero offset keeps its declared shape,
@@ -713,6 +726,29 @@ mod tests {
         let path = dir.path().join("empty.nii");
         std::fs::write(&path, single(&h, &[])).unwrap();
         assert_eq!(nifti(&path).read_voxels().unwrap().shape, vec![1 << 40, 4, 0]);
+    }
+
+    #[test]
+    fn s02_2_a_shape_of_no_dimensions_is_one_element_where_numpy_maps_it() {
+        // dim[0] = -1 slices no dimensions: numpy's scalar.  Mapped, from a
+        // .nii holding it, its one element is read, as (1,); compressed, or
+        // from a file too short to map, nibabel read none, as (0,).
+        let dir = tempfile::tempdir().unwrap();
+        // Big-endian: dim[0] = -1 is no little-endian header's, so the byte
+        // order is guessed as big.
+        let mut h = header(Version::One, &[4, 3, 2]);
+        h.dim[0] = -1;
+        h.big_endian = true;
+        let data = voxels(2);
+        let path = dir.path().join("scalar.nii");
+        std::fs::write(&path, single(&h, &data)).unwrap();
+        let read = nifti(&path).read_voxels().unwrap();
+        assert_eq!((read.shape, read.bytes), (vec![1], data[..2].to_vec()));
+        std::fs::write(&path, single(&h, &data[..1])).unwrap();
+        assert_eq!(nifti(&path).read_voxels().unwrap().shape, vec![0]);
+        let gz = dir.path().join("scalar.nii.gz");
+        std::fs::write(&gz, gzip(&single(&h, &data))).unwrap();
+        assert_eq!(nifti(&gz).read_voxels().unwrap().shape, vec![0]);
     }
 
     #[test]
