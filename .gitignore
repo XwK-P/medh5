@@ -23,6 +23,8 @@ cohort.json
 results.json
 *.medh5
 *.medh5c
+# The samples the NIfTI parity corpus exports from: inputs, not products.
+!tests/data/nifti-parity/inputs/samples/*.medh5
 
 # Scratch files and results the benchmark scripts write beside themselves.
 docs/examples/*.h5

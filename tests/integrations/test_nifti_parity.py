@@ -73,6 +73,24 @@ def _slashes(value: Any) -> Any:
     return value
 
 
+def _respelled(value: Any, out: Path) -> Any:
+    """*value* with the corpus and the case's directory named as tokens however
+    a message spells them.  ``record.py`` replaces each as ``str()`` spells it;
+    on Windows a message may spell one in a ``repr`` (each separator doubled)
+    or with ``/``, as a reader of paths does.  Elsewhere this changes nothing.
+    """
+    if isinstance(value, dict):
+        return {k: _respelled(v, out) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_respelled(v, out) for v in value]
+    if isinstance(value, str):
+        for base, token in ((out, "{out}"), (CORPUS, "{corpus}")):
+            for spelling in (str(base).replace("\\", "\\\\"), base.as_posix()):
+                value = value.replace(spelling, token)
+        return value
+    return value
+
+
 def masked(record: dict[str, Any]) -> dict[str, Any]:
     """*record* without what parity does not compare (E3).
 
@@ -169,7 +187,7 @@ def test_E3_the_converter_matches_2_1_0(case_id: str, harness: ModuleType) -> No
     with tempfile.TemporaryDirectory() as scratch:
         out = Path(scratch).resolve() / "out"
         out.mkdir()
-        fresh = harness.outcome(CASES[case_id], out)
+        fresh = _respelled(harness.outcome(CASES[case_id], out), out)
     expected, got = masked(_record(case_id)), masked(fresh)
     for key in ALLOWED.get(case_id, ((), ""))[0]:  # pragma: no cover - none yet
         expected.pop(key, None)
