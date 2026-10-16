@@ -712,6 +712,24 @@ def _check_concatenation(series: Series, headers: Sequence[Any]) -> None:
             "across them, and the missing ones' are not here to place; import "
             "the complete concatenation"
         )
+    # Each part's ConcatenationFrameOffsetNumber is where its first frame sits
+    # in the object, so the parts' frames must follow on with none between.
+    # Checked where every part states it (it is required, but not always set).
+    ordered = sorted(headers, key=lambda h: _number(h, "InConcatenationNumber"))
+    if all(
+        getattr(h, "ConcatenationFrameOffsetNumber", None) is not None for h in ordered
+    ):
+        offsets = [_number(h, "ConcatenationFrameOffsetNumber") for h in ordered]
+        expected = [0]
+        for header in ordered[:-1]:
+            expected.append(expected[-1] + _frames(header))
+        if offsets != expected:
+            raise MEDH5ValidationError(
+                f"series {series.series_uid}: concatenation {uid} states its "
+                f"parts' frame offsets as {offsets}, but their frames put them "
+                f"at {expected}: frames between the parts are missing, or the "
+                "offsets are wrong, and either way the frames cannot be placed"
+            )
 
 
 def _check_stack_order(slices: Sequence[Any], series: Series) -> None:

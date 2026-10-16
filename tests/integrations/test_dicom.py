@@ -1498,6 +1498,21 @@ class TestEnhancedMultiFrame:
         with pytest.raises(MEDH5ValidationError, match=match):
             from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
 
+    def test_a_concatenation_whose_offsets_skip_a_frame_is_refused(self, tmp_path):
+        """``ConcatenationFrameOffsetNumber`` places each part's first frame in
+        the object: the second part of a 4 + 2 split starts at 4, and one
+        starting at 5 says a frame between them is missing."""
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        _, second = _concatenation(enhanced, tmp_path / "enhanced", split=4)
+        part = pydicom.dcmread(second)
+        part.ConcatenationFrameOffsetNumber = 5
+        part.save_as(second)
+        with pytest.raises(MEDH5ValidationError, match="frame offset"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
     def test_an_enhanced_ultrasound_volume_is_still_skipped(self, tmp_path):
         from pydicom.uid import EnhancedUSVolumeStorage
 
