@@ -4,13 +4,15 @@
 
 ``SHA256SUMS`` is the release's checksum file, ``<sha256>  <archive>`` per
 line, as the release workflow writes it.  The formula installs the prebuilt
-binary on macOS and Linux, arm64 and x86_64; the release pushes it to the tap.
+binary on macOS (Apple silicon) and Linux (arm64 and x86_64); the release
+pushes it to the tap.
 Nothing here touches the network.
 """
 
 from __future__ import annotations
 
 import sys
+import textwrap
 from pathlib import Path
 
 # What the binary is licensed under: the package's own MIT, and the licences of
@@ -19,9 +21,13 @@ from pathlib import Path
 LICENSES = ("MIT", "BSD-3-Clause", "BSD-2-Clause", "Zlib", "Apache-2.0", "MIT-0")
 
 # Homebrew's (OS, architecture) blocks and the Rust target built for each.
+# macOS on Intel is not among them (2.2.0 dropped it): there the formula
+# refuses to install, rather than offering a download that does not exist.  An
+# OS with one architecture states its download outside any `on_<arch>` block,
+# beside `depends_on arch:`: Homebrew reads a formula's URL before it checks its
+# dependencies, so a formula with no URL for the machine cannot even be read.
 TARGETS = {
     ("macos", "arm"): "aarch64-apple-darwin",
-    ("macos", "intel"): "x86_64-apple-darwin",
     ("linux", "arm"): "aarch64-unknown-linux-gnu",
     ("linux", "intel"): "x86_64-unknown-linux-gnu",
 }
@@ -48,16 +54,20 @@ def formula(version: str, sums: dict[str, str], repository: str) -> str:
     blocks = []
     for os_name in ("macos", "linux"):
         arches = []
-        for arch in ("arm", "intel"):
+        shipped = [arch for arch in ("arm", "intel") if (os_name, arch) in TARGETS]
+        for arch in shipped:
             name = archive(version, TARGETS[(os_name, arch)])
             if name not in sums:
                 raise SystemExit(f"SHA256SUMS lists no {name}")
-            arches.append(
-                f"    on_{arch} do\n"
-                f'      url "{base}/{name}"\n'
-                f'      sha256 "{sums[name]}"\n'
-                f"    end"
-            )
+            download = f'url "{base}/{name}"\nsha256 "{sums[name]}"'
+            if len(shipped) == 1:
+                cpu = {"arm": "arm64", "intel": "x86_64"}[arch]
+                arches.append(f"    depends_on arch: :{cpu}")
+                arches.append(textwrap.indent(download, "    "))
+            else:
+                arches.append(
+                    f"    on_{arch} do\n{textwrap.indent(download, '      ')}\n    end"
+                )
         blocks.append(f"  on_{os_name} do\n" + "\n".join(arches) + "\n  end")
     sections = "\n\n".join(blocks)
     licenses = ", ".join(f'"{name}"' for name in LICENSES)
