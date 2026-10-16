@@ -762,36 +762,42 @@ def _check_stack_order(slices: Sequence[Any], series: Series) -> None:
     """Refuse a stack whose ``InStackPositionNumber`` its positions contradict,
     or that skips a number.
 
-    *slices* are in geometric order.  The number orders a frame within its
-    stack (C.7.6.16.2.2.4), so it runs one way along the slice normal; one
-    that does not is a broken object, and re-sorting it by either would be a
-    guess about which one is wrong.
+    *slices* are in geometric order.  The number is an ordinal from 1 that
+    orders a frame within its stack (C.7.6.16.2.2.4), so along the slice
+    normal it runs 1 to N one way or the other: the frame *i* places must
+    be numbered ``i + 1``, or ``N - i``.  One that is not is a broken object
+    --- a plane missing, or a numbering its geometry contradicts --- and
+    re-sorting it by either would be a guess.  Frames that state no number
+    are left out, and the numbers the others state are still held to that.
     """
     stated = [getattr(s, "InStackPositionNumber", None) for s in slices]
-    if None in stated:
+    known = [(i, int(n)) for i, n in enumerate(stated) if n is not None]
+    count = len(slices)
+    if all(n == i + 1 for i, n in known) or all(n == count - i for i, n in known):
         return
-    numbers = [int(n) for n in stated if n is not None]
-    # An ordinal from 1 (C.7.6.16.2.2.4): a gap is a missing plane, though
-    # the positions left are regular.
-    missing = sorted(set(range(1, len(numbers) + 1)) - set(numbers))
-    if missing and len(set(numbers)) == len(numbers):
+    numbers = [n for _, n in known]
+    missing = sorted(set(range(1, count + 1)) - set(numbers))
+    if len(known) == count and len(set(numbers)) == count:
         raise MEDH5ValidationError(
             f"series {series.series_uid}: its frames' InStackPositionNumber are "
             f"{sorted(numbers)}, which count a stack from 1 without a gap, so "
             f"the frame(s) numbered {missing} are missing; a stack with a plane "
             "missing is not a volume"
         )
-    if len(numbers) < 2:
-        return
-    steps = np.diff(np.asarray(numbers, dtype=np.int64))
-    if np.all(steps > 0) or np.all(steps < 0):
-        return
+    beyond = sorted({n for n in numbers if not 1 <= n <= count})
+    if beyond:
+        raise MEDH5ValidationError(
+            f"series {series.series_uid}: its frames' InStackPositionNumber "
+            f"include {beyond}, beyond the {count} frames of its stack, which "
+            "the number counts from 1; frames of the stack are missing, and a "
+            "stack with a plane missing is not a volume"
+        )
     raise MEDH5ValidationError(
         f"series {series.series_uid}: in the order their positions put them "
         f"along the slice normal, its frames' InStackPositionNumber run "
-        f"{numbers}, not one way. A stack whose numbering its geometry "
-        "contradicts is a broken object, and re-sorting it by either would be "
-        "a guess"
+        f"{[None if n is None else int(n) for n in stated]}, not one way. A "
+        "stack whose numbering its geometry contradicts is a broken object, and "
+        "re-sorting it by either would be a guess"
     )
 
 

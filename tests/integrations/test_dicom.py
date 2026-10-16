@@ -1344,6 +1344,37 @@ class TestEnhancedMultiFrame:
         with pytest.raises(MEDH5ValidationError, match=r"InStackPositionNumber.*\[6\]"):
             from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
 
+    @pytest.mark.parametrize(
+        ("numbers", "refused"),
+        [
+            ([1, None, 3, 4, 5, 6], None),
+            ([1, None, 3, 4, 5, 7], "beyond"),
+            ([1, None, 4, 3, 5, 6], "not one way"),
+        ],
+    )
+    def test_a_stack_numbered_in_part_is_held_to_the_numbers_it_states(
+        self, tmp_path, numbers, refused
+    ):
+        """Frames in geometric order, some unnumbered: the numbers stated must
+        still be where an ordinal from 1 puts them."""
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        for index, number in enumerate(numbers):
+            content = _frame(enhanced, index).FrameContentSequence[0]
+            if number is None:
+                if "InStackPositionNumber" in content:
+                    del content.InStackPositionNumber
+            else:
+                content.InStackPositionNumber = number
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        if refused is None:
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+            return
+        with pytest.raises(MEDH5ValidationError, match=refused):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
     def test_a_frame_with_no_position_is_refused_with_the_reason(self, tmp_path):
         from medh5.io.dicom import from_dicom
 
