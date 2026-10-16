@@ -580,17 +580,19 @@ fn vlen_text_bytes(ds: &hdf5::Dataset, rows: Option<(usize, usize)>) -> Result<u
 /// opened for reading through the default driver.  A file this process is
 /// writing may hold its newest bytes in HDF5's cache, and is not checked;
 /// nor are chunked or compact datasets, whose elements HDF5 alone reads.
+/// They are read through HDF5's own descriptor, not by name: the name may
+/// since have been given to another file (`amend` replaces a file under its
+/// open handles), or to none, while HDF5 reads on from the file it opened.
 fn check_stored_lengths(ds: &hdf5::Dataset, n: usize) -> Result<()> {
-    use std::io::{Read, Seek, SeekFrom};
-
     use crate::h5sys::{h5d, h5f, h5p};
 
     // Elements read per pass: 64 KiB of them, at most.
     const SLAB: usize = 4096;
     let Ok(file) = ds.file() else { return Ok(()) };
-    if n == 0 || super::file::descriptor(&file).is_none() {
+    if n == 0 {
         return Ok(());
     }
+    let Some(stored) = super::file::descriptor(&file).and_then(Opened::borrow) else { return Ok(()) };
     let placed = super::locked(|| unsafe {
         let mut intent = 0u32;
         if h5f::H5Fget_intent(file.id(), &mut intent) < 0 || intent & h5f::H5F_ACC_RDWR != 0 {
@@ -611,12 +613,8 @@ fn check_stored_lengths(ds: &hdf5::Dataset, n: usize) -> Result<()> {
         // collection's address and the object's index.
         (sized >= 0).then_some((offset, 4 + address + 4))
     });
-    let Some((offset, element)) = placed else { return Ok(()) };
-    let Ok(mut stored) = std::fs::File::open(file.filename()) else { return Ok(()) };
-    let Ok(file_bytes) = stored.metadata().map(|m| m.len()) else { return Ok(()) };
-    if stored.seek(SeekFrom::Start(offset)).is_err() {
-        return Ok(());
-    }
+    let Some((mut offset, element)) = placed else { return Ok(()) };
+    let Ok(file_bytes) = stored.0.metadata().map(|m| m.len()) else { return Ok(()) };
     let mut slab = vec![0u8; SLAB.min(n) * element];
     let mut left = n;
     while left > 0 {
@@ -624,9 +622,10 @@ fn check_stored_lengths(ds: &hdf5::Dataset, n: usize) -> Result<()> {
         let bytes = &mut slab[..count * element];
         // Storage the file stops short of is HDF5's to answer for, as it
         // answers for the rest of a damaged dataset.
-        if stored.read_exact(bytes).is_err() {
+        if stored.read_at(bytes, offset).is_err() {
             return Ok(());
         }
+        offset += bytes.len() as u64;
         for stated in bytes.chunks_exact(element) {
             let length = u64::from(u32::from_le_bytes([stated[0], stated[1], stated[2], stated[3]]));
             if length > file_bytes {
@@ -639,6 +638,62 @@ fn check_stored_lengths(ds: &hdf5::Dataset, n: usize) -> Result<()> {
         left -= count;
     }
     Ok(())
+}
+
+/// The file HDF5 opened, borrowed through its descriptor for reads that leave
+/// HDF5's position in it as it was.  HDF5 owns the descriptor and closes it.
+struct Opened(std::mem::ManuallyDrop<std::fs::File>);
+
+impl Opened {
+    #[cfg(unix)]
+    fn borrow(fd: std::os::raw::c_int) -> Option<Self> {
+        use std::os::unix::io::FromRawFd;
+        // SAFETY: `fd` is HDF5's open descriptor, which outlives the borrow
+        // (the dataset holds its file open), and is never closed here.
+        Some(Self(std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) })))
+    }
+
+    #[cfg(windows)]
+    fn borrow(fd: std::os::raw::c_int) -> Option<Self> {
+        use std::os::windows::io::FromRawHandle;
+        let handle = super::file::os_handle(fd)?;
+        // SAFETY: as on Unix; the handle is the one behind HDF5's descriptor.
+        Some(Self(std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_handle(handle) })))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn borrow(_fd: std::os::raw::c_int) -> Option<Self> {
+        None
+    }
+
+    /// Fill `bytes` from `offset`.  A positioned read leaves the descriptor's
+    /// offset alone.
+    #[cfg(unix)]
+    fn read_at(&self, bytes: &mut [u8], offset: u64) -> std::io::Result<()> {
+        use std::os::unix::fs::FileExt;
+        self.0.read_exact_at(bytes, offset)
+    }
+
+    /// Fill `bytes` from `offset`.  Windows has no read that leaves the file
+    /// pointer where it was, and HDF5's `sec2` there skips its seek when it
+    /// believes the pointer is where it left it; so, under HDF5's lock, the
+    /// pointer is put back.
+    #[cfg(windows)]
+    fn read_at(&self, bytes: &mut [u8], offset: u64) -> std::io::Result<()> {
+        use std::io::{Read, Seek, SeekFrom};
+        super::locked(|| {
+            let mut file: &std::fs::File = &self.0;
+            let was = file.stream_position()?;
+            let read = file.seek(SeekFrom::Start(offset)).and_then(|_| file.read_exact(bytes));
+            file.seek(SeekFrom::Start(was))?;
+            read
+        })
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn read_at(&self, _bytes: &mut [u8], _offset: u64) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
 }
 
 /// The memory reading `n` strings costs once decoded: one `String` each and
@@ -1410,7 +1465,8 @@ mod tests {
 
     /// A string's stored element states its length, which no string the
     /// file stores exceeds the file's size by: a longer one is refused before
-    /// HDF5 reads, in a whole read and a slab at a time.
+    /// HDF5 reads, in a whole read and a slab at a time, from the file HDF5
+    /// opened whatever its name now names.
     #[test]
     fn s14_5_a_string_stated_longer_than_its_file_is_refused_unread() {
         let dir = tempfile::tempdir().unwrap();
@@ -1427,13 +1483,23 @@ mod tests {
         };
         // The length of the scalar's string, and of the vector's last.
         let stated = 0xFFFF_FF00u32.to_le_bytes();
-        let mut bytes = std::fs::read(&path).unwrap();
+        let written = std::fs::read(&path).unwrap();
+        let mut bytes = written.clone();
         for at in [offsets.0 as usize, offsets.1 as usize + 2 * 16] {
             bytes[at..at + 4].copy_from_slice(&stated);
         }
         std::fs::write(&path, &bytes).unwrap();
 
         let file = crate::h5::file::open_read(&path).unwrap();
+        // The name is given to the file as written while the crafted one is
+        // open, as `amend` replaces a file: HDF5 reads on from the file it
+        // opened, and so does the check.
+        #[cfg(unix)]
+        {
+            let sound = dir.path().join("sound.h5");
+            std::fs::write(&sound, &written).unwrap();
+            std::fs::rename(&sound, &path).unwrap();
+        }
         let refused = |err: Error| assert!(err.to_string().contains("states a string of 4294967040 bytes"), "{err}");
         refused(read_stored_strings(&file.dataset("one").unwrap()).unwrap_err());
         let rows = file.dataset("rows").unwrap();
