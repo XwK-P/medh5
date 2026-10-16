@@ -1,4 +1,5 @@
-"""ITK transform files: affines, their composites, and displacement fields.
+"""ITK transform files: affines, B-splines, their composites, and
+displacement fields.
 
 ITK's convention is MEDH5's (§10.2): a transform from a *fixed* image to a
 *moving* one maps fixed points to moving points, ``x_M = T(x_F)``, so a
@@ -6,6 +7,9 @@ registration's output is stored as it is, from the fixed grid's frame to the
 moving grid's.  What differs is the world each is written in: ITK's points
 are LPS millimetres, a grid's are its own coordinate system and units.  The
 matrix is re-expressed on both sides (``H_M⁻¹ · T · H_F``), never resampled.
+A ``BSplineTransform`` is stored as 1.0 §10.5's ``bspline``: ITK's lattice
+becomes a grid and its coefficients the control points, re-expressed in the
+grid's world as the matrix is, and §10.5 evaluates them as ITK does.
 
 Two things an ITK file does not say are taken from the caller:
 
@@ -23,8 +27,8 @@ moving frame, and a ``composite`` between the two grids' frames, which earns
 ``reg`` (1.0 §1.3) and is the one shortest route between them.
 
 Parsed with the standard library (``.tfm``/``.txt``, and ANTs' MATLAB v4
-``.mat`` with :mod:`struct`); fields need nibabel (the ``nifti`` extra).
-ITK's HDF5 transform files and B-splines are not read before medh5 2.2.
+``.mat`` with :mod:`struct`), and ITK's HDF5 transform files (``.h5``)
+through the engine's HDF5; fields need nibabel (the ``nifti`` extra).
 """
 
 from __future__ import annotations
@@ -50,7 +54,7 @@ Vectors = Literal["lps", "ras"]
 
 _NAME = re.compile(
     r"^(?P<kind>[A-Za-z][A-Za-z0-9]*)_(?P<precision>double|float)_"
-    r"(?P<input>\d+)_(?P<output>\d+)$"
+    r"(?P<input>\d+)_(?P<output>\d+)(?:_(?P<order>\d+))?$"
 )
 
 _LINEAR = (
@@ -67,9 +71,18 @@ _LINEAR = (
 )
 """The ITK transform types this module reads: every one a matrix."""
 
+_BSPLINE = "BSplineTransform"
+"""ITK's B-spline type (ITKv4), read as 1.0 §10.5's ``bspline``: its
+coefficients and lattice are the kind's ``control_points`` and ``cp_grid``,
+and the kind evaluates them as ITK does."""
+
+_BSPLINE_ORDERS = (1, 3)
+"""The B-spline orders 1.0 §10.5's reference evaluation implements, and so
+the ones an ITK B-spline is imported at; ITK's default is 3."""
+
 _LATER = ("BSpline", "DisplacementField", "GaussianSmoothingOnUpdate", "TimeVarying")
-"""Prefixes of ITK's non-linear types: none is stored in a text or `.mat` file
-this module reads, and B-splines wait for medh5 2.2."""
+"""Prefixes of ITK's other non-linear types, none stored in a transform file
+this module reads: a displacement field is read from its NIfTI file."""
 
 _FIXED_DIMENSION = {
     "Euler3DTransform": 3,
@@ -81,23 +94,67 @@ _FIXED_DIMENSION = {
 
 _MAGIC = "#Insight Transform File V1.0"
 
+_HDF5 = (".h5", ".hdf5", ".hdf")
+"""The suffixes of ITK's HDF5 transform files, as ITK reads them."""
+
 _INTENT_DISPVECT = 1006
 """NIfTI's intent for a displacement vector field."""
 
 
 @dataclass(frozen=True, eq=False)
-class ItkTransform:
-    """One ITK transform as a homogeneous matrix in LPS millimetres, mapping
-    fixed points to moving ones (``x_moving = T(x_fixed)``).
+class ItkBSpline:
+    """An ITK ``BSplineTransform`` in LPS millimetres: ``x_moving = x + u(x)``,
+    *u* the B-spline of *order* with *coefficients* on a lattice of *size*
+    control points per ITK axis (x first), at *origin*, *spacing* apart, its
+    axes the columns of *direction* --- ITK's fixed parameters.
 
-    *name* is ITK's type name (``AffineTransform_double_3_3``).  A composite
-    has *components*, in the order the file lists them --- the last is applied
-    first --- and *matrix* is their product, the whole mapping.
+    *coefficients* is ``(S, *reversed(size))``: one block per LPS component,
+    each in ITK's order, x fastest.
+    """
+
+    order: int
+    size: tuple[int, ...]
+    origin: npt.NDArray[np.float64]
+    spacing: npt.NDArray[np.float64]
+    direction: npt.NDArray[np.float64]
+    coefficients: npt.NDArray[np.float64]
+
+    @property
+    def name(self) -> str:
+        n = len(self.size)
+        suffix = "" if self.order == 3 else f"_{self.order}"
+        return f"{_BSPLINE}_double_{n}_{n}{suffix}"
+
+    @property
+    def parameters(self) -> list[float]:
+        return [float(v) for v in self.coefficients.ravel()]
+
+    @property
+    def fixed_parameters(self) -> list[float]:
+        return [
+            *(float(v) for v in self.size),
+            *(float(v) for v in self.origin),
+            *(float(v) for v in self.spacing),
+            *(float(v) for v in self.direction.ravel()),
+        ]
+
+
+@dataclass(frozen=True, eq=False)
+class ItkTransform:
+    """One ITK transform in LPS millimetres, mapping fixed points to moving
+    ones (``x_moving = T(x_fixed)``): a homogeneous matrix, or a B-spline.
+
+    *name* is ITK's type name (``AffineTransform_double_3_3``).  A B-spline
+    has *bspline*, and its *matrix* is the identity.  A composite has
+    *components*, in the order the file lists them --- the last is applied
+    first --- and *matrix* is the product of their matrices: the whole
+    mapping when the composite :attr:`is_linear`.
     """
 
     name: str
     matrix: npt.NDArray[np.float64]
     components: tuple[ItkTransform, ...] = ()
+    bspline: ItkBSpline | None = None
 
     @property
     def dimension(self) -> int:
@@ -107,25 +164,42 @@ class ItkTransform:
     def is_composite(self) -> bool:
         return bool(self.components)
 
+    @property
+    def is_linear(self) -> bool:
+        """Whether *matrix* is the whole mapping: no B-spline in it."""
+        return self.bspline is None and all(c.is_linear for c in self.components)
+
 
 # -- reading ---------------------------------------------------------------------
 
 
 def read_itk_transform(path: str | os.PathLike[str]) -> ItkTransform:
-    """Read an ITK transform file: text (``.tfm``, ``.txt``) or ANTs' MATLAB
-    v4 ``.mat``, holding one of the linear types or a composite of them.
+    """Read an ITK transform file: text (``.tfm``, ``.txt``), ITK's HDF5
+    (``.h5``, ``.hdf5``, ``.hdf``) or ANTs' MATLAB v4 ``.mat``, holding one
+    of the linear types, a B-spline, or a composite of them.
 
-    Refused: ITK's HDF5 files, B-splines and other non-linear types (medh5
-    2.2), a transform whose input and output dimensions differ, dimensions
-    other than 2 and 3, and parameter counts the type does not have.
+    An HDF5 file is read as ITK writes it --- ``/TransformGroup/<n>/`` with
+    ``TransformType``, ``TransformParameters`` and
+    ``TransformFixedParameters``, a composite at 0 and its components after
+    it --- and refused as its text equivalent would be.
+
+    A ``BSplineTransform`` of order 1 or 3 is read as its lattice and
+    coefficients (:class:`ItkBSpline`), alone or in a composite.
+
+    Refused: B-splines of other orders, ITKv3's ``BSplineDeformableTransform``
+    and other non-linear types, a transform whose input and output
+    dimensions differ, dimensions other than 2 and 3, and parameter counts
+    the type does not have.  ITK's HDF5 files and B-splines were refused
+    before 2.2.
     """
     source = Path(path)
     where = os.fspath(path)
-    if source.suffix.lower() in (".h5", ".hdf5", ".hdf"):
-        raise MEDH5ValidationError(
-            f"{where}: ITK's HDF5 transform files are not read before medh5 "
-            "2.2; write the transform as .tfm or .mat"
-        )
+    if source.suffix.lower() in _HDF5:
+        listed = [
+            {"name": name, "Parameters": parameters, "FixedParameters": fixed}
+            for name, parameters, fixed in _core.read_itk_h5(source)
+        ]
+        return _from_entries(listed, where)
     data = source.read_bytes()
     if data.lstrip().startswith(b"#Insight Transform File"):
         return _read_text(data.decode("utf-8", errors="replace"), where)
@@ -165,6 +239,13 @@ def _read_text(text: str, where: str) -> ItkTransform:
                 ) from None
         else:
             raise MEDH5ValidationError(f"{where}, line {number}: unknown key {key!r}")
+    return _from_entries(entries, where)
+
+
+def _from_entries(entries: list[dict[str, Any]], where: str) -> ItkTransform:
+    """The transform a file's entries --- ``name``, ``Parameters`` and
+    ``FixedParameters`` each, in the file's order --- describe: one, or a
+    composite and its components."""
     if not entries:
         raise MEDH5ValidationError(f"{where} holds no transform")
     head = _parse_name(entries[0]["name"], where)
@@ -172,7 +253,7 @@ def _read_text(text: str, where: str) -> ItkTransform:
         if len(entries) == 1:
             raise MEDH5ValidationError(f"{where}: the composite has no components")
         parts = tuple(
-            _linear(e["name"], e["Parameters"], e["FixedParameters"], where)
+            _one(e["name"], e["Parameters"], e["FixedParameters"], where)
             for e in entries[1:]
         )
         return _composite(entries[0]["name"], parts, where)
@@ -182,7 +263,7 @@ def _read_text(text: str, where: str) -> ItkTransform:
             "CompositeTransform saying how they compose"
         )
     first = entries[0]
-    return _linear(first["name"], first["Parameters"], first["FixedParameters"], where)
+    return _one(first["name"], first["Parameters"], first["FixedParameters"], where)
 
 
 def _composite(name: str, parts: tuple[ItkTransform, ...], where: str) -> ItkTransform:
@@ -207,13 +288,19 @@ def _parse_name(name: str, where: str) -> tuple[str, int]:
     if found is None:
         raise MEDH5ValidationError(f"{where}: {name!r} is not an ITK transform type")
     kind = found["kind"]
-    if kind.startswith(_LATER):
+    if found["order"] is not None and kind != _BSPLINE:
+        raise MEDH5ValidationError(f"{where}: {name!r} is not an ITK transform type")
+    if kind == "BSplineDeformableTransform":
         raise MEDH5ValidationError(
-            f"{where}: {name} is not read before medh5 2.2 (B-splines and other "
-            "non-linear ITK transforms); a displacement field is read from its "
-            "NIfTI file with warp="
+            f"{where}: {name} is ITKv3's B-spline; resave it as ITKv4's "
+            f"{_BSPLINE}, whose lattice this reads"
         )
-    if kind not in (*_LINEAR, "CompositeTransform"):
+    if kind.startswith(_LATER) and kind != _BSPLINE:
+        raise MEDH5ValidationError(
+            f"{where}: {name} is a non-linear ITK transform this does not read; "
+            "a displacement field is read from its NIfTI file with warp="
+        )
+    if kind not in (*_LINEAR, _BSPLINE, "CompositeTransform"):
         raise MEDH5ValidationError(f"{where}: ITK type {name} is not one this reads")
     source, target = int(found["input"]), int(found["output"])
     if source != target:
@@ -231,12 +318,89 @@ def _parse_name(name: str, where: str) -> tuple[str, int]:
     return kind, source
 
 
+def _one(
+    name: str, parameters: Sequence[float], fixed: Sequence[float], where: str
+) -> ItkTransform:
+    """One transform of a file: a B-spline, or one of the linear types."""
+    kind, n = _parse_name(name, where)
+    if kind == _BSPLINE:
+        return _bspline(name, n, parameters, fixed, where)
+    return _linear(name, parameters, fixed, where)
+
+
+def _bspline(
+    name: str, n: int, parameters: Sequence[float], fixed: Sequence[float], where: str
+) -> ItkTransform:
+    """An ITK ``BSplineTransform``: its fixed parameters are the lattice's
+    size, origin, spacing and direction, its parameters the coefficients."""
+    found = _NAME.match(name)
+    order = int(found["order"]) if found and found["order"] else 3
+    if order not in _BSPLINE_ORDERS:
+        raise MEDH5ValidationError(
+            f"{where}: {name} is a B-spline of order {order}, and a B-spline "
+            "transform is stored at an order 1.0 §10.5's evaluation implements "
+            f"({' or '.join(map(str, _BSPLINE_ORDERS))}); another would not map "
+            "points as ITK does"
+        )
+    f = np.array([float(v) for v in fixed])
+    expected = 3 * n + n * n
+    if f.size != expected:
+        raise MEDH5ValidationError(
+            f"{where}: {name} takes {expected} fixed parameters (the lattice's "
+            f"size, origin, spacing and direction); the file gives {f.size}"
+        )
+    if not np.all(np.isfinite(f)):
+        raise MEDH5ValidationError(f"{where}: {name}'s lattice is not finite")
+    counts = f[:n]
+    if np.any(counts != np.round(counts)) or np.any(counts < order + 1):
+        raise MEDH5ValidationError(
+            f"{where}: {name}'s lattice is {counts.tolist()} control points, and "
+            f"an order-{order} B-spline needs a whole number of at least "
+            f"{order + 1} per axis"
+        )
+    size = tuple(int(v) for v in counts)
+    spacing = f[2 * n : 3 * n]
+    direction = f[3 * n :].reshape(n, n)
+    if np.any(spacing <= 0) or not np.allclose(
+        direction.T @ direction, np.eye(n), atol=1e-6
+    ):
+        raise MEDH5ValidationError(
+            f"{where}: {name}'s lattice has spacing {spacing.tolist()} and "
+            "direction columns that are not orthonormal; a grid needs both"
+        )
+    p = np.array([float(v) for v in parameters])
+    count = n * int(np.prod(size))
+    if p.size != count:
+        raise MEDH5ValidationError(
+            f"{where}: {name} on a lattice of {list(size)} takes {count} "
+            f"parameters, {n} per control point; the file gives {p.size}"
+        )
+    if not np.all(np.isfinite(p)):
+        raise MEDH5ValidationError(
+            f"{where}: {name} holds coefficients that are not finite"
+        )
+    spline = ItkBSpline(
+        order=order,
+        size=size,
+        origin=f[n : 2 * n],
+        spacing=spacing,
+        direction=direction,
+        coefficients=p.reshape(n, *size[::-1]),
+    )
+    return ItkTransform(name, np.eye(n + 1), bspline=spline)
+
+
 def _linear(
     name: str, parameters: Sequence[float], fixed: Sequence[float], where: str
 ) -> ItkTransform:
     kind, n = _parse_name(name, where)
     if kind == "CompositeTransform":
         raise MEDH5ValidationError(f"{where}: a composite nested in a composite")
+    if kind == _BSPLINE:
+        raise MEDH5ValidationError(
+            f"{where}: {name} in a MATLAB file, where ANTs writes only a matrix; "
+            "read a B-spline from ITK's .tfm or .h5"
+        )
     p = [float(v) for v in parameters]
     f = [float(v) for v in fixed]
 
@@ -385,33 +549,43 @@ def _read_mat(data: bytes, where: str) -> ItkTransform:
 
 def write_itk_transform(path: str | os.PathLike[str], transform: ItkTransform) -> Path:
     """Write *transform* as ITK reads it, picking the format by suffix:
-    ``.tfm`` or ``.txt`` text, or ``.mat`` as ANTs writes it.
+    ``.tfm`` or ``.txt`` text, ITK's HDF5 (``.h5``, ``.hdf5``, ``.hdf``), or
+    ``.mat`` as ANTs writes it.
 
     Every matrix is written as ``AffineTransform_double_S_S`` with its centre
-    at the origin, which maps every point as the type it was read as did.  A
-    ``.mat`` holds one transform, so a composite is refused there.
+    at the origin, which maps every point as the type it was read as did, and
+    a B-spline as ``BSplineTransform`` (``_1`` appended at order 1).  A
+    ``.mat`` holds one matrix, so a composite and a B-spline are refused there.
     """
     target = Path(path)
-    if _transform_suffix(target) in (".tfm", ".txt"):
+    suffix = _transform_suffix(target)
+    if suffix in (".tfm", ".txt"):
         write_text(target, _text(transform))
+    elif suffix in _HDF5:
+        _core.write_itk_h5(target, _entries(transform))
     else:
         if transform.is_composite:
             raise MEDH5ValidationError(
                 f"{os.fspath(path)}: a .mat file holds one transform, and this "
                 f"is a composite of {len(transform.components)}; write it as .tfm"
             )
+        if not transform.is_linear:
+            raise MEDH5ValidationError(
+                f"{os.fspath(path)}: a .mat file holds a matrix, and this is a "
+                "B-spline; write it as .tfm or .h5"
+            )
         _write_bytes(target, _mat(transform.matrix))
     return target
 
 
 def _transform_suffix(path: Path) -> str:
-    """*path*'s suffix, which names the format: ``.tfm``, ``.txt`` or
-    ``.mat``; anything else is refused."""
+    """*path*'s suffix, which names the format: ``.tfm``, ``.txt``, ITK's
+    HDF5 (``.h5``, ``.hdf5``, ``.hdf``) or ``.mat``; anything else is
+    refused."""
     suffix = path.suffix.lower()
-    if suffix not in (".tfm", ".txt", ".mat"):
+    if suffix not in (".tfm", ".txt", ".mat", *_HDF5):
         raise MEDH5ValidationError(
-            f"{os.fspath(path)}: name a .tfm, .txt or .mat file (ITK's HDF5 "
-            "transform files are not written before medh5 2.2)"
+            f"{os.fspath(path)}: name a .tfm, .txt, .h5 or .mat file"
         )
     return suffix
 
@@ -424,26 +598,42 @@ def _number(value: float) -> str:
     return repr(float(value))
 
 
-def _affine_lines(matrix: npt.NDArray[np.float64], index: int) -> list[str]:
+def _entry(part: ItkTransform) -> tuple[str, list[float], list[float]]:
+    """One transform that is not a composite, as ITK's type name, its
+    parameters and its fixed parameters: a B-spline, or the matrix as an
+    affine centred at the origin."""
+    if part.bspline is not None:
+        spline = part.bspline
+        return spline.name, spline.parameters, spline.fixed_parameters
+    matrix = part.matrix
     n = matrix.shape[0] - 1
     parameters = [*matrix[:n, :n].ravel(), *matrix[:n, n]]
-    return [
-        f"#Transform {index}",
-        f"Transform: {_affine_name(n)}",
-        "Parameters: " + " ".join(_number(v) for v in parameters),
-        "FixedParameters: " + " ".join("0" for _ in range(n)),
-    ]
+    return _affine_name(n), [float(v) for v in parameters], [0.0] * n
+
+
+def _entries(transform: ItkTransform) -> list[tuple[str, list[float], list[float]]]:
+    """*transform* as an HDF5 file's entries: a composite's type alone, as
+    ITK writes it, then its components in its order."""
+    if not transform.is_composite:
+        return [_entry(transform)]
+    n = transform.dimension
+    head: tuple[str, list[float], list[float]] = (
+        f"CompositeTransform_double_{n}_{n}",
+        [],
+        [],
+    )
+    return [head, *(_entry(part) for part in transform.components)]
 
 
 def _text(transform: ItkTransform) -> str:
     lines = [_MAGIC]
-    if transform.is_composite:
-        n = transform.dimension
-        lines += ["#Transform 0", f"Transform: CompositeTransform_double_{n}_{n}"]
-        for index, part in enumerate(transform.components, 1):
-            lines += _affine_lines(part.matrix, index)
-    else:
-        lines += _affine_lines(transform.matrix, 0)
+    for index, (name, parameters, fixed) in enumerate(_entries(transform)):
+        lines += [f"#Transform {index}", f"Transform: {name}"]
+        if not name.startswith("CompositeTransform"):
+            lines += [
+                "Parameters: " + " ".join(_number(v) for v in parameters),
+                "FixedParameters: " + " ".join(_number(v) for v in fixed),
+            ]
     return "\n".join(lines) + "\n"
 
 
@@ -545,6 +735,14 @@ def from_itk_transform(
     The field is stored on grid *fixed* when its geometry is that grid's, and
     otherwise on a new grid ``<id>_field`` in the fixed frame; its vectors as
     ``world`` vectors in the fixed grid's convention and units.
+
+    A B-spline is stored as a ``bspline`` (``<id>.bspline`` in a composite)
+    whose control points are ITK's coefficients, on a new grid ``<id>_cp``
+    in the fixed frame that is ITK's lattice --- both in the fixed grid's
+    convention and units.  It is the first step applied (listed last in a
+    composite), as its lattice is in the fixed frame, so it is not combined
+    with *warp*; alone, it needs the moving grid in the fixed grid's
+    convention and units, as a ``bspline`` maps points to points of its own.
     """
     import medh5
 
@@ -628,6 +826,10 @@ def from_itk_transform(
             {"itk_order": [c.name for c in linear]},
         )
         linear.reverse()
+    splines = [j for j, part in enumerate(linear) if part.bspline is not None]
+    cp_grid_id = f"{transform_id}_cp"
+    if splines:
+        _check_bspline_place(splines, len(linear), warp, h_fixed, h_moving, grids)
     fields: list[tuple[str, Any]] = []
     if warp is not None:
         fields.append(("warp", _read_field(warp, fixed_grid, vectors, log, "warp")))  # type: ignore[arg-type]
@@ -652,16 +854,23 @@ def from_itk_transform(
     else:
         if warp is not None:
             names.append(f"{transform_id}.warp")
-        if len(linear) == 1:
-            names.append(f"{transform_id}.affine")
-        else:
-            names += [f"{transform_id}.affine{j}" for j in range(1, len(linear) + 1)]
+        matrices = len(linear) - len(splines)
+        numbered = iter(range(1, matrices + 1))
+        for part in linear:
+            if part.bspline is not None:
+                names.append(f"{transform_id}.bspline")
+            elif matrices == 1:
+                names.append(f"{transform_id}.affine")
+            else:
+                names.append(f"{transform_id}.affine{next(numbered)}")
     if inverse_warp is not None:
         names_all = [*names, f"{transform_id}.inverse_warp"]
     else:
         names_all = list(names)
     if steps > 1:
         names_all.append(transform_id)
+    if splines:
+        names_all.append(cp_grid_id)
     clash = sorted(n for n in names_all if n in taken)
     if clash:
         raise MEDH5ValidationError(
@@ -735,6 +944,20 @@ def from_itk_transform(
         for offset, part in enumerate(linear):
             j = index + offset
             last = j == steps - 1
+            if part.bspline is not None:
+                _add_bspline(
+                    w,
+                    names[j],
+                    part.bspline,
+                    h_fixed,
+                    fixed_grid,
+                    cp_grid_id,
+                    frames=(frames[j], frames[j + 1]),
+                    to_grid=moving if last else None,
+                    prov=activity,
+                    log=log,
+                )
+                continue
             # Interior frames are expressed as the fixed grid's are.
             before = h_fixed
             after = h_moving if last else h_fixed
@@ -773,6 +996,97 @@ def from_itk_transform(
             )
     log.outputs.append(os.fspath(sample))
     return log
+
+
+def _check_bspline_place(
+    splines: list[int],
+    steps: int,
+    warp: object,
+    h_fixed: npt.NDArray[np.float64],
+    h_moving: npt.NDArray[np.float64],
+    grids: dict[str, Any],
+) -> None:
+    """Refuse a B-spline anywhere but where its lattice can be stored: the
+    first step, in the fixed frame, between grids of one convention when it
+    is the only step."""
+    if splines != [0]:
+        raise MEDH5ValidationError(
+            "a B-spline is imported as the first step applied (listed last in "
+            "an ITK composite), because its lattice is a grid in the fixed frame "
+            f"(1.0 §10.5); this composite applies it as step {splines[-1] + 1} "
+            f"of {steps}"
+        )
+    if warp is not None:
+        raise MEDH5ValidationError(
+            "a B-spline is imported as the first step applied, and so is a warp; "
+            "import them as two registrations"
+        )
+    if steps == 1 and not np.allclose(h_fixed, h_moving):
+        fixed_grid, moving_grid = grids["fixed"], grids["moving"]
+        raise MEDH5ValidationError(
+            f"a B-spline maps grid {fixed_grid.grid_id!r}'s points "
+            f"({fixed_grid.coord_system} {fixed_grid.units}) to points of the same "
+            f"convention, and grid {moving_grid.grid_id!r} is in "
+            f"{moving_grid.coord_system} {moving_grid.units}; give the moving "
+            "grid the fixed grid's convention and units"
+        )
+
+
+def _add_bspline(
+    w: Any,
+    transform_id: str,
+    spline: ItkBSpline,
+    h_fixed: npt.NDArray[np.float64],
+    fixed_grid: Any,
+    cp_grid_id: str,
+    *,
+    frames: tuple[str, str],
+    to_grid: str | None,
+    prov: Any,
+    log: ConversionReport,
+) -> None:
+    """*spline* as a ``bspline`` from the fixed frame, its lattice the grid
+    *cp_grid_id*: both re-expressed from LPS millimetres in the fixed grid's
+    world, ``x' = H⁻¹ x`` with ``H`` diagonal, so the coefficients scale as
+    the points do."""
+    n = len(spline.size)
+    h = np.diag(h_fixed)[:n]  # flip · millimetres per unit, per world axis
+    # ITK lists the lattice's axes x first; a grid's array axes are z first.
+    w.add_grid(
+        cp_grid_id,
+        shape=tuple(spline.size[::-1]),
+        spacing=[float(v) for v in (spline.spacing / np.abs(h))[::-1]],
+        origin=[float(v) for v in spline.origin / h],
+        direction=(np.sign(h)[:, None] * spline.direction)[:, ::-1],
+        coord_system=fixed_grid.coord_system,
+        units=fixed_grid.units,
+        frame_uid=frames[0],
+        timepoint=fixed_grid.timepoint,
+    )
+    coefficients = spline.coefficients / h.reshape(n, *([1] * n))
+    w.add_transform(
+        transform_id,
+        kind="bspline",
+        from_frame=frames[0],
+        to_frame=frames[1],
+        control_points=coefficients,
+        cp_grid=cp_grid_id,
+        vector_space="world",
+        order=spline.order,
+        units=fixed_grid.units,
+        from_grid=fixed_grid.grid_id,
+        to_grid=to_grid,
+        prov=prov,
+    )
+    log.decision(
+        "bspline",
+        f"the order-{spline.order} B-spline's coefficients are stored as "
+        f"{transform_id!r}'s control points on grid {cp_grid_id!r}, ITK's "
+        "lattice, and 1.0 §10.5 evaluates them as ITK does inside it; beyond "
+        "the lattice's support ITK leaves a point where it is, while §10.5 "
+        "takes the edge's control points",
+        {"grid": cp_grid_id, "order": spline.order, "size": list(spline.size)},
+    )
 
 
 def _coordinates_note(log: ConversionReport, *grids: Any) -> None:
@@ -938,16 +1252,19 @@ def to_itk_transform(
     warp_out: str | os.PathLike[str] | None = None,
     vectors: Vectors | None = None,
 ) -> ConversionReport:
-    """Write transform *transform_id* of *sample* as ITK reads it: its linear
-    part to *out* (``.tfm``, ``.txt`` or ``.mat``), and a displacement field
-    applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI
-    (intent 1006) whose vectors are in the *vectors* convention, required.
+    """Write transform *transform_id* of *sample* as ITK reads it: its
+    matrices and B-spline to *out* (``.tfm``, ``.txt``, ``.h5`` or ``.mat``),
+    and a displacement field applied first, as ANTs pairs them, to *warp_out*
+    as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors*
+    convention, required.
 
-    A composite is flattened; it may hold one displacement, as its first
-    step, and linear steps after it.  Several linear steps are written as an
-    ITK composite in a ``.tfm`` (last applied listed first) or multiplied into
-    one affine in a ``.mat``. A displacement alone writes the identity to
-    *out*. B-splines are refused.
+    A composite is flattened; it may hold one displacement or one
+    ``bspline``, as its first step, and linear steps after it.  A ``bspline``
+    is written as ITK's ``BSplineTransform`` on its control-point grid, in a
+    ``.tfm`` or ``.h5``.  Several steps are written as an ITK composite in a
+    ``.tfm`` or ``.h5`` (last applied listed first), or linear ones
+    multiplied into one affine in a ``.mat``. A displacement alone writes the
+    identity to *out*.
     """
     import medh5
 
@@ -989,49 +1306,61 @@ def to_itk_transform(
                 f"transform {transform_id!r} holds no displacement field to "
                 "write to warp_out"
             )
-        matrices: list[npt.NDArray[np.float64]] = []
+        if any(t.kind == "bspline" for t in steps[1:]):
+            raise MEDH5ValidationError(
+                f"transform {transform_id!r} applies a B-spline after another "
+                "step; it is written as the first step applied, on its "
+                "lattice in the starting frame"
+            )
+        n = len(start.spacing)
+        parts: list[ItkTransform] = []
         for step in steps:
             if step.kind == "displacement":
                 continue
-            n = len(start.spacing)
+            if step.kind == "bspline":
+                parts.append(_itk_bspline(step, convention(step.to_frame)))
+                continue
             matrix = (
                 np.eye(n + 1) if step.kind == "identity" else np.asarray(step.matrix)
             )
             before = _world_to_itk(convention(step.from_frame), "the step's")
             after = _world_to_itk(convention(step.to_frame), "the step's")
-            matrices.append(after @ matrix @ np.linalg.inv(before))
+            parts.append(
+                ItkTransform(_affine_name(n), after @ matrix @ np.linalg.inv(before))
+            )
+        if Path(out).suffix.lower() == ".mat" and not all(p.is_linear for p in parts):
+            raise MEDH5ValidationError(
+                f"{os.fspath(out)}: a .mat file holds a matrix, and transform "
+                f"{transform_id!r} holds a B-spline; write it as .tfm or .h5"
+            )
         if fields:
             written = _write_field(fields[0], warp_out, vectors, log)  # type: ignore[arg-type]
             log.outputs.append(os.fspath(written))
-    n = len(start.spacing)
-    if not matrices:
+    product = np.eye(n + 1)
+    for part in parts:
+        product = part.matrix @ product
+    if not parts:
         itk = ItkTransform(_affine_name(n), np.eye(n + 1))
         log.decision(
             "identity",
             f"transform {transform_id!r} is a displacement alone; the identity "
             f"was written to {os.fspath(out)} to pair with it",
         )
-    elif len(matrices) == 1:
-        itk = ItkTransform(_affine_name(n), matrices[0])
+    elif len(parts) == 1:
+        itk = parts[0]
     elif Path(out).suffix.lower() == ".mat":
-        product = np.eye(n + 1)
-        for matrix in matrices:
-            product = matrix @ product
         itk = ItkTransform(_affine_name(n), product)
         log.decision(
             "composite",
-            f"the {len(matrices)} linear steps were multiplied into one affine, "
+            f"the {len(parts)} linear steps were multiplied into one affine, "
             "which is all a .mat file holds",
         )
     else:
-        parts = tuple(ItkTransform(_affine_name(n), m) for m in reversed(matrices))
-        product = np.eye(n + 1)
-        for matrix in matrices:
-            product = matrix @ product
-        itk = ItkTransform(f"CompositeTransform_double_{n}_{n}", product, parts)
+        listed = tuple(reversed(parts))
+        itk = ItkTransform(f"CompositeTransform_double_{n}_{n}", product, listed)
         log.decision(
             "order",
-            f"the {len(matrices)} linear steps are listed in reverse: ITK applies "
+            f"the {len(parts)} steps are listed in reverse: ITK applies "
             "the last listed first",
         )
     written = write_itk_transform(out, itk)
@@ -1046,12 +1375,39 @@ def _flatten(transform: Any) -> list[Any]:
         for component in transform.components():
             out += _flatten(component)
         return out
-    if transform.kind in ("affine", "identity", "displacement"):
-        return [transform]
-    raise MEDH5ValidationError(
-        f"transform {transform.transform_id!r} is a {transform.kind}, which is "
-        "not written as an ITK file before medh5 2.2"
+    return [transform]
+
+
+def _itk_bspline(step: Any, target: Any) -> ItkTransform:
+    """A stored ``bspline`` as ITK's ``BSplineTransform`` in LPS millimetres:
+    its control-point grid as ITK's lattice, its control points as world
+    vectors re-expressed as the points are (``x = H x'``).  The grid it maps
+    to, *target*, is in the lattice's convention and units, or the spline has
+    no ITK equivalent."""
+    from medh5.transforms import to_world_vectors
+
+    cp = step.cp_grid
+    n = len(cp.spacing)
+    h = np.diag(_world_to_itk(cp, "the B-spline's lattice"))[:n]
+    if not np.allclose(np.diag(_world_to_itk(target, "the step's"))[:n], h):
+        raise MEDH5ValidationError(
+            f"transform {step.transform_id!r} maps points of grid {cp.grid_id!r} "
+            f"({cp.coord_system} {cp.units}) to frame {step.to_frame!r}, in "
+            f"{target.coord_system} {target.units}; ITK's B-spline maps LPS "
+            "millimetres to LPS millimetres, which this is not"
+        )
+    control = np.asarray(step.control_points, dtype=np.float64)
+    flat = np.moveaxis(control, 0, -1).reshape(-1, n)
+    world = to_world_vectors(flat, cp, step.vector_space) * h
+    spline = ItkBSpline(
+        order=step.order,
+        size=tuple(int(v) for v in cp.spatial_shape[::-1]),
+        origin=np.asarray(cp.origin, dtype=np.float64) * h,
+        spacing=np.asarray(cp.spacing, dtype=np.float64)[::-1] * np.abs(h),
+        direction=(np.sign(h)[:, None] * np.asarray(cp.direction))[:, ::-1],
+        coefficients=np.moveaxis(world.reshape(*control.shape[1:], n), -1, 0),
     )
+    return ItkTransform(spline.name, np.eye(n + 1), bspline=spline)
 
 
 def _write_field(
@@ -1104,6 +1460,7 @@ def _write_field(
 
 
 __all__ = [
+    "ItkBSpline",
     "ItkTransform",
     "from_itk_transform",
     "read_itk_transform",

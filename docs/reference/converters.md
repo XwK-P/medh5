@@ -655,7 +655,8 @@ read_itk_transform("back.mat").matrix     # LPS mm, x_moving = T(x_fixed)
 ```
 
 `read_itk_transform` returns a `medh5.io.ItkTransform` (its `name`, `matrix`
-and, for a composite, `components`), and
+and, for a composite, `components`; for a B-spline, `bspline`, a
+`medh5.io.ItkBSpline` holding ITK's lattice and coefficients), and
 `medh5.io.write_itk_transform(path, transform)` writes one, with no sample
 involved.
 
@@ -666,20 +667,37 @@ transform is stored from the fixed grid's frame to the moving grid's. ITK's
 points are LPS millimetres, so the matrix is re-expressed in each grid's
 coordinate system and units — an RAS grid flips two axes, a grid in metres
 scales the translation — and a grid in `px`, which has no millimetres, is
-refused. The importer reads text files (`.tfm`, `.txt`) and ANTs' MATLAB
-`.mat`, holding `AffineTransform`, `MatrixOffsetTransformBase`,
+refused. The importer reads text files (`.tfm`, `.txt`), ITK's HDF5 transform
+files (`.h5`, `.hdf5`, `.hdf`) and ANTs' MATLAB `.mat`, holding `AffineTransform`, `MatrixOffsetTransformBase`,
 `TranslationTransform`, `IdentityTransform`, `Euler3DTransform` (with its
 ZYX order where the file sets it), `Euler2DTransform`,
 `VersorRigid3DTransform`, `Similarity3DTransform`, `Similarity2DTransform`,
-`ScaleTransform`, or a `CompositeTransform` of them; the centre in the fixed
-parameters folds into the translation. ITK's HDF5 transform files and
-B-splines are refused (they wait for 2.2), as is a transform whose input and
-output dimensions differ.
+`ScaleTransform`, `BSplineTransform` of order 1 or 3, or a
+`CompositeTransform` of them; the centre in the fixed
+parameters folds into the translation. An HDF5 file is read as ITK writes it,
+`/TransformGroup/<n>/` with `TransformType`, `TransformParameters` and
+`TransformFixedParameters`, through the engine's HDF5 (the converters need no
+`h5py`), and refused as its text equivalent would be. Refused: a transform
+whose input and output dimensions differ, B-splines of order 0 or 2 (1.0
+§10.5's evaluation implements 1 and 3), ITKv3's `BSplineDeformableTransform`
+(resave it as ITKv4's `BSplineTransform`), and the other non-linear types.
 
 **A composite is listed in reverse.** ITK applies the last transform it lists
 first; §10.5 applies the first component first. Each component is stored as an
 `affine` between intermediate frames `pseudo:<id>.mid…`, and a `composite`
 `<id>` relates the two grids' frames.
+
+**A B-spline is stored as the `bspline` kind** (1.0 §10.5), not sampled:
+ITK's lattice becomes a grid `<id>_cp` in the fixed frame, and its
+coefficients the control points, both re-expressed in the fixed grid's
+coordinate system and units as a matrix is. Inside the lattice's support the
+stored transform maps every point as SimpleITK does, to 2e-13 mm in the
+measurement the design rationale gives, where a field sampled at the control
+points was millimetres off. Beyond the support, ITK leaves a point where it
+is, while §10.5 takes the edge control points. The B-spline must be the first step applied
+(listed last in an ITK composite), since its lattice is in the fixed frame, so
+it is not combined with `--warp`; alone, it needs the moving grid in the fixed
+grid's coordinate system and units.
 
 **A displacement field needs `--vectors`.** Some versions of ITK write a
 field's vectors in LPS and others in RAS, and the file does not say which:
@@ -696,8 +714,10 @@ frame, so it is refused where that would give the fixed grid's visit a second
 frame.
 
 The export writes each matrix as `AffineTransform_double_3_3` to a `.tfm`,
-`.txt` or `.mat` file (several linear steps as an ITK composite in a text
-file, or multiplied into one affine in a `.mat`), and a displacement applied
+`.txt`, `.h5` or `.mat` file (several linear steps as an ITK composite in a
+text or HDF5 file, or multiplied into one affine in a `.mat`), a `bspline`
+as `BSplineTransform` on its control-point grid (to a `.tfm`, `.txt` or `.h5`;
+a `.mat` holds only a matrix), and a displacement applied
 first to `--warp-out`, a `DISPVECT` NIfTI (intent 1006) in the `--vectors`
 convention. Each file is written to a temporary beside it and renamed over
 it.

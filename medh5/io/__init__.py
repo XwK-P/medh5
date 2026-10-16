@@ -35,6 +35,7 @@ _LAZY: dict[str, str] = {
     "to_dicom_seg": "medh5.io.dicom_seg",
     "from_rtstruct": "medh5.io.rtstruct",
     "to_rtstruct": "medh5.io.rtstruct",
+    "ItkBSpline": "medh5.io.itk",
     "ItkTransform": "medh5.io.itk",
     "read_itk_transform": "medh5.io.itk",
     "write_itk_transform": "medh5.io.itk",

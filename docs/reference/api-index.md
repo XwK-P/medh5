@@ -660,13 +660,14 @@ compiled extension the modules re-export from, not an API of its own.
 | `from_rtstruct` | function | Import an RTSTRUCT's ROIs as contours, and optionally rasterise them. | [Converters › RTSTRUCT](converters.md#rtstruct) |
 | `group_by_subject` | function | Group occasions into subjects (`mode="subject"`) or leave them apart. |  |
 | `import_seg_nifti` | function | Add NIfTI masks to an existing sample, checking they sit on its grid. | [Converters › NIfTI](converters.md#nifti) |
-| `ItkTransform` | class | One ITK transform as a homogeneous matrix in LPS millimetres, mapping fixed points to moving ones (`x_moving = T(x_fixed)`). | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `ItkBSpline` | class | An ITK `BSplineTransform` in LPS millimetres: `x_moving = x + u(x)`, *u* the B-spline of *order* with *coefficients* on a lattice of *size* control points per ITK axis (x first), at *origin*, *spacing* apart, its axes the columns of *direction* — ITK's fixed parameters. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `ItkTransform` | class | One ITK transform in LPS millimetres, mapping fixed points to moving ones (`x_moving = T(x_fixed)`): a homogeneous matrix, or a B-spline. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `merge_reports` | function | One report over a whole cohort. |  |
 | `migrate` | function | Migrate one 0.x file into one 1.0 sample (Appendix B). | [Converters › 0.x files](converters.md#0x-files) |
 | `migrate_paths` | function | Migrate a cohort, minting one label set for all of it. | [Converters › 0.x files](converters.md#0x-files) |
 | `Note` | class | One thing a conversion did that the source did not fully determine. |  |
 | `read_fhir` | function | The Observations and DiagnosticReports of *subject* (a reference, such as `Patient/123`) in *source*, as clinical records on *clock*, and what the conversion decided. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
-| `read_itk_transform` | function | Read an ITK transform file: text (`.tfm`, `.txt`) or ANTs' MATLAB v4 `.mat`, holding one of the linear types or a composite of them. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `read_itk_transform` | function | Read an ITK transform file: text (`.tfm`, `.txt`), ITK's HDF5 (`.h5`, `.hdf5`, `.hdf`) or ANTs' MATLAB v4 `.mat`, holding one of the linear types, a B-spline, or a composite of them. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `read_meds` | function | The rows of MEDS subject *subject_id* in *source*, as clinical records on *clock*, and what the conversion decided. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `read_nifti` | function | One NIfTI file as `(array, geometry)` in MEDH5 conventions. | [Converters › NIfTI](converters.md#nifti) |
 | `scan_dicom` | function | Walk a directory tree and collect its image series. | [Converters › DICOM](converters.md#dicom) |
@@ -674,11 +675,11 @@ compiled extension the modules re-export from, not an API of its own.
 | `SubjectGroup` | class | Occasions belonging to one subject, in timepoint order. |  |
 | `SubjectImport` | class | One subject of a cohort import: the sample its records went into, or why they did not. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `to_dicom_seg` | function | Export one voxel annotation as a DICOM SEG against its source slices. | [Converters › DICOM SEG](converters.md#dicom-seg) |
-| `to_itk_transform` | function | Write transform *transform_id* of *sample* as ITK reads it: its linear part to *out* (`.tfm`, `.txt` or `.mat`), and a displacement field applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors* convention, required. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `to_itk_transform` | function | Write transform *transform_id* of *sample* as ITK reads it: its matrices and B-spline to *out* (`.tfm`, `.txt`, `.h5` or `.mat`), and a displacement field applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors* convention, required. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `to_nifti` | function | Export one image, or one class of one annotation, as a NIfTI file. | [Converters › NIfTI](converters.md#nifti) |
 | `to_nnunetv2` | function | Export samples as an nnU-Net v2 dataset. | [Converters › nnU-Net v2](converters.md#nnu-net-v2) |
 | `to_rtstruct` | function | Export a `contours` annotation as an RT Structure Set. | [Converters › RTSTRUCT](converters.md#rtstruct) |
-| `write_itk_transform` | function | Write *transform* as ITK reads it, picking the format by suffix: `.tfm` or `.txt` text, or `.mat` as ANTs writes it. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `write_itk_transform` | function | Write *transform* as ITK reads it, picking the format by suffix: `.tfm` or `.txt` text, ITK's HDF5 (`.h5`, `.hdf5`, `.hdf`), or `.mat` as ANTs writes it. | [Converters › ITK transforms](converters.md#itk-transforms) |
 
 ## `medh5.io.dicom` { #medh5-io-dicom }
 
@@ -740,10 +741,11 @@ compiled extension the modules re-export from, not an API of its own.
 | Name | Kind | Summary | Documented in |
 |---|---|---|---|
 | `from_itk_transform` | function | Add the ITK transform at *path* to *sample*, from the frame of grid *fixed* to that of grid *moving* — ITK's fixed and moving images. | [Converters › ITK transforms](converters.md#itk-transforms) |
-| `ItkTransform` | class | One ITK transform as a homogeneous matrix in LPS millimetres, mapping fixed points to moving ones (`x_moving = T(x_fixed)`). | [Converters › ITK transforms](converters.md#itk-transforms) |
-| `read_itk_transform` | function | Read an ITK transform file: text (`.tfm`, `.txt`) or ANTs' MATLAB v4 `.mat`, holding one of the linear types or a composite of them. | [Converters › ITK transforms](converters.md#itk-transforms) |
-| `to_itk_transform` | function | Write transform *transform_id* of *sample* as ITK reads it: its linear part to *out* (`.tfm`, `.txt` or `.mat`), and a displacement field applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors* convention, required. | [Converters › ITK transforms](converters.md#itk-transforms) |
-| `write_itk_transform` | function | Write *transform* as ITK reads it, picking the format by suffix: `.tfm` or `.txt` text, or `.mat` as ANTs writes it. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `ItkBSpline` | class | An ITK `BSplineTransform` in LPS millimetres: `x_moving = x + u(x)`, *u* the B-spline of *order* with *coefficients* on a lattice of *size* control points per ITK axis (x first), at *origin*, *spacing* apart, its axes the columns of *direction* — ITK's fixed parameters. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `ItkTransform` | class | One ITK transform in LPS millimetres, mapping fixed points to moving ones (`x_moving = T(x_fixed)`): a homogeneous matrix, or a B-spline. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `read_itk_transform` | function | Read an ITK transform file: text (`.tfm`, `.txt`), ITK's HDF5 (`.h5`, `.hdf5`, `.hdf`) or ANTs' MATLAB v4 `.mat`, holding one of the linear types, a B-spline, or a composite of them. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `to_itk_transform` | function | Write transform *transform_id* of *sample* as ITK reads it: its matrices and B-spline to *out* (`.tfm`, `.txt`, `.h5` or `.mat`), and a displacement field applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors* convention, required. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `write_itk_transform` | function | Write *transform* as ITK reads it, picking the format by suffix: `.tfm` or `.txt` text, ITK's HDF5 (`.h5`, `.hdf5`, `.hdf`), or `.mat` as ANTs writes it. | [Converters › ITK transforms](converters.md#itk-transforms) |
 
 ## `medh5.io.legacy` { #medh5-io-legacy }
 
@@ -1077,7 +1079,7 @@ compiled extension the modules re-export from, not an API of its own.
 |---|---|---|---|
 | `AffineTransform` | class | A homogeneous `(S+1, S+1)` matrix in world coordinates. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `basis` | function | The B-spline basis weights at `t`: `(order + 1, *t.shape)`. |  |
-| `BSplineTransform` | class | A free-form deformation evaluated with a uniform B-spline basis. |  |
+| `BSplineTransform` | class | A free-form deformation evaluated with a uniform B-spline basis. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `ChainTransform` | class | Several transforms applied in order — a resolved path. | [Registration between visits › Write one](../guides/registration.md#write-one) |
 | `check_transform_id` | function | Return `transform_id` if it is a valid object id, else raise E003. |  |
 | `CompositeTransform` | class | Components applied in order; each one's `to_frame` is the next's `from_frame`. | [Converters › ITK transforms](converters.md#itk-transforms) |
