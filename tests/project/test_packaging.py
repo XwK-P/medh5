@@ -174,7 +174,7 @@ def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
     build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
     # The targets ci.yml passes to build.yml, one job each.
     built = set(re.findall(r"^      target: (\S+)$", ci, re.M))
-    assert len(built) == 5
+    assert len(built) == 7
     assert set(brew.TARGETS.values()) <= built
     assert all(target in release for target in built)
     assert 'name="medh5-$version-$target"' in build
@@ -439,11 +439,11 @@ class TestRepositoryGates:
         assert floor
         version = tuple(map(int, pins["maturin_version"].split(".")))
         assert tuple(map(int, floor[1].split("."))) <= version < (int(floor[2]),)
-        for arch in ("x86_64", "aarch64"):
+        for arch in ("x86_64", "aarch64", "x86_64_musl", "aarch64_musl"):
             assert re.search(rf"^rustup_sha256_{arch}=[0-9a-f]{{64}}$", build, re.M)
-        assert "sha256sum --check" in build
+        assert '[[ "$actual" != "$digest" ]]' in build
         containers = re.findall(r"container: (\S+)", CI.read_text(encoding="utf-8"))
-        assert len(containers) == 2
+        assert len(containers) == 4
         for image in containers:
             assert re.fullmatch(r"quay\.io/pypa/[\w.-]+@sha256:[0-9a-f]{64}", image)
         built = []
@@ -473,6 +473,8 @@ class TestRepositoryGates:
         ]
         assert sorted(callers) == [
             "build-linux-aarch64",
+            "build-linux-musl-aarch64",
+            "build-linux-musl-x86_64",
             "build-linux-x86_64",
             "build-macos-arm64",
             "build-macos-x86_64",
@@ -983,7 +985,7 @@ class TestDistribution:
             for name, job in jobs.items()
             if "uses: ./.github/workflows/build.yml" in job
         }
-        assert len(build_of) == 5
+        assert len(build_of) == 7
         downloading = 0
         for name, job in jobs.items():
             targets = set(re.findall(r"name: ci-(?:dist|cli)-([\w-]+)$", job, re.M))
@@ -997,7 +999,7 @@ class TestDistribution:
             if targets:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
-        assert downloading == 16
+        assert downloading == 18
 
     def test_every_shipped_target_is_built_released_and_noticed(self):
         """The targets were listed four times --- the build jobs, the
@@ -1048,6 +1050,37 @@ class TestDistribution:
         # `dist/*.whl` now.
         for name, job in jobs.items():
             assert "dist/*.whl" not in job, name
+
+    def test_musl_gets_wheels_and_a_static_binary(self):
+        """Alpine and the other musl Linux built medh5 from source, which
+        takes a compiler, CMake and minutes.  Each architecture has musllinux
+        wheels and a binary that links musl statically, so it runs on any
+        Linux; the wheels are tested in the image that built them, and the
+        binary is checked to need no shared library."""
+        jobs = _jobs(CI.read_text(encoding="utf-8"))
+        build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
+        assert "--compatibility musllinux_1_2" in build
+        assert 'readelf -d "$exe" | grep -q NEEDED' in build
+        for arch in ("x86_64", "aarch64"):
+            target = f"{arch}-unknown-linux-musl"
+            caller = jobs[f"build-linux-musl-{arch}"]
+            assert f"      target: {target}\n" in caller
+            image = re.search(r"^      container: (\S+)$", caller, re.M)
+            assert image and image[1].startswith(f"quay.io/pypa/musllinux_1_2_{arch}@")
+            test = jobs[f"test-linux-musl-{arch}"]
+            # Tested in the image it was built in.
+            assert f"      IMAGE: {image[1]}\n" in test
+            assert f"bash .github/scripts/test-musl.sh {target}" in test
+        script = (ROOT / ".github/scripts/test-musl.sh").read_text(encoding="utf-8")
+        assert '!= "hdf5plugin"' in script and '"dev"' in script
+        assert "--image expects NAME=VALUE" in script
+        assert "pytest tests/ -v -rs" in script
+        # The glibc host cannot install a musl wheel: those checks are the
+        # test job's.
+        steps = _jobs(BUILD.read_text(encoding="utf-8"))["build"].split("\n      - ")
+        for name in ("The wheel installs", "The binary hands the converters"):
+            (step,) = [s for s in steps if name in s]
+            assert "if: ${{ !endsWith(inputs.target, '-musl') }}" in step
 
     def test_macos_x86_64_is_cross_built_and_tested_on_every_run(self):
         """The Intel Mac build was the slowest job of every run (14 to 23

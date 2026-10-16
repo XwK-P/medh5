@@ -7,9 +7,10 @@
 # a second serves free-threaded CPython 3.14, which the stable ABI does not
 # cover --- and the binary, archived with its licence, the notices of what it
 # links and its README, to cli/.  CI runs this on every
-# platform the project ships --- inside a manylinux_2_28 container on Linux, so
-# both run on any glibc from 2.28, and for macOS x86_64 on Apple silicon --- and
-# the release publishes what CI built.
+# platform the project ships --- on Linux inside a manylinux_2_28 container, so
+# both run on any glibc from 2.28, and a musllinux_1_2 one, for musl and a
+# static binary; and for macOS x86_64 on Apple silicon --- and the release
+# publishes what CI built.
 set -euo pipefail
 
 target="$1"
@@ -21,35 +22,51 @@ target="$1"
 # built, so the ones that built it; a hosted runner's CMake is its image's.
 maturin_version=1.15.0
 cmake_version=4.4.4
-# rustup-init for the manylinux containers, which have no Rust: this release,
-# checked against the digests static.rust-lang.org publishes beside it.
+# rustup-init for the manylinux and musllinux containers, which have no Rust:
+# this release, checked against the digests static.rust-lang.org publishes
+# beside it.
 rustup_version=1.28.2
 rustup_sha256_x86_64=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
 rustup_sha256_aarch64=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c
+rustup_sha256_x86_64_musl=e6599a1c7be58a2d8eaca66a80e0dc006d87bbcf780a58b7343d6e14c1605cb2
+rustup_sha256_aarch64_musl=a97c8f56d7462908695348dd8c71ea6740c138ce303715793a690503a94fc9a9
 
 if [[ -x /opt/python/cp312-cp312/bin/python ]]; then
-  # A manylinux container: its own Python, with CMake and Rust installed here.
+  # A manylinux or musllinux container: its own Python, with CMake and Rust
+  # installed here.  A musl target is built in a musllinux container, whose
+  # Rust is musl's too, so the binary links musl statically.
   python=/opt/python/cp312-cp312/bin/python
   MEDH5_FT_PYTHON=/opt/python/cp314-cp314t/bin/python
   "$python" -m pip install --quiet "maturin==$maturin_version" "cmake==$cmake_version"
   export PATH="$(dirname "$python"):$HOME/.cargo/bin:$PATH"
+  case "$target" in
+    *-linux-musl) libc=musl; compatibility=(--compatibility musllinux_1_2) ;;
+    *) libc=gnu; compatibility=(--compatibility manylinux_2_28) ;;
+  esac
   if ! command -v rustup >/dev/null; then
     arch=$(uname -m)
-    case "$arch" in
-      x86_64) digest=$rustup_sha256_x86_64 ;;
-      aarch64) digest=$rustup_sha256_aarch64 ;;
-      *) echo "no rustup-init digest for $arch" >&2; exit 1 ;;
+    case "$arch-$libc" in
+      x86_64-gnu) digest=$rustup_sha256_x86_64 ;;
+      aarch64-gnu) digest=$rustup_sha256_aarch64 ;;
+      x86_64-musl) digest=$rustup_sha256_x86_64_musl ;;
+      aarch64-musl) digest=$rustup_sha256_aarch64_musl ;;
+      *) echo "no rustup-init digest for $arch-$libc" >&2; exit 1 ;;
     esac
     # Under this name: rustup is one binary that acts as the name it runs as.
     init="$(mktemp -d)/rustup-init"
     curl --proto '=https' --tlsv1.2 -sSf -o "$init" \
-      "https://static.rust-lang.org/rustup/archive/$rustup_version/$arch-unknown-linux-gnu/rustup-init"
-    echo "$digest  $init" | sha256sum --check --quiet
+      "https://static.rust-lang.org/rustup/archive/$rustup_version/$arch-unknown-linux-$libc/rustup-init"
+    # Compared here, not by `sha256sum --check`: BusyBox's, in the musllinux
+    # images, takes none of GNU's long options.
+    actual=$(sha256sum "$init" | cut -d " " -f 1)
+    if [[ "$actual" != "$digest" ]]; then
+      echo "rustup-init's digest is $actual, not $digest" >&2
+      exit 1
+    fi
     chmod +x "$init"
     "$init" -y --no-modify-path --profile minimal --default-toolchain none
     rm -r "$(dirname "$init")"
   fi
-  compatibility=(--compatibility manylinux_2_28)
 else
   # A hosted runner: Python from setup-python, CMake and rustup preinstalled;
   # build.yml names its free-threaded Python in MEDH5_FT_PYTHON.
@@ -103,6 +120,13 @@ if [[ "$target" == *-apple-darwin ]]; then
     fi
   done
   rm -r "$unpacked"
+fi
+# The musl binary is the one for any Linux, whatever its C library or none:
+# it must need no shared library at all.
+if [[ "$target" == *-linux-musl ]] && readelf -d "$exe" | grep -q NEEDED; then
+  readelf -d "$exe" >&2
+  echo "$exe needs a shared library; it should link musl statically" >&2
+  exit 1
 fi
 "$exe" --version
 

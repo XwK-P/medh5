@@ -17,7 +17,9 @@ on:
         type: string
         required: true
       container:
-        description: A manylinux image, by digest, to build in; none elsewhere.
+        description: >-
+          A manylinux or musllinux image, by digest, to build in; none
+          elsewhere.
         type: string
         default: ""
       rosetta:
@@ -53,7 +55,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      # The free-threaded CPython the second wheel is built for; a manylinux
+      # The free-threaded CPython the second wheel is built for; a container
       # image has its own (build-dist.sh).  The 3.12 above stays first on PATH.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: free-threaded
@@ -64,7 +66,7 @@ jobs:
       # The crates' builds, HDF5's among them, as `main`'s last run of this
       # platform left them; only `main` saves them.  Never on a tag: the
       # release publishes what its run on the tag builds, so that build starts
-      # clean.  Not in the manylinux containers, whose Rust and
+      # clean.  Not in the containers, whose Rust and
       # Cargo home are the container's: the Windows build, which compiles HDF5
       # each time, is the one on the pull request's longest path.
       - name: Install the pinned Rust for the cache's key
@@ -76,7 +78,7 @@ jobs:
         with:
           key: ${{ inputs.target }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build in a manylinux container
+      - name: Build in a container
         if: inputs.container
         run: docker run --rm -v "$PWD:/io" -w /io "${{ inputs.container }}" bash .github/scripts/build-dist.sh "${{ inputs.target }}"
       - name: Build
@@ -104,7 +106,10 @@ jobs:
       # every program it starts prefers x86_64 too.  So a cross-built wheel's
       # checks run again in an x86_64 bash (the build itself needs no x86_64
       # Python: the target, not the interpreter, names the wheel's platform).
+      # A musl wheel installs only where there is musl: its own test job runs
+      # these two checks in the image it was built in (test-musl.sh).
       - name: The wheel installs and runs the conformance corpus
+        if: ${{ !endsWith(inputs.target, '-musl') }}
         shell: bash
         run: |
           if [[ "$ROSETTA" && "$(uname -m)" != "$ROSETTA" ]]; then exec arch -"$ROSETTA" /bin/bash -eo pipefail "$0"; fi
@@ -120,6 +125,7 @@ jobs:
       # and says what to install when there is none.  Out of the checkout, whose
       # `medh5/` has no compiled engine and would shadow the installed one.
       - name: The binary hands the converters to the wheel's Python
+        if: ${{ !endsWith(inputs.target, '-musl') }}
         shell: bash
         run: |
           if [[ "$ROSETTA" && "$(uname -m)" != "$ROSETTA" ]]; then exec arch -"$ROSETTA" /bin/bash -eo pipefail "$0"; fi
