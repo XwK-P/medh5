@@ -1075,6 +1075,9 @@ class TestDistribution:
         assert '!= "hdf5plugin"' in script and '"dev"' in script
         assert "--image expects NAME=VALUE" in script
         assert "pytest tests/ -v -rs" in script
+        # The checkout's own `medh5/` has no engine, and shadowed the
+        # installed one for the first import run from the checkout.
+        assert script.index("rm -rf medh5") < script.index("import medh5")
         # The glibc host cannot install a musl wheel: those checks are the
         # test job's.
         steps = _jobs(BUILD.read_text(encoding="utf-8"))["build"].split("\n      - ")

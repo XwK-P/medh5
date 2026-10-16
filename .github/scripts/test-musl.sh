@@ -23,6 +23,9 @@ with open("pyproject.toml", "rb") as f:
 print("\n".join(d for d in dev if re.match(r"[\w-]+", d)[0] != "hdf5plugin"))
 PY
 pip install --quiet "$(ls dist/*-abi3-*.whl)[nifti,dicom]" -r /tmp/dev.txt
+# Out of the checkout's `medh5/`, which has no compiled engine and would
+# shadow the installed one for everything run from here.
+rm -rf medh5
 python -c "import medh5; print(medh5.__version__, medh5.__file__)"
 
 # The static binary runs here, where there is no glibc, and hands a converter
@@ -38,7 +41,4 @@ cat /tmp/bridged.log
 grep -F -e "--image expects NAME=VALUE" /tmp/bridged.log
 
 (cd /tmp && medh5 conformance build corpus && medh5 conformance run corpus)
-# Out of the checkout's `medh5/`, which has no compiled engine and would
-# shadow the installed one.
-rm -rf medh5
 pytest tests/ -v -rs --no-cov -p no:cacheprovider
