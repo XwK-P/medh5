@@ -246,11 +246,17 @@ taken from a functional group that is the same for all of an acquisition's
 planes: temporal position, cardiac or respiratory synchronization, the MR
 echo, diffusion, timing, modifier, velocity encoding, spin labelling,
 metabolite, receive coil and frame type groups, the CT and PET frame type
-groups and contrast usage. Any other dimension, such as a CT's modulated
-exposure, does when its values are shared by frames at different positions
-(even where motion shifts one acquisition's planes from the next's). A
-dimension that numbers frames or planes (`FrameAcquisitionNumber`) splits
-nothing. Each stack becomes a series, with `Series.frames` naming its
+groups and contrast usage. A dimension pointer may name such a group itself.
+Any other dimension, such as a CT's modulated exposure, splits only planes
+that repeat: it does when, within one acquisition, it tells apart frames at
+the same position and a value of it is shared by frames at different
+positions. So a dimension that numbers frames or planes
+(`FrameAcquisitionNumber`) splits nothing, and nor does a value that a
+plane-varying attribute repeats over distinct planes (a tube current
+alternating between two values). An acquisition indexed only by such a
+dimension, whose planes motion has shifted so that none repeats, is read with
+the others as one stack, which is refused unless its planes still form a
+regular grid. Each stack becomes a series, with `Series.frames` naming its
 `(file, frame index)` pairs and `Series.stack` the stack where an object holds
 several, and is imported as a classic series would be: every frame read as a
 slice whose position, orientation, pixel spacing, rescale and acquisition

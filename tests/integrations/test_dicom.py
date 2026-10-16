@@ -1350,9 +1350,9 @@ class TestEnhancedMultiFrame:
         for n, pointer in enumerate(pointers):
             item = Dataset()
             item.DimensionIndexPointer = pointer
-            item.FunctionalGroupPointer = (
-                groups[n] if groups is not None else 0x00209111
-            )
+            group = groups[n] if groups is not None else 0x00209111
+            if group is not None:
+                item.FunctionalGroupPointer = group
             items.append(item)
         enhanced.DimensionIndexSequence = Sequence(items)
         for index in range(int(enhanced.NumberOfFrames)):
@@ -1400,6 +1400,7 @@ class TestEnhancedMultiFrame:
             (0x00209252, 0x00189118),  # a cardiac timing unlisted, by its group
             (0x00181314, 0x00189112),  # FlipAngle, MRTimingAndRelatedParameters
             (0x00180091, 0x00189112),  # an MR timing unlisted, by its group
+            (0x00189112, None),  # the MR timing group, named by the pointer
         ],
     )
     @pytest.mark.parametrize("same_place", [True, False])
@@ -1475,6 +1476,38 @@ class TestEnhancedMultiFrame:
         _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
         with pytest.raises(MEDH5ValidationError, match="irregular slice gaps"):
             from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
+    @pytest.mark.parametrize(
+        ("repeat", "expected"),
+        [(False, [6]), (True, [3, 3])],
+    )
+    def test_an_unlisted_dimension_splits_only_repeated_planes(
+        self, tmp_path, repeat, expected
+    ):
+        """A dimension that names no acquisition splits only planes that
+        repeat: a tube current alternating between two values over six
+        distinct planes is one stack, not two at double the spacing, and the
+        same index over two volumes at the same planes tells them apart."""
+        from medh5.io.dicom import scan_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        if repeat:
+            for index in range(3, 6):
+                source = _frame(enhanced, index - 3).PlanePositionSequence[0]
+                plane = _frame(enhanced, index).PlanePositionSequence[0]
+                plane.ImagePositionPatient = list(source.ImagePositionPatient)
+        self._dimensions(
+            enhanced,
+            [0x00189330, 0x00200032],  # XRayTubeCurrentInmA, position
+            (lambda i: [i // 3 + 1, i % 3 + 1])
+            if repeat
+            else (lambda i: [i % 2 + 1, i + 1]),
+            groups=[0x00189321, 0x00209113],  # CTExposure, PlanePosition
+        )
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        stacks = scan_dicom(tmp_path / "enhanced")
+        assert [s.n_slices for s in stacks] == expected
 
     def test_frames_out_of_their_stack_order_are_refused(self, tmp_path):
         """``InStackPositionNumber`` says where a frame sits in its stack; a

@@ -449,7 +449,10 @@ def _object_series(parts: Sequence[tuple[str, Any]]) -> list[Series]:
     acquisitions = {
         d
         for d, index in enumerate(dimensions)
-        if pointers[index] in _ACQUISITIONS or groups[index] in _ACQUISITION_GROUPS
+        if pointers[index] in _ACQUISITIONS
+        or groups[index] in _ACQUISITION_GROUPS
+        # A pointer may name the functional group itself (C.7.6.17.1).
+        or pointers[index] in _ACQUISITION_GROUPS
     }
     found: list[tuple[str, int, tuple[Any, ...], tuple[float, ...] | None]] = []
     for path, part in parts:
@@ -524,18 +527,27 @@ def _separating(
 
     The *acquisitions* --- dimensions whose pointer names one acquisition
     of the planes (:data:`_ACQUISITIONS`), or whose functional group does
-    (:data:`_ACQUISITION_GROUPS`) --- always do, a single-plane
-    time series too.  Any other dimension does when a value of it is shared
-    by frames at different positions --- an acquisition the object indexes
-    otherwise holds every plane, even where motion shifts the planes of one
-    from those of the next --- and not when each of its values sits at one
-    position, as a per-frame or per-plane number
-    (``FrameAcquisitionNumber``) does.  With a position unknown, every
-    dimension is kept, as before positions were read.
+    (:data:`_ACQUISITION_GROUPS`), named by the pointer itself or by
+    ``FunctionalGroupPointer`` --- always do, a single-plane time series
+    too.  Any other dimension does only where the planes repeat: when,
+    within one acquisition, it tells apart frames at the same position, and
+    a value of it is shared by frames at different positions.  So a
+    per-frame or per-plane number (``FrameAcquisitionNumber``) splits
+    nothing, and nor does a value a plane-varying attribute repeats --- a
+    tube current alternating between two values --- where no position
+    repeats.  With a position unknown, every dimension is kept, as before
+    positions were read.
     """
     count = len(values[0]) if values else 0
     if any(position is None for position in positions):
         return list(range(count))
+    chosen = sorted(d for d in acquisitions if d < count)
+    # Frames at one position within one acquisition: the repeats any other
+    # dimension must tell apart before it may split.
+    at: dict[Any, list[int]] = {}
+    for n, (value, position) in enumerate(zip(values, positions, strict=True)):
+        at.setdefault((tuple(value[d] for d in chosen), position), []).append(n)
+    repeats = [frames for frames in at.values() if len(frames) > 1]
     keep = []
     for d in range(count):
         if d in acquisitions:
@@ -544,7 +556,9 @@ def _separating(
         places: dict[Any, set[Any]] = {}
         for value, position in zip(values, positions, strict=True):
             places.setdefault(value[d], set()).add(position)
-        if any(len(at) > 1 for at in places.values()):
+        spans = any(len(where) > 1 for where in places.values())
+        tells = any(len({values[n][d] for n in frames}) > 1 for frames in repeats)
+        if spans and tells:
             keep.append(d)
     return keep
 
