@@ -237,12 +237,9 @@ impl AnnotationHandle {
         if !value.is_none() {
             value.getattr("flags")?.setattr("writeable", false)?;
         }
-        self.columns
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(name)
-            .or_insert_with(|| value.clone().unbind());
-        Ok(value)
+        // Two threads may both have read it: every caller gets the one kept.
+        let mut columns = self.columns.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(columns.entry(name).or_insert_with(|| value.unbind()).bind(py).clone())
     }
 }
 

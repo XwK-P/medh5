@@ -518,6 +518,38 @@ class TestOneThreadAtATime:
         hammered([replace(k) for k in range(threads)], rounds=200)
         assert prov.to_json()["agents"] == doc.provenance.to_json()["agents"]
 
+    @pytest.mark.parametrize("document", [False, True])
+    def test_a_provenance_reads_whole_while_its_activities_change(self, document: bool):
+        """Threads editing an activity's `params` while others read the
+        provenance: every read ends whole, and the last holds every edit.
+        A dict is read as it stands in one step, and a document's activity
+        under the lock its edits hold."""
+        from medh5.curation import Activity, Provenance
+        from medh5.document import new_document
+
+        threads = 4
+        given = Activity("a", "import", params={"seen": {}})
+        if document:
+            prov = new_document("s").provenance
+            prov.add_activity(given)
+        else:
+            prov = Provenance(activities=[given])
+        act = prov.activities[0]
+        rounds = 200
+
+        def edit(k: int) -> Callable[[], None]:
+            count = iter(range(10**9))
+            return lambda: act.params["seen"].__setitem__(f"{k}.{next(count)}", k)
+
+        def read() -> None:
+            seen = prov.to_json()["activities"][0]["params"]["seen"]
+            assert all(isinstance(v, int) for v in seen.values())
+
+        calls = [edit(k) for k in range(threads)] + [read] * threads
+        assert hammered(calls, rounds=rounds) == 0
+        every = {f"{k}.{n}" for k in range(threads) for n in range(rounds)}
+        assert set(prov.to_json()["activities"][0]["params"]["seen"]) == every
+
     @pytest.mark.parametrize("threads", [8])
     def test_threads_editing_one_nested_member_keep_every_edit(self, threads: int):
         """Threads appending to a list nested in one document member, and

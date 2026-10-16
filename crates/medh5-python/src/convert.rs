@@ -145,6 +145,13 @@ fn is_sequence(obj: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// which varies from one interpreter to the next (`PYTHONHASHSEED`), so the
 /// bytes written --- and the `content_id` --- would too.  So is an iterator,
 /// which a write would consume, and an integer beyond 64 bits ([`Wide`]).
+/// A dict's items as they stand, taken in one step (`dict.items()` is
+/// atomic): iterating the dict itself panics if another thread resizes it
+/// meanwhile, as one may on free-threaded CPython.
+fn dict_items<'py>(dict: &Bound<'py, PyDict>) -> PyResult<Vec<(Bound<'py, PyAny>, Bound<'py, PyAny>)>> {
+    dict.items().iter().map(|item| item.extract()).collect()
+}
+
 pub fn py_to_json(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     json_of(obj, Wide::Refused)
 }
@@ -174,7 +181,7 @@ fn json_of(obj: &Bound<'_, PyAny>, wide: Wide) -> PyResult<Value> {
     }
     if let Ok(dict) = obj.cast::<PyDict>() {
         let mut map = Map::new();
-        for (k, v) in dict.iter() {
+        for (k, v) in dict_items(dict)? {
             map.insert(key_text(&k)?, json_of(&v, wide)?);
         }
         return Ok(Value::Object(map));
@@ -228,7 +235,7 @@ fn json_of(obj: &Bound<'_, PyAny>, wide: Wide) -> PyResult<Value> {
 pub fn py_to_json_lenient(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Ok(dict) = obj.cast::<PyDict>() {
         let mut map = Map::new();
-        for (k, v) in dict.iter() {
+        for (k, v) in dict_items(dict)? {
             map.insert(key_text(&k).unwrap_or(k.str()?.to_string()), py_to_json_lenient(&v)?);
         }
         return Ok(Value::Object(map));

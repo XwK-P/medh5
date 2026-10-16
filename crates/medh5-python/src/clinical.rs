@@ -130,7 +130,8 @@ impl ClinicalHandle {
         Ok(py.detach(move || inner.text(&id))?)
     }
     fn document<'py>(&self, py: Python<'py>, document_id: &str) -> R<Bound<'py, PyAny>> {
-        Ok(json_to_py(py, &self.inner.document(document_id)?.to_json())?)
+        let doc = crate::h5(py, || self.inner.document(document_id).map(|d| d.to_json()))?;
+        Ok(json_to_py(py, &doc)?)
     }
     /// Every record, each document's text read from the file now.
     fn records<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
@@ -140,8 +141,11 @@ impl ClinicalHandle {
     }
     #[pyo3(signature = (cutoff_us, policy=None))]
     fn select<'py>(&self, py: Python<'py>, cutoff_us: i64, policy: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
-        let selection = self.inner.select(cutoff_us, &policy_arg(policy)?)?;
-        Ok(json_to_py(py, &selection.to_json(&self.inner.events))?)
+        let policy = policy_arg(policy)?;
+        let doc = crate::h5(py, || {
+            self.inner.select(cutoff_us, &policy).map(|selection| selection.to_json(&self.inner.events))
+        })?;
+        Ok(json_to_py(py, &doc)?)
     }
     fn summary<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.inner.summary())

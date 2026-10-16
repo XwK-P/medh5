@@ -276,7 +276,11 @@ impl Provenance {
             let objects = objects.iter().map(|o| o.clone_ref(py)).collect::<Vec<_>>();
             (state.inner.agents().cloned().collect(), objects)
         };
-        let activities = objects.iter().map(|a| activity_arg(a.bind(py).as_any())).collect::<R<Vec<_>>>()?;
+        // Read under the lock a document's activity takes for an edit to its
+        // `params`, so the graph is one state of every activity.
+        let activities = crate::document::under_live_lock(py, || {
+            objects.iter().map(|a| activity_arg(a.bind(py).as_any())).collect::<R<Vec<_>>>()
+        })?;
         Ok(prov_engine::Provenance::new(agents, activities)?)
     }
 }

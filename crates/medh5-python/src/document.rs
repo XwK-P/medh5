@@ -118,6 +118,19 @@ fn live_members<'py>(doc: &Bound<'py, SampleDocument>, field: &str) -> PyResult<
     class.bind(py).call_method1("_of", (doc, field))
 }
 
+/// `f` under the live views' lock (`medh5._live._LOCK`), which every change
+/// to a container nested in a document member holds with its rewrite: what
+/// `f` reads of those containers is one state of them, not a mix of two.
+/// `f` must not wait for another thread.
+pub fn under_live_lock<T>(py: Python<'_>, f: impl FnOnce() -> R<T>) -> R<T> {
+    static LOCK: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    let lock = LOCK.import(py, "medh5._live", "_LOCK")?;
+    lock.call_method0("acquire")?;
+    let out = f();
+    lock.call_method0("release")?;
+    out
+}
+
 /// How a member is named to a caller: `document.identity`,
 /// `document.extra['tool']`, `document.provenance.activity('act_1')`.
 fn member_name(field: &str, key: Option<&str>) -> String {
