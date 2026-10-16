@@ -1359,9 +1359,20 @@ class TestEnhancedMultiFrame:
             content = _frame(enhanced, index).FrameContentSequence[0]
             content.DimensionIndexValues = values(index)
 
-    def test_a_per_frame_dimension_does_not_split_a_stack(self, tmp_path):
-        """``FrameAcquisitionNumber`` numbers every frame: a dimension whose
-        values never meet at two positions tells no stacks apart."""
+    @pytest.mark.parametrize(
+        ("pointer", "group"),
+        [
+            (0x00209156, 0x00209111),  # FrameAcquisitionNumber, FrameContent
+            (0x00189330, 0x00189321),  # XRayTubeCurrentInmA, CTExposure
+        ],
+    )
+    def test_a_per_frame_dimension_does_not_split_a_stack(
+        self, tmp_path, pointer, group
+    ):
+        """``FrameAcquisitionNumber`` numbers every frame, and a modulated
+        tube current changes from plane to plane: a dimension whose values
+        never meet at two positions, from a group that can vary within one
+        acquisition, tells no stacks apart."""
         from medh5.io.dicom import scan_dicom
 
         classic = self._classic(tmp_path)
@@ -1372,8 +1383,9 @@ class TestEnhancedMultiFrame:
             content.InStackPositionNumber = index + 1
         self._dimensions(
             enhanced,
-            [0x00209056, 0x00209057, 0x00209156],  # StackID, in-stack, acquisition
+            [0x00209056, 0x00209057, pointer],  # StackID, in-stack, per frame
             lambda i: [1, i + 1, i + 1],
+            groups=[0x00209111, 0x00209111, group],
         )
         _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
         (series,) = scan_dicom(tmp_path / "enhanced")
@@ -1386,6 +1398,8 @@ class TestEnhancedMultiFrame:
             (0x00209128, 0x00209111),  # TemporalPositionIndex, FrameContent
             (0x00209241, 0x00189118),  # NominalPercentageOfCardiacPhase
             (0x00209252, 0x00189118),  # a cardiac timing unlisted, by its group
+            (0x00181314, 0x00189112),  # FlipAngle, MRTimingAndRelatedParameters
+            (0x00180091, 0x00189112),  # an MR timing unlisted, by its group
         ],
     )
     @pytest.mark.parametrize("same_place", [True, False])

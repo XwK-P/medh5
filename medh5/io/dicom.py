@@ -240,12 +240,20 @@ _ACQUISITIONS = frozenset(
         0x00189082,  # EffectiveEchoTime
         0x00189087,  # DiffusionBValue
         0x00189089,  # DiffusionGradientOrientation
+        0x00181314,  # FlipAngle
+        0x00180080,  # RepetitionTime
+        0x00189079,  # InversionTimes
+        0x00189090,  # VelocityEncodingDirection
+        0x00189257,  # ASLContext
+        0x00089208,  # ComplexImageComponent
+        0x00189344,  # ContrastBolusAgentPhase
     }
 )
 """Dimensions each of whose values is one acquisition of the planes --- a
-time point, a cardiac or respiratory phase, an echo, a diffusion weighting
---- so they tell stacks apart however many planes a value holds
-(C.7.6.16.2.2)."""
+time point, a cardiac or respiratory phase, an echo, a diffusion weighting,
+a flip angle or repetition time, a flow encoding, a labelling, a complex
+component, a contrast phase --- so they tell stacks apart however many
+planes a value holds (C.7.6.16.2.2)."""
 
 
 _ACQUISITION_GROUPS = frozenset(
@@ -255,11 +263,24 @@ _ACQUISITION_GROUPS = frozenset(
         0x00209253,  # RespiratorySynchronizationSequence
         0x00189114,  # MREchoSequence
         0x00189117,  # MRDiffusionSequence
+        0x00189112,  # MRTimingAndRelatedParametersSequence
+        0x00189115,  # MRModifierSequence
+        0x00189197,  # MRVelocityEncodingSequence
+        0x00189251,  # MRArterialSpinLabelingSequence
+        0x00189152,  # MRMetaboliteMapSequence
+        0x00189042,  # MRReceiveCoilSequence
+        0x00189226,  # MRImageFrameTypeSequence
+        0x00189329,  # CTImageFrameTypeSequence
+        0x00189751,  # PETFrameTypeSequence
+        0x00189341,  # ContrastBolusUsageSequence
     }
 )
-"""Functional groups whose every attribute times or weights one acquisition:
-a dimension pointing into one is an acquisition whatever attribute it names,
-so a timing attribute :data:`_ACQUISITIONS` does not list still splits."""
+"""Functional groups whose every attribute times, weights, encodes or types
+one acquisition, and is the same for all of its planes: a dimension pointing
+into one is an acquisition whatever attribute it names, so an attribute
+:data:`_ACQUISITIONS` does not list still splits. Groups that can vary plane
+by plane within one acquisition --- frame content, plane position, a CT's
+modulated exposure --- are left to the positions to judge."""
 
 
 _POSITIONAL = frozenset({0x00209057, 0x00200032})
@@ -502,7 +523,8 @@ def _separating(
     ``StackID``) tell its stacks apart.
 
     The *acquisitions* --- dimensions whose pointer names one acquisition
-    of the planes (:data:`_ACQUISITIONS`) --- always do, a single-plane
+    of the planes (:data:`_ACQUISITIONS`), or whose functional group does
+    (:data:`_ACQUISITION_GROUPS`) --- always do, a single-plane
     time series too.  Any other dimension does when a value of it is shared
     by frames at different positions --- an acquisition the object indexes
     otherwise holds every plane, even where motion shifts the planes of one

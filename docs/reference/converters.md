@@ -236,39 +236,43 @@ de-identify, and writes no de-identification record: the report says so, and
 the validator reports such a file (`W903`).
 
 **Enhanced multi-frame objects are read as their stacks.** Enhanced and
-legacy-converted CT, MR and PET objects (PS3.3 C.7.6.16) are split into
-stacks by `StackID` and by the dimensions of `DimensionIndexSequence` that
-tell acquisitions apart. A temporal position, a cardiac or respiratory phase,
-an echo time or a diffusion weighting always does, even when each of its
-values holds one plane, and so does any dimension taken from the
-temporal-position, cardiac- or respiratory-synchronization, echo or diffusion
-functional group; any other dimension does when its values are shared by
-frames at different positions (even where motion shifts one acquisition's
-planes from the next's). A dimension that numbers frames or planes
-(`FrameAcquisitionNumber`) splits nothing. Each stack becomes a series, with
-`Series.frames` naming its `(file, frame index)` pairs and `Series.stack` the
-stack where an object holds several, and is imported as a classic series
-would be: every frame read as a slice whose position, orientation, pixel spacing, rescale and
-acquisition attributes come from its own functional groups, else the shared
-ones, else the object's top level (an enhanced MR's `EffectiveEchoTime` is
-its `EchoTime`). Frames are decoded one at a time. A frame that states no
-position, a stack that is not a regular grid, and a stack whose
-`InStackPositionNumber` runs against its positions or skips a number (it
-counts a stack's frames from 1, so a gap is a missing plane) are refused with
-the reason. Frames with different rescales follow `per_slice_rescale`. A
-concatenation's instances are joined by `ConcatenationUID` in
-`InConcatenationNumber` order, and one missing a part is refused: the parts
-are counted against `InConcatenationTotalNumber`, and where that optional
-total is absent their numbers must run from 1 without a gap. Each part
-that states `ConcatenationFrameOffsetNumber` must start where the frames of
-the parts before it end, or frames between them are missing. An instance
-with no `ConcatenationUID` whose markers make it a part (a number or total
-above 1, or a frame offset) is refused rather than read as the whole object,
-and so is an instance whose `NumberOfFrames` is absent or disagrees with its
-per-frame functional groups, which hold one item per frame. Enhanced
+legacy-converted CT, MR and PET objects (PS3.3 C.7.6.16) are split into stacks
+by `StackID` and by the dimensions of `DimensionIndexSequence` that tell
+acquisitions apart. A temporal position, a cardiac or respiratory phase, an
+echo time, a diffusion weighting, a flip angle or repetition time, a flow
+encoding, a spin labelling, a complex component or a contrast phase always
+does, even when each of its values holds one plane, and so does any dimension
+taken from a functional group that is the same for all of an acquisition's
+planes: temporal position, cardiac or respiratory synchronization, the MR
+echo, diffusion, timing, modifier, velocity encoding, spin labelling,
+metabolite, receive coil and frame type groups, the CT and PET frame type
+groups and contrast usage. Any other dimension, such as a CT's modulated
+exposure, does when its values are shared by frames at different positions
+(even where motion shifts one acquisition's planes from the next's). A
+dimension that numbers frames or planes (`FrameAcquisitionNumber`) splits
+nothing. Each stack becomes a series, with `Series.frames` naming its
+`(file, frame index)` pairs and `Series.stack` the stack where an object holds
+several, and is imported as a classic series would be: every frame read as a
+slice whose position, orientation, pixel spacing, rescale and acquisition
+attributes come from its own functional groups, else the shared ones, else the
+object's top level (an enhanced MR's `EffectiveEchoTime` is its `EchoTime`).
+Frames are decoded one at a time. A frame that states no position, a stack
+that is not a regular grid, and a stack whose `InStackPositionNumber` runs
+against its positions or skips a number (it counts a stack's frames from 1, so
+a gap is a missing plane) are refused with the reason. Frames with different
+rescales follow `per_slice_rescale`. A concatenation's instances are joined by
+`ConcatenationUID` in `InConcatenationNumber` order, and one missing a part is
+refused: the parts are counted against `InConcatenationTotalNumber`, and where
+that optional total is absent their numbers must run from 1 without a gap.
+Each part that states `ConcatenationFrameOffsetNumber` must start where the
+frames of the parts before it end, or frames between them are missing. An
+instance with no `ConcatenationUID` whose markers make it a part (a number or
+total above 1, or a frame offset) is refused rather than read as the whole
+object, and so is an instance whose `NumberOfFrames` is absent or disagrees
+with its per-frame functional groups, which hold one item per frame. Enhanced
 ultrasound volumes and other multi-frame objects are skipped with a warning,
-and an object that carries a patient position but is not an image — an RT
-Dose grid — with a note.
+and an object that carries a patient position but is not an image — an RT Dose
+grid — with a note.
 
 **One series does not stop the tree.** A series the importer refuses is left
 out with a warning (`series`) naming it and the reason, and the rest are
