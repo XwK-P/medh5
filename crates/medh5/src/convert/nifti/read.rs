@@ -484,8 +484,8 @@ impl Image {
         if self.shape.is_empty() {
             // A shape of no dimensions is numpy's scalar: one element.  Where
             // numpy maps it (an uncompressed file holding the element), it is
-            // read, and 2.1.0's `ascontiguousarray` made it `(1,)`; elsewhere
-            // nibabel read nothing, and an empty read is `(0,)`.
+            // read, shape `()`; elsewhere nibabel read nothing, and an empty
+            // read is `(0,)`.
             let mut file = File::open(&self.image_path).map_err(|e| open_error(&e, &self.image_name))?;
             let item = element.itemsize() as u64;
             let length = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -495,7 +495,7 @@ impl Image {
             file.seek(SeekFrom::Start(self.offset))?;
             let mut bytes = vec![0; element.itemsize()];
             file.read_exact(&mut bytes)?;
-            return Ok(Voxels { element, big_endian, shape: vec![1], bytes });
+            return Ok(Voxels { element, big_endian, shape: Vec::new(), bytes });
         }
         // NIfTI-2's seven 64-bit dimensions can name more bytes than even
         // an i128 counts: that array is one no machine holds.
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn s02_2_a_shape_of_no_dimensions_is_one_element_where_numpy_maps_it() {
         // dim[0] = -1 slices no dimensions: numpy's scalar.  Mapped, from a
-        // .nii holding it, its one element is read, as (1,); compressed, or
+        // .nii holding it, its one element is read, as (); compressed, or
         // from a file too short to map, nibabel read none, as (0,).
         let dir = tempfile::tempdir().unwrap();
         // Big-endian: dim[0] = -1 is no little-endian header's, so the byte
@@ -743,7 +743,7 @@ mod tests {
         let path = dir.path().join("scalar.nii");
         std::fs::write(&path, single(&h, &data)).unwrap();
         let read = nifti(&path).read_voxels().unwrap();
-        assert_eq!((read.shape, read.bytes), (vec![1], data[..2].to_vec()));
+        assert_eq!((read.shape, read.bytes), (Vec::new(), data[..2].to_vec()));
         std::fs::write(&path, single(&h, &data[..1])).unwrap();
         assert_eq!(nifti(&path).read_voxels().unwrap().shape, vec![0]);
         let gz = dir.path().join("scalar.nii.gz");
