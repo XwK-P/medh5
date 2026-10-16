@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -226,6 +226,21 @@ _STACK_ID = 0x00209056
 """``StackID``: the stack a frame belongs to (C.7.6.16.2.2)."""
 
 
+_ACQUISITIONS = frozenset(
+    {
+        0x00209128,  # TemporalPositionIndex
+        0x0020930D,  # TemporalPositionTimeOffset
+        0x00209153,  # NominalCardiacTriggerDelayTime
+        0x00189082,  # EffectiveEchoTime
+        0x00189087,  # DiffusionBValue
+        0x00189089,  # DiffusionGradientOrientation
+    }
+)
+"""Dimensions each of whose values is one acquisition of the planes --- a
+time point, a cardiac phase, an echo, a diffusion weighting --- so they
+tell stacks apart however many planes a value holds (C.7.6.16.2.2)."""
+
+
 _POSITIONAL = frozenset({0x00209057, 0x00200032})
 """Dimensions that order frames within a stack --- ``InStackPositionNumber``
 and ``ImagePositionPatient`` --- rather than tell stacks apart."""
@@ -381,12 +396,18 @@ def _object_series(parts: Sequence[tuple[str, Any]]) -> list[Series]:
     """
     parts = sorted(parts, key=lambda part: _number(part[1], "InConcatenationNumber"))
     header = parts[0][1]
+    pointers = [
+        int(getattr(item, "DimensionIndexPointer", 0) or 0)
+        for item in getattr(header, "DimensionIndexSequence", [])
+    ]
     dimensions = [
         index
-        for index, item in enumerate(getattr(header, "DimensionIndexSequence", []))
-        if int(getattr(item, "DimensionIndexPointer", 0) or 0)
-        not in (_POSITIONAL | {_STACK_ID})
+        for index, pointer in enumerate(pointers)
+        if pointer not in (_POSITIONAL | {_STACK_ID})
     ]
+    acquisitions = {
+        d for d, index in enumerate(dimensions) if pointers[index] in _ACQUISITIONS
+    }
     found: list[tuple[str, int, tuple[Any, ...], tuple[float, ...] | None]] = []
     for path, part in parts:
         shared, per_frame = _groups(part)
@@ -401,7 +422,9 @@ def _object_series(parts: Sequence[tuple[str, Any]]) -> list[Series]:
     stacks: dict[tuple[Any, ...], list[tuple[str, int]]] = {}
     for members in by_id.values():
         keep = _separating(
-            [found[n][2][1:] for n in members], [found[n][3] for n in members]
+            [found[n][2][1:] for n in members],
+            [found[n][3] for n in members],
+            acquisitions,
         )
         for n in members:
             path, index, key, _ = found[n]
@@ -449,23 +472,31 @@ def _placed(group: Any, shared: Any) -> tuple[float, ...] | None:
 
 
 def _separating(
-    values: Sequence[tuple[Any, ...]], positions: Sequence[tuple[float, ...] | None]
+    values: Sequence[tuple[Any, ...]],
+    positions: Sequence[tuple[float, ...] | None],
+    acquisitions: Collection[int] = (),
 ) -> list[int]:
     """Which of the dimensions in *values* (one tuple per frame of a
     ``StackID``) tell its stacks apart.
 
-    A dimension tells stacks apart when a value of it is shared by frames at
-    different positions --- a time point or an echo holds every plane, even
-    where motion shifts the planes of one from those of the next --- and not
-    when each of its values sits at one position, as a per-frame or
-    per-plane number (``FrameAcquisitionNumber``) does.  With a position
-    unknown, every dimension is kept, as before positions were read.
+    The *acquisitions* --- dimensions whose pointer names one acquisition
+    of the planes (:data:`_ACQUISITIONS`) --- always do, a single-plane
+    time series too.  Any other dimension does when a value of it is shared
+    by frames at different positions --- an acquisition the object indexes
+    otherwise holds every plane, even where motion shifts the planes of one
+    from those of the next --- and not when each of its values sits at one
+    position, as a per-frame or per-plane number
+    (``FrameAcquisitionNumber``) does.  With a position unknown, every
+    dimension is kept, as before positions were read.
     """
     count = len(values[0]) if values else 0
     if any(position is None for position in positions):
         return list(range(count))
     keep = []
     for d in range(count):
+        if d in acquisitions:
+            keep.append(d)
+            continue
         places: dict[Any, set[Any]] = {}
         for value, position in zip(values, positions, strict=True):
             places.setdefault(value[d], set()).add(position)

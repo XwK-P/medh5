@@ -1375,6 +1375,32 @@ class TestEnhancedMultiFrame:
         assert series.n_slices == 6 and series.stack is None
         self._imported(tmp_path / "enhanced", tmp_path / "out.medh5")
 
+    @pytest.mark.parametrize("same_place", [True, False])
+    def test_a_temporal_index_splits_single_plane_time_points(
+        self, tmp_path, same_place
+    ):
+        """A single-plane time series: each time point holds one frame, so
+        no value spans planes, and the temporal index still tells them apart
+        --- frames at one place are not duplicates, and frames at regular
+        places are not one volume."""
+        from medh5.io.dicom import scan_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        if same_place:
+            first = _frame(enhanced, 0).PlanePositionSequence[0]
+            for index in range(1, 6):
+                plane = _frame(enhanced, index).PlanePositionSequence[0]
+                plane.ImagePositionPatient = list(first.ImagePositionPatient)
+        self._dimensions(
+            enhanced,
+            [0x00209128, 0x00200032],  # temporal, position
+            lambda i: [i + 1, 1],
+        )
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        stacks = scan_dicom(tmp_path / "enhanced")
+        assert [s.n_slices for s in stacks] == [1] * 6
+
     @pytest.mark.parametrize("shift", [0.0, 0.25])
     def test_a_dimension_repeating_positions_splits_them_into_stacks(
         self, tmp_path, shift
