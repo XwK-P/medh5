@@ -220,7 +220,8 @@ class CohortImport:
             )
             if verbose:
                 lines.extend(
-                    "    " + line for line in subject.report.format().splitlines()
+                    "    " + line
+                    for line in subject.report.format(verbose=True).splitlines()
                 )
         lines.extend(f"  {note}" for note in self.report.notes)
         return "\n".join(lines)

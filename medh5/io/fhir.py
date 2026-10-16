@@ -45,8 +45,9 @@ import datetime
 import json
 import os
 import re
+import sqlite3
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -763,7 +764,9 @@ def augment_cohort_from_fhir(
 
     The files are streamed twice: once to find where each mapped subject's
     resources are (a line's offset, not the resource), then once per subject
-    to read them, so one subject's resources are in memory at a time.
+    to read them, so one subject's resources are in memory at a time.  The
+    index of where they are, and of the subjects not read, is kept in a
+    temporary database on disk, so memory does not grow with the export.
     Resources of subjects the mapping does not name, and resource types the
     profile does not read, are counted in ``info`` notes.  A subject that
     refuses is reported in the result, and the others are still written.
@@ -777,13 +780,70 @@ def augment_cohort_from_fhir(
         converter="from-fhir",
         report=ConversionReport(source=source, converter="from-fhir"),
     )
-    lines: dict[str, list[tuple[int, int, int]]] = defaultdict(list)
-    others: Counter[str] = Counter()
-    elsewhere: Counter[str] = Counter()
-    for index, path in enumerate(files):
+    with _BulkIndex(mapping) as index:
+        for n, path in enumerate(files):
+            index.scan(n, path)
+        index.notes(cohort.report)
+        for subject, sample, out in targets:
+
+            def read(
+                on: Clock, subject: str = subject
+            ) -> tuple[ClinicalRecords, ConversionReport]:
+                resources = list(_bulk_read(files, index.lines(subject)))
+                records, report = read_fhir(
+                    resources,
+                    subject=subject,
+                    clock=on,
+                    timezone=timezone,
+                    origin=origin,
+                    texts=texts,
+                    prefer_systems=prefer_systems,
+                    image_studies=image_studies,
+                )
+                report.source = source
+                return records, report
+
+            cohort.subjects.append(
+                _clinical.import_subject(subject, sample, out, clock, read)
+            )
+    return cohort
+
+
+class _BulkIndex:
+    """Where each mapped subject's lines are in a bulk export, and how many
+    resources of each subject the mapping does not name: in a temporary
+    database on disk (SQLite's, removed when it closes), so that what is held
+    in memory is the mapping and a bounded buffer, never a row per resource
+    or per subject of the export."""
+
+    BUFFER = 1_000
+    """Rows gathered before they are written to the database."""
+
+    def __init__(self, subjects: Iterable[str]) -> None:
+        self._subjects = {subject: n for n, subject in enumerate(subjects)}
+        self._db = sqlite3.connect("")
+        self._db.executescript(
+            "PRAGMA cache_size = -2048; PRAGMA temp_store = FILE;"
+            "CREATE TABLE line (subject INTEGER, file INTEGER, start INTEGER,"
+            " length INTEGER);"
+            "CREATE TABLE elsewhere (reference TEXT, resources INTEGER);"
+        )
+        self._lines: list[tuple[int, int, int, int]] = []
+        self._elsewhere: Counter[str] = Counter()
+        self._others: Counter[str] = Counter()
+        self._indexed = False
+
+    def __enter__(self) -> _BulkIndex:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._db.close()
+
+    def scan(self, number: int, path: Path) -> None:
+        """Index the lines of *path*, the export's file *number*."""
         with path.open("rb") as stream:
             offset = 0
-            for number, line in enumerate(stream, 1):
+            for line_number, line in enumerate(stream, 1):
                 start, offset = offset, offset + len(line)
                 if not line.strip():
                     continue
@@ -791,49 +851,62 @@ def augment_cohort_from_fhir(
                     resource = json.loads(line)
                 except ValueError as exc:
                     raise MEDH5ValidationError(
-                        f"line {number} of {path} is not JSON: {exc}"
+                        f"line {line_number} of {path} is not JSON: {exc}"
                     ) from None
                 if not isinstance(resource, Mapping):
                     raise MEDH5ValidationError(
-                        f"line {number} of {path} is not a FHIR resource"
+                        f"line {line_number} of {path} is not a FHIR resource"
                     )
                 kind = str(resource.get("resourceType"))
                 if kind not in _KINDS:
-                    others[kind] += 1
+                    self._others[kind] += 1
                     continue
                 reference = (resource.get("subject") or {}).get("reference")
-                if isinstance(reference, str) and reference in mapping:
-                    lines[reference].append((index, start, len(line)))
+                subject = (
+                    self._subjects.get(reference)
+                    if isinstance(reference, str)
+                    else None
+                )
+                if subject is not None:
+                    self._lines.append((subject, number, start, len(line)))
+                    if len(self._lines) >= self.BUFFER:
+                        self._flush()
                 else:
-                    elsewhere[str(reference)] += 1
-    _bulk_notes(cohort.report, others, elsewhere)
-    for subject, sample, out in targets:
+                    self._elsewhere[str(reference)] += 1
+                    if len(self._elsewhere) >= self.BUFFER:
+                        self._flush()
 
-        def read(
-            on: Clock, subject: str = subject
-        ) -> tuple[ClinicalRecords, ConversionReport]:
-            resources = list(_bulk_read(files, lines.pop(subject, [])))
-            records, report = read_fhir(
-                resources,
-                subject=subject,
-                clock=on,
-                timezone=timezone,
-                origin=origin,
-                texts=texts,
-                prefer_systems=prefer_systems,
-                image_studies=image_studies,
-            )
-            report.source = source
-            return records, report
-
-        cohort.subjects.append(
-            _clinical.import_subject(subject, sample, out, clock, read)
+    def _flush(self) -> None:
+        self._db.executemany("INSERT INTO line VALUES (?, ?, ?, ?)", self._lines)
+        self._db.executemany(
+            "INSERT INTO elsewhere VALUES (?, ?)", self._elsewhere.items()
         )
-    return cohort
+        self._lines.clear()
+        self._elsewhere.clear()
+
+    def notes(self, report: ConversionReport) -> None:
+        """Count, in *report*, what the export holds that is not read."""
+        self._flush()
+        subjects, resources = self._db.execute(
+            "SELECT COUNT(DISTINCT reference), SUM(resources) FROM elsewhere"
+        ).fetchone()
+        _bulk_notes(report, self._others, subjects, resources or 0)
+
+    def lines(self, subject: str) -> Iterator[tuple[int, int, int]]:
+        """*subject*'s lines, as (file, offset, length), in file and line
+        order."""
+        if not self._indexed:
+            self._flush()
+            self._db.execute("CREATE INDEX line_subject ON line (subject)")
+            self._indexed = True
+        return self._db.execute(
+            "SELECT file, start, length FROM line WHERE subject = ? ORDER BY rowid",
+            (self._subjects[subject],),
+        )
 
 
 def _bulk_read(
-    files: Sequence[Path], where: Sequence[tuple[int, int, int]]
+    files: Sequence[Path], where: Iterable[tuple[int, int, int]]
 ) -> Iterable[Any]:
     """The resources at *where*: (file, offset, length) of each line."""
     streams: dict[int, Any] = {}
@@ -850,17 +923,14 @@ def _bulk_read(
 
 
 def _bulk_notes(
-    report: ConversionReport, others: Counter[str], elsewhere: Counter[str]
+    report: ConversionReport, others: Counter[str], subjects: int, resources: int
 ) -> None:
-    if elsewhere:
+    if resources:
         report.add(
             "subject",
-            f"{sum(elsewhere.values())} Observation(s) and DiagnosticReport(s) "
-            f"of {len(elsewhere)} subject(s) not in the mapping were not read",
-            detail={
-                "subjects": len(elsewhere),
-                "resources": sum(elsewhere.values()),
-            },
+            f"{resources} Observation(s) and DiagnosticReport(s) "
+            f"of {subjects} subject(s) not in the mapping were not read",
+            detail={"subjects": subjects, "resources": resources},
         )
     for kind, n in sorted(others.items()):
         report.add(

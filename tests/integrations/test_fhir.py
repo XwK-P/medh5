@@ -363,6 +363,67 @@ def test_a_resource_for_an_unmapped_subject_is_counted(tmp_path):
     assert "19 Observation(s) and DiagnosticReport(s)" in str(cohort)
 
 
+def test_a_bulk_index_is_kept_out_of_memory(tmp_path):
+    """Where a bulk export's lines are, and which subjects it holds that the
+    mapping does not name, is kept on disk: indexing 24 subjects' 48,000
+    lines peaks where indexing 12 subjects' does, and 30,000 subjects outside
+    the mapping add nothing, where an index in memory holds some 2.5 MB more
+    in each case.  The samples have no clock and none is given, so every
+    subject is refused before its lines are read, and the peak is the
+    index's."""
+    import json
+    import tracemalloc
+
+    from medh5.io.fhir import augment_cohort_from_fhir
+
+    def obs(subject, i):
+        return json.dumps({
+            "resourceType": "Observation", "id": f"o{i}", "status": "final",
+            "subject": {"reference": subject},
+            "code": {"coding": [{"system": Fhir.LOINC, "code": "2160-0"}]},
+            "effectiveDateTime": "2020-03-01T08:15:00Z",
+        }) + "\n"  # fmt: skip
+
+    subjects = [f"Patient/s{s}" for s in range(24)]
+    narrow, wide = tmp_path / "narrow", tmp_path / "wide"
+    for root in (narrow, wide):
+        root.mkdir()
+        with (root / "Observation.ndjson").open("w", encoding="utf-8") as out:
+            out.writelines(obs(s, i) for i in range(2000) for s in subjects)
+            if root is wide:
+                out.writelines(obs(f"Patient/u{u}", 0) for u in range(30_000))
+    samples = {s: Fhir.sample(tmp_path / f"{s[8:]}.medh5") for s in subjects}
+
+    def peak(export, n):
+        mapping = {s: samples[s] for s in subjects[:n]}
+        tracemalloc.start()
+        try:
+            cohort = augment_cohort_from_fhir(export, mapping)
+            top = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert len(cohort.refused) == n
+        assert "no clinical clock" in cohort.refused[0].error
+        return top / 2**20  # MB
+
+    half, whole = peak(narrow, 12), peak(narrow, 24)
+    assert whole - half < 0.5, (half, whole)
+    assert peak(wide, 24) - whole < 0.5, whole
+
+
+def test_a_verbose_cohort_shows_each_subjects_notes(tmp_path):
+    from medh5.io.fhir import augment_cohort_from_fhir
+
+    export, _ = _export(tmp_path)
+    sample = Fhir.sample(tmp_path / "one.medh5")
+    cohort = augment_cohort_from_fhir(export, {"Patient/p1": sample}, **BULK)
+    (subject,) = cohort.imported
+    verbose = subject.report.format(verbose=True)
+    assert verbose != subject.report.format()
+    shown = cohort.format(verbose=True)
+    assert all("    " + line in shown for line in verbose.splitlines())
+
+
 def test_a_bulk_subject_that_refuses_leaves_the_others(tmp_path):
     from medh5.io.fhir import augment_cohort_from_fhir
 

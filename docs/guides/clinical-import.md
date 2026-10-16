@@ -143,7 +143,9 @@ The batch changes the cost, never the answer:
   order holds one row group and one subject in memory at a time.
 - **FHIR.** The NDJSON files are read once to find where each mapped
   subject's Observations and DiagnosticReports are, then once per subject to
-  read them, in file and line order, as a Bundle of them would be read.
+  read them, in file and line order, as a Bundle of them would be read. Where
+  they are is kept in a temporary file, not in memory, so an export of
+  millions of resources holds one subject's in memory at a time.
 
 A subject that refuses (no rows, a sample without a clock, ids already there)
 is listed in `cohort.refused` with its reason, and the others are still
