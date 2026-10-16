@@ -2575,3 +2575,172 @@ class TestWithheldShift:
             + main(["scrub", str(quiet), "--apply", "--withhold-shift"])
             == 0
         )
+
+
+class TestScrubCollection:
+    """W22-07.1 (E8): a collection is scrubbed member by member, into a new
+    collection, and its source is only read."""
+
+    IDS = (("MRN-0001", "subj-1"), ("MRN-0002", "subj-1"), ("MRN-0003", "subj-2"))
+
+    @staticmethod
+    def _collection(tmp_path: Path, *extra: Path) -> Path:
+        from medh5.collection import pack
+
+        paths = [
+            _dated(tmp_path / f"{sample}.medh5", sample_id=sample, subject_id=subject)
+            for sample, subject in TestScrubCollection.IDS
+        ]
+        return pack([*paths, *extra], tmp_path / "cohort.medh5c")
+
+    @staticmethod
+    def _members(path: Path) -> dict[str, Any]:
+        """Each member's key, ids, first date and stored `content_id`."""
+        from medh5.collection import open_collection
+
+        with open_collection(path) as collection:
+            return {
+                key: (
+                    collection[key].document.identity.sample_id,
+                    collection[key].document.identity.subject_id,
+                    collection[key].document.timepoints["tp0"].date,
+                    collection[key].content_id,
+                )
+                for key in collection
+            }
+
+    @staticmethod
+    def _scratch(tmp_path: Path) -> list[str]:
+        return [p.name for p in tmp_path.iterdir() if ".scrub-" in p.name]
+
+    def test_S2_2_a_scrubbed_collection_is_a_new_collection(self, tmp_path: Path):
+        source = self._collection(tmp_path)
+        before = self._members(source)
+        out = tmp_path / "shared.medh5c"
+        report = scrubber.apply(
+            source,
+            out=out,
+            salt="pep",
+            pseudonymise_ids=True,
+            date_shift_range=(-400, -100),
+        )
+        assert report.applied and report.ok and report.path == str(out)
+        assert validate_file(out).ok
+        after = self._members(out)
+        # Keyed by each member's pseudonym, as `--out-dir` names a file.
+        pseudonyms = {
+            scrubber.pseudonymise(sample, "pep"): sample for sample, _ in self.IDS
+        }
+        assert sorted(after) == sorted(p.removeprefix("pseudo:") for p in pseudonyms)
+        for key, (sample_id, subject_id, date, content_id) in after.items():
+            old = pseudonyms[sample_id]
+            assert key == sample_id.removeprefix("pseudo:")
+            assert subject_id == scrubber.pseudonymise(dict(self.IDS)[old], "pep")
+            assert date != "2020-01-31" and content_id != before[old][3]
+        # One report: each member's findings under its source key, what a
+        # re-scan still finds under the key it was written as.
+        assert {f.where.split("::")[0] for f in report.findings} == {
+            sample for sample, _ in self.IDS
+        }
+        assert (
+            f"MRN-0001 written as {scrubber.pseudonymise('MRN-0001', 'pep')[7:]}"
+            in (report.actions)
+        )
+        assert set(report.uid_map) >= {"MRN-0001", "MRN-0002", "MRN-0003", "subj-1"}
+        assert b"MRN-000" not in out.read_bytes()
+        assert not self._scratch(tmp_path)
+
+    def test_S11_4_members_of_one_subject_share_a_shift(self, tmp_path: Path):
+        source = self._collection(tmp_path)
+        out = tmp_path / "shared.medh5c"
+        scrubber.apply(source, out=out, salt="pep", date_shift_range=(-400, -100))
+        dates = {sample: date for sample, _, date, _ in self._members(out).values()}
+        assert dates["MRN-0001"] == dates["MRN-0002"] != dates["MRN-0003"]
+        # The members agree with the samples scrubbed one by one.
+        alone = _dated(tmp_path / "alone.medh5", subject_id="subj-2")
+        scrubber.apply(alone, salt="pep", date_shift_range=(-400, -100))
+        with medh5.open(alone) as sample:
+            assert sample.document.timepoints["tp0"].date == dates["MRN-0003"]
+
+    def test_S2_2_a_refused_member_leaves_no_output(self, tmp_path: Path):
+        clinical = TestClinicalScrub._clinical(tmp_path)
+        source = self._collection(tmp_path, clinical)
+        out = tmp_path / "shared.medh5c"
+        with pytest.raises(MEDH5ValidationError, match="nothing was written") as no:
+            scrubber.apply(source, out=out, salt="pep", withhold_shift=True)
+        said = str(no.value)
+        assert "member 'visit' of" in said and "--skip-refused" in said
+        assert f"{source}::visit" in said and ".scrub-" not in said
+        assert not out.exists() and not self._scratch(tmp_path)
+        # Left out and listed, the others written.
+        report = scrubber.apply(
+            source, out=out, salt="pep", withhold_shift=True, skip_refused=True
+        )
+        assert sorted(self._members(out)) == ["MRN-0001", "MRN-0002", "MRN-0003"]
+        (refused,) = [f for f in report.findings if f.rule == "refused_member"]
+        assert refused.where == "visit" and "a name, a UID" in refused.detail
+        assert "visit left out: refused" in report.actions
+        assert not self._scratch(tmp_path)
+
+    def test_S2_2_the_source_collection_is_byte_identical(self, tmp_path: Path):
+        source = self._collection(tmp_path)
+        before = source.read_bytes()
+        scanned = scrubber.scan(source)
+        assert not scanned.applied
+        assert [f.where for f in scanned.findings] == [
+            f"{sample}::timepoints[0].date" for sample, _ in self.IDS
+        ]
+        report = scrubber.apply(
+            source, out=tmp_path / "shared.medh5c", withhold_shift=True, salt="pep"
+        )
+        assert report.ok
+        assert source.read_bytes() == before
+
+    def test_S2_2_a_collection_is_never_rewritten_in_place(self, tmp_path: Path):
+        source = self._collection(tmp_path)
+        with pytest.raises(MEDH5ValidationError, match="give --out"):
+            scrubber.apply(source)
+        with pytest.raises(MEDH5ValidationError, match="the collection being scrubbed"):
+            scrubber.apply(source, out=source)
+        # In a directory, under its own name.
+        target = tmp_path / "shared"
+        target.mkdir()
+        [report] = scrubber.scrub_paths(
+            [source], apply_changes=True, withhold_shift=True, out_dir=target
+        )
+        assert report.path == str(target / source.name)
+
+    def test_S11_4_a_member_keyed_by_a_record_number_is_reported(self, tmp_path: Path):
+        """A member's key is a lone sample's file name: the identity rule
+        reads it as it reads a name, and a pseudonymised run re-keys it."""
+        from medh5.collection import pack
+
+        path = tmp_path / "1.2.840.10008.5.medh5"
+        _dated(path, sample_id="s1")
+        source = pack([path], tmp_path / "c.medh5c", keys=["1.2.840.10008.5"])
+        (keyed,) = [f for f in scrubber.scan(source).findings if f.rule == "file_name"]
+        assert keyed.where == "1.2.840.10008.5::member key"
+        assert keyed.value == "1.2.840.10008.5" and "member key" in keyed.detail
+        assert "rename" not in keyed.detail
+        report = scrubber.apply(
+            source,
+            out=tmp_path / "shared.medh5c",
+            salt="pep",
+            pseudonymise_ids=True,
+            withhold_shift=True,
+        )
+        assert not [f for f in report.remaining if f.rule == "file_name"]
+
+    def test_the_cli_scrubs_a_collection(self, tmp_path: Path, capsys):
+        from medh5.cli import main
+
+        source = self._collection(tmp_path)
+        out = tmp_path / "shared.medh5c"
+        assert main(["scrub", str(source), "--apply", "--withhold-shift"]) == 1
+        assert "give --out" in capsys.readouterr().err
+        flags = ["--apply", "--salt", "pep", "--withhold-shift", "--out", str(out)]
+        assert main(["scrub", str(source), *flags, "--json"]) == 0
+        [report] = json.loads(capsys.readouterr().out)
+        assert report["path"] == str(out) and report["ok"]
+        assert main(["scrub", str(source), "--skip-refused"]) == 2
+        assert "--skip-refused (skip_refused)" in capsys.readouterr().err

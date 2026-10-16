@@ -2441,11 +2441,11 @@ medh5.curation.scrub.ScrubReport.to_json	method	()
 medh5.curation.scrub.ScrubReport.uid_map	field
 medh5.curation.scrub.UID_KEYS	constant	frozenset
 medh5.curation.scrub.UNFIXABLE_LOCATIONS	constant	tuple
-medh5.curation.scrub.apply	function	(path, *, profile='basic', salt='', date_shift_days=None, performed_by=None, pseudonymise_ids=False, date_shift_range=None, withhold_shift=None, out=None, attest_text=None)
+medh5.curation.scrub.apply	function	(path, *, profile='basic', salt='', date_shift_days=None, performed_by=None, pseudonymise_ids=False, date_shift_range=None, withhold_shift=None, out=None, attest_text=None, skip_refused=False)
 medh5.curation.scrub.pseudonymise	function	(uid, salt='')
 medh5.curation.scrub.scan	function	(path, *, profile='basic')
 medh5.curation.scrub.scan_document	function	(document, report)
-medh5.curation.scrub.scrub_paths	function	(paths, *, apply_changes=False, profile='basic', salt='', date_shift_days=None, performed_by=None, pseudonymise_ids=False, date_shift_range=None, withhold_shift=None, out_dir=None, attest_text=None)
+medh5.curation.scrub.scrub_paths	function	(paths, *, apply_changes=False, profile='basic', salt='', date_shift_days=None, performed_by=None, pseudonymise_ids=False, date_shift_range=None, withhold_shift=None, out_dir=None, attest_text=None, skip_refused=False)
 medh5.curation.splits	module
 medh5.curation.splits.Conflict	class	(set_id, manifests, paths_by_manifest=<factory>) bases=
 medh5.curation.splits.Conflict.manifests	field

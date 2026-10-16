@@ -274,6 +274,46 @@ timepoint whose `date` was
 added after the shift is reported: its `days_from_baseline` puts it apart from
 the dates that moved together, and a person has to decide what it should say.
 
+### A collection
+
+A collection (`.medh5c`, §2.2) is scanned and scrubbed member by member, and
+`--apply` writes a **new collection**: `--out NEW.medh5c` (or `--out-dir DIR`,
+where it keeps its own name) is required, and the source is only read.
+
+```bash
+medh5 scrub cohort.medh5c --apply --salt "$SALT" --pseudonymise-ids \
+    --date-shift-range=-400:-100 --out shared/cohort.medh5c
+```
+
+<!-- illustrative -->
+```python
+report = scrub.apply(
+    "cohort.medh5c",
+    salt=SALT,
+    pseudonymise_ids=True,
+    date_shift_range=(-400, -100),
+    out="shared/cohort.medh5c",
+)
+```
+
+Each member is scrubbed by the sample rules with the one salt, so it gets
+what it would get as a file of its own: the same pseudonyms, the same
+re-minted clinical ids, and — from a range — its subject's shift, which every
+member of that subject shares. Under `--pseudonymise-ids` a member is keyed by
+its pseudonymised sample id, as `--out-dir` names a file, since a member key is
+usually the sample id; otherwise it keeps its key, and a key that is itself an
+identifier is reported (`file_name`, at `KEY::member key`). Each member's
+`content_id` is the one its scrub computed, and the collection's member list is
+rebuilt from them.
+
+The report is one, for the collection: each finding's `where` names its member
+(`KEY::timepoints[0].date`), with the key it had in the source, and what the
+re-scan of the written collection still finds is under the key it was written
+as. A member that refuses — a clinical sample with unattested text, say —
+fails the whole collection, and nothing is written. `--skip-refused`
+(`skip_refused=True`) leaves it out instead, and lists it as a
+`refused_member` finding.
+
 ## 3. Record what was done
 
 The record is part of the file, not a note in a README:

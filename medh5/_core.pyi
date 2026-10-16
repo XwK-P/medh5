@@ -1861,6 +1861,7 @@ def scrub_apply(
     out: str | os.PathLike[str] | None = None,
     out_dir: str | os.PathLike[str] | None = None,
     attest_text: str | None = None,
+    skip_refused: bool = False,
 ) -> dict[Any, Any]:
     """Act on the actionable findings and write the §11.4 attestation.  The
     report's fields.
@@ -1880,6 +1881,7 @@ def scrub_check(
     out: str | os.PathLike[str] | None = None,
     out_dir: str | os.PathLike[str] | None = None,
     attest_text: str | None = None,
+    skip_refused: bool = False,
 ) -> None:
     """Refuse what these options cannot do, before any file is read
     (`ScrubOptions::check`).

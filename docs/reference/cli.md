@@ -307,7 +307,8 @@ fails the audit.
 ```
 medh5 scrub PATH... [--profile basic|strict] [--json]
     [--apply [--salt S] [--date-shift-days N | --date-shift-range MIN:MAX] [--withhold-shift]
-             [--by WHO] [--pseudonymise-ids] [--out FILE | --out-dir DIR] [--attest-text TOOL]]
+             [--by WHO] [--pseudonymise-ids] [--out FILE | --out-dir DIR] [--attest-text TOOL]
+             [--skip-refused]]
 ```
 
 Find identifiers in the container. Without `--apply` nothing is written and the
@@ -358,6 +359,13 @@ de-identified the text, with the digests of the bytes it covers. A `utc` clock,
 or `--pseudonymise-ids`, writes the history again as new versions: times moved
 by the shift, the clock `shifted_utc`, every id re-minted from `--salt` (see
 the [de-identification guide](../guides/deidentify.md#4-a-clinical-sample)).
+
+A collection (`.medh5c`) is scanned and scrubbed member by member, into one
+report whose findings name their member (`KEY::where`). `--apply` writes a new
+collection at `--out` (or under its own name in `--out-dir`), which it
+requires: each member scrubbed with the one salt, keyed by its pseudonymised
+sample id under `--pseudonymise-ids`. A member that refuses leaves nothing
+written; `--skip-refused` leaves it out and lists it (`refused_member`).
 
 Every option but `--profile` and `--json` acts only with `--apply`, and is
 refused without it.

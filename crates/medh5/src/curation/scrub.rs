@@ -35,8 +35,10 @@ use crate::sample::{frame_references, open_sample, FRAME_ATTRS};
 use crate::{Error, Result};
 
 mod clinical;
+mod collection;
 
 pub use clinical::{CLINICAL, CLINICAL_CLOCK, CLINICAL_ID, CLINICAL_TEXT};
+pub use collection::REFUSED_MEMBER;
 
 pub const PROFILES: [&str; 2] = ["basic", "strict"];
 
@@ -551,7 +553,8 @@ impl std::fmt::Display for Finding {
 }
 
 fn names_the_sample(finding: &Finding) -> bool {
-    IDENTITY_RULES.contains(&finding.rule.as_str()) || UNFIXABLE_LOCATIONS.contains(&finding.r#where.as_str())
+    IDENTITY_RULES.contains(&finding.rule.as_str())
+        || UNFIXABLE_LOCATIONS.contains(&collection::in_member(&finding.r#where))
 }
 
 /// What was found, what was changed, and what was never looked at.
@@ -2211,8 +2214,13 @@ fn check_profile(profile: &str) -> Result<()> {
     }
 }
 
-/// Find identifiers in one file.  Changes nothing.
+/// Find identifiers in one file.  Changes nothing.  A collection is read
+/// member by member, into one report whose locations name each member
+/// (`KEY::where`).
 pub fn scan(path: &Path, profile: &str) -> Result<ScrubReport> {
+    if collection::names_collection(path) {
+        return collection::scan(path, profile);
+    }
     scan_with(path, profile, &[])
 }
 
@@ -2225,8 +2233,21 @@ fn scan_with(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<ScrubR
 /// [`scan_with`], and what the clinical profile is to `apply`.
 fn scan_examined(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<(ScrubReport, clinical::Profile)> {
     check_profile(profile)?;
-    let mut report = ScrubReport::new(&path.to_string_lossy(), profile);
     let sample = open_sample(path)?;
+    scan_sample(&sample, path, &path.to_string_lossy(), profile, replaced)
+}
+
+/// [`scan_examined`] over an open sample: `named` is the file whose name the
+/// `file_name` rule reads, and `shown` the report's path.
+fn scan_sample(
+    sample: &crate::sample::Sample,
+    named: &Path,
+    shown: &str,
+    profile: &str,
+    replaced: &[Replaced],
+) -> Result<(ScrubReport, clinical::Profile)> {
+    let path = named;
+    let mut report = ScrubReport::new(shown, profile);
     let document = sample.document()?;
     let doc = match document.to_json() {
         Value::Object(m) => m,
@@ -2243,8 +2264,15 @@ fn scan_examined(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<(S
         sweep.hdf5(&sample.root)?;
     }
     scan_file_name(path, &document.identity.sample_id, &document.identity.subject_id, &mut report);
-    // The ids the clinical text must not hold: the sample's, and those this
-    // run replaced.
+    let ids = text_ids(document, replaced);
+    let found = clinical::examine(sample, &doc, &ids, &mut report)?;
+    escalate(&mut report);
+    Ok((report, found))
+}
+
+/// The ids the clinical text must not hold: the sample's, and those a run
+/// replaced.
+fn text_ids(document: &SampleDocument, replaced: &[Replaced]) -> Vec<String> {
     let mut ids: Vec<String> = [&document.identity.sample_id, &document.identity.subject_id]
         .into_iter()
         .filter(|id| !id.starts_with(PSEUDONYM_PREFIX) && id.chars().count() >= MIN_SWEPT_ID)
@@ -2253,9 +2281,7 @@ fn scan_examined(path: &Path, profile: &str, replaced: &[Replaced]) -> Result<(S
     ids.extend(replaced.iter().map(|r| r.old.clone()));
     ids.sort();
     ids.dedup();
-    let found = clinical::examine(&sample, &doc, &ids, &mut report)?;
-    escalate(&mut report);
-    Ok((report, found))
+    ids
 }
 
 /// What `apply` does beyond scanning, as 2.0 asked for it.  [`ScrubOptions`]
@@ -2318,6 +2344,9 @@ pub struct ScrubOptions {
     /// The tool that de-identified a clinical sample's text, attested with
     /// the digests of the bytes it attests (D15).
     pub attest_text: Option<String>,
+    /// For a collection: leave out a member that refuses, and list it,
+    /// rather than write nothing.
+    pub skip_refused: bool,
 }
 
 impl From<ApplyOptions> for ScrubOptions {
@@ -2379,6 +2408,11 @@ impl ScrubOptions {
         self
     }
 
+    pub fn with_skip_refused(mut self, skip: bool) -> Self {
+        self.skip_refused = skip;
+        self
+    }
+
     fn profile(&self) -> &str {
         if self.profile.is_empty() {
             "basic"
@@ -2406,6 +2440,7 @@ impl ScrubOptions {
                 (self.out.is_some(), "--out (out)"),
                 (self.out_dir.is_some(), "--out-dir (out_dir)"),
                 (self.attest_text.is_some(), "--attest-text (attest_text)"),
+                (self.skip_refused, "--skip-refused (skip_refused)"),
             ]
             .into_iter()
             .filter_map(|(set, name)| set.then_some(name))
@@ -2586,8 +2621,18 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
 
 /// [`apply`], with every option: a shift taken from a range or withheld, a
 /// copy rather than a rewrite.
+///
+/// A collection is scrubbed member by member into a new collection, at
+/// `out` (or under its own name in `out_dir`), and never rewritten: each
+/// member by the sample rules with the one salt, so pseudonyms, re-minted
+/// ids and a range's per-subject shifts agree across members as across
+/// files.  A member that refuses leaves nothing written, or with
+/// `skip_refused` is left out and listed (rule [`REFUSED_MEMBER`]).
 pub fn apply_with(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> {
     options.check(true)?;
+    if collection::names_collection(path) {
+        return collection::apply(path, options);
+    }
     let profile = options.profile();
     let strict = profile == "strict";
     let (mut report, found) = scan_examined(path, profile, &[])?;

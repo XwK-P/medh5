@@ -299,6 +299,7 @@ def apply(
     withhold_shift: bool | None = None,
     out: str | os.PathLike[str] | None = None,
     attest_text: str | None = None,
+    skip_refused: bool = False,
 ) -> ScrubReport:
     """Act on the actionable findings and write the §11.4 attestation.
 
@@ -341,6 +342,15 @@ def apply(
     the attestation holds the digests of the bytes it covers.  Text no one has
     attested, or that holds a name, a UID or one of the sample's ids, refuses
     the apply.
+
+    A collection (``.medh5c``) is scrubbed member by member into a new
+    collection at *out*, never rewritten: each member by the rules above with
+    the one *salt*, so pseudonyms, re-minted ids and a range's per-subject
+    shift agree across members.  Under ``pseudonymise_ids`` each member is
+    keyed by its pseudonymised sample id.  The report is the collection's:
+    each finding's ``where`` names its member (``KEY::where``).  A member that
+    refuses leaves nothing written, unless ``skip_refused`` leaves it out and
+    lists it (rule ``refused_member``).
     """
     return _apply(
         path,
@@ -353,6 +363,7 @@ def apply(
         withhold_shift=withhold_shift,
         out=out,
         attest_text=attest_text,
+        skip_refused=skip_refused,
     )
 
 
@@ -379,12 +390,18 @@ def _apply(
 
 
 def _records_its_shift(path: str) -> bool:
-    """Whether the sample at *path* states the amount of its date shift."""
-    from medh5.sample import open_sample
+    """Whether the sample at *path*, or a member of the collection there,
+    states the amount of its date shift."""
+    from medh5.collection import Collection, open_any
 
-    with open_sample(path) as sample:
+    def records(sample: Any) -> bool:
         record = sample.document.deidentification
-    return record is not None and bool(record.date_shift_days)
+        return record is not None and bool(record.date_shift_days)
+
+    with open_any(path) as opened:
+        if isinstance(opened, Collection):
+            return any(records(opened[key]) for key in opened)
+        return records(opened)
 
 
 def scrub_paths(
@@ -400,6 +417,7 @@ def scrub_paths(
     withhold_shift: bool | None = None,
     out_dir: str | os.PathLike[str] | None = None,
     attest_text: str | None = None,
+    skip_refused: bool = False,
 ) -> list[ScrubReport]:
     """:func:`scan` each of *paths*, or, with *apply_changes*, :func:`apply`
     the other options to each.
@@ -416,7 +434,8 @@ def scrub_paths(
     *apply_changes* rather than ignored: a scan that was meant as a salted,
     shifted scrub writes nothing.  The engine checks them, so the command line
     refuses the same combinations in the same words.  *out_dir* writes each
-    result into that directory and leaves the sources as they are.
+    result into that directory and leaves the sources as they are; a
+    collection among *paths* is written there under its own name.
     """
     options: dict[str, Any] = {
         "profile": profile,
@@ -427,6 +446,7 @@ def scrub_paths(
         "date_shift_range": date_shift_range,
         "withhold_shift": withhold_shift,
         "attest_text": attest_text,
+        "skip_refused": skip_refused,
     }
     _core.scrub_check(apply_changes, out_dir=out_dir, **options)
     reports: list[ScrubReport | None] = []

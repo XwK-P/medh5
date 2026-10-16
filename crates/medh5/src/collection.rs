@@ -365,7 +365,7 @@ fn refuse_own_collection(collection: &Path, destination: &Path, member: &str) ->
     Ok(())
 }
 
-fn write_sample_root(src: &hdf5::Group, destination: &Path) -> Result<()> {
+pub(crate) fn write_sample_root(src: &hdf5::Group, destination: &Path) -> Result<()> {
     let file = AtomicFile::create(destination)?;
     let result = (|| -> Result<()> {
         let handle = file.handle();

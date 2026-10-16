@@ -472,6 +472,7 @@ fn scrub_options(
     out: Option<PathBuf>,
     out_dir: Option<PathBuf>,
     attest_text: Option<String>,
+    skip_refused: bool,
 ) -> R<sc::ScrubOptions> {
     let mut options =
         sc::ScrubOptions::default().with_profile(profile).with_salt(salt).with_pseudonymise_ids(pseudonymise_ids);
@@ -501,7 +502,7 @@ fn scrub_options(
     if let Some(tool) = attest_text {
         options = options.with_attest_text(tool);
     }
-    Ok(options)
+    Ok(options.with_skip_refused(skip_refused))
 }
 
 /// Refuse what these options cannot do, before any file is read
@@ -509,7 +510,7 @@ fn scrub_options(
 #[pyfunction]
 #[pyo3(signature = (apply_changes, *, profile="basic".to_string(), salt="".to_string(), date_shift_days=None,
     date_shift_range=None, performed_by=None, pseudonymise_ids=false, withhold_shift=None, out=None, out_dir=None,
-    attest_text=None))]
+    attest_text=None, skip_refused=false))]
 #[allow(clippy::too_many_arguments)]
 fn scrub_check(
     apply_changes: bool,
@@ -523,6 +524,7 @@ fn scrub_check(
     out: Option<PathBuf>,
     out_dir: Option<PathBuf>,
     attest_text: Option<String>,
+    skip_refused: bool,
 ) -> R<()> {
     let options = scrub_options(
         profile,
@@ -535,6 +537,7 @@ fn scrub_check(
         out,
         out_dir,
         attest_text,
+        skip_refused,
     )?;
     Ok(options.check(apply_changes)?)
 }
@@ -544,7 +547,7 @@ fn scrub_check(
 #[pyfunction]
 #[pyo3(signature = (path, *, profile="basic".to_string(), salt="".to_string(), date_shift_days=None,
     date_shift_range=None, performed_by=None, pseudonymise_ids=false, withhold_shift=None, out=None, out_dir=None,
-    attest_text=None))]
+    attest_text=None, skip_refused=false))]
 #[allow(clippy::too_many_arguments)]
 fn scrub_apply(
     py: Python<'_>,
@@ -559,6 +562,7 @@ fn scrub_apply(
     out: Option<PathBuf>,
     out_dir: Option<PathBuf>,
     attest_text: Option<String>,
+    skip_refused: bool,
 ) -> R<Bound<'_, PyDict>> {
     let options = scrub_options(
         profile,
@@ -571,6 +575,7 @@ fn scrub_apply(
         out,
         out_dir,
         attest_text,
+        skip_refused,
     )?;
     let report = py.detach(move || sc::apply_with(&path, &options))?;
     Ok(report_fields(py, &report)?)

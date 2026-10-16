@@ -5,8 +5,8 @@ use std::path::Path;
 use clap::ArgMatches;
 use serde_json::Value;
 
+use medh5::collection::{open_any, AnyFile};
 use medh5::curation::scrub::{scrub_each, DateShift, ScrubOptions};
-use medh5::sample::open_sample;
 
 use crate::common::*;
 
@@ -15,7 +15,8 @@ pub fn scrub(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let mut options = ScrubOptions::default()
         .with_profile(req_str(m, "profile"))
         .with_salt(req_str(m, "salt"))
-        .with_pseudonymise_ids(flag(m, "pseudonymise_ids"));
+        .with_pseudonymise_ids(flag(m, "pseudonymise_ids"))
+        .with_skip_refused(flag(m, "skip_refused"));
     if let Some(days) = get_i64(m, "date_shift_days") {
         options = options.with_date_shift(DateShift::Days(days));
     }
@@ -53,7 +54,9 @@ pub fn scrub(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         let report = match result {
             Ok(r) => r,
             Err(e) => {
-                reports.push(ctx.file_failed(path, &sample_file_error(path, e)));
+                // A collection is scrubbed member by member: its refusal is
+                // its own, not the one-sample-file refusal other commands give.
+                reports.push(ctx.file_failed(path, &e));
                 continue;
             }
         };
@@ -79,9 +82,18 @@ pub fn scrub(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     Ok(if ok { EXIT_OK } else { EXIT_ERROR })
 }
 
-/// Whether the sample at `path` states the amount of its date shift.
+/// Whether the sample at `path`, or a member of the collection, states the
+/// amount of its date shift.
 fn records_its_shift(path: &str) -> bool {
-    open_sample(Path::new(path))
-        .and_then(|s| Ok(s.document()?.deidentification.as_ref().and_then(|r| r.shift_days()).is_some()))
-        .unwrap_or(false)
+    let records = |s: &medh5::sample::Sample| -> medh5::Result<bool> {
+        Ok(s.document()?.deidentification.as_ref().and_then(|r| r.shift_days()).is_some())
+    };
+    match open_any(Path::new(path), None) {
+        Ok(AnyFile::Sample(sample)) => records(&sample).unwrap_or(false),
+        Ok(AnyFile::Collection(collection)) => collection
+            .keys()
+            .map(|keys| keys.iter().any(|k| collection.get(k).and_then(|s| records(&s)).unwrap_or(false)))
+            .unwrap_or(false),
+        Err(_) => false,
+    }
 }
