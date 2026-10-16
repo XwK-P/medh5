@@ -1336,6 +1336,68 @@ class TestEnhancedMultiFrame:
             # the slices run the other way.
             assert np.array_equal(np.sort(both, axis=None), np.sort(volume, axis=None))
 
+    @staticmethod
+    def _dimensions(enhanced: Any, pointers: list[int], values: Any) -> None:
+        """Give *enhanced* a ``DimensionIndexSequence`` of *pointers*, and
+        frame *i* the index values ``values(i)``."""
+        from pydicom.dataset import Dataset
+        from pydicom.sequence import Sequence
+
+        items = []
+        for pointer in pointers:
+            item = Dataset()
+            item.DimensionIndexPointer = pointer
+            item.FunctionalGroupPointer = 0x00209111  # FrameContentSequence
+            items.append(item)
+        enhanced.DimensionIndexSequence = Sequence(items)
+        for index in range(int(enhanced.NumberOfFrames)):
+            content = _frame(enhanced, index).FrameContentSequence[0]
+            content.DimensionIndexValues = values(index)
+
+    def test_a_per_frame_dimension_does_not_split_a_stack(self, tmp_path):
+        """``FrameAcquisitionNumber`` numbers every frame: a dimension whose
+        values never meet at two positions tells no stacks apart."""
+        from medh5.io.dicom import scan_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        for index in range(6):
+            content = _frame(enhanced, index).FrameContentSequence[0]
+            content.StackID = "1"
+            content.InStackPositionNumber = index + 1
+        self._dimensions(
+            enhanced,
+            [0x00209056, 0x00209057, 0x00209156],  # StackID, in-stack, acquisition
+            lambda i: [1, i + 1, i + 1],
+        )
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        (series,) = scan_dicom(tmp_path / "enhanced")
+        assert series.n_slices == 6 and series.stack is None
+        self._imported(tmp_path / "enhanced", tmp_path / "out.medh5")
+
+    def test_a_dimension_repeating_positions_splits_them_into_stacks(self, tmp_path):
+        """Two time points of three planes: the temporal index tells the
+        repeated positions apart, and a per-frame acquisition number beside
+        it does not split them further."""
+        from medh5.io.dicom import scan_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        for index in range(3, 6):
+            source = _frame(enhanced, index - 3).PlanePositionSequence[0]
+            plane = _frame(enhanced, index).PlanePositionSequence[0]
+            plane.ImagePositionPatient = list(source.ImagePositionPatient)
+        self._dimensions(
+            enhanced,
+            [0x00209128, 0x00209156, 0x00200032],  # temporal, acquisition, position
+            lambda i: [i // 3 + 1, i + 1, i % 3 + 1],
+        )
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        stacks = scan_dicom(tmp_path / "enhanced")
+        assert [s.n_slices for s in stacks] == [3, 3]
+        # Named by StackID (highdicom's "1") and the temporal index.
+        assert [s.stack for s in stacks] == ["1-1", "1-2"]
+
     def test_an_irregular_stack_is_refused(self, tmp_path):
         from medh5.io.dicom import from_dicom
 

@@ -236,9 +236,12 @@ the validator reports such a file (`W903`).
 
 **Enhanced multi-frame objects are read as their stacks.** Enhanced and
 legacy-converted CT, MR and PET objects (PS3.3 C.7.6.16) are split into
-stacks by `StackID` and by every dimension of `DimensionIndexSequence` that
-does not order a stack (`InStackPositionNumber` and `ImagePositionPatient`
-order one). Each stack becomes a series, with `Series.frames` naming its
+stacks by `StackID` and, where frames of one `StackID` repeat a position, by
+the dimensions of `DimensionIndexSequence` that tell the repeats apart: one
+whose values are shared by frames at different positions, as a time point
+holds every plane. A dimension that numbers frames or planes
+(`FrameAcquisitionNumber`) splits nothing, and frames that repeat no position
+are one stack. Each stack becomes a series, with `Series.frames` naming its
 `(file, frame index)` pairs and `Series.stack` the stack where an object
 holds several, and is imported as a classic series would be: every frame
 read as a slice whose position, orientation, pixel spacing, rescale and

@@ -374,9 +374,11 @@ def _object_series(parts: Sequence[tuple[str, Any]]) -> list[Series]:
 
     *parts* are the object's instances --- one, or a concatenation's ---
     as ``(path, header)``, joined in ``InConcatenationNumber`` order.  Frames
-    are told apart by ``StackID`` and by the value of every dimension of the
-    object's ``DimensionIndexSequence`` that does not order a stack (a
-    temporal position, an echo); a stack is ordered later, by geometry.
+    are told apart by ``StackID``, and, where frames of one ``StackID``
+    repeat a position, by the dimensions of the object's
+    ``DimensionIndexSequence`` that tell the repeats apart (a temporal
+    position, an echo: :func:`_separating`); a stack is ordered later, by
+    geometry.
     """
     parts = sorted(parts, key=lambda part: _number(part[1], "InConcatenationNumber"))
     header = parts[0][1]
@@ -386,12 +388,26 @@ def _object_series(parts: Sequence[tuple[str, Any]]) -> list[Series]:
         if int(getattr(item, "DimensionIndexPointer", 0) or 0)
         not in (_POSITIONAL | {_STACK_ID})
     ]
-    stacks: dict[tuple[Any, ...], list[tuple[str, int]]] = {}
+    found: list[tuple[str, int, tuple[Any, ...], tuple[float, ...] | None]] = []
     for path, part in parts:
-        _, per_frame = _groups(part)
+        shared, per_frame = _groups(part)
         for index in range(_frames(part)):
             group = per_frame[index] if index < len(per_frame) else None
-            stacks.setdefault(_stack_key(group, dimensions), []).append((path, index))
+            found.append(
+                (path, index, _stack_key(group, dimensions), _placed(group, shared))
+            )
+    by_id: dict[Any, list[int]] = {}
+    for n, (_, _, key, _) in enumerate(found):
+        by_id.setdefault(key[0], []).append(n)
+    stacks: dict[tuple[Any, ...], list[tuple[str, int]]] = {}
+    for members in by_id.values():
+        keep = _separating(
+            [found[n][2][1:] for n in members], [found[n][3] for n in members]
+        )
+        for n in members:
+            path, index, key, _ = found[n]
+            stack = (key[0], *(key[1 + d] for d in keep))
+            stacks.setdefault(stack, []).append((path, index))
     labels = [
         "-".join(str(v) for v in key if v is not None) or str(n)
         for n, key in enumerate(stacks, start=1)
@@ -417,6 +433,50 @@ def _object_series(parts: Sequence[tuple[str, Any]]) -> list[Series]:
         )
         for label, frames in zip(labels, stacks.values(), strict=True)
     ]
+
+
+def _placed(group: Any, shared: Any) -> tuple[float, ...] | None:
+    """A frame's ``ImagePositionPatient``, rounded to a micrometre, or
+    ``None`` where it states none (refused later, when the frame is read)."""
+    for holder in (group, shared):
+        plane = _first_item(holder, "PlanePositionSequence")
+        position = getattr(plane, "ImagePositionPatient", None) if plane else None
+        if position is not None:
+            try:
+                return tuple(round(float(v), 3) for v in position)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _separating(
+    values: Sequence[tuple[Any, ...]], positions: Sequence[tuple[float, ...] | None]
+) -> list[int]:
+    """Which of the dimensions in *values* (one tuple per frame of a
+    ``StackID``) tell its stacks apart.
+
+    None, where no two frames share a position: the frames are one stack,
+    whatever else the object indexes them by (``FrameAcquisitionNumber``
+    numbers every frame).  Where positions repeat, a dimension tells stacks
+    apart when a value of it is shared by frames at different positions ---
+    a time point holds every plane --- and not when each of its values sits
+    at one position, as a per-frame or per-plane number does.  With a
+    position unknown, every dimension is kept, as before positions were
+    read.
+    """
+    count = len(values[0]) if values else 0
+    if any(position is None for position in positions):
+        return list(range(count))
+    if len(set(positions)) == len(positions):
+        return []
+    keep = []
+    for d in range(count):
+        places: dict[Any, set[Any]] = {}
+        for value, position in zip(values, positions, strict=True):
+            places.setdefault(value[d], set()).add(position)
+        if any(len(at) > 1 for at in places.values()):
+            keep.append(d)
+    return keep
 
 
 def _stack_key(group: Any, dimensions: Sequence[int]) -> tuple[Any, ...]:
