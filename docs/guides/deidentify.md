@@ -10,13 +10,14 @@ untouched. **A file this tool calls clean may still be identifying.** Pixel
 de-identification is a separate job, and this page assumes you have done it or
 established that you do not need to.
 
-**Nor does it rewrite clinical text** (format 1.1). It reads the clinical
+**Nor does it clear clinical text** (format 1.1). It reads the clinical
 profile — its clock, its ids, and its text one document at a time — and finds
 names, dates, UIDs and record numbers there, but a report is free text no rule
-can clear, and a rewritten text would move every span that points into it. So
-the text must be de-identified by a tool or a person who can, and attested as
-such (section 4); until then the sample is never clean and `--apply` refuses
-it. If the history is not needed, share the imaging projection instead:
+can clear. `--redact-text` replaces what the rules find with placeholders, as
+new documents with every span moved (section 4); the rest of the text must be
+de-identified by a tool or a person who can, and attested as such. Until then
+the sample is never clean and `--apply` refuses it. If the history is not
+needed, share the imaging projection instead:
 `medh5 clinical strip case.medh5 --out case.imaging.medh5` writes the sample
 without its clinical records, as a different file.
 
@@ -342,7 +343,7 @@ the profile adds four rules:
 |---|---|---|
 | `clinical_clock` | a `utc` clock: every time on it is the subject's own | moves every time by the shift |
 | `clinical_id` | the clock's id, encounter ids, and event, record or document ids holding a name, a date, a UID or the sample's ids | re-mints them, with a salt |
-| `clinical_text` | a name, date, UID or one of the sample's ids in a document or a short text column, with its byte span | refuses while a name, UID or id is there |
+| `clinical_text` | a name, date, UID or one of the sample's ids in a document or a short text column, with its byte span | refuses while a name, UID or id is there; `--redact-text` replaces it |
 | `clinical` | each document, and the short text columns, that no one has attested as de-identified | refuses until attested |
 
 Text is read one document at a time, so a long report never sits in memory
@@ -393,6 +394,30 @@ report = scrub.apply(
 )
 report.uid_map["event:rep_v2"]    # the new id of event rep_v2
 ```
+
+**Or redact what the rules find.** `--redact-text` (`redact_text=True`)
+rewrites each hit of the `clinical_text` rules — names, dates, UIDs and the
+sample's ids — as its placeholder, `[NAME]`, `[DATE]` or `[ID]`:
+
+<!-- illustrative -->
+```bash
+medh5 scrub case.medh5 --apply --salt "$SALT" --redact-text --attest-text "reviewed by RAD-07"
+```
+
+A document with a hit is a new document, owned by a new version of its event
+(1.1 §6): the same record, the same availability, a new id, and the
+attestation of the old bytes does not follow it. Every span that pointed into
+the old text is moved through the edit, so it cites the same words in the new
+one; a span that overlaps a redacted range is refused, naming the link,
+rather than moved by a guess. A short text with a hit (`value_text`,
+`missing_reason`) makes a new version of its event too. The run records the
+redaction in a `deidentify` activity of its own (scope
+`clinical_text_redaction`, tool `medh5 scrub`), with its rules, their
+placeholders and the digest of every text it wrote. It records nothing more:
+the rules find names, dates, UIDs and record numbers, not everything that
+identifies a person, so the text it writes still needs `--attest-text` from
+whoever de-identified the rest. It needs `--salt`, since the history is
+written again with re-minted ids.
 
 `report.uid_map` keys a re-minted id by its kind (`event:`, `record:`,
 `document:`, `encounter:`, `clock:`), since an event and its record often

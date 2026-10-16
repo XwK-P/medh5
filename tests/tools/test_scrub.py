@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -2744,3 +2745,210 @@ class TestScrubCollection:
         assert report["path"] == str(out) and report["ok"]
         assert main(["scrub", str(source), "--skip-refused"]) == 2
         assert "--skip-refused (skip_refused)" in capsys.readouterr().err
+
+
+class TestRedactText:
+    """W22-07.2 (E7): a redacted clinical document is a new document, owned
+    by a new version of its event, and every span into it moves with it."""
+
+    NOTE = "Seen with Smith^Alice today; review on 2020-02-14."
+
+    @staticmethod
+    def _sample(
+        tmp_path: Path,
+        *,
+        notes: Sequence[tuple[str, str]] = (("note", NOTE),),
+        spans: Sequence[tuple[str, str]] = (("note", "today"),),
+        name: str = "visit.medh5",
+    ) -> Path:
+        """One document event per note, each owning its text, and a link
+        citing each *spans* entry's words in its note."""
+        from medh5.clinical import HOUR, Document, Event, Link
+        from tests.kits import History
+
+        texts = dict(notes)
+        events = [
+            Event(
+                key,
+                key,
+                "document",
+                "point",
+                "final",
+                effective_start_us=0,
+                available_us=HOUR,
+            )
+            for key in texts
+        ]
+        links = [
+            Link.between(("event", key), "describes", ("document", f"{key}_text"))
+            for key in texts
+        ]
+        for key, words in spans:
+            text = texts[key].encode()
+            start = text.index(words.encode())
+            links.append(
+                Link.between(
+                    ("document", f"{key}_text"),
+                    "describes",
+                    ("image", "CT_tp0"),
+                    span=(start, start + len(words.encode())),
+                )
+            )
+        path = tmp_path / name
+        History.write(
+            path,
+            events=events,
+            documents=[Document(f"{key}_text", text) for key, text in notes],
+            links=links,
+        )
+        return path
+
+    @staticmethod
+    def _cited(records: Any) -> list[str]:
+        """What every span in *records* cites, in order."""
+        texts = {d.document_id: d.text.encode() for d in records.documents}
+        return [
+            texts[link.source_id][link.source_span[0] : link.source_span[1]].decode()
+            for link in records.links
+            if link.source_span is not None
+        ]
+
+    def test_S6_redaction_writes_a_new_document_and_version(self, tmp_path: Path):
+        path = self._sample(tmp_path)
+        before = path.read_bytes()
+        with medh5.open(path) as sample:
+            held = sample.clinical.records()
+        out = tmp_path / "shared.medh5"
+        report = scrubber.apply(
+            path, salt="pep", redact_text=True, attest_text="reviewed", out=out
+        )
+        assert report.ok and path.read_bytes() == before
+        with medh5.open(out) as sample:
+            records = sample.clinical.records()
+            activities = sample.document.provenance.activities_by_type("deidentify")
+        note = report.uid_map["document:note_text"]
+        (document,) = [d for d in records.documents if d.document_id == note]
+        assert document.text == "Seen with [NAME] today; review on [DATE]."
+        # Owned by a new version of its event: a new id, the same record and
+        # the source's availability.
+        (event,) = [
+            e for e in records.events if e.event_id == report.uid_map["event:note"]
+        ]
+        (was,) = [e for e in held.events if e.event_id == "note"]
+        assert event.record_id == report.uid_map["record:note"]
+        assert event.available_us == was.available_us
+        assert any(
+            (link.source_id, link.relation, link.target_id)
+            == (event.event_id, "describes", note)
+            for link in records.links
+        )
+        # A document without a hit is the same bytes under its new id.
+        texts = sorted(d.text for d in records.documents if d.document_id != note)
+        assert texts == sorted(
+            d.text for d in held.documents if d.document_id != "note_text"
+        )
+        # The redaction is recorded, apart from the attestation, with the
+        # digests of the bytes it wrote.
+        digest = "sha256:" + hashlib.sha256(document.text.encode()).hexdigest()
+        (redaction,) = [
+            a for a in activities if a.params.get("scope") == "clinical_text_redaction"
+        ]
+        assert redaction.params["tool"] == "medh5 scrub"
+        assert redaction.params["placeholders"]["name"] == "[NAME]"
+        assert redaction.params["digests"] == {f"clinical/documents/{note}": digest}
+        (attested,) = [
+            a for a in activities if a.params.get("scope") == "clinical_text"
+        ]
+        assert attested.params["digests"][f"clinical/documents/{note}"] == digest
+        assert any("redacted" in action for action in report.actions)
+
+    def test_S6_spans_are_remapped_through_the_redaction(self, tmp_path: Path):
+        path = self._sample(tmp_path)
+        with medh5.open(path) as sample:
+            assert self._cited(sample.clinical.records()) == ["today"]
+        report = scrubber.apply(
+            path, salt="pep", redact_text=True, attest_text="reviewed"
+        )
+        assert report.ok
+        with medh5.open(path) as sample:
+            assert self._cited(sample.clinical.records()) == ["today"]
+
+    def test_S6_a_span_inside_a_redacted_range_is_refused(self, tmp_path: Path):
+        path = self._sample(tmp_path, spans=[("note", "Smith^Alice today")])
+        before = path.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="overlap the range") as no:
+            scrubber.apply(path, salt="pep", redact_text=True, attest_text="reviewed")
+        said = str(no.value)
+        assert "document:note_text -describes-> image:CT_tp0" in said
+        assert "[10, 21)" in said and "Smith" not in said
+        assert path.read_bytes() == before
+
+    def test_S6_a_redacted_sample_validates_clean(self, tmp_path: Path):
+        path = self._sample(tmp_path)
+        report = scrubber.apply(
+            path,
+            salt="pep",
+            redact_text=True,
+            attest_text="reviewed",
+            pseudonymise_ids=True,
+        )
+        assert report.ok
+        result = validate_file(path)
+        assert result.ok, result
+        rescan = scrubber.scan(path)
+        assert not [f for f in rescan.findings if f.rule.startswith("clinical")]
+        # Re-applied, nothing is left to redact: the records are the same.
+        with medh5.open(path) as sample:
+            held = sample.clinical.records()
+        again = scrubber.apply(
+            path, salt="pep", redact_text=True, pseudonymise_ids=True
+        )
+        assert again.ok
+        with medh5.open(path) as sample:
+            assert sample.clinical.records() == held
+
+    def test_S6_redaction_is_read_one_document_at_a_time(self, tmp_path: Path):
+        """Each document is redacted from its own bytes, and its spans by its
+        own edits; one whose bytes do not read refuses the run by name."""
+        notes = [("note", self.NOTE), ("letter", "Dear Jones^Bob, all is well.")]
+        spans = [("note", "today"), ("letter", "all is well")]
+        path = self._sample(tmp_path, notes=notes, spans=spans)
+        out = tmp_path / "shared.medh5"
+        report = scrubber.apply(
+            path, salt="pep", redact_text=True, attest_text="reviewed", out=out
+        )
+        with medh5.open(out) as sample:
+            records = sample.clinical.records()
+        letter = report.uid_map["document:letter_text"]
+        (redacted,) = [d.text for d in records.documents if d.document_id == letter]
+        assert redacted == "Dear [NAME], all is well."
+        assert sorted(self._cited(records)) == ["all is well", "today"]
+        TestClinicalScrub._plant(path, "letter_text", b"w", b"\xff")
+        with pytest.raises(MEDH5ValidationError, match="does not read") as no:
+            scrubber.apply(path, salt="pep", redact_text=True, attest_text="reviewed")
+        assert "letter_text" in str(no.value) and "note_text" not in str(no.value)
+
+    def test_S6_redacted_text_still_needs_an_attestation(self, tmp_path: Path):
+        path = self._sample(tmp_path)
+        with pytest.raises(MEDH5ValidationError, match="--attest-text TOOL"):
+            scrubber.apply(path, salt="pep", redact_text=True)
+        with pytest.raises(MEDH5ValidationError, match="--salt"):
+            scrubber.apply(path, redact_text=True, attest_text="reviewed")
+        with pytest.raises(MEDH5ValidationError, match="--redact-text"):
+            scrubber.apply(path, salt="pep", attest_text="reviewed")
+        with pytest.raises(
+            MEDH5ValidationError, match=r"--redact-text \(redact_text\)"
+        ):
+            scrubber.scrub_paths([path], redact_text=True)
+
+    def test_the_cli_flag(self, tmp_path: Path, capsys):
+        from medh5.cli import main
+
+        path = self._sample(tmp_path)
+        flags = ["--apply", "--salt", "pep", "--attest-text", "reviewed"]
+        assert main(["scrub", str(path), *flags, "--redact-text", "--json"]) == 0
+        [report] = json.loads(capsys.readouterr().out)
+        assert report["ok"]
+        with medh5.open(path) as sample:
+            texts = [d.text for d in sample.clinical.records().documents]
+        assert any("[NAME]" in text for text in texts)

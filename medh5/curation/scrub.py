@@ -299,6 +299,7 @@ def apply(
     withhold_shift: bool | None = None,
     out: str | os.PathLike[str] | None = None,
     attest_text: str | None = None,
+    redact_text: bool = False,
     skip_refused: bool = False,
 ) -> ScrubReport:
     """Act on the actionable findings and write the §11.4 attestation.
@@ -338,10 +339,20 @@ def apply(
     becomes ``shifted_utc``; with a ``utc`` clock or ``pseudonymise_ids``,
     every event, record, document, encounter and clock id is re-minted from
     the *salt*, so one subject's fragments still share a clock.  Its text is
-    never rewritten: ``attest_text`` names the tool that de-identified it, and
-    the attestation holds the digests of the bytes it covers.  Text no one has
-    attested, or that holds a name, a UID or one of the sample's ids, refuses
-    the apply.
+    not rewritten unless asked: ``attest_text`` names the tool that
+    de-identified it, and the attestation holds the digests of the bytes it
+    covers.  Text no one has attested, or that holds a name, a UID or one of
+    the sample's ids, refuses the apply.
+
+    ``redact_text`` rewrites the text instead (E7): each name, date, UID and
+    sample id the rules find becomes ``[NAME]``, ``[DATE]`` or ``[ID]``.  A
+    document with a hit is written as a new document, owned by a new version
+    of its event, and every span into it is moved through the edit; a span
+    that overlaps a redacted range refuses the apply, naming the link.  A
+    short text with a hit (``value_text``, ``missing_reason``) makes a new
+    version of its event.  It needs a *salt*, since the records are written
+    again with re-minted ids, and ``attest_text``: the rules find names,
+    dates, UIDs and record numbers, not everything that identifies.
 
     A collection (``.medh5c``) is scrubbed member by member into a new
     collection at *out*, never rewritten: each member by the rules above with
@@ -363,6 +374,7 @@ def apply(
         withhold_shift=withhold_shift,
         out=out,
         attest_text=attest_text,
+        redact_text=redact_text,
         skip_refused=skip_refused,
     )
 
@@ -417,6 +429,7 @@ def scrub_paths(
     withhold_shift: bool | None = None,
     out_dir: str | os.PathLike[str] | None = None,
     attest_text: str | None = None,
+    redact_text: bool = False,
     skip_refused: bool = False,
 ) -> list[ScrubReport]:
     """:func:`scan` each of *paths*, or, with *apply_changes*, :func:`apply`
@@ -446,6 +459,7 @@ def scrub_paths(
         "date_shift_range": date_shift_range,
         "withhold_shift": withhold_shift,
         "attest_text": attest_text,
+        "redact_text": redact_text,
         "skip_refused": skip_refused,
     }
     _core.scrub_check(apply_changes, out_dir=out_dir, **options)

@@ -308,7 +308,7 @@ fails the audit.
 medh5 scrub PATH... [--profile basic|strict] [--json]
     [--apply [--salt S] [--date-shift-days N | --date-shift-range MIN:MAX] [--withhold-shift]
              [--by WHO] [--pseudonymise-ids] [--out FILE | --out-dir DIR] [--attest-text TOOL]
-             [--skip-refused]]
+             [--redact-text] [--skip-refused]]
 ```
 
 Find identifiers in the container. Without `--apply` nothing is written and the
@@ -359,6 +359,11 @@ de-identified the text, with the digests of the bytes it covers. A `utc` clock,
 or `--pseudonymise-ids`, writes the history again as new versions: times moved
 by the shift, the clock `shifted_utc`, every id re-minted from `--salt` (see
 the [de-identification guide](../guides/deidentify.md#4-a-clinical-sample)).
+`--redact-text` (with `--salt`) replaces each name, date, UID and sample id
+the rules find in the text with `[NAME]`, `[DATE]` or `[ID]`, as new documents
+owned by new event versions, every span into them moved through the edit (a
+span overlapping a redacted range refuses the run); the text it writes still
+needs `--attest-text`.
 
 A collection (`.medh5c`) is scanned and scrubbed member by member, into one
 report whose findings name their member (`KEY::where`). `--apply` writes a new

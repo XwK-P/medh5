@@ -16,6 +16,7 @@ pub fn scrub(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         .with_profile(req_str(m, "profile"))
         .with_salt(req_str(m, "salt"))
         .with_pseudonymise_ids(flag(m, "pseudonymise_ids"))
+        .with_redact_text(flag(m, "redact_text"))
         .with_skip_refused(flag(m, "skip_refused"));
     if let Some(days) = get_i64(m, "date_shift_days") {
         options = options.with_date_shift(DateShift::Days(days));

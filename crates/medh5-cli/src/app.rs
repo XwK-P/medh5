@@ -437,6 +437,13 @@ fn curation() -> Vec<Command> {
                 .value_name("TOOL"),
             )
             .arg(flag(
+                "redact_text",
+                "redact-text",
+                "with --apply and --salt: replace each name, date, UID and sample id found in a clinical sample's text \
+                 with a placeholder, as new documents and event versions, every span moved; new text needs \
+                 --attest-text",
+            ))
+            .arg(flag(
                 "skip_refused",
                 "skip-refused",
                 "with --apply on a collection: leave out a member that refuses, and list it, rather than write nothing",
