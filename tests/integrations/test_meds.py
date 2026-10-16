@@ -516,8 +516,9 @@ def test_a_cohort_mapping_is_checked_before_anything_is_read(tmp_path):
 def test_a_cohort_never_writes_two_subjects_to_one_sample(tmp_path):
     """A sample holds one subject's history: a mapping that would write two
     subjects to one file --- the same sample, a link to it, two samples of
-    one name into `out_dir`, or one subject over another's source --- is
-    refused before anything is written."""
+    one name into `out_dir` (or of names told apart only by case), or one
+    subject over another's source --- is refused before anything is
+    written."""
     from medh5.io.meds import augment_cohort_from_meds
 
     dataset = Meds.write(tmp_path / "meds", _cohort_rows((1, 2)))
@@ -535,6 +536,8 @@ def test_a_cohort_never_writes_two_subjects_to_one_sample(tmp_path):
         ({1: sample, 2: tmp_path / "sub" / ".." / "s.medh5"}, None),
         ({1: a, 2: b}, out),
         ({1: a, 2: out / "s.medh5"}, out),
+        # Not yet written, so maybe onto a file system blind to case.
+        ({1: a, 2: tmp_path / "b" / "S.medh5"}, out),
     ):
         with pytest.raises(MEDH5ValidationError, match="both be written to"):
             augment_cohort_from_meds(dataset, mapping, out_dir=out_dir, **COHORT)
@@ -548,6 +551,48 @@ def test_a_cohort_never_writes_two_subjects_to_one_sample(tmp_path):
         dataset, {1: a, 2: other}, out_dir=tmp_path / "a", **COHORT
     )
     assert not cohort.refused
+
+
+def test_the_subjects_a_cohort_does_not_read_are_counted_on_disk(tmp_path):
+    """The subjects outside the mapping are counted, not held: read a row
+    group of 1,000 at a time, 60,000 of them peak where 2,000 do, where a set
+    of them is some 3 MB more."""
+    import datetime as dt
+    import tracemalloc
+
+    from medh5.io.meds import augment_cohort_from_meds
+
+    def dataset(name, n):
+        rows = [
+            {
+                "subject_id": s,
+                "time": dt.datetime(2021, 1, 1),
+                "code": "LOINC/2160-0",
+                "numeric_value": 1.0,
+                "text_value": None,
+            }
+            for s in range(1, n + 1)
+        ]
+        return Meds.write(tmp_path / name, rows, row_group_size=1_000)
+
+    def peak(root):
+        mapping = {1: Meds.sample(tmp_path / f"{root.name}.medh5")}
+        tracemalloc.start()
+        try:
+            cohort = augment_cohort_from_meds(root, mapping, **COHORT)
+            top = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert not cohort.refused, cohort.format()
+        (others,) = cohort.report.of_kind("subject")
+        return others.detail["subjects"], top / 2**20  # MB
+
+    (few, low), (many, high) = (
+        peak(dataset("few", 2_000)),
+        peak(dataset("many", 60_000)),
+    )
+    assert (few, many) == (1_999, 59_999)
+    assert high - low < 1, (low, high)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="peak RSS is POSIX's")

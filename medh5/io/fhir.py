@@ -826,10 +826,9 @@ class _BulkIndex:
             "PRAGMA cache_size = -2048; PRAGMA temp_store = FILE;"
             "CREATE TABLE line (subject INTEGER, file INTEGER, start INTEGER,"
             " length INTEGER);"
-            "CREATE TABLE elsewhere (reference TEXT, resources INTEGER);"
         )
         self._lines: list[tuple[int, int, int, int]] = []
-        self._elsewhere: Counter[str] = Counter()
+        self._elsewhere = _clinical.Tally()
         self._others: Counter[str] = Counter()
         self._indexed = False
 
@@ -838,6 +837,7 @@ class _BulkIndex:
 
     def __exit__(self, *_: object) -> None:
         self._db.close()
+        self._elsewhere.__exit__()
 
     def scan(self, number: int, path: Path) -> None:
         """Index the lines of *path*, the export's file *number*."""
@@ -872,25 +872,15 @@ class _BulkIndex:
                     if len(self._lines) >= self.BUFFER:
                         self._flush()
                 else:
-                    self._elsewhere[str(reference)] += 1
-                    if len(self._elsewhere) >= self.BUFFER:
-                        self._flush()
+                    self._elsewhere.add(str(reference))
 
     def _flush(self) -> None:
         self._db.executemany("INSERT INTO line VALUES (?, ?, ?, ?)", self._lines)
-        self._db.executemany(
-            "INSERT INTO elsewhere VALUES (?, ?)", self._elsewhere.items()
-        )
         self._lines.clear()
-        self._elsewhere.clear()
 
     def notes(self, report: ConversionReport) -> None:
         """Count, in *report*, what the export holds that is not read."""
-        self._flush()
-        subjects, resources = self._db.execute(
-            "SELECT COUNT(DISTINCT reference), SUM(resources) FROM elsewhere"
-        ).fetchone()
-        _bulk_notes(report, self._others, subjects, resources or 0)
+        _bulk_notes(report, self._others, *self._elsewhere.counts())
 
     def lines(self, subject: str) -> Iterator[tuple[int, int, int]]:
         """*subject*'s lines, as (file, offset, length), in file and line

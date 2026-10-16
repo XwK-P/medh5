@@ -701,24 +701,26 @@ def augment_cohort_from_meds(
     column = rules.names["subject_id"]
 
     # The subject column alone, to know when each subject's rows are all read.
+    # The subjects it does not read are counted on disk, not in a set: a
+    # dataset may hold millions of them.
     expected: Counter[int] = Counter()
-    others: set[int] = set()
-    other_rows = 0
-    for group in _row_groups(scan, [column], None):
-        found = pc.value_counts(group.column(0))
-        values = found.field("values").to_pylist()
-        for value, n in zip(values, found.field("counts").to_pylist(), strict=True):
-            if value in mapping:
-                expected[value] += n
-            else:
-                others.add(value)
-                other_rows += n
-    if others:
+    with _clinical.Tally() as others:
+        for group in _row_groups(scan, [column], None):
+            found = pc.value_counts(group.column(0))
+            values = found.field("values").to_pylist()
+            counts = found.field("counts").to_pylist()
+            for value, n in zip(values, counts, strict=True):
+                if value in mapping:
+                    expected[value] += n
+                else:
+                    others.add(value, n)
+        other_subjects, other_rows = others.counts()
+    if other_subjects:
         cohort.report.add(
             "subject",
-            f"{len(others)} subject(s) of the dataset are not in the mapping, "
+            f"{other_subjects} subject(s) of the dataset are not in the mapping, "
             f"and their {other_rows} row(s) were not read",
-            detail={"subjects": len(others), "rows": other_rows},
+            detail={"subjects": other_subjects, "rows": other_rows},
         )
 
     places = {subject: (sample, out) for subject, sample, out in targets}

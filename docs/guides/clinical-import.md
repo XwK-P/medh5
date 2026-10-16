@@ -150,10 +150,12 @@ The batch changes the cost, never the answer:
 A subject that refuses (no rows, a sample without a clock, ids already there)
 is listed in `cohort.refused` with its reason, and the others are still
 written. Subjects the mapping does not name are counted in an `info` note of
-`cohort.report`, and never read. `cohort.to_json()` is the whole result.
-A sample holds one subject, so a mapping that would write two subjects to
-one file (the same sample twice, a link to it, two samples of one name into
-`out_dir`) is refused before anything is written.
+`cohort.report`, and never read; they are counted in a temporary file, so a
+dataset of millions of them costs no memory for it. `cohort.to_json()` is the
+whole result. A sample holds one subject, so a mapping that would write two
+subjects to one file (the same sample twice, a link to it, two samples of one
+name into `out_dir`, or of names that differ only in case) is refused before
+anything is written.
 
 ## The report
 

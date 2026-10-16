@@ -15,7 +15,10 @@ import contextlib
 import datetime
 import os
 import re
+import sqlite3
+import unicodedata
 import zoneinfo
+from collections import Counter
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -244,8 +247,10 @@ def cohort_targets(
 
 def _identity(path: Path) -> Any:
     """What tells two paths to one file apart: the file itself, by device
-    and inode, where it exists (a link, a hard link, ``sub/../a``), else
-    the resolved path."""
+    and inode, where it exists (a link, a hard link, ``sub/../a``), else its
+    directory and its name, case-folded and NFC-normalised.  A file not yet
+    written may land on a file system that does not tell ``A.medh5`` from
+    ``a.medh5`` (macOS's, Windows'), so two such names are one file here."""
     try:
         resolved = path.resolve()
     except (OSError, RuntimeError):  # RuntimeError: a link loop
@@ -253,7 +258,53 @@ def _identity(path: Path) -> Any:
     with contextlib.suppress(OSError):
         found = resolved.stat()
         return (found.st_dev, found.st_ino)
-    return resolved
+    parent: Any = resolved.parent
+    with contextlib.suppress(OSError):
+        found = parent.stat()
+        parent = (found.st_dev, found.st_ino)
+    return (parent, unicodedata.normalize("NFC", resolved.name).casefold())
+
+
+class Tally:
+    """How many distinct keys were seen, and how many items of them: kept in
+    a temporary database on disk (SQLite's, removed when it closes), so the
+    subjects of a dataset that a mapping does not name cost a bounded buffer
+    in memory, never a set of them.  ``None`` is a key of its own."""
+
+    BUFFER = 1_000
+    """Keys gathered before they are written to the database."""
+
+    def __init__(self) -> None:
+        self._db = sqlite3.connect("")
+        self._db.executescript(
+            "PRAGMA cache_size = -2048; PRAGMA temp_store = FILE;"
+            "CREATE TABLE tally (key, n INTEGER);"
+        )
+        self._buffer: Counter[Any] = Counter()
+
+    def __enter__(self) -> Tally:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._db.close()
+
+    def add(self, key: Any, n: int = 1) -> None:
+        self._buffer[key] += n
+        if len(self._buffer) >= self.BUFFER:
+            self._flush()
+
+    def _flush(self) -> None:
+        self._db.executemany("INSERT INTO tally VALUES (?, ?)", self._buffer.items())
+        self._buffer.clear()
+
+    def counts(self) -> tuple[int, int]:
+        """The distinct keys, and the items of all of them."""
+        self._flush()
+        keys, items = self._db.execute(
+            "SELECT COUNT(DISTINCT key) + COALESCE(MAX(key IS NULL), 0),"
+            " COALESCE(SUM(n), 0) FROM tally"
+        ).fetchone()
+        return int(keys), int(items)
 
 
 def sample_clock(path: Path) -> Clock:
