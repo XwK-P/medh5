@@ -120,7 +120,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest, macos-14]
+        runner: [windows-latest, macos-15]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     defaults:
@@ -274,20 +274,21 @@ jobs:
     uses: ./.github/workflows/build.yml
     with:
       target: aarch64-apple-darwin
-      runner: macos-14
+      runner: macos-15
 
   build-macos-x86_64:
-    # Not on a pull request: the Intel Mac build was the slowest job of every
-    # run (14 to 23 minutes), and every test waited on it.  It runs, with its
-    # tests, in the merge queue, on each push to `main` and a release line, and
-    # on the release's own run of this workflow, so nothing ships untested; a
-    # break particular to it shows in the queue, not on the pull request.
+    # Cross-built on Apple silicon, where Rosetta runs the x64 Pythons the
+    # wheels are built for and checked with, and the binary.  On an Intel
+    # runner this was the slowest build of every run (14 to 23 minutes), so it
+    # ran only in the merge queue, where a break particular to it cost a whole
+    # re-queue; and GitHub's last Intel image retires in 2027.
     needs: changes
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'pull_request'
+    if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/build.yml
     with:
       target: x86_64-apple-darwin
-      runner: macos-15-intel
+      runner: macos-15
+      python-architecture: x64
 
   build-windows-x86_64:
     needs: changes
@@ -545,7 +546,7 @@ jobs:
     # where DataLoader workers and process pools re-import the package.  One
     # interpreter: this job is about the start method, not the matrix.
     needs: build-macos-arm64
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -604,16 +605,20 @@ jobs:
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
   test-macos-x86_64:
-    # PyTorch has published no macOS x86_64 wheel since 2.2, which predates
-    # NumPy 2, so this one goes without `torch`.
+    # On Apple silicon, under Rosetta: an x64 Python loads only an x86_64
+    # extension, and every package it installs is x86_64 too.  PyTorch has
+    # published no macOS x86_64 wheel since 2.2, which predates NumPy 2, so
+    # this one goes without `torch`.
     needs: build-macos-x86_64
-    runs-on: macos-15-intel
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+          architecture: x64
+      - run: python -c "import platform; assert platform.machine() == 'x86_64', platform.machine()"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ci-dist-x86_64-apple-darwin
@@ -1016,7 +1021,6 @@ jobs:
       - name: Every job passed
         env:
           NEEDS: ${{ toJSON(needs) }}
-          EVENT: ${{ github.event_name }}
         run: |
           python3 - <<'PY'
           import json, os, sys
@@ -1027,11 +1031,6 @@ jobs:
           changes = needs["changes"]
           if changes["result"] == "success" and changes["outputs"]["code"] == "false":
               sys.exit(0)
-          # The Intel Mac jobs skip a pull request on purpose (build-macos-x86_64).
-          if os.environ["EVENT"] == "pull_request":
-              for job in ("build-macos-x86_64", "test-macos-x86_64"):
-                  if results[job] == "skipped":
-                      results[job] = "success"
           cancelled = sorted(job for job, result in results.items() if result == "cancelled")
           failed = sorted(
               job for job, result in results.items() if result not in ("success", "cancelled")

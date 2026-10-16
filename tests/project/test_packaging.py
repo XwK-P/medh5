@@ -583,7 +583,7 @@ class TestRepositoryGates:
         )
         platforms = jobs["rust-platforms"]
         assert "cargo test -p medh5 --lib --locked" in platforms
-        assert "[windows-latest, macos-14]" in platforms
+        assert "[windows-latest, macos-15]" in platforms
         extras = re.search(r"\[(dev,[\w,]+)\]", jobs["test-windows"])
         assert extras and "torch" in extras.group(1).split(",")
         build = _jobs(BUILD.read_text(encoding="utf-8"))["build"]
@@ -1049,27 +1049,52 @@ class TestDistribution:
         for name, job in jobs.items():
             assert "dist/*.whl" not in job, name
 
-    def test_the_intel_mac_skips_pull_requests_and_nothing_else(self):
+    def test_macos_x86_64_is_cross_built_and_tested_on_every_run(self):
         """The Intel Mac build was the slowest job of every run (14 to 23
-        minutes), and a pull request's tests waited on it.  It and its tests
-        run on every other event (the merge queue, a push, the release's call),
-        and the gate accepts their skip on a pull request only."""
+        minutes), so it ran only in the merge queue, where a break particular
+        to it (#51) cost a whole re-queue; and GitHub's last Intel image
+        retires in 2027.  It is cross-built on Apple silicon, its wheel tested
+        there under Rosetta by an x64 Python, on every event, pull requests
+        included; and no job runs on an Intel or a retired image."""
         text = CI.read_text(encoding="utf-8")
-        # The merge queue runs it, and must: a group without `ci-ok` never merges.
-        assert "\n  merge_group:\n" in text.split("\njobs:", 1)[0]
         jobs = _jobs(text)
-        skipping = {
-            name
-            for name, job in jobs.items()
-            if "github.event_name != 'pull_request'" in job.split("steps:")[0]
-        }
-        assert skipping == {"build-macos-x86_64"}
-        assert re.search(
-            r"^    needs: build-macos-x86_64$", jobs["test-macos-x86_64"], re.M
-        )
+        for name, job in jobs.items():
+            assert "github.event_name != 'pull_request'" not in job, name
+        runners = set(re.findall(r"(?:runner|runs-on): \[?.*?\b(macos-[\w.-]+)", text))
+        assert runners == {"macos-15"}, runners
+        build = jobs["build-macos-x86_64"]
+        assert re.search(r"^      runner: macos-15$", build, re.M)
+        assert re.search(r"^      python-architecture: x64$", build, re.M)
+        test = jobs["test-macos-x86_64"]
+        assert re.search(r"^    runs-on: macos-15$", test, re.M)
+        assert re.search(r"^          architecture: x64$", test, re.M)
+        assert "platform.machine() == 'x86_64'" in test
+        assert re.search(r"^    needs: build-macos-x86_64$", test, re.M)
+        # The gate accepts no skip but the one `changes` asks for.
         gate = jobs["ci-ok"]
-        assert "EVENT: ${{ github.event_name }}" in gate
-        assert 'for job in ("build-macos-x86_64", "test-macos-x86_64"):' in gate
+        assert "build-macos-x86_64" not in gate.split("steps:", 1)[1]
+        assert "EVENT" not in gate
+        # The build's Pythons are the caller's architecture, both of them.
+        workflow = BUILD.read_text(encoding="utf-8")
+        assert workflow.count("architecture: ${{ inputs.python-architecture }}") == 2
+
+    def test_every_build_names_its_target(self):
+        """build-dist.sh built for its host alone: it passed no `--target`, and
+        took the binary from `target/release`.  Each build names the target,
+        the binary is taken from that target's directory, and on macOS, where
+        Rosetta runs either architecture, what was built is checked by
+        reading it rather than by running it."""
+        build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
+        builds = re.findall(r"^(?:maturin|cargo) build .*$", build, re.M)
+        assert len(builds) == 3
+        assert all('--target "$target"' in line for line in builds), builds
+        assert 'rustup target add "$target"' in build
+        assert 'exe="target/$target/release/medh5"' in build
+        assert 'lipo -archs "$built"' in build
+        assert '"$unpacked"/*/medh5/_core*.so' in build
+        workflow = BUILD.read_text(encoding="utf-8")
+        assert "target/release" not in workflow
+        assert workflow.count("target/${{ inputs.target }}/release/medh5") == 2
 
     def test_the_next_python_is_tried_and_not_claimed(self):
         """The classifiers name the interpreters the gating matrix tests, and

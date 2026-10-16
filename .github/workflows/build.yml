@@ -20,6 +20,13 @@ on:
         description: A manylinux image, by digest, to build in; none elsewhere.
         type: string
         default: ""
+      python-architecture:
+        description: >-
+          The architecture of the Pythons the wheels are built for and checked
+          with, when it is not the runner's: `x64` for macOS x86_64, cross-built
+          on Apple silicon, where Rosetta runs them.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -43,9 +50,11 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # An empty architecture is the runner's own.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+          architecture: ${{ inputs.python-architecture }}
       # The free-threaded CPython the second wheel is built for; a manylinux
       # image has its own (build-dist.sh).  The 3.12 above stays first on PATH.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -53,6 +62,7 @@ jobs:
         if: ${{ !inputs.container }}
         with:
           python-version: "3.14t"
+          architecture: ${{ inputs.python-architecture }}
           update-environment: false
       # The crates' builds, HDF5's among them, as `main`'s last run of this
       # platform left them; only `main` saves them.  Never on a tag: the
@@ -81,7 +91,7 @@ jobs:
       - name: The binary runs the conformance corpus
         shell: bash
         run: |
-          exe=target/release/medh5
+          exe="target/${{ inputs.target }}/release/medh5"
           if [[ -f "$exe.exe" ]]; then exe="$exe.exe"; fi
           "$exe" --version
           "$exe" conformance build "$RUNNER_TEMP/corpus-native"
@@ -108,7 +118,7 @@ jobs:
       - name: The binary hands the converters to the wheel's Python
         shell: bash
         run: |
-          exe="$PWD/target/release/medh5"
+          exe="$PWD/target/${{ inputs.target }}/release/medh5"
           if [[ -f "$exe.exe" ]]; then exe="$exe.exe"; fi
           cd "$RUNNER_TEMP"
           # Only the Python package says this, and it needs none of the extras.
