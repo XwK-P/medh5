@@ -23,8 +23,8 @@ moving frame, and a ``composite`` between the two grids' frames, which earns
 ``reg`` (1.0 §1.3) and is the one shortest route between them.
 
 Parsed with the standard library (``.tfm``/``.txt``, and ANTs' MATLAB v4
-``.mat`` with :mod:`struct`); fields need nibabel (the ``nifti`` extra).
-ITK's HDF5 transform files and B-splines are not read before medh5 2.2.
+``.mat`` with :mod:`struct`), and ITK's HDF5 transform files (``.h5``)
+through the engine's HDF5; fields need nibabel (the ``nifti`` extra).
 """
 
 from __future__ import annotations
@@ -81,6 +81,9 @@ _FIXED_DIMENSION = {
 
 _MAGIC = "#Insight Transform File V1.0"
 
+_HDF5 = (".h5", ".hdf5", ".hdf")
+"""The suffixes of ITK's HDF5 transform files, as ITK reads them."""
+
 _INTENT_DISPVECT = 1006
 """NIfTI's intent for a displacement vector field."""
 
@@ -112,20 +115,28 @@ class ItkTransform:
 
 
 def read_itk_transform(path: str | os.PathLike[str]) -> ItkTransform:
-    """Read an ITK transform file: text (``.tfm``, ``.txt``) or ANTs' MATLAB
-    v4 ``.mat``, holding one of the linear types or a composite of them.
+    """Read an ITK transform file: text (``.tfm``, ``.txt``), ITK's HDF5
+    (``.h5``, ``.hdf5``, ``.hdf``) or ANTs' MATLAB v4 ``.mat``, holding one
+    of the linear types or a composite of them.
 
-    Refused: ITK's HDF5 files, B-splines and other non-linear types (medh5
-    2.2), a transform whose input and output dimensions differ, dimensions
-    other than 2 and 3, and parameter counts the type does not have.
+    An HDF5 file is read as ITK writes it --- ``/TransformGroup/<n>/`` with
+    ``TransformType``, ``TransformParameters`` and
+    ``TransformFixedParameters``, a composite at 0 and its components after
+    it --- and refused as its text equivalent would be.
+
+    Refused: B-splines and other non-linear types, a transform whose input
+    and output dimensions differ, dimensions other than 2 and 3, and
+    parameter counts the type does not have.  ITK's HDF5 files were refused
+    before 2.2, whatever they held.
     """
     source = Path(path)
     where = os.fspath(path)
-    if source.suffix.lower() in (".h5", ".hdf5", ".hdf"):
-        raise MEDH5ValidationError(
-            f"{where}: ITK's HDF5 transform files are not read before medh5 "
-            "2.2; write the transform as .tfm or .mat"
-        )
+    if source.suffix.lower() in _HDF5:
+        listed = [
+            {"name": name, "Parameters": parameters, "FixedParameters": fixed}
+            for name, parameters, fixed in _core.read_itk_h5(source)
+        ]
+        return _from_entries(listed, where)
     data = source.read_bytes()
     if data.lstrip().startswith(b"#Insight Transform File"):
         return _read_text(data.decode("utf-8", errors="replace"), where)
@@ -165,6 +176,13 @@ def _read_text(text: str, where: str) -> ItkTransform:
                 ) from None
         else:
             raise MEDH5ValidationError(f"{where}, line {number}: unknown key {key!r}")
+    return _from_entries(entries, where)
+
+
+def _from_entries(entries: list[dict[str, Any]], where: str) -> ItkTransform:
+    """The transform a file's entries --- ``name``, ``Parameters`` and
+    ``FixedParameters`` each, in the file's order --- describe: one, or a
+    composite and its components."""
     if not entries:
         raise MEDH5ValidationError(f"{where} holds no transform")
     head = _parse_name(entries[0]["name"], where)
@@ -385,15 +403,19 @@ def _read_mat(data: bytes, where: str) -> ItkTransform:
 
 def write_itk_transform(path: str | os.PathLike[str], transform: ItkTransform) -> Path:
     """Write *transform* as ITK reads it, picking the format by suffix:
-    ``.tfm`` or ``.txt`` text, or ``.mat`` as ANTs writes it.
+    ``.tfm`` or ``.txt`` text, ITK's HDF5 (``.h5``, ``.hdf5``, ``.hdf``), or
+    ``.mat`` as ANTs writes it.
 
     Every matrix is written as ``AffineTransform_double_S_S`` with its centre
     at the origin, which maps every point as the type it was read as did.  A
     ``.mat`` holds one transform, so a composite is refused there.
     """
     target = Path(path)
-    if _transform_suffix(target) in (".tfm", ".txt"):
+    suffix = _transform_suffix(target)
+    if suffix in (".tfm", ".txt"):
         write_text(target, _text(transform))
+    elif suffix in _HDF5:
+        _core.write_itk_h5(target, _entries(transform))
     else:
         if transform.is_composite:
             raise MEDH5ValidationError(
@@ -405,13 +427,13 @@ def write_itk_transform(path: str | os.PathLike[str], transform: ItkTransform) -
 
 
 def _transform_suffix(path: Path) -> str:
-    """*path*'s suffix, which names the format: ``.tfm``, ``.txt`` or
-    ``.mat``; anything else is refused."""
+    """*path*'s suffix, which names the format: ``.tfm``, ``.txt``, ITK's
+    HDF5 (``.h5``, ``.hdf5``, ``.hdf``) or ``.mat``; anything else is
+    refused."""
     suffix = path.suffix.lower()
-    if suffix not in (".tfm", ".txt", ".mat"):
+    if suffix not in (".tfm", ".txt", ".mat", *_HDF5):
         raise MEDH5ValidationError(
-            f"{os.fspath(path)}: name a .tfm, .txt or .mat file (ITK's HDF5 "
-            "transform files are not written before medh5 2.2)"
+            f"{os.fspath(path)}: name a .tfm, .txt, .h5 or .mat file"
         )
     return suffix
 
@@ -433,6 +455,24 @@ def _affine_lines(matrix: npt.NDArray[np.float64], index: int) -> list[str]:
         "Parameters: " + " ".join(_number(v) for v in parameters),
         "FixedParameters: " + " ".join("0" for _ in range(n)),
     ]
+
+
+def _affine_entry(
+    matrix: npt.NDArray[np.float64],
+) -> tuple[str, list[float], list[float]]:
+    n = matrix.shape[0] - 1
+    parameters = [*matrix[:n, :n].ravel(), *matrix[:n, n]]
+    return _affine_name(n), [float(v) for v in parameters], [0.0] * n
+
+
+def _entries(transform: ItkTransform) -> list[tuple[str, list[float], list[float]]]:
+    """*transform* as an HDF5 file's entries: a composite's type alone, as
+    ITK writes it, then its components in its order."""
+    if not transform.is_composite:
+        return [_affine_entry(transform.matrix)]
+    n = transform.dimension
+    head = (f"CompositeTransform_double_{n}_{n}", [], [])
+    return [head, *(_affine_entry(part.matrix) for part in transform.components)]
 
 
 def _text(transform: ItkTransform) -> str:
@@ -939,15 +979,15 @@ def to_itk_transform(
     vectors: Vectors | None = None,
 ) -> ConversionReport:
     """Write transform *transform_id* of *sample* as ITK reads it: its linear
-    part to *out* (``.tfm``, ``.txt`` or ``.mat``), and a displacement field
+    part to *out* (``.tfm``, ``.txt``, ``.h5`` or ``.mat``), and a displacement field
     applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI
     (intent 1006) whose vectors are in the *vectors* convention, required.
 
     A composite is flattened; it may hold one displacement, as its first
     step, and linear steps after it.  Several linear steps are written as an
-    ITK composite in a ``.tfm`` (last applied listed first) or multiplied into
-    one affine in a ``.mat``. A displacement alone writes the identity to
-    *out*. B-splines are refused.
+    ITK composite in a ``.tfm`` or ``.h5`` (last applied listed first) or
+    multiplied into one affine in a ``.mat``. A displacement alone writes the
+    identity to *out*. B-splines are refused.
     """
     import medh5
 

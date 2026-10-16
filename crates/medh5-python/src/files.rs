@@ -117,8 +117,30 @@ fn same_file(a: PathBuf, b: PathBuf) -> bool {
     medh5::h5::file::same_file(Path::new(&a), Path::new(&b))
 }
 
+/// An ITK transform file's entries, each `(type, parameters, fixed
+/// parameters)`.
+type ItkEntries = Vec<(String, Vec<f64>, Vec<f64>)>;
+
+/// The transforms of an ITK HDF5 transform file, in its order, each as
+/// `(type, parameters, fixed parameters)`.
+#[pyfunction]
+fn read_itk_h5(py: Python<'_>, path: PathBuf) -> R<ItkEntries> {
+    let entries = py.detach(move || medh5::convert::read_itk_h5(&path))?;
+    Ok(entries.into_iter().map(|e| (e.name, e.parameters, e.fixed_parameters)).collect())
+}
+
+/// Write `entries`, each `(type, parameters, fixed parameters)`, as the ITK
+/// HDF5 transform file `path`, replacing it atomically.
+#[pyfunction]
+fn write_itk_h5(py: Python<'_>, path: PathBuf, entries: ItkEntries) -> R<()> {
+    let entries: Vec<_> = entries.into_iter().map(|(n, p, f)| medh5::convert::ItkEntry::new(n, p, f)).collect();
+    Ok(py.detach(move || medh5::convert::write_itk_h5(&path, &entries))?)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<StagedFileHandle>()?;
+    m.add_function(wrap_pyfunction!(read_itk_h5, m)?)?;
+    m.add_function(wrap_pyfunction!(write_itk_h5, m)?)?;
     m.add_function(wrap_pyfunction!(write_atomic, m)?)?;
     m.add_function(wrap_pyfunction!(stage_file, m)?)?;
     m.add_function(wrap_pyfunction!(same_file, m)?)?;

@@ -663,18 +663,18 @@ compiled extension the modules re-export from, not an API of its own.
 | `migrate_paths` | function | Migrate a cohort, minting one label set for all of it. | [Converters › 0.x files](converters.md#0x-files) |
 | `Note` | class | One thing a conversion did that the source did not fully determine. |  |
 | `read_fhir` | function | The Observations and DiagnosticReports of *subject* (a reference, such as `Patient/123`) in *source*, as clinical records on *clock*, and what the conversion decided. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
-| `read_itk_transform` | function | Read an ITK transform file: text (`.tfm`, `.txt`) or ANTs' MATLAB v4 `.mat`, holding one of the linear types or a composite of them. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `read_itk_transform` | function | Read an ITK transform file: text (`.tfm`, `.txt`), ITK's HDF5 (`.h5`, `.hdf5`, `.hdf`) or ANTs' MATLAB v4 `.mat`, holding one of the linear types or a composite of them. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `read_meds` | function | The rows of MEDS subject *subject_id* in *source*, as clinical records on *clock*, and what the conversion decided. | [Converters › MEDS and FHIR R4](converters.md#meds-and-fhir-r4) |
 | `read_nifti` | function | One NIfTI file as `(array, geometry)` in MEDH5 conventions. | [Converters › NIfTI](converters.md#nifti) |
 | `scan_dicom` | function | Walk a directory tree and collect its image series. | [Converters › DICOM](converters.md#dicom) |
 | `Series` | class | One DICOM series, resolved into a volume and its geometry. |  |
 | `SubjectGroup` | class | Occasions belonging to one subject, in timepoint order. |  |
 | `to_dicom_seg` | function | Export one voxel annotation as a DICOM SEG against its source slices. | [Converters › DICOM SEG](converters.md#dicom-seg) |
-| `to_itk_transform` | function | Write transform *transform_id* of *sample* as ITK reads it: its linear part to *out* (`.tfm`, `.txt` or `.mat`), and a displacement field applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors* convention, required. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `to_itk_transform` | function | Write transform *transform_id* of *sample* as ITK reads it: its linear part to *out* (`.tfm`, `.txt`, `.h5` or `.mat`), and a displacement field applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors* convention, required. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `to_nifti` | function | Export one image, or one class of one annotation, as a NIfTI file. | [Converters › NIfTI](converters.md#nifti) |
 | `to_nnunetv2` | function | Export samples as an nnU-Net v2 dataset. | [Converters › nnU-Net v2](converters.md#nnu-net-v2) |
 | `to_rtstruct` | function | Export a `contours` annotation as an RT Structure Set. | [Converters › RTSTRUCT](converters.md#rtstruct) |
-| `write_itk_transform` | function | Write *transform* as ITK reads it, picking the format by suffix: `.tfm` or `.txt` text, or `.mat` as ANTs writes it. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `write_itk_transform` | function | Write *transform* as ITK reads it, picking the format by suffix: `.tfm` or `.txt` text, ITK's HDF5 (`.h5`, `.hdf5`, `.hdf`), or `.mat` as ANTs writes it. | [Converters › ITK transforms](converters.md#itk-transforms) |
 
 ## `medh5.io.dicom` { #medh5-io-dicom }
 
@@ -736,9 +736,9 @@ compiled extension the modules re-export from, not an API of its own.
 |---|---|---|---|
 | `from_itk_transform` | function | Add the ITK transform at *path* to *sample*, from the frame of grid *fixed* to that of grid *moving* — ITK's fixed and moving images. | [Converters › ITK transforms](converters.md#itk-transforms) |
 | `ItkTransform` | class | One ITK transform as a homogeneous matrix in LPS millimetres, mapping fixed points to moving ones (`x_moving = T(x_fixed)`). | [Converters › ITK transforms](converters.md#itk-transforms) |
-| `read_itk_transform` | function | Read an ITK transform file: text (`.tfm`, `.txt`) or ANTs' MATLAB v4 `.mat`, holding one of the linear types or a composite of them. | [Converters › ITK transforms](converters.md#itk-transforms) |
-| `to_itk_transform` | function | Write transform *transform_id* of *sample* as ITK reads it: its linear part to *out* (`.tfm`, `.txt` or `.mat`), and a displacement field applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors* convention, required. | [Converters › ITK transforms](converters.md#itk-transforms) |
-| `write_itk_transform` | function | Write *transform* as ITK reads it, picking the format by suffix: `.tfm` or `.txt` text, or `.mat` as ANTs writes it. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `read_itk_transform` | function | Read an ITK transform file: text (`.tfm`, `.txt`), ITK's HDF5 (`.h5`, `.hdf5`, `.hdf`) or ANTs' MATLAB v4 `.mat`, holding one of the linear types or a composite of them. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `to_itk_transform` | function | Write transform *transform_id* of *sample* as ITK reads it: its linear part to *out* (`.tfm`, `.txt`, `.h5` or `.mat`), and a displacement field applied first, as ANTs pairs them, to *warp_out* as a DISPVECT NIfTI (intent 1006) whose vectors are in the *vectors* convention, required. | [Converters › ITK transforms](converters.md#itk-transforms) |
+| `write_itk_transform` | function | Write *transform* as ITK reads it, picking the format by suffix: `.tfm` or `.txt` text, ITK's HDF5 (`.h5`, `.hdf5`, `.hdf`), or `.mat` as ANTs writes it. | [Converters › ITK transforms](converters.md#itk-transforms) |
 
 ## `medh5.io.legacy` { #medh5-io-legacy }
 

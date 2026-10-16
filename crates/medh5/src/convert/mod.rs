@@ -7,9 +7,11 @@
 //! migration.
 
 pub mod grouping;
+pub mod itk;
 pub mod legacy;
 pub mod nifti;
 pub mod report;
 
 pub use grouping::{group_by_subject, Occasion, SubjectGroup};
+pub use itk::{read_itk_h5, write_itk_h5, ItkEntry};
 pub use report::{merge_reports, ConversionReport, Note};

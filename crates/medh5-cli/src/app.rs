@@ -849,7 +849,7 @@ fn convert() -> Vec<Command> {
         .subcommand(report_args(
             Command::new("from-itk-transform")
                 .about("an ITK or ANTs transform -> a transform between two grids")
-                .arg(positional("transform", "the .tfm, .txt or ANTs .mat transform to import"))
+                .arg(positional("transform", "the .tfm, .txt, .h5 or ANTs .mat transform to import"))
                 .arg(positional("sample", "the sample to add the transform to"))
                 .arg(opt("transform_id", "id", "id for the new transform").required(true))
                 .arg(opt("fixed", "fixed", "the grid of ITK's fixed image: the transform starts in its frame").required(true))
@@ -865,7 +865,7 @@ fn convert() -> Vec<Command> {
             Command::new("to-itk-transform")
                 .about("a transform -> an ITK transform (and a displacement field)")
                 .arg(positional("sample", "the sample to read"))
-                .arg(positional("out", "the .tfm, .txt or .mat file to write"))
+                .arg(positional("out", "the .tfm, .txt, .h5 or .mat file to write"))
                 .arg(opt("transform_id", "id", "the transform to export").required(true))
                 .arg(opt("warp_out", "warp-out", "where to write its displacement field (NIfTI)"))
                 .arg(
