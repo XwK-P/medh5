@@ -1137,10 +1137,12 @@ def _frame(dataset: Any, index: int) -> Any:
     return dataset.PerFrameFunctionalGroupsSequence[index]
 
 
-def _concatenation(dataset: Any, directory: Path, split: int) -> list[Path]:
-    """*dataset* as a concatenation of two instances, frames ``[:split]`` and
-    ``[split:]`` --- the second part written first, so file order is not the
-    concatenation's."""
+def _concatenation(
+    dataset: Any, directory: Path, split: int | tuple[int, ...]
+) -> list[Path]:
+    """*dataset* as a concatenation of instances split before each frame in
+    *split* --- ``4`` makes frames ``[:4]`` and ``[4:]`` --- the last part
+    written first, so file order is not the concatenation's."""
     from copy import deepcopy
 
     from pydicom.sequence import Sequence
@@ -1150,7 +1152,9 @@ def _concatenation(dataset: Any, directory: Path, split: int) -> list[Path]:
     size = int(dataset.Rows) * int(dataset.Columns) * int(dataset.BitsAllocated) // 8
     concatenation = generate_uid()
     written = []
-    for number, (start, stop) in enumerate(((0, split), (split, frames)), start=1):
+    edges = [0, *((split,) if isinstance(split, int) else split), frames]
+    bounds = list(zip(edges[:-1], edges[1:], strict=True))
+    for number, (start, stop) in enumerate(bounds, start=1):
         part = deepcopy(dataset)
         part.SOPInstanceUID = part.file_meta.MediaStorageSOPInstanceUID = generate_uid()
         part.NumberOfFrames = stop - start
@@ -1161,9 +1165,9 @@ def _concatenation(dataset: Any, directory: Path, split: int) -> list[Path]:
         part.ConcatenationUID = concatenation
         part.SOPInstanceUIDOfConcatenationSource = dataset.SOPInstanceUID
         part.InConcatenationNumber = number
-        part.InConcatenationTotalNumber = 2
+        part.InConcatenationTotalNumber = len(bounds)
         part.ConcatenationFrameOffsetNumber = start
-        written.append(_save(part, directory / f"part{3 - number}.dcm"))
+        written.append(_save(part, directory / f"part{len(bounds) + 1 - number}.dcm"))
     return written
 
 
@@ -1553,6 +1557,23 @@ class TestEnhancedMultiFrame:
         part = pydicom.dcmread(second)
         part.ConcatenationFrameOffsetNumber = 5
         part.save_as(second)
+        with pytest.raises(MEDH5ValidationError, match="frame offset"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
+    def test_a_part_stating_no_offset_leaves_the_others_checked(self, tmp_path):
+        """Offsets 0, none and 5 over three parts of two frames: the third part
+        starts at 4 whatever the second states, so 5 is refused."""
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        _, second, third = _concatenation(enhanced, tmp_path / "enhanced", (2, 4))
+        part = pydicom.dcmread(second)
+        del part.ConcatenationFrameOffsetNumber
+        part.save_as(second)
+        part = pydicom.dcmread(third)
+        part.ConcatenationFrameOffsetNumber = 5
+        part.save_as(third)
         with pytest.raises(MEDH5ValidationError, match="frame offset"):
             from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
 

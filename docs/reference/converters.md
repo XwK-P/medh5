@@ -245,9 +245,9 @@ the reason. Frames with different rescales follow `per_slice_rescale`. A
 concatenation's instances are joined by `ConcatenationUID` in
 `InConcatenationNumber` order, and one missing a part is refused: the parts
 are counted against `InConcatenationTotalNumber`, and where that optional
-total is absent their numbers must run from 1 without a gap. Where the
-parts state `ConcatenationFrameOffsetNumber`, each must start where the
-frames before it end, or frames between them are missing. Enhanced
+total is absent their numbers must run from 1 without a gap. Each part
+that states `ConcatenationFrameOffsetNumber` must start where the frames of
+the parts before it end, or frames between them are missing. Enhanced
 ultrasound volumes and other multi-frame objects are skipped with a warning,
 and an object that carries a patient position but is not an image — an RT
 Dose grid — with a note.
