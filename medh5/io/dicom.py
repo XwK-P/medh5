@@ -441,6 +441,21 @@ def _number(header: Any, keyword: str) -> int:
         return 0
 
 
+def _values(modality: str, rescale_type: str | None) -> dict[str, Any]:
+    """An image's ``value_type`` and ``value_units`` from its modality and
+    ``RescaleType``.
+
+    A CT's rescale gives HU unless ``RescaleType`` names another quantity
+    (C.8.15.3.10): a derived or multi-energy CT may hold mg/ml or Z_eff, and
+    ``US`` (unspecified) names none.  Other modalities' values are intensity.
+    """
+    if modality != "CT":
+        return {"value_type": "intensity", "value_units": None}
+    if rescale_type == "US":
+        return {"value_type": "intensity", "value_units": None}
+    return {"value_type": "quantitative", "value_units": rescale_type or "HU"}
+
+
 def _count(skipped: dict[str, list[str]]) -> int:
     return sum(len(paths) for paths in skipped.values())
 
@@ -603,6 +618,13 @@ def _plan_series(
             {"series_uid": series.series_uid},
         )
     rescale, rescales = _series_rescale(slices, uids, series, report, per_slice_rescale)
+    # What the rescale gives: one quantity for the volume, so one type.
+    rescale_type = _agreed(
+        slices,
+        lambda s: _text(getattr(s, "RescaleType", None)),
+        "RescaleType",
+        series,
+    )
     direction = np.stack([normal, column, row], axis=1)
     geometry = {
         "shape": (len(slices), int(rows), int(columns)),
@@ -613,6 +635,7 @@ def _plan_series(
         "units": "mm",
         "frame_uid": series.frame_uid,
         "rescale": rescale,
+        "rescale_type": rescale_type,
         "acquisition": {
             tag: _scalar(getattr(slices[0], tag, None))
             for tag in STORED_TAGS
@@ -662,6 +685,7 @@ def _frame_headers(series: Series) -> list[Any]:
             "SamplesPerPixel",
             "RescaleSlope",
             "RescaleIntercept",
+            "RescaleType",
             *STORED_TAGS,
         ):
             value = _group_value(group, shared, dataset, keyword)
@@ -1229,6 +1253,8 @@ def _differs(first: Any, other: Any) -> bool:
         return True
     if first is None:
         return False
+    if isinstance(first, str) or isinstance(other, str):
+        return bool(first != other)
     return not np.allclose(
         np.asarray(first, dtype=np.float64),
         np.asarray(other, dtype=np.float64),
@@ -1634,8 +1660,7 @@ def _write_occasion(
             volume,
             grid=grid_id,
             modality=entry.modality,
-            value_type="quantitative" if entry.modality == "CT" else "intensity",
-            value_units="HU" if entry.modality == "CT" else None,
+            **_values(entry.modality, geometry["rescale_type"]),
             rescale_slope=None if rescale is None else rescale[0],
             rescale_intercept=None if rescale is None else rescale[1],
             prov=activity,

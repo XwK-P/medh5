@@ -1395,6 +1395,49 @@ class TestEnhancedMultiFrame:
         with medh5.open(right) as sample:
             assert not sample.images["CT_tp0"].is_rescaled
 
+    @pytest.mark.parametrize(
+        ("rescale_type", "value_type", "units"),
+        [("MGML", "quantitative", "MGML"), ("US", "intensity", None)],
+    )
+    def test_a_ct_takes_its_units_from_its_rescale_type(
+        self, tmp_path, rescale_type, value_type, units
+    ):
+        """A CT's rescale gives HU unless ``RescaleType`` says otherwise
+        (C.8.15.3.10): a material map in mg/ml is not HU, and ``US`` is no unit."""
+        classic = self._classic(tmp_path)
+        for path in classic["paths"]:
+            ds = pydicom.dcmread(path)
+            ds.RescaleType = rescale_type
+            ds.save_as(path)
+        enhanced = _enhanced(classic["paths"])
+        # highdicom writes HU whatever the slices say.
+        shared = enhanced.SharedFunctionalGroupsSequence[0]
+        shared.PixelValueTransformationSequence[0].RescaleType = rescale_type
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        for name in ("classic", "enhanced"):
+            out = self._imported(tmp_path / name, tmp_path / f"{name}.medh5")
+            with medh5.open(out) as sample:
+                image = sample.images["CT_tp0"]
+                assert (image.value_type, image.value_units) == (value_type, units)
+
+    def test_frames_of_different_rescale_types_are_refused(self, tmp_path):
+        from copy import deepcopy
+
+        from pydicom.sequence import Sequence
+
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        shared = enhanced.SharedFunctionalGroupsSequence[0]
+        shared.PixelValueTransformationSequence[0].RescaleType = "MGML"
+        item = deepcopy(shared.PixelValueTransformationSequence[0])
+        item.RescaleType = "HU"
+        _frame(enhanced, 2).PixelValueTransformationSequence = Sequence([item])
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        with pytest.raises(MEDH5ValidationError, match="RescaleType"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
     def test_enhanced_acquisition_attributes_come_from_the_functional_groups(
         self, tmp_path
     ):

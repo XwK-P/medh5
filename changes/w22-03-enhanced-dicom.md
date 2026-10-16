@@ -13,3 +13,11 @@
   `InStackPositionNumber` its positions contradict or that skips a number,
   and a concatenation missing a part are refused with the reason. `Series`
   gains `frames` and `stack`.
+
+### Fixed
+
+- **A CT's units follow its `RescaleType`.** Every CT was written as
+  quantitative HU, though DICOM lets a derived or multi-energy CT rescale to
+  another quantity. `value_units` is now the stated `RescaleType` (`HU` when
+  none is stated), `US` gives `intensity` with no units, and a series whose
+  slices state different types is refused.

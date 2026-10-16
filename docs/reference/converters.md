@@ -198,7 +198,11 @@ policy.
 
 **Modality LUT is stored, not applied.** `RescaleSlope` and `RescaleIntercept`
 become the image's `rescale`, so `read(physical=True)` gives HU and `read()`
-gives what the scanner stored.
+gives what the scanner stored. A CT's `value_units` is HU unless its
+`RescaleType` names another quantity — a derived or multi-energy CT may hold
+`MGML` or `Z_EFF` — and then it is that; `US` (unspecified) makes the image
+`intensity` with no units. Slices or frames stating different types are
+refused.
 
 **A per-slice rescale is refused, or applied when asked.** An image stores one
 modality LUT (§4.2), and a PET series often states one per slice; taking the
