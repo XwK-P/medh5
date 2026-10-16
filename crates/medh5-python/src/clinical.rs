@@ -609,17 +609,19 @@ impl CacheWriterHandle {
         Ok(checksum?)
     }
     /// Discard the half-written cache.
-    fn abort(&self) -> R<()> {
-        self.inner.write()?.take();
+    fn abort(&self, py: Python<'_>) -> R<()> {
+        let taken = self.inner.write()?.take();
+        crate::h5(py, move || drop(taken));
         Ok(())
     }
 }
 
 /// Start writing a feature cache (`medh5.cache/1`).
 #[pyfunction]
-fn cache_create(path: PathBuf, header_doc: &Bound<'_, PyAny>) -> R<CacheWriterHandle> {
+fn cache_create(py: Python<'_>, path: PathBuf, header_doc: &Bound<'_, PyAny>) -> R<CacheWriterHandle> {
     let h = header(&record(header_doc)?);
-    Ok(CacheWriterHandle { inner: Exclusive::new("a CacheWriterHandle", Some(CacheWriter::create(&path, h)?)) })
+    let writer = crate::h5(py, move || CacheWriter::create(&path, h))?;
+    Ok(CacheWriterHandle { inner: Exclusive::new("a CacheWriterHandle", Some(writer)) })
 }
 
 /// An open feature cache; `close()` releases the file.
@@ -649,8 +651,9 @@ impl FeatureCacheHandle {
     fn is_open(&self) -> bool {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
-    fn close(&self) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).take();
+    fn close(&self, py: Python<'_>) {
+        let taken = self.inner.lock().unwrap_or_else(|e| e.into_inner()).take();
+        crate::h5(py, move || drop(taken));
     }
     /// Forget the handle without closing it: what a forked child does with
     /// its parent's (§14.4) --- the descriptor is the parent's to close.

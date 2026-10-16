@@ -109,3 +109,23 @@ fn wait_detached(run: &mut dyn FnMut()) {
         (calls.0)()
     });
 }
+
+/// Engine calls that read or write a file, made from a binding that holds
+/// the interpreter: on free-threaded CPython, detached.  Every HDF5 call
+/// takes HDF5's one lock, and `hdf5`'s own methods take it themselves, past
+/// the engine's wait hook (`wait_detached`): a thread that met another's
+/// read there while attached held up every stop-the-world pause --- a
+/// collection --- until that read ended.  Detaching is not holding: `f`
+/// takes HDF5's lock call by call, as it would attached, so an engine cache
+/// filled on first use never waits for a thread that holds HDF5's lock.
+/// With the GIL, `f` runs where it is, as it always has.
+#[inline]
+pub(crate) fn h5<T: Send>(py: Python<'_>, f: impl FnOnce() -> T + Send) -> T {
+    #[cfg(Py_GIL_DISABLED)]
+    return py.detach(f);
+    #[cfg(not(Py_GIL_DISABLED))]
+    {
+        let _ = py;
+        f()
+    }
+}

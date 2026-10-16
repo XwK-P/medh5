@@ -44,12 +44,15 @@ pub struct StagedFileHandle {
 }
 
 impl StagedFileHandle {
-    fn take(&self) -> R<StagedFile> {
-        Ok(self
-            .inner
-            .write()?
-            .take()
-            .ok_or_else(|| medh5::Error::File("this staged file has already been committed or aborted".into()))?)
+    /// Commit, holding the handle across the rename (as a cache writer's
+    /// commit does): a commit or abort meanwhile is refused, not told the
+    /// file is finished before it is.  `None` when it already was.
+    fn commit_held(&self, py: Python<'_>) -> R<Option<()>> {
+        let mut held = self.inner.write()?;
+        let Some(staged) = held.take() else { return Ok(None) };
+        let committed = py.detach(move || staged.commit());
+        drop(held);
+        Ok(Some(committed?))
     }
 }
 
@@ -69,8 +72,8 @@ impl StagedFileHandle {
 
     /// Rename the written temporary over the target.
     fn commit(&self, py: Python<'_>) -> R<()> {
-        let staged = self.take()?;
-        Ok(py.detach(move || staged.commit())?)
+        self.commit_held(py)?
+            .ok_or_else(|| medh5::Error::File("this staged file has already been committed or aborted".into()).into())
     }
 
     /// Remove the temporary, leaving the target as it was.  Aborting a
@@ -98,10 +101,7 @@ impl StagedFileHandle {
             self.abort()?;
             return Ok(false);
         }
-        let staged = self.inner.write()?.take();
-        if let Some(staged) = staged {
-            py.detach(move || staged.commit())?;
-        }
+        self.commit_held(py)?;
         Ok(false)
     }
 }

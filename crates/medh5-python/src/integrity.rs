@@ -156,10 +156,11 @@ fn dataset_digest(py: Python<'_>, dataset: &Bound<'_, PyAny>, path: Option<Strin
 #[pyfunction]
 fn canonical_attrs(obj: &Bound<'_, PyAny>, names: Vec<String>) -> R<String> {
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    Ok(match loc_of(obj)? {
-        Loc::Dataset(d) => digest::canonical_attrs(&d, &refs)?,
-        Loc::Group(g) => digest::canonical_attrs(&g, &refs)?,
-    })
+    let loc = loc_of(obj)?;
+    Ok(crate::h5(obj.py(), || match &loc {
+        Loc::Dataset(d) => digest::canonical_attrs(d, &refs),
+        Loc::Group(g) => digest::canonical_attrs(g, &refs),
+    })?)
 }
 
 /// Return the digest of the canonical JSON of an object's named attributes (§13.2).
@@ -170,10 +171,11 @@ fn canonical_attrs(obj: &Bound<'_, PyAny>, names: Vec<String>) -> R<String> {
 #[pyo3(signature = (obj, names, algo="sha256"))]
 fn attrs_digest(obj: &Bound<'_, PyAny>, names: Vec<String>, algo: &str) -> R<String> {
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    Ok(match loc_of(obj)? {
-        Loc::Dataset(d) => digest::attrs_digest(&d, &refs, algo)?,
-        Loc::Group(g) => digest::attrs_digest(&g, &refs, algo)?,
-    })
+    let loc = loc_of(obj)?;
+    Ok(crate::h5(obj.py(), || match &loc {
+        Loc::Dataset(d) => digest::attrs_digest(d, &refs, algo),
+        Loc::Group(g) => digest::attrs_digest(g, &refs, algo),
+    })?)
 }
 
 /// An object's path relative to a sample root (the file root by default).

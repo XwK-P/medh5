@@ -88,13 +88,17 @@ fn dataset_layout<'py>(
 /// A dataset's actual HDF5 filter pipeline, e.g. `blosc2:zstd:3+shuffle`.
 #[pyfunction]
 fn describe_filters(dataset: &Bound<'_, PyAny>) -> R<String> {
-    Ok(codecs::describe_filters(crate::nodes::dataset_arg(dataset)?.get().ds())?)
+    let ds = crate::nodes::dataset_arg(dataset)?;
+    let ds = ds.get().ds();
+    Ok(crate::h5(dataset.py(), || codecs::describe_filters(ds))?)
 }
 
 /// Whether a dataset is large enough for the W902 warning.
 #[pyfunction]
 fn is_bulk(dataset: &Bound<'_, PyAny>) -> PyResult<bool> {
-    Ok(codecs::is_bulk(crate::nodes::dataset_arg(dataset)?.get().ds()))
+    let ds = crate::nodes::dataset_arg(dataset)?;
+    let ds = ds.get().ds();
+    Ok(crate::h5(dataset.py(), || codecs::is_bulk(ds)))
 }
 
 /// `portable` when every dataset of the file needs only HDF5's own filters,

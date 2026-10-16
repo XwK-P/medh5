@@ -177,15 +177,17 @@ impl PatchSamplerHandle {
         annotation: Option<String>,
         grid: Option<String>,
     ) -> R<Option<String>> {
+        let py = sample.py();
         let sample = sample_arg(sample)?;
-        Ok(self.inner.annotation(&sample, annotation.as_deref(), grid.as_deref())?)
+        Ok(crate::h5(py, || self.inner.annotation(&sample, annotation.as_deref(), grid.as_deref()))?)
     }
 
     /// The grid a draw is measured in.
     #[pyo3(signature = (sample, annotation=None, grid=None))]
     fn window_grid(&self, sample: &Bound<'_, PyAny>, annotation: Option<String>, grid: Option<String>) -> R<String> {
+        let py = sample.py();
         let sample = sample_arg(sample)?;
-        Ok(self.inner.window_grid(&sample, annotation.as_deref(), grid.as_deref())?)
+        Ok(crate::h5(py, || self.inner.window_grid(&sample, annotation.as_deref(), grid.as_deref()))?)
     }
 
     /// A class to sample from, weighted as configured; `None` when no class
@@ -333,7 +335,8 @@ fn sampling_check_pair_mode(mode: &str) -> R<()> {
 #[pyfunction]
 fn sampling_pairs<'py>(py: Python<'py>, mode: &str, sample: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
     let sample = sample_arg(sample)?;
-    let pairs = engine::TimepointPairSampler::new(mode)?.pairs(&sample)?;
+    let sampler = engine::TimepointPairSampler::new(mode)?;
+    let pairs = crate::h5(py, || sampler.pairs(&sample))?;
     let out = PyList::empty(py);
     for p in pairs {
         out.append((p.first, p.second, p.interval_days, p.label))?;

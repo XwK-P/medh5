@@ -35,6 +35,7 @@ use crate::curation::{Activity, Agent, Cohort, Deidentification, Identity, Quali
 use crate::errors::R;
 use crate::exclusive::Exclusive;
 use crate::geometry::Grid;
+use crate::h5;
 use crate::nodes::{Dataset, Group};
 
 // -- arguments ----------------------------------------------------------------------------
@@ -564,26 +565,30 @@ impl SampleWriter {
         _tb: Option<&Bound<'_, PyAny>>,
     ) -> R<bool> {
         let mut held = self.inner.write()?;
-        if is_given(exc_type).is_some() {
-            held.abort();
-            return Ok(false);
-        }
-        if !held.is_closed() {
-            let inner = &mut *held;
-            if let Err(e) = py.detach(|| inner.commit(true)) {
-                // The block is over, so no one is left to mend and commit
-                // again: a refused commit aborts, and the temporary sibling
-                // goes.
-                held.abort();
-                return Err(e.into());
+        let inner = &mut *held;
+        let aborted = is_given(exc_type).is_some();
+        h5(py, move || {
+            if aborted {
+                inner.abort();
+            } else if !inner.is_closed() {
+                if let Err(e) = inner.commit(true) {
+                    // The block is over, so no one is left to mend and commit
+                    // again: a refused commit aborts, and the temporary
+                    // sibling goes.
+                    inner.abort();
+                    return Err(e);
+                }
             }
-        }
+            Ok(())
+        })?;
         Ok(false)
     }
 
     /// Discard the in-progress file, leaving any existing one untouched.
-    fn abort(&self) -> R<()> {
-        self.inner.write()?.abort();
+    fn abort(&self, py: Python<'_>) -> R<()> {
+        let mut held = self.inner.write()?;
+        let inner = &mut *held;
+        h5(py, move || inner.abort());
         Ok(())
     }
 
@@ -636,8 +641,8 @@ impl SampleWriter {
     /// model.  `commit` stamps what is written through it, and refuses
     /// (E701) to restamp a dataset the amended file already failed.
     #[getter]
-    fn handle(&self) -> R<Group> {
-        Ok(Group::wrap(self.state()?.root()?))
+    fn handle(&self, py: Python<'_>) -> R<Group> {
+        h5(py, || Ok(Group::wrap(self.state()?.root()?)))
     }
 
     // -- document ------------------------------------------------------------------
@@ -758,6 +763,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_grid(
         &self,
+        py: Python<'_>,
         grid_id: &str,
         shape: &Bound<'_, PyAny>,
         spacing: &Bound<'_, PyAny>,
@@ -790,7 +796,7 @@ impl SampleWriter {
         };
         let shape = i64_vec(shape)?;
         let spacing = f64_vec(spacing)?;
-        Ok(Grid::wrap(self.writer()?.add_grid(grid_id, &shape, &spacing, options)?))
+        h5(py, || Ok(Grid::wrap(self.writer()?.add_grid(grid_id, &shape, &spacing, options)?)))
     }
 
     /// Grids declared so far.
@@ -810,12 +816,13 @@ impl SampleWriter {
         for (k, v) in items_of(mapping)? {
             map.insert(k.extract::<String>()?, v.extract::<String>()?);
         }
-        Ok(PyTuple::new(py, self.writer()?.remap_frame_uids(&map)?)?)
+        let renamed = h5(py, || -> R<_> { Ok(self.writer()?.remap_frame_uids(&map)?) })?;
+        Ok(PyTuple::new(py, renamed)?)
     }
 
     /// Every frame UID in the file so far, and the attributes naming it.
     fn frame_uids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
-        let uids = self.state()?.frame_uids()?;
+        let uids = h5(py, || -> R<_> { Ok(self.state()?.frame_uids()?) })?;
         let out = PyDict::new(py);
         for (k, v) in uids {
             out.set_item(k, PyTuple::new(py, v)?)?;
@@ -1059,32 +1066,32 @@ impl SampleWriter {
     }
 
     /// Drop an annotation, and any index entry derived from it.
-    fn remove_annotation(&self, ann_id: &str) -> R<()> {
-        Ok(self.writer()?.remove_annotation(ann_id)?)
+    fn remove_annotation(&self, py: Python<'_>, ann_id: &str) -> R<()> {
+        h5(py, || Ok(self.writer()?.remove_annotation(ann_id)?))
     }
 
     /// Drop a transform; what still names it is checked at commit.
-    fn remove_transform(&self, transform_id: &str) -> R<()> {
-        Ok(self.writer()?.remove_transform(transform_id)?)
+    fn remove_transform(&self, py: Python<'_>, transform_id: &str) -> R<()> {
+        h5(py, || Ok(self.writer()?.remove_transform(transform_id)?))
     }
 
     /// Drop an image, its `acquisition` entry and its `series_uids`
     /// mentions; what still names it, and the last image going (E201), are
     /// checked at commit.
-    fn remove_image(&self, image_id: &str) -> R<()> {
-        Ok(self.writer()?.remove_image(image_id)?)
+    fn remove_image(&self, py: Python<'_>, image_id: &str) -> R<()> {
+        h5(py, || Ok(self.writer()?.remove_image(image_id)?))
     }
 
     /// Drop a grid; what still names it (E101, E503), and the last grid
     /// going (E111), are checked at commit.
-    fn remove_grid(&self, grid_id: &str) -> R<()> {
-        Ok(self.writer()?.remove_grid(grid_id)?)
+    fn remove_grid(&self, py: Python<'_>, grid_id: &str) -> R<()> {
+        h5(py, || Ok(self.writer()?.remove_grid(grid_id)?))
     }
 
     /// Change an image's attributes without rewriting its samples (§4.1):
     /// `None` removes one.  Checked as `add_image` checks them.
     #[pyo3(signature = (image_id, **attrs))]
-    fn set_image_attrs(&self, image_id: &str, attrs: Option<&Bound<'_, PyDict>>) -> R<()> {
+    fn set_image_attrs(&self, py: Python<'_>, image_id: &str, attrs: Option<&Bound<'_, PyDict>>) -> R<()> {
         let mut edit = ImageEdit::default();
         for (key, value) in attrs.into_iter().flat_map(|d| d.iter()) {
             let key: String = key.extract()?;
@@ -1118,7 +1125,7 @@ impl SampleWriter {
                 }
             }
         }
-        Ok(self.writer()?.set_image_attrs(image_id, edit)?)
+        h5(py, || Ok(self.writer()?.set_image_attrs(image_id, edit)?))
     }
 
     /// Re-encode a voxel annotation in place, preserving its header (§7.6).
@@ -1419,6 +1426,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_classification(
         &self,
+        py: Python<'_>,
         ann_id: &str,
         labels: &Bound<'_, PyAny>,
         scope: &str,
@@ -1442,7 +1450,8 @@ impl SampleWriter {
         // The classes against one label set, the one the write holds (E4).
         let mut held = self.writer()?;
         assertions.class_ids = keys.iter().map(|k| held.class_id(k)).collect::<medh5::Result<Vec<_>>>()?;
-        let group = held.add_classification(ann_id, assertions, scope, multilabel, grid, options)?;
+        let writer = &mut *held;
+        let group = h5(py, move || writer.add_classification(ann_id, assertions, scope, multilabel, grid, options))?;
         Ok(Group::wrap(group))
     }
 
@@ -1546,7 +1555,7 @@ impl SampleWriter {
 
     /// Profiles this sample actually satisfies, unioned with declared ones.
     fn infer_profiles<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyFrozenSet>> {
-        let profiles = self.state()?.infer_profiles()?;
+        let profiles = h5(py, || -> R<_> { Ok(self.state()?.infer_profiles()?) })?;
         Ok(PyFrozenSet::new(py, profiles)?)
     }
 
@@ -1580,7 +1589,8 @@ impl SampleWriter {
     ) -> R<Bound<'py, PyAny>> {
         let doc = crate::clinical::record_with(clock, fields)?;
         let clock = medh5::clinical::Clock::from_json(&doc)?;
-        Ok(crate::convert::json_to_py(py, &self.writer()?.set_clock(clock)?.to_json())?)
+        let added = h5(py, || -> R<_> { Ok(self.writer()?.set_clock(clock)?.to_json()) })?;
+        Ok(crate::convert::json_to_py(py, &added)?)
     }
 
     /// Add one event version (1.1 §5): an `Event`, a dict, or keywords.
@@ -1592,7 +1602,8 @@ impl SampleWriter {
         fields: Option<&Bound<'py, PyDict>>,
     ) -> R<Bound<'py, PyAny>> {
         let event = crate::clinical::event_arg(event, fields)?;
-        Ok(crate::convert::json_to_py(py, &self.writer()?.add_event(event)?.to_json())?)
+        let added = h5(py, || -> R<_> { Ok(self.writer()?.add_event(event)?.to_json()) })?;
+        Ok(crate::convert::json_to_py(py, &added)?)
     }
 
     /// Add one source document (1.1 §6).
@@ -1604,7 +1615,8 @@ impl SampleWriter {
         fields: Option<&Bound<'py, PyDict>>,
     ) -> R<Bound<'py, PyAny>> {
         let doc = medh5::clinical::Document::from_json(&crate::clinical::record_with(document, fields)?)?;
-        Ok(crate::convert::json_to_py(py, &self.writer()?.add_document(doc)?.to_json())?)
+        let added = h5(py, || -> R<_> { Ok(self.writer()?.add_document(doc)?.to_json()) })?;
+        Ok(crate::convert::json_to_py(py, &added)?)
     }
 
     /// Add one typed link (1.1 §7).
@@ -1616,7 +1628,8 @@ impl SampleWriter {
         fields: Option<&Bound<'py, PyDict>>,
     ) -> R<Bound<'py, PyAny>> {
         let link = medh5::clinical::Link::from_json(&crate::clinical::record_with(link, fields)?)?;
-        Ok(crate::convert::json_to_py(py, &self.writer()?.add_link(link)?.to_json())?)
+        let added = h5(py, || -> R<_> { Ok(self.writer()?.add_link(link)?.to_json()) })?;
+        Ok(crate::convert::json_to_py(py, &added)?)
     }
 
     /// Add a logical-record bundle: `clinical`, `events`, `documents`, `links`.
@@ -1629,7 +1642,7 @@ impl SampleWriter {
 
     /// The clinical records so far (an amended file's once loaded), or `None`.
     fn clinical<'py>(&self, py: Python<'py>) -> R<Option<Bound<'py, PyAny>>> {
-        let found = self.writer()?.clinical()?.map(|r| r.to_json());
+        let found = h5(py, || -> R<_> { Ok(self.writer()?.clinical()?.map(|r| r.to_json())) })?;
         Ok(found.map(|v| crate::convert::json_to_py(py, &v)).transpose()?)
     }
 
@@ -1641,8 +1654,8 @@ impl SampleWriter {
     /// Remove the clinical profile: the imaging projection (1.1 §10), written
     /// at the lowest version what remains needs.  A sample with no clinical
     /// profile to remove keeps the version it declared (1.1 §2.1).
-    fn drop_clinical(&self) -> R<()> {
-        Ok(self.writer()?.drop_clinical()?)
+    fn drop_clinical(&self, py: Python<'_>) -> R<()> {
+        h5(py, || Ok(self.writer()?.drop_clinical()?))
     }
 
     fn __repr__(&self) -> R<String> {

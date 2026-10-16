@@ -314,9 +314,11 @@ pub const DETACH_BYTES: usize = 1 << 20;
 /// more than the work.
 pub const DETACH_ROWS: usize = 4096;
 
-/// `f()`, with the GIL released when `large`.
+/// `f()`, with the GIL released when `large`.  On free-threaded CPython
+/// always detached: there is no GIL to hand back, and a call that may wait
+/// for HDF5's lock waits detached (`crate::h5`).
 pub fn detach_if<T: Ungil, F: Ungil + FnOnce() -> T>(py: Python<'_>, large: bool, f: F) -> T {
-    if large {
+    if large || cfg!(Py_GIL_DISABLED) {
         py.detach(f)
     } else {
         f()
