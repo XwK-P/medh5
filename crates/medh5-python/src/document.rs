@@ -13,19 +13,22 @@ use crate::curation::{
     timeline_arg, Activity, Cohort, Deidentification, Identity, QualityRecord, SplitClaim, Timeline, Timepoint,
 };
 use crate::errors::R;
+use crate::exclusive::Exclusive;
 use crate::labels::{label_set_arg, with_classes, LabelClass, LabelSet};
 
 /// Where a document object's fields live.
 enum Source {
-    /// Its own copy: a document read from a file or built by hand.
-    Owned(Box<engine::SampleDocument>),
+    /// Its own copy: a document read from a file or built by hand, changed by
+    /// one thread at a time (E4).
+    Owned(Exclusive<Box<engine::SampleDocument>>),
     /// A writer's document, read and edited in place: `SampleWriter.document`,
-    /// as 1.x had it, so `w.document.label_set = ...` reaches the file.
+    /// as 1.x had it, so `w.document.label_set = ...` reaches the file.  The
+    /// writer's lock is its lock.
     Writer(Py<crate::writer::SampleWriter>),
 }
 
 /// The whole document, typed.  Fields read and write the engine's types.
-#[pyclass(module = "medh5.document", name = "SampleDocument", skip_from_py_object)]
+#[pyclass(module = "medh5.document", name = "SampleDocument", skip_from_py_object, frozen)]
 pub struct SampleDocument {
     source: Source,
 }
@@ -39,7 +42,7 @@ fn object(value: Value) -> Map<String, Value> {
 
 impl SampleDocument {
     pub fn owned(inner: engine::SampleDocument) -> Self {
-        SampleDocument { source: Source::Owned(Box::new(inner)) }
+        SampleDocument { source: Source::Owned(Exclusive::new("a SampleDocument", Box::new(inner))) }
     }
 
     /// The live document of `writer`.
@@ -52,25 +55,22 @@ impl SampleDocument {
         matches!(&self.source, Source::Writer(w) if w.as_ptr() == writer)
     }
 
-    fn read<T>(&self, py: Python<'_>, f: impl FnOnce(&engine::SampleDocument) -> T) -> PyResult<T> {
+    fn read<T>(&self, py: Python<'_>, f: impl FnOnce(&engine::SampleDocument) -> T) -> R<T> {
         match &self.source {
-            Source::Owned(doc) => Ok(f(doc)),
-            Source::Writer(w) => Ok(f(w.bind(py).try_borrow()?.inner.document())),
+            Source::Owned(doc) => Ok(f(&**doc.read()?)),
+            Source::Writer(w) => w.bind(py).get().read_document(f),
         }
     }
 
-    pub(crate) fn edit<T>(&mut self, py: Python<'_>, f: impl FnOnce(&mut engine::SampleDocument) -> T) -> R<T> {
-        match &mut self.source {
-            Source::Owned(doc) => Ok(f(doc)),
-            Source::Writer(w) => {
-                let mut writer = w.bind(py).try_borrow_mut()?;
-                Ok(f(writer.engine()?.document_mut()))
-            }
+    pub(crate) fn edit<T>(&self, py: Python<'_>, f: impl FnOnce(&mut engine::SampleDocument) -> T) -> R<T> {
+        match &self.source {
+            Source::Owned(doc) => Ok(f(&mut **doc.write()?)),
+            Source::Writer(w) => w.bind(py).get().edit_document(f),
         }
     }
 
     /// A copy of the document as it stands.
-    pub fn current(&self, py: Python<'_>) -> PyResult<engine::SampleDocument> {
+    pub fn current(&self, py: Python<'_>) -> R<engine::SampleDocument> {
         self.read(py, |doc| doc.clone())
     }
 }
@@ -116,6 +116,19 @@ fn live_members<'py>(doc: &Bound<'py, SampleDocument>, field: &str) -> PyResult<
     let py = doc.py();
     let class = MEMBERS.get_or_try_init(py, || py.import("medh5._live")?.getattr("Members").map(Bound::unbind))?;
     class.bind(py).call_method1("_of", (doc, field))
+}
+
+/// `f` under the live views' lock (`medh5._live._LOCK`), which every change
+/// to a container nested in a document member holds with its rewrite: what
+/// `f` reads of those containers is one state of them, not a mix of two.
+/// `f` must not wait for another thread.
+pub fn under_live_lock<T>(py: Python<'_>, f: impl FnOnce() -> R<T>) -> R<T> {
+    static LOCK: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    let lock = LOCK.import(py, "medh5._live", "_LOCK")?;
+    lock.call_method0("acquire")?;
+    let out = f();
+    lock.call_method0("release")?;
+    out
 }
 
 /// How a member is named to a caller: `document.identity`,
@@ -224,58 +237,58 @@ impl SampleDocument {
     }
     /// The identity; an edit to its `extra` reaches the document.
     #[getter]
-    fn identity(slf: &Bound<'_, Self>) -> PyResult<Identity> {
-        let found = slf.borrow().read(slf.py(), |d| d.identity.clone())?;
+    fn identity(slf: &Bound<'_, Self>) -> R<Identity> {
+        let found = slf.get().read(slf.py(), |d| d.identity.clone())?;
         Ok(Identity::read_from(found, slf.as_any(), "identity", None))
     }
     #[setter]
-    fn set_identity(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
+    fn set_identity(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = Identity::arg(value)?;
         self.edit(py, |d| d.identity = value)
     }
     /// The timepoints; an edit to one's `series_uids` reaches the document.
     #[getter]
-    fn timepoints(slf: &Bound<'_, Self>) -> PyResult<Timeline> {
-        let found = slf.borrow().read(slf.py(), |d| d.timepoints.clone())?;
+    fn timepoints(slf: &Bound<'_, Self>) -> R<Timeline> {
+        let found = slf.get().read(slf.py(), |d| d.timepoints.clone())?;
         Ok(Timeline::read_from(found, slf.as_any()))
     }
     #[setter]
-    fn set_timepoints(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
+    fn set_timepoints(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = timeline_arg(value)?;
         self.edit(py, |d| d.timepoints = value)
     }
     /// The cohort; an edit to its `extra` reaches the document.
     #[getter]
-    fn cohort(slf: &Bound<'_, Self>) -> PyResult<Cohort> {
-        let found = slf.borrow().read(slf.py(), |d| d.cohort.clone())?;
+    fn cohort(slf: &Bound<'_, Self>) -> R<Cohort> {
+        let found = slf.get().read(slf.py(), |d| d.cohort.clone())?;
         Ok(Cohort::read_from(found, slf.as_any(), "cohort", None))
     }
     #[setter]
-    fn set_cohort(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
+    fn set_cohort(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = Cohort::arg(value)?;
         self.edit(py, |d| d.cohort = value)
     }
     /// The label set; an edit to a class's `properties` reaches the
     /// document.
     #[getter]
-    fn label_set(slf: &Bound<'_, Self>) -> PyResult<Option<LabelSet>> {
-        let found = slf.borrow().read(slf.py(), |d| d.label_set.clone())?;
+    fn label_set(slf: &Bound<'_, Self>) -> R<Option<LabelSet>> {
+        let found = slf.get().read(slf.py(), |d| d.label_set.clone())?;
         Ok(found.map(|set| LabelSet::read_from(set, slf.as_any())))
     }
     #[setter]
-    fn set_label_set(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
+    fn set_label_set(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = if value.is_none() { None } else { Some(label_set_arg(value)?) };
         self.edit(py, |d| d.label_set = value)
     }
     /// The provenance graph; an agent or activity added to it, and an edit
     /// to an activity's `params`, reach the document.
     #[getter]
-    fn provenance(slf: &Bound<'_, Self>) -> PyResult<crate::curation::Provenance> {
-        let found = slf.borrow().read(slf.py(), |d| d.provenance.clone())?;
+    fn provenance(slf: &Bound<'_, Self>) -> R<crate::curation::Provenance> {
+        let found = slf.get().read(slf.py(), |d| d.provenance.clone())?;
         Ok(crate::curation::Provenance::read_from(found, slf.as_any()))
     }
     #[setter]
-    fn set_provenance(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
+    fn set_provenance(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = provenance_arg(value)?;
         self.edit(py, |d| d.provenance = value)
     }
@@ -285,17 +298,17 @@ impl SampleDocument {
         live_members(slf, "quality")
     }
     #[setter]
-    fn set_quality(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
+    fn set_quality(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = quality_arg(value)?;
         self.edit(py, |d| d.quality = value)
     }
     #[getter]
-    fn splits<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+    fn splits<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyTuple>> {
         let claims = self.read(py, |d| d.splits.clone())?;
-        PyTuple::new(py, claims.into_iter().map(SplitClaim::wrap))
+        Ok(PyTuple::new(py, claims.into_iter().map(SplitClaim::wrap))?)
     }
     #[setter]
-    fn set_splits(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
+    fn set_splits(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = value.try_iter()?.map(|i| SplitClaim::arg(&i?)).collect::<R<Vec<_>>>()?;
         self.edit(py, |d| d.splits = value)
     }
@@ -306,19 +319,19 @@ impl SampleDocument {
         live_members(slf, "acquisition")
     }
     #[setter]
-    fn set_acquisition(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
+    fn set_acquisition(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = object(py_to_json(value)?);
         self.edit(py, |d| d.acquisition = value)
     }
     /// The de-identification record; an edit to its `extra` reaches the
     /// document.
     #[getter]
-    fn deidentification(slf: &Bound<'_, Self>) -> PyResult<Option<Deidentification>> {
-        let found = slf.borrow().read(slf.py(), |d| d.deidentification.clone())?;
+    fn deidentification(slf: &Bound<'_, Self>) -> R<Option<Deidentification>> {
+        let found = slf.get().read(slf.py(), |d| d.deidentification.clone())?;
         Ok(found.map(|record| Deidentification::read_from(record, slf.as_any(), "deidentification", None)))
     }
     #[setter]
-    fn set_deidentification(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
+    fn set_deidentification(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = if value.is_none() { None } else { Some(Deidentification::arg(value)?) };
         self.edit(py, |d| d.deidentification = value)
     }
@@ -329,19 +342,19 @@ impl SampleDocument {
         live_members(slf, "extra")
     }
     #[setter]
-    fn set_extra(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
+    fn set_extra(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = object(py_to_json(value)?);
         self.edit(py, |d| d.extra = value)
     }
-    fn to_json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        json_to_py(py, &self.read(py, |d| d.to_json())?)
+    fn to_json<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        Ok(json_to_py(py, &self.read(py, |d| d.to_json())?)?)
     }
     #[classmethod]
     fn from_json(_cls: &Bound<'_, pyo3::types::PyType>, doc: &Bound<'_, PyAny>) -> R<Self> {
         Ok(SampleDocument::owned(engine::SampleDocument::from_json(&py_to_json(doc)?)?))
     }
     #[pyo3(signature = (*, indent=None))]
-    fn dumps(&self, py: Python<'_>, indent: Option<usize>) -> PyResult<String> {
+    fn dumps(&self, py: Python<'_>, indent: Option<usize>) -> R<String> {
         self.read(py, |d| match indent {
             Some(n) => d.dumps_indented(n),
             None => d.dumps(),
@@ -363,30 +376,30 @@ impl SampleDocument {
         };
         Ok(SampleDocument::owned(engine::SampleDocument::loads(&text)?))
     }
-    fn check_schema(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+    fn check_schema(&self, py: Python<'_>) -> R<Vec<String>> {
         self.read(py, |d| d.check_schema())
     }
     #[getter]
-    fn subject_id(&self, py: Python<'_>) -> PyResult<String> {
+    fn subject_id(&self, py: Python<'_>) -> R<String> {
         self.read(py, |d| d.subject_id().to_string())
     }
     #[getter]
-    fn group_id(&self, py: Python<'_>) -> PyResult<String> {
+    fn group_id(&self, py: Python<'_>) -> R<String> {
         self.read(py, |d| d.group_id().to_string())
     }
-    fn quality_of(slf: &Bound<'_, Self>, key: Option<&str>) -> PyResult<Option<QualityRecord>> {
-        let found = slf.borrow().read(slf.py(), |d| d.quality_of(key).cloned())?;
+    fn quality_of(slf: &Bound<'_, Self>, key: Option<&str>) -> R<Option<QualityRecord>> {
+        let found = slf.get().read(slf.py(), |d| d.quality_of(key).cloned())?;
         Ok(found.map(|record| QualityRecord::read_from(record, slf.as_any(), "quality", key)))
     }
-    fn summary<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        json_to_py(py, &self.read(py, |d| d.summary())?)
+    fn summary<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        Ok(json_to_py(py, &self.read(py, |d| d.summary())?)?)
     }
-    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> R<bool> {
         let Ok(other) = other.cast::<SampleDocument>() else { return Ok(false) };
-        let theirs = other.try_borrow()?.current(py)?;
+        let theirs = other.get().current(py)?;
         self.read(py, |d| *d == theirs)
     }
-    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+    fn __repr__(&self, py: Python<'_>) -> R<String> {
         self.read(py, |d| {
             format!(
                 "SampleDocument(sample_id={}, subject_id={}, timepoints={})",
@@ -404,7 +417,7 @@ impl SampleDocument {
 
     /// The members of `field` as `(key, value, token)`: the token is the
     /// member's canonical JSON, which `_replace_member` compares.
-    fn _members<'py>(&self, py: Python<'py>, field: &str) -> PyResult<Bound<'py, PyList>> {
+    fn _members<'py>(&self, py: Python<'py>, field: &str) -> R<Bound<'py, PyList>> {
         let out = PyList::empty(py);
         match Members::of(field)? {
             Members::Quality => {
@@ -425,7 +438,7 @@ impl SampleDocument {
 
     /// Set (or replace) one member, converted as `SampleWriter.extra`
     /// converts a value.
-    fn _set_member(&mut self, py: Python<'_>, field: &str, key: &str, value: &Bound<'_, PyAny>) -> R<()> {
+    fn _set_member(&self, py: Python<'_>, field: &str, key: &str, value: &Bound<'_, PyAny>) -> R<()> {
         match Members::of(field)? {
             Members::Quality => {
                 let record = QualityRecord::arg(value)?;
@@ -446,7 +459,7 @@ impl SampleDocument {
     /// set's class by key.
     #[pyo3(signature = (field, key, token, value))]
     fn _replace_member(
-        &mut self,
+        &self,
         py: Python<'_>,
         field: &str,
         key: Option<&str>,
@@ -547,7 +560,7 @@ impl SampleDocument {
     }
 
     /// Delete one member (`KeyError` when there is none).
-    fn _delete_member(&mut self, py: Python<'_>, field: &str, key: &str) -> R<()> {
+    fn _delete_member(&self, py: Python<'_>, field: &str, key: &str) -> R<()> {
         let removed = match Members::of(field)? {
             Members::Quality => self.edit(py, |d| d.quality.shift_remove(key).is_some())?,
             members => self.edit(py, |d| members.json_mut(d).shift_remove(key).is_some())?,
@@ -559,7 +572,7 @@ impl SampleDocument {
     }
 
     /// Delete every member.
-    fn _clear_members(&mut self, py: Python<'_>, field: &str) -> R<()> {
+    fn _clear_members(&self, py: Python<'_>, field: &str) -> R<()> {
         match Members::of(field)? {
             Members::Quality => self.edit(py, |d| d.quality.clear()),
             members => self.edit(py, |d| members.json_mut(d).clear()),
@@ -576,7 +589,7 @@ impl SampleDocument {
 
 pub fn provenance_arg(obj: &Bound<'_, PyAny>) -> R<medh5::curation::provenance::Provenance> {
     if let Ok(p) = obj.cast::<crate::curation::Provenance>() {
-        return p.try_borrow()?.current(obj.py());
+        return p.get().current(obj.py());
     }
     Ok(medh5::curation::provenance::Provenance::from_json(Some(&py_to_json(obj)?))?)
 }

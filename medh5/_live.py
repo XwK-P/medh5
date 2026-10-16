@@ -24,15 +24,82 @@ than written over it, and the member's containers refuse every further edit
 A copy of a view (``copy.copy``, ``dict(view)``, ``pickle``) is a plain
 ``dict``, detached from the document; a copy of a record is a record no
 document handed out.
+
+Threads may share a view.  A change nested in a member, the rewrite it makes
+(comparing the member's token and replacing it), and a view's reread of the
+document each happen in one step, under one lock: two threads editing one
+member each write their edit over the other's, never over a token the other
+has already spent, and never rewrite a container the other is changing.  A
+value, a key or an index given is converted before the lock is taken, and an
+item to remove is found before it, so no caller's code runs under it.
 """
 
 from __future__ import annotations
 
 import copy
+import operator
+import threading
 from collections.abc import Iterable, Mapping
 from typing import Any, SupportsIndex
 
 __all__ = ["Members"]
+
+_LOCK = threading.RLock()
+"""Held while a container nested in a member changes and the member is
+rewritten (`_Anchor.rewrite`), and while a view rereads the document
+(`Members._sync`).  Reentrant, so nested use on one thread never blocks
+itself."""
+
+
+def _key(key: Any) -> Any:
+    """*key* as the document keeps it, made before the lock: a subclass of
+    ``str``, ``int`` or ``float`` (whose ``__hash__``, ``__eq__`` and
+    ``__str__`` are the caller's) as the built-in value it holds, an object
+    with ``__index__`` as its ``int``; any other key is refused here, as the
+    rewrite would refuse it, before anything changes."""
+    if key is None or type(key) in (str, int, float, bool):
+        return key
+    if isinstance(key, str):
+        return str.__str__(key)
+    if isinstance(key, int):
+        return int.__int__(key)
+    if isinstance(key, float):
+        return float.__float__(key)
+    if hasattr(type(key), "__index__"):
+        return operator.index(key)
+    raise TypeError(
+        f"keys must be str, int, float, bool or None, not {type(key).__name__}"
+    )
+
+
+_ABSENT = object()
+
+
+def _found(key: Any) -> Any:
+    """*key* for a lookup, as `_key` makes it; ``_ABSENT`` for a key no
+    member can hold (an unhashable one still raises, as a dict's lookup
+    would)."""
+    try:
+        return _key(key)
+    except TypeError:
+        hash(key)
+        return _ABSENT
+
+
+def _index(index: Any) -> Any:
+    """*index* as a list takes it, converted before the lock: an object's
+    ``__index__``, and a slice's bounds', are the caller's code."""
+    if isinstance(index, slice):
+        bounds = (index.start, index.stop, index.step)
+        return slice(*(None if b is None else operator.index(b) for b in bounds))
+    return operator.index(index)
+
+
+def _unchanged(items: list[Any], before: list[Any]) -> bool:
+    """Whether *items* still holds what *before* copied of it, item by item."""
+    return len(items) == len(before) and all(
+        a is b for a, b in zip(items, before, strict=True)
+    )
 
 
 class _Anchor:
@@ -69,16 +136,39 @@ class _Anchor:
 
     def rewrite(self) -> None:
         """Write the member back after a change nested in it."""
-        self.check()
-        try:
-            self.token = self.document._replace_member(
-                self.field, self.key, self.token, self.root
-            )
-        except BaseException:
-            # The change is made here and not in the document: these
-            # containers no longer hold what the document holds.
-            self.stale = True
-            raise
+        with _LOCK:
+            self.check()
+            try:
+                self.token = self.document._replace_member(
+                    self.field, self.key, self.token, self.root
+                )
+            except BaseException:
+                # The change is made here and not in the document: these
+                # containers no longer hold what the document holds.
+                self.stale = True
+                raise
+
+
+def _refresh(view: dict[str, Any], held: dict[str, Any]) -> None:
+    """Make *view* hold *held*, in its order, a key at a time: a thread
+    reading the view without the lock (``view[key]``, ``len``, iteration)
+    sees each key as it was or as it is, never a view cleared to be refilled.
+    A key the document moved to the end (deleted and added again) moves
+    there; the keys before it stay where they are."""
+    for key in [k for k in dict.keys(view) if k not in held]:
+        dict.__delitem__(view, key)
+    order = list(held)
+    kept = 0
+    for key in dict.keys(view):
+        if kept < len(order) and order[kept] == key:
+            kept += 1
+    for at, key in enumerate(order):
+        value = held[key]
+        if at >= kept:
+            dict.pop(view, key, None)
+            dict.__setitem__(view, key, value)
+        elif dict.__getitem__(view, key) is not value:
+            dict.__setitem__(view, key, value)
 
 
 class Members(dict[str, Any]):
@@ -111,19 +201,19 @@ class Members(dict[str, Any]):
     def _sync(self) -> None:
         """Hold what the document holds, keeping the containers of a member
         that has not changed (a caller may be holding them)."""
-        held: dict[str, Any] = {}
-        anchors: dict[str, _Anchor] = {}
-        for key, value, token in self._document._members(self._field):
-            anchor = self._anchors.get(key)
-            if anchor is not None and anchor.token == token and not anchor.stale:
-                held[key] = anchor.root
-            else:
-                anchor = _Anchor(self._document, self._field, key, token)
-                anchor.root = held[key] = _adopted(value, anchor)
-            anchors[key] = anchor
-        dict.clear(self)
-        dict.update(self, held)
-        self._anchors = anchors
+        with _LOCK:
+            held: dict[str, Any] = {}
+            anchors: dict[str, _Anchor] = {}
+            for key, value, token in self._document._members(self._field):
+                anchor = self._anchors.get(key)
+                if anchor is not None and anchor.token == token and not anchor.stale:
+                    held[key] = anchor.root
+                else:
+                    anchor = _Anchor(self._document, self._field, key, token)
+                    anchor.root = held[key] = _adopted(value, anchor)
+                anchors[key] = anchor
+            _refresh(self, held)
+            self._anchors = anchors
 
     # -- mutation ----------------------------------------------------------------
 
@@ -157,33 +247,48 @@ class Members(dict[str, Any]):
             self._sync()
 
     def setdefault(self, key: str, default: Any = None) -> Any:
-        if self._document is not None:
+        if self._document is None:
+            return super().setdefault(key, default)
+        # A default is converted only when the key is missing, and before
+        # the lock, so the caller's code runs outside it (a quality record is
+        # the engine's own); the look and the write are one step, so one
+        # default is the member.
+        key = _key(key)
+        with _LOCK:
             self._sync()
-        if key not in self:
-            self[key] = default
-        return self[key]
+            if key in self:
+                return self[key]
+        value = default if self._field == "quality" else self._document._plain(default)
+        with _LOCK:
+            self._sync()
+            if key not in self:
+                self[key] = value
+            return self[key]
 
     def pop(self, key: str, *default: Any) -> Any:
         if self._document is None:
             return super().pop(key, *default)
-        self._sync()
-        if key not in self:
-            if default:
-                return default[0]
-            raise KeyError(key)
-        # Detached: the member it was is gone from the document.
-        value = copy.deepcopy(self[key])
-        del self[key]
-        return value
+        found = _found(key)
+        with _LOCK:
+            self._sync()
+            if found is _ABSENT or found not in self:
+                if default:
+                    return default[0]
+                raise KeyError(key)
+            # Detached: the member it was is gone from the document.
+            value = copy.deepcopy(self[found])
+            del self[found]
+            return value
 
     def popitem(self) -> tuple[str, Any]:
         if self._document is None:
             return super().popitem()
-        self._sync()
-        if not self:
-            raise KeyError("popitem(): dictionary is empty")
-        key = next(reversed(self))
-        return key, self.pop(key)
+        with _LOCK:
+            self._sync()
+            if not self:
+                raise KeyError("popitem(): dictionary is empty")
+            key = next(reversed(self))
+            return key, self.pop(key)
 
     def clear(self) -> None:
         if self._document is None:
@@ -217,15 +322,25 @@ class _NestedDict(dict[str, Any]):
         if self._anchor is not None:
             self._anchor.rewrite()
 
-    def __setitem__(self, key: str, value: Any) -> None:
-        super().__setitem__(key, self._adopt(value))
-        self._changed()
-
-    def __delitem__(self, key: str) -> None:
+    def _check(self) -> None:
         if self._anchor is not None:
             self._anchor.check()
-        super().__delitem__(key)
-        self._changed()
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        key, value = _key(key), self._adopt(value)
+        with _LOCK:
+            self._check()
+            super().__setitem__(key, value)
+            self._changed()
+
+    def __delitem__(self, key: str) -> None:
+        found = _found(key)
+        if found is _ABSENT:
+            raise KeyError(key)
+        with _LOCK:
+            self._check()
+            super().__delitem__(found)
+            self._changed()
 
     def __ior__(self, other: Any) -> _NestedDict:  # type: ignore[override,misc]
         self.update(other)
@@ -233,38 +348,51 @@ class _NestedDict(dict[str, Any]):
 
     def update(self, other: Any = (), /, **kwargs: Any) -> None:
         given = dict(other, **kwargs)
-        changes = {key: self._adopt(value) for key, value in given.items()}
-        super().update(changes)
-        self._changed()
+        changes = {_key(key): self._adopt(value) for key, value in given.items()}
+        with _LOCK:
+            self._check()
+            super().update(changes)
+            self._changed()
 
     def setdefault(self, key: str, default: Any = None) -> Any:
-        if key not in self:
-            self[key] = default
-        return self[key]
+        # A default is converted only when the key is missing, as a dict
+        # never reads one it does not keep; outside the lock, as `Members`.
+        key = _key(key)
+        with _LOCK:
+            if key in self:
+                return self[key]
+        value = self._adopt(default)
+        with _LOCK:
+            if key not in self:
+                self._check()
+                super().__setitem__(key, value)
+                self._changed()
+            return self[key]
 
     def pop(self, key: str, *default: Any) -> Any:
-        if key not in self:
-            if default:
-                return default[0]
-            raise KeyError(key)
-        if self._anchor is not None:
-            self._anchor.check()
-        value = super().pop(key)
-        self._changed()
+        found = _found(key)
+        with _LOCK:
+            if found is _ABSENT or found not in self:
+                if default:
+                    return default[0]
+                raise KeyError(key)
+            self._check()
+            value = super().pop(found)
+            self._changed()
         return copy.deepcopy(value)
 
     def popitem(self) -> tuple[str, Any]:
-        if self._anchor is not None:
-            self._anchor.check()
-        key, value = super().popitem()
-        self._changed()
+        with _LOCK:
+            self._check()
+            key, value = super().popitem()
+            self._changed()
         return key, copy.deepcopy(value)
 
     def clear(self) -> None:
-        if self._anchor is not None:
-            self._anchor.check()
-        super().clear()
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().clear()
+            self._changed()
 
     def __reduce__(self) -> tuple[Any, ...]:
         return (dict, (dict(self),))
@@ -298,68 +426,112 @@ class _NestedList(list[Any]):
     def __setitem__(self, index: Any, value: Any) -> None:
         # Refused before anything changes, even an empty slice's values.
         self._check()
+        index = _index(index)
         if isinstance(index, slice):
             value = [self._adopt(v) for v in value]
         else:
             value = self._adopt(value)
-        super().__setitem__(index, value)
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().__setitem__(index, value)
+            self._changed()
 
     def __delitem__(self, index: SupportsIndex | slice) -> None:
-        self._check()
-        super().__delitem__(index)
-        self._changed()
+        index = _index(index)
+        with _LOCK:
+            self._check()
+            super().__delitem__(index)
+            self._changed()
 
     def __iadd__(self, other: Iterable[Any]) -> _NestedList:  # type: ignore[misc]
         self.extend(other)
         return self
 
     def __imul__(self, count: SupportsIndex) -> _NestedList:
-        self._check()
-        super().__imul__(count)
-        self._changed()
+        count = operator.index(count)
+        with _LOCK:
+            self._check()
+            super().__imul__(count)
+            self._changed()
         return self
 
     def append(self, value: Any) -> None:
-        super().append(self._adopt(value))
-        self._changed()
+        value = self._adopt(value)
+        with _LOCK:
+            self._check()
+            super().append(value)
+            self._changed()
 
     def extend(self, values: Iterable[Any]) -> None:
-        super().extend([self._adopt(v) for v in values])
-        self._changed()
+        adopted = [self._adopt(v) for v in values]
+        with _LOCK:
+            self._check()
+            super().extend(adopted)
+            self._changed()
 
     def insert(self, index: SupportsIndex, value: Any) -> None:
-        super().insert(index, self._adopt(value))
-        self._changed()
+        index, value = operator.index(index), self._adopt(value)
+        with _LOCK:
+            self._check()
+            super().insert(index, value)
+            self._changed()
 
     def pop(self, index: SupportsIndex = -1) -> Any:
-        self._check()
-        value = super().pop(index)
-        self._changed()
+        index = operator.index(index)
+        with _LOCK:
+            self._check()
+            value = super().pop(index)
+            self._changed()
         return copy.deepcopy(value)
 
     def remove(self, value: Any) -> None:
         self._check()
-        super().remove(value)
-        self._changed()
+        # Found in a copy before the lock (`==` is the caller's), and removed
+        # only if no other edit came in meanwhile; if one did, found again.
+        while True:
+            before = list(self)
+            found = (
+                i for i, item in enumerate(before) if item is value or item == value
+            )
+            at = next(found, None)
+            if at is None:
+                raise ValueError("list.remove(x): x not in list")
+            with _LOCK:
+                self._check()
+                if _unchanged(self, before):
+                    super().__delitem__(at)
+                    self._changed()
+                    return
 
     def clear(self) -> None:
-        self._check()
-        super().clear()
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().clear()
+            self._changed()
 
     def sort(self, *, key: Any = None, reverse: bool = False) -> None:
         self._check()
         # A sort that fails partway leaves a list part-sorted, which the next
         # edit would write through: sort a copy, and keep it only if it ends.
-        ordered = sorted(self, key=key, reverse=reverse)
-        super().__setitem__(slice(None), ordered)
-        self._changed()
+        # The copy is sorted before the lock (`key` is the caller's), and
+        # kept only if no other edit came in meanwhile.
+        before = list(self)
+        ordered = sorted(before, key=key, reverse=reverse)
+        with _LOCK:
+            self._check()
+            if not _unchanged(self, before):
+                raise RuntimeError(
+                    f"`{self._anchor.member if self._anchor else 'list'}` "
+                    "changed on another thread while it was sorted; sort it again"
+                )
+            super().__setitem__(slice(None), ordered)
+            self._changed()
 
     def reverse(self) -> None:
-        self._check()
-        super().reverse()
-        self._changed()
+        with _LOCK:
+            self._check()
+            super().reverse()
+            self._changed()
 
     def __reduce__(self) -> tuple[Any, ...]:
         return (list, (list(self),))

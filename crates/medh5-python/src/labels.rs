@@ -292,7 +292,10 @@ impl LabelClass {
             Value::Object(m) => m,
             _ => Map::new(),
         };
-        match py_to_json(properties.bind(py))? {
+        // Under the live views' lock, as a record's fields are read: an edit
+        // nested in `properties` and its rewrite are one step under it.
+        let properties = crate::document::under_live_lock(py, || Ok(py_to_json(properties.bind(py))?))?;
+        match properties {
             Value::Object(m) if m.is_empty() => {
                 doc.shift_remove("properties");
             }
@@ -543,7 +546,11 @@ impl LabelSet {
         if objects.iter().all(|c| c.cast::<LabelClass>().map(|c| c.get().is_untouched()).unwrap_or(true)) {
             return Ok(self.inner.clone());
         }
-        let classes = objects.iter().map(|c| LabelClass::arg(&c)).collect::<R<Vec<_>>>()?;
+        // Every class in one step under the live views' lock, so that edits to
+        // two classes' `properties` are read both or neither.
+        let classes = crate::document::under_live_lock(py, || {
+            objects.iter().map(|c| LabelClass::arg(&c)).collect::<R<Vec<_>>>()
+        })?;
         Ok(with_classes(&self.inner, classes)?)
     }
 }
