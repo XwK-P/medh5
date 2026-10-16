@@ -296,6 +296,14 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
         "read, and every other filter, decompresses under it.",
         r"window",
     ),
+    (
+        "a writer used by two threads said to raise RuntimeError",
+        r"Already borrowed",
+        "a call on a writer another thread is using raises MEDH5Error, one "
+        "thread at a time (2.2, E4).",
+        None,
+    ),
+
 )
 
 

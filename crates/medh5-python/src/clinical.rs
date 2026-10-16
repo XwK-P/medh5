@@ -23,6 +23,7 @@ use medh5::sample::Sample as EngineSample;
 
 use crate::convert::{json_to_py, nd_to_py, py_to_json, py_to_nd};
 use crate::errors::R;
+use crate::exclusive::Exclusive;
 
 /// A Python value as JSON: a dict, or anything with `to_json()`.
 pub fn record(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
@@ -575,38 +576,38 @@ fn header(value: &Value) -> CacheHeader {
     }
 }
 
-/// Writes a feature cache; `commit()` moves it into place.
-#[pyclass(module = "medh5._core", name = "CacheWriterHandle")]
+/// Writes a feature cache; `commit()` moves it into place.  Used by one
+/// thread at a time (E4): a call while another runs is refused.
+#[pyclass(module = "medh5._core", name = "CacheWriterHandle", frozen)]
 pub struct CacheWriterHandle {
-    inner: Option<CacheWriter>,
+    inner: Exclusive<Option<CacheWriter>>,
 }
 
 #[pymethods]
 impl CacheWriterHandle {
     /// Add one feature: `entry` as a dict (its `digest` is computed).
-    fn add<'py>(
-        &mut self,
-        py: Python<'py>,
-        entry: &Bound<'py, PyAny>,
-        values: &Bound<'py, PyAny>,
-    ) -> R<Bound<'py, PyAny>> {
+    fn add<'py>(&self, py: Python<'py>, entry: &Bound<'py, PyAny>, values: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         // As the reader parses one: a cutoff that is not an integer was read
         // as none, and refused as a row entry pinning no cutoff.
         let entry = CacheEntry { digest: String::new(), ..CacheEntry::from_json(&record(entry)?)? };
         let values = py_to_nd(values)?;
-        let writer = self.inner.as_mut().ok_or_else(|| medh5::Error::invalid("this cache writer has finished"))?;
+        let mut held = self.inner.write()?;
+        let writer = held.as_mut().ok_or_else(|| medh5::Error::invalid("this cache writer has finished"))?;
         // The digest and the write, of values already out of Python.
         let added = py.detach(move || writer.add(entry, &values).map(|e| e.to_json()))?;
+        drop(held);
         Ok(json_to_py(py, &added)?)
     }
     /// Write the manifest and its checksum; returns the checksum.
-    fn commit(&mut self, py: Python<'_>) -> R<String> {
-        let writer = self.inner.take().ok_or_else(|| medh5::Error::invalid("this cache writer has finished"))?;
+    fn commit(&self, py: Python<'_>) -> R<String> {
+        let writer =
+            self.inner.write()?.take().ok_or_else(|| medh5::Error::invalid("this cache writer has finished"))?;
         Ok(py.detach(move || writer.commit())?)
     }
     /// Discard the half-written cache.
-    fn abort(&mut self) {
-        self.inner.take();
+    fn abort(&self) -> R<()> {
+        self.inner.write()?.take();
+        Ok(())
     }
 }
 
@@ -614,7 +615,7 @@ impl CacheWriterHandle {
 #[pyfunction]
 fn cache_create(path: PathBuf, header_doc: &Bound<'_, PyAny>) -> R<CacheWriterHandle> {
     let h = header(&record(header_doc)?);
-    Ok(CacheWriterHandle { inner: Some(CacheWriter::create(&path, h)?) })
+    Ok(CacheWriterHandle { inner: Exclusive::new("a CacheWriterHandle", Some(CacheWriter::create(&path, h)?)) })
 }
 
 /// An open feature cache; `close()` releases the file.

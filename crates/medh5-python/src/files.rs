@@ -12,6 +12,7 @@ use pyo3::types::{PyBytes, PyString};
 use medh5::h5::file::StagedFile;
 
 use crate::errors::R;
+use crate::exclusive::Exclusive;
 
 /// `data` as `path`'s whole content: a `str` as UTF-8, its `\n` kept on
 /// every platform, `bytes` as given.
@@ -33,18 +34,20 @@ fn write_atomic(py: Python<'_>, path: PathBuf, data: &Bound<'_, PyAny>) -> R<()>
 
 /// A replacement of a file being written by someone else: write `path`,
 /// then `commit()`.  As a context manager it commits when the block ends
-/// without an exception, and aborts otherwise.
-#[pyclass(module = "medh5._core", name = "StagedFileHandle")]
+/// without an exception, and aborts otherwise.  Used by one thread at a time
+/// (E4): a commit or abort while another runs is refused.
+#[pyclass(module = "medh5._core", name = "StagedFileHandle", frozen)]
 pub struct StagedFileHandle {
-    inner: Option<StagedFile>,
+    inner: Exclusive<Option<StagedFile>>,
     path: PathBuf,
     target: PathBuf,
 }
 
 impl StagedFileHandle {
-    fn take(&mut self) -> R<StagedFile> {
+    fn take(&self) -> R<StagedFile> {
         Ok(self
             .inner
+            .write()?
             .take()
             .ok_or_else(|| medh5::Error::File("this staged file has already been committed or aborted".into()))?)
     }
@@ -65,17 +68,18 @@ impl StagedFileHandle {
     }
 
     /// Rename the written temporary over the target.
-    fn commit(&mut self, py: Python<'_>) -> R<()> {
+    fn commit(&self, py: Python<'_>) -> R<()> {
         let staged = self.take()?;
         Ok(py.detach(move || staged.commit())?)
     }
 
     /// Remove the temporary, leaving the target as it was.  Aborting a
     /// committed or aborted file does nothing.
-    fn abort(&mut self) {
-        if let Some(staged) = self.inner.take() {
+    fn abort(&self) -> R<()> {
+        if let Some(staged) = self.inner.write()?.take() {
             staged.abort();
         }
+        Ok(())
     }
 
     fn __enter__(slf: Py<Self>) -> Py<Self> {
@@ -84,18 +88,19 @@ impl StagedFileHandle {
 
     #[pyo3(signature = (exc_type=None, _exc=None, _tb=None))]
     fn __exit__(
-        &mut self,
+        &self,
         py: Python<'_>,
         exc_type: Option<&Bound<'_, PyAny>>,
         _exc: Option<&Bound<'_, PyAny>>,
         _tb: Option<&Bound<'_, PyAny>>,
     ) -> R<bool> {
         if exc_type.is_some_and(|t| !t.is_none()) {
-            self.abort();
+            self.abort()?;
             return Ok(false);
         }
-        if self.inner.is_some() {
-            self.commit(py)?;
+        let staged = self.inner.write()?.take();
+        if let Some(staged) = staged {
+            py.detach(move || staged.commit())?;
         }
         Ok(false)
     }
@@ -107,7 +112,7 @@ impl StagedFileHandle {
 fn stage_file(path: PathBuf) -> R<StagedFileHandle> {
     let staged = StagedFile::create(&path)?;
     let (tmp, target) = (staged.path().to_path_buf(), staged.target().to_path_buf());
-    Ok(StagedFileHandle { inner: Some(staged), path: tmp, target })
+    Ok(StagedFileHandle { inner: Exclusive::new("a StagedFileHandle", Some(staged)), path: tmp, target })
 }
 
 /// Whether two paths name one existing file, through `..`, a symbolic or a

@@ -103,8 +103,12 @@ gives the two cases that remain.
 ## Writers
 
 **A writer belongs to one thread.** A second thread calling the same writer while the first is in
-a call is refused (`RuntimeError: Already borrowed`) rather than made to wait. Two writers on two
-files, one per thread, are fine, and take turns at the HDF5 lock.
+a call is refused with a `MEDH5Error` saying the writer "is used by one thread at a time", rather
+than made to wait, and the refused call changes nothing. Two writers on two files, one per thread,
+are fine, and take turns at the HDF5 lock. The same holds for every object that changes as it is
+used: a document, an annotation payload, a provenance record, a cache writer, a staged file and a
+sampler's draws. Calls that only read one of them share it; they are refused only while another
+thread is changing it.
 
 **`amend` replaces the file.** An amendment is copy-on-write: it writes the new version beside the
 file and renames it over the old one. Anything holding the file open across that keeps reading the
