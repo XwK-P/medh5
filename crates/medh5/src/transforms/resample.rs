@@ -531,7 +531,7 @@ fn check_axes(image_id: &str, source: &Grid, target: &Grid, new_grid: bool) -> R
         }
     };
     let (ours, theirs) = (leading(source), leading(target));
-    if ours != theirs || source.time_values != target.time_values {
+    if ours != theirs {
         return Err(Error::invalid(format!(
             "image {} has non-spatial axes ({}) that grid {} does not ({}); an image takes its grid's shape \
              (§4.1) and a resample moves only the spatial axes, so resample onto a new spacing instead",
@@ -539,6 +539,16 @@ fn check_axes(image_id: &str, source: &Grid, target: &Grid, new_grid: bool) -> R
             describe(&ours),
             repr_str(&target.grid_id),
             describe(&theirs)
+        )));
+    }
+    if !same_times(source, target) {
+        return Err(Error::invalid(format!(
+            "image {} has a time axis at acquisition times {} and grid {} at {}; a resample moves only the \
+             spatial axes and carries each time point as it is, so the target must hold the same times (§3.2)",
+            repr_str(image_id),
+            describe_times(source),
+            repr_str(&target.grid_id),
+            describe_times(target)
         )));
     }
     if source.n_spatial() != target.n_spatial() {
@@ -811,15 +821,15 @@ fn write(sample: &Sample, writer: &mut SampleWriter, plan: &ResamplePlan, prepar
     for job in &prepared.jobs {
         let mapping = &prepared.mappings[&job.source_grid.grid_id];
         let (filled, valid) = resample_image(sample, writer, job, target, mapping, plan, &activity.id)?;
-        let mask = if valid.iter().all(|v| *v) {
-            None
-        } else {
+        let mask = if let Some(valid) = valid {
             let name = job.mask.clone().expect("named in prepare");
             writer.add_mask(&name, valid, &target.grid_id, "other", Some(&activity.id), None)?;
             let images_attr = writer.root()?.group("images")?.dataset(&job.output)?;
             crate::h5::attrs::write(&images_attr, "valid_mask", &crate::h5::attrs::AttrValue::Str(name.clone()))?;
             written.push(format!("annotations/{name}"));
             Some(name)
+        } else {
+            None
         };
         images.push(ResampledImage {
             source: job.source.clone(),
@@ -857,26 +867,48 @@ fn write(sample: &Sample, writer: &mut SampleWriter, plan: &ResamplePlan, prepar
     })
 }
 
-/// The blocks covering `shape`, one chunk extent each (the whole axis where
-/// there is no chunking), in C order: `(start, stop)` per axis.
-fn blocks(shape: &[usize], chunk: &[usize]) -> Vec<Vec<(usize, usize)>> {
-    let mut out: Vec<Vec<(usize, usize)>> = vec![Vec::new()];
-    for (n, c) in shape.iter().zip(chunk) {
-        let step = (*c).clamp(1, (*n).max(1));
-        let mut next = Vec::new();
-        for prefix in &out {
-            let mut start = 0;
-            while start < *n {
-                let stop = (start + step).min(*n);
-                let mut block = prefix.clone();
-                block.push((start, stop));
-                next.push(block);
-                start = stop;
-            }
+/// A grid's `time_values` in seconds: `time_units` is `"s"` unless it says
+/// `"ms"` (§3.2).
+fn seconds(grid: &Grid) -> Option<Vec<f64>> {
+    let scale = if grid.time_units.as_deref() == Some("ms") { 1e-3 } else { 1.0 };
+    grid.time_values.as_ref().map(|values| values.iter().map(|t| t * scale).collect())
+}
+
+/// Whether two grids state the same acquisition times, compared in seconds.
+fn same_times(a: &Grid, b: &Grid) -> bool {
+    match (seconds(a), seconds(b)) {
+        (None, None) => true,
+        (Some(x), Some(y)) => {
+            x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| p == q || (p - q).abs() <= 1e-9 * p.abs().max(q.abs()))
         }
-        out = next;
+        _ => false,
     }
-    out
+}
+
+fn describe_times(grid: &Grid) -> String {
+    match &grid.time_values {
+        None => "none".into(),
+        Some(values) => format!("{values:?} {}", grid.time_units.as_deref().unwrap_or("s")),
+    }
+}
+
+/// The blocks covering `shape`, one chunk extent each (the whole axis where
+/// there is no chunking), in C order: `(start, stop)` per axis.  Generated
+/// one at a time, so a fine chunking costs no memory up front.
+fn blocks(shape: &[usize], chunk: &[usize]) -> impl Iterator<Item = Vec<(usize, usize)>> {
+    let steps: Vec<usize> = shape.iter().zip(chunk).map(|(n, c)| (*c).clamp(1, (*n).max(1))).collect();
+    let counts: Vec<usize> = shape.iter().zip(&steps).map(|(n, step)| n.div_ceil(*step)).collect();
+    let total: usize = counts.iter().product();
+    let shape = shape.to_vec();
+    (0..total).map(move |mut flat| {
+        let mut block = vec![(0, 0); shape.len()];
+        for k in (0..shape.len()).rev() {
+            let start = (flat % counts[k]) * steps[k];
+            flat /= counts[k];
+            block[k] = (start, (start + steps[k]).min(shape[k]));
+        }
+        block
+    })
 }
 
 #[cfg(test)]
@@ -887,7 +919,8 @@ thread_local! {
 }
 
 /// Resample one image block by block; the voxels filled, and where the
-/// result holds data (§4.4).
+/// result holds data (§4.4) --- `None` when every voxel does, so a resample
+/// that fills nothing allocates no target-wide mask.
 fn resample_image(
     sample: &Sample,
     writer: &mut SampleWriter,
@@ -896,7 +929,7 @@ fn resample_image(
     mapping: &Mapping,
     plan: &ResamplePlan,
     activity: &str,
-) -> Result<(u64, ArrayD<bool>)> {
+) -> Result<(u64, Option<ArrayD<bool>>)> {
     let image = sample.image(&job.source)?.level(0)?;
     let source = &job.source_grid;
     let s = source.n_spatial();
@@ -932,7 +965,7 @@ fn resample_image(
     } else {
         None
     };
-    let mut valid = ArrayD::from_elem(IxDyn(&target_spatial), true);
+    let mut valid: Option<ArrayD<bool>> = None;
     let mut filled = 0u64;
     for block in blocks(&target_spatial, &chunk) {
         let dims: Vec<usize> = block.iter().map(|(a, b)| b - a).collect();
@@ -1001,7 +1034,7 @@ fn resample_image(
             for (row, at) in nearest_rows(crop).into_iter().enumerate() {
                 if let Some(at) = at {
                     if !region[IxDyn(&at)] {
-                        set(&mut valid, &block, &dims, row, false);
+                        invalidate(&mut valid, &target_spatial, &block, &dims, row);
                     }
                 }
             }
@@ -1009,7 +1042,7 @@ fn resample_image(
         for (row, ok) in inside.iter().enumerate() {
             if !ok {
                 filled += 1;
-                set(&mut valid, &block, &dims, row, false);
+                invalidate(&mut valid, &target_spatial, &block, &dims, row);
             }
         }
         let values: NdArray = match plan.interpolation.as_str() {
@@ -1051,8 +1084,10 @@ fn resample_image(
     Ok((filled, valid))
 }
 
-/// Mark one voxel of a block in the target-wide mask.
-fn set(valid: &mut ArrayD<bool>, block: &[(usize, usize)], dims: &[usize], row: usize, value: bool) {
+/// Mark one voxel of a block as holding no data, making the target-wide mask
+/// the first time one does.
+fn invalidate(valid: &mut Option<ArrayD<bool>>, shape: &[usize], block: &[(usize, usize)], dims: &[usize], row: usize) {
+    let valid = valid.get_or_insert_with(|| ArrayD::from_elem(IxDyn(shape), true));
     let s = dims.len();
     let mut at = vec![0usize; s];
     let mut rest = row;
@@ -1060,7 +1095,7 @@ fn set(valid: &mut ArrayD<bool>, block: &[(usize, usize)], dims: &[usize], row: 
         at[k] = block[k].0 + rest % dims[k];
         rest /= dims[k];
     }
-    valid[IxDyn(&at)] = value;
+    valid[IxDyn(&at)] = false;
 }
 
 /// `(lanes, n)` values of `dtype`, all `fill`.
@@ -1223,9 +1258,12 @@ mod tests {
 
     #[test]
     fn blocks_cover_the_shape_once() {
-        let covered = blocks(&[5, 3], &[2, 3]);
+        let covered: Vec<_> = blocks(&[5, 3], &[2, 3]).collect();
         assert_eq!(covered, vec![vec![(0, 2), (0, 3)], vec![(2, 4), (0, 3)], vec![(4, 5), (0, 3)]]);
-        assert_eq!(blocks(&[4], &[9]), vec![vec![(0, 4)]]);
+        assert_eq!(blocks(&[4], &[9]).collect::<Vec<_>>(), vec![vec![(0, 4)]]);
+        let fine: Vec<_> = blocks(&[2, 3], &[1, 2]).collect();
+        assert_eq!(fine, vec![vec![(0, 1), (0, 2)], vec![(0, 1), (2, 3)], vec![(1, 2), (0, 2)], vec![(1, 2), (2, 3)]]);
+        assert_eq!(blocks(&[0, 3], &[1, 1]).count(), 0);
     }
 
     #[test]

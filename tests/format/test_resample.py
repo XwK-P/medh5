@@ -294,6 +294,42 @@ class TestSharedFrame:
         with pytest.raises(MEDH5ValidationError, match="non-spatial axes"):
             resample(path, "img", onto="plain")
 
+    @pytest.mark.parametrize(
+        ("units", "values", "same"),
+        [
+            ("s", (0.0, 1.0), True),
+            ("ms", (0.0, 1.0), False),
+            ("ms", (0.0, 1000.0), True),
+        ],
+    )
+    def test_S3_2_time_values_are_compared_in_seconds(
+        self, tmp_path, units, values, same
+    ):
+        """A time axis is carried as it is, so the target must hold the same
+        acquisition times: ``[0, 1]`` in ms is not ``[0, 1]`` in s."""
+        path = tmp_path / "s.medh5"
+        with medh5.create(path, codec="portable") as w:
+            for grid_id, time_units, time_values in (
+                ("g", None, (0.0, 1.0)),  # "s", the default
+                ("h", units, values),
+            ):
+                w.add_grid(
+                    grid_id,
+                    shape=(2, 3, 3),
+                    spacing=(1.0, 1.0),
+                    axis_kinds=("time", "spatial", "spatial"),
+                    time_values=time_values,
+                    time_units=time_units,
+                    frame_uid="F0",
+                )
+            w.add_image("img", np.zeros((2, 3, 3), np.float32), grid="g", modality="MR")
+        if same:
+            resample(path, "img", onto="h")
+            assert read(path, "img_on_h").shape == (2, 3, 3)
+        else:
+            with pytest.raises(MEDH5ValidationError, match="acquisition times"):
+                resample(path, "img", onto="h")
+
     def test_the_value_attributes_carry_over(self, tmp_path):
         path = tmp_path / "s.medh5"
         with medh5.create(path, codec="portable") as w:
