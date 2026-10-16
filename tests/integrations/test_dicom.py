@@ -1178,6 +1178,24 @@ def _frame(dataset: Any, index: int) -> Any:
     return dataset.PerFrameFunctionalGroupsSequence[index]
 
 
+def _shared(dataset: Any, *keywords: str) -> Any:
+    """The shared functional groups, holding each of *keywords*.
+
+    highdicom 0.23 (the floor) leaves every converted group per frame, where
+    later versions move one the frames agree on to the shared groups; this
+    moves it there either way, so a test edits one group whatever wrote it.
+    """
+    shared = dataset.SharedFunctionalGroupsSequence[0]
+    for keyword in keywords:
+        frames = [group for group in dataset.PerFrameFunctionalGroupsSequence]
+        if keyword not in shared:
+            setattr(shared, keyword, getattr(frames[0], keyword))
+        for group in frames:
+            if keyword in group:
+                delattr(group, keyword)
+    return shared
+
+
 def _concatenation(
     dataset: Any, directory: Path, split: int | tuple[int, ...]
 ) -> list[Path]:
@@ -1453,6 +1471,9 @@ class TestEnhancedMultiFrame:
             plane = _frame(enhanced, index).PlanePositionSequence[0]
             x, y, z = (float(v) for v in source.ImagePositionPatient)
             plane.ImagePositionPatient = [x, y + shift, z]
+        for index in range(6):
+            # One StackID, which highdicom 0.23 (the floor) does not write.
+            _frame(enhanced, index).FrameContentSequence[0].StackID = "1"
         self._dimensions(
             enhanced,
             [0x00209128, 0x00209156, 0x00200032],  # temporal, acquisition, position
@@ -1461,7 +1482,7 @@ class TestEnhancedMultiFrame:
         _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
         stacks = scan_dicom(tmp_path / "enhanced")
         assert [s.n_slices for s in stacks] == [3, 3]
-        # Named by StackID (highdicom's "1") and the temporal index.
+        # Named by the StackID and the temporal index.
         assert [s.stack for s in stacks] == ["1-1", "1-2"]
 
     def test_an_irregular_stack_is_refused(self, tmp_path):
@@ -1648,8 +1669,8 @@ class TestEnhancedMultiFrame:
             ds.RescaleType = rescale_type
             ds.save_as(path)
         enhanced = _enhanced(classic["paths"])
-        # highdicom writes HU whatever the slices say.
-        shared = enhanced.SharedFunctionalGroupsSequence[0]
+        # highdicom writes its own type whatever the slices say.
+        shared = _shared(enhanced, "PixelValueTransformationSequence")
         shared.PixelValueTransformationSequence[0].RescaleType = rescale_type
         _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
         for name in ("classic", "enhanced"):
@@ -1705,7 +1726,9 @@ class TestEnhancedMultiFrame:
         classic = self._classic(tmp_path)
         enhanced = _enhanced(classic["paths"])
         enhanced.ImageType = [*image_type, "NONE"]
-        shared = enhanced.SharedFunctionalGroupsSequence[0]
+        shared = _shared(
+            enhanced, "CTImageFrameTypeSequence", "PixelValueTransformationSequence"
+        )
         if frame_type:
             shared.CTImageFrameTypeSequence[0].FrameType = [*image_type, "NONE"]
         else:
@@ -1728,7 +1751,7 @@ class TestEnhancedMultiFrame:
 
         classic = self._classic(tmp_path)
         enhanced = _enhanced(classic["paths"])
-        shared = enhanced.SharedFunctionalGroupsSequence[0]
+        shared = _shared(enhanced, "PixelValueTransformationSequence")
         shared.PixelValueTransformationSequence[0].RescaleType = "MGML"
         item = deepcopy(shared.PixelValueTransformationSequence[0])
         item.RescaleType = "HU"
