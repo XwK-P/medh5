@@ -21,10 +21,12 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{apply_with, scan_sample, Finding, ScrubOptions, ScrubReport};
+use super::clinical::REMINTED_KINDS;
+use super::{apply_with, scan_file_name, scan_sample, Finding, ScrubOptions, ScrubReport};
 use crate::collection::{is_collection, open_collection, pack, write_sample_root, SUFFIX};
 use crate::h5::file::{open_read, same_file};
 use crate::json::{repr_list, repr_str};
+use crate::sample::open_sample;
 use crate::{Error, Result};
 
 /// The rule a member `--skip-refused` left out is reported under.
@@ -103,8 +105,12 @@ fn merged(
             }
             report.remaining.extend(one.remaining.into_iter().map(|f| under(new, keyed(f, new))));
         }
+        // A pseudonym of a UID or an id is the salt's alone, the same in
+        // every member; a re-minted clinical id is its subject's too, so two
+        // members' `clock:ehr` differ, and each is kept under its member.
         for (old, new) in one.uid_map {
-            report.uid_map.insert(old, new);
+            let reminted = old.split_once(':').is_some_and(|(kind, _)| REMINTED_KINDS.contains(&kind));
+            report.uid_map.insert(if reminted { format!("{key}::{old}") } else { old }, new);
         }
         for note in one.not_checked {
             if !report.not_checked.contains(&note) {
@@ -222,7 +228,9 @@ pub(super) fn apply(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> 
         // before they are told apart below.
         let dir = scratch.0.join(i.to_string());
         std::fs::create_dir(&dir).map_err(|e| crate::error::os_error(&e, &dir))?;
-        let copy = dir.join(format!("{key}.medh5"));
+        // A bounded name: a key may be 255 bytes, which a file name with
+        // its suffix cannot.  The key is read as the name below.
+        let copy = dir.join("member.medh5");
         write_sample_root(&group.group(key)?, &copy)?;
         let mut one = options.clone().with_out_dir(dir.join("out"));
         one.out = None;
@@ -230,7 +238,13 @@ pub(super) fn apply(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> 
         match apply_with(&copy, &one) {
             Ok(mut report) => {
                 let result = PathBuf::from(&report.path);
-                let new = result.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                // Named for the member's pseudonym under --pseudonymise-ids;
+                // otherwise the member keeps its key.
+                let new = match options.pseudonymise_ids {
+                    true => result.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+                    false => key.clone(),
+                };
+                key_findings(&mut report, &copy, key, &result, &new)?;
                 report.path = format!("{}::{new}", out.to_string_lossy());
                 written.push(result);
                 members.push(Member { key: key.clone(), written_as: Some(new), report });
@@ -282,6 +296,27 @@ pub(super) fn apply(path: &Path, options: &ScrubOptions) -> Result<ScrubReport> 
     let report = merged(&out.to_string_lossy(), options.profile(), true, members, skipped);
     drop(scratch);
     Ok(report)
+}
+
+/// The `file_name` rule read of a member's keys, as a scan reads it: of the
+/// key it had, among the findings, and of the key it is written as, among
+/// what remains.  The scratch copy's own name says nothing of the member.
+fn key_findings(report: &mut ScrubReport, copy: &Path, key: &str, result: &Path, new: &str) -> Result<()> {
+    report.findings.retain(|f| f.rule != "file_name");
+    report.remaining.retain(|f| f.rule != "file_name");
+    let ids = |path: &Path| -> Result<(String, String)> {
+        let sample = open_sample(path)?;
+        let identity = &sample.document()?.identity;
+        Ok((identity.sample_id.clone(), identity.subject_id.clone()))
+    };
+    let (sample_id, subject_id) = ids(copy)?;
+    scan_file_name(&PathBuf::from(format!("{key}.medh5")), &sample_id, &subject_id, report);
+    let (sample_id, subject_id) = ids(result)?;
+    let mut after = ScrubReport::new(&report.path, &report.profile);
+    after.findings = std::mem::take(&mut report.remaining);
+    scan_file_name(&PathBuf::from(format!("{new}.medh5")), &sample_id, &subject_id, &mut after);
+    report.remaining = after.findings;
+    Ok(())
 }
 
 /// `error` with its message replaced, its kind and code kept.

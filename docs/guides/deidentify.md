@@ -310,7 +310,10 @@ rebuilt from them.
 The report is one, for the collection: each finding's `where` names its member
 (`KEY::timepoints[0].date`), with the key it had in the source, and what the
 re-scan of the written collection still finds is under the key it was written
-as. A member that refuses — a clinical sample with unattested text, say —
+as. Its `uid_map` keeps a re-minted clinical id under its member
+(`KEY::event:visit`), since two subjects' histories re-mint apart; the
+pseudonym of an id or a UID is the salt's alone, and one entry serves every
+member. A member that refuses — a clinical sample with unattested text, say —
 fails the whole collection, and nothing is written. `--skip-refused`
 (`skip_refused=True`) leaves it out instead, and lists it as a
 `refused_member` finding.

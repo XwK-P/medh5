@@ -692,6 +692,10 @@ pub(super) fn redaction_record(digests: &BTreeMap<String, String>) -> Map<String
 }
 
 /// One id [`derive`] replaced.
+/// The kinds of id a derivation re-mints, as `uid_map` keys them
+/// (`event:visit`): each from its subject as well as the salt.
+pub(super) const REMINTED_KINDS: [&str; 5] = ["clock", "event", "record", "encounter", "document"];
+
 pub(super) struct Reminted {
     pub kind: &'static str,
     pub old: String,

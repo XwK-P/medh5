@@ -359,7 +359,8 @@ def apply(
     the one *salt*, so pseudonyms, re-minted ids and a range's per-subject
     shift agree across members.  Under ``pseudonymise_ids`` each member is
     keyed by its pseudonymised sample id.  The report is the collection's:
-    each finding's ``where`` names its member (``KEY::where``).  A member that
+    each finding's ``where`` names its member (``KEY::where``), and so does
+    each re-minted clinical id in ``uid_map`` (``KEY::event:visit``).  A member that
     refuses leaves nothing written, unless ``skip_refused`` leaves it out and
     lists it (rule ``refused_member``).
     """

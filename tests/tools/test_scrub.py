@@ -2732,6 +2732,54 @@ class TestScrubCollection:
         )
         assert not [f for f in report.remaining if f.rule == "file_name"]
 
+    def test_S11_4_each_members_reminted_ids_are_kept(self, tmp_path: Path):
+        """Two subjects' histories on clocks of one id re-mint apart, so the
+        key to the pseudonyms keeps each under its member; a pseudonym of an
+        id, the salt's alone, stays one entry."""
+        from medh5.clinical import HOUR, Event
+        from medh5.collection import pack
+        from tests.kits import History
+
+        visit = Event(
+            "visit", "visit", "observation", "point", "final", 0, available_us=HOUR
+        )
+        paths = []
+        for subject in ("P-01", "P-02"):
+            path = tmp_path / f"{subject}.medh5"
+            History.write(path, subject_id=subject, events=[visit], lesion=False)
+            paths.append(path)
+        source = pack(paths, tmp_path / "c.medh5c")
+        report = scrubber.apply(
+            source,
+            out=tmp_path / "shared.medh5c",
+            salt="pep",
+            pseudonymise_ids=True,
+            withhold_shift=True,
+            attest_text="reviewed",
+        )
+        clocks = {k: v for k, v in report.uid_map.items() if "clock:" in k}
+        assert sorted(k.split("::")[0] for k in clocks) == ["P-01", "P-02"]
+        assert len(set(clocks.values())) == 2
+        assert "event:visit" not in report.uid_map
+        assert (
+            report.uid_map["P-01::event:visit"] != report.uid_map["P-02::event:visit"]
+        )
+        assert report.uid_map["P-01"] == scrubber.pseudonymise("P-01", "pep")
+
+    def test_S2_2_a_key_as_long_as_a_key_may_be(self, tmp_path: Path):
+        """A key may be 255 bytes, longer than a file name with its suffix
+        can be: the member is scrubbed under it all the same."""
+        from medh5.collection import open_collection, pack
+
+        key = "k" * 255
+        source = pack([_dated(tmp_path / "s.medh5")], tmp_path / "c.medh5c", keys=[key])
+        out = tmp_path / "shared.medh5c"
+        report = scrubber.apply(source, out=out, salt="pep", withhold_shift=True)
+        assert report.ok
+        with open_collection(out) as collection:
+            assert list(collection) == [key]
+        assert {f.where.split("::")[0] for f in report.findings} == {key}
+
     def test_the_cli_scrubs_a_collection(self, tmp_path: Path, capsys):
         from medh5.cli import main
 
