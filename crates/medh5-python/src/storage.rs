@@ -333,7 +333,7 @@ impl IndexPayload {
         stats: &Bound<'_, PyDict>,
     ) -> R<Self> {
         let mut coords = indexmap::IndexMap::new();
-        for (k, v) in fg_coords.iter() {
+        for (k, v) in crate::convert::dict_items(fg_coords)? {
             coords.insert(k.extract::<i64>()?, typed_array::<i32>(&v, "int32")?.into_dimensionality()?);
         }
         let total_foreground = match stats.get_item("total_foreground")? {

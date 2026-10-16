@@ -30,13 +30,14 @@ Threads may share a view.  A change nested in a member, the rewrite it makes
 document each happen in one step, under one lock: two threads editing one
 member each write their edit over the other's, never over a token the other
 has already spent, and never rewrite a container the other is changing.  A
-value given is converted before the lock is taken, so no caller's code runs
-under it.
+value, a key or an index given is converted before the lock is taken, and an
+item to remove is found before it, so no caller's code runs under it.
 """
 
 from __future__ import annotations
 
 import copy
+import operator
 import threading
 from collections.abc import Iterable, Mapping
 from typing import Any, SupportsIndex
@@ -48,6 +49,30 @@ _LOCK = threading.RLock()
 rewritten (`_Anchor.rewrite`), and while a view rereads the document
 (`Members._sync`).  Reentrant, so nested use on one thread never blocks
 itself."""
+
+
+def _key(key: Any) -> Any:
+    """*key* as the lock-holding step hashes it: a ``str`` subclass (whose
+    ``__hash__`` and ``__eq__`` are the caller's) as the ``str`` it spells."""
+    if type(key) is not str and isinstance(key, str):
+        return str.__str__(key)
+    return key
+
+
+def _index(index: Any) -> Any:
+    """*index* as a list takes it, converted before the lock: an object's
+    ``__index__``, and a slice's bounds', are the caller's code."""
+    if isinstance(index, slice):
+        bounds = (index.start, index.stop, index.step)
+        return slice(*(None if b is None else operator.index(b) for b in bounds))
+    return operator.index(index)
+
+
+def _unchanged(items: list[Any], before: list[Any]) -> bool:
+    """Whether *items* still holds what *before* copied of it, item by item."""
+    return len(items) == len(before) and all(
+        a is b for a, b in zip(items, before, strict=True)
+    )
 
 
 class _Anchor:
@@ -179,6 +204,7 @@ class Members(dict[str, Any]):
         # Converted first, so the caller's code runs outside the lock (a
         # quality record is the engine's own); the look and the write are one
         # step, so one default is the member.
+        key = _key(key)
         value = default if self._field == "quality" else self._document._plain(default)
         with _LOCK:
             self._sync()
@@ -189,6 +215,7 @@ class Members(dict[str, Any]):
     def pop(self, key: str, *default: Any) -> Any:
         if self._document is None:
             return super().pop(key, *default)
+        key = _key(key)
         with _LOCK:
             self._sync()
             if key not in self:
@@ -247,13 +274,14 @@ class _NestedDict(dict[str, Any]):
             self._anchor.check()
 
     def __setitem__(self, key: str, value: Any) -> None:
-        value = self._adopt(value)
+        key, value = _key(key), self._adopt(value)
         with _LOCK:
             self._check()
             super().__setitem__(key, value)
             self._changed()
 
     def __delitem__(self, key: str) -> None:
+        key = _key(key)
         with _LOCK:
             self._check()
             super().__delitem__(key)
@@ -265,14 +293,14 @@ class _NestedDict(dict[str, Any]):
 
     def update(self, other: Any = (), /, **kwargs: Any) -> None:
         given = dict(other, **kwargs)
-        changes = {key: self._adopt(value) for key, value in given.items()}
+        changes = {_key(key): self._adopt(value) for key, value in given.items()}
         with _LOCK:
             self._check()
             super().update(changes)
             self._changed()
 
     def setdefault(self, key: str, default: Any = None) -> Any:
-        value = self._adopt(default)
+        key, value = _key(key), self._adopt(default)
         with _LOCK:
             if key not in self:
                 self._check()
@@ -281,6 +309,7 @@ class _NestedDict(dict[str, Any]):
             return self[key]
 
     def pop(self, key: str, *default: Any) -> Any:
+        key = _key(key)
         with _LOCK:
             if key not in self:
                 if default:
@@ -336,6 +365,7 @@ class _NestedList(list[Any]):
     def __setitem__(self, index: Any, value: Any) -> None:
         # Refused before anything changes, even an empty slice's values.
         self._check()
+        index = _index(index)
         if isinstance(index, slice):
             value = [self._adopt(v) for v in value]
         else:
@@ -346,6 +376,7 @@ class _NestedList(list[Any]):
             self._changed()
 
     def __delitem__(self, index: SupportsIndex | slice) -> None:
+        index = _index(index)
         with _LOCK:
             self._check()
             super().__delitem__(index)
@@ -356,6 +387,7 @@ class _NestedList(list[Any]):
         return self
 
     def __imul__(self, count: SupportsIndex) -> _NestedList:
+        count = operator.index(count)
         with _LOCK:
             self._check()
             super().__imul__(count)
@@ -377,13 +409,14 @@ class _NestedList(list[Any]):
             self._changed()
 
     def insert(self, index: SupportsIndex, value: Any) -> None:
-        value = self._adopt(value)
+        index, value = operator.index(index), self._adopt(value)
         with _LOCK:
             self._check()
             super().insert(index, value)
             self._changed()
 
     def pop(self, index: SupportsIndex = -1) -> Any:
+        index = operator.index(index)
         with _LOCK:
             self._check()
             value = super().pop(index)
@@ -391,10 +424,23 @@ class _NestedList(list[Any]):
         return copy.deepcopy(value)
 
     def remove(self, value: Any) -> None:
-        with _LOCK:
-            self._check()
-            super().remove(value)
-            self._changed()
+        self._check()
+        # Found in a copy before the lock (`==` is the caller's), and removed
+        # only if no other edit came in meanwhile; if one did, found again.
+        while True:
+            before = list(self)
+            found = (
+                i for i, item in enumerate(before) if item is value or item == value
+            )
+            at = next(found, None)
+            if at is None:
+                raise ValueError("list.remove(x): x not in list")
+            with _LOCK:
+                self._check()
+                if _unchanged(self, before):
+                    super().__delitem__(at)
+                    self._changed()
+                    return
 
     def clear(self) -> None:
         with _LOCK:
@@ -412,9 +458,7 @@ class _NestedList(list[Any]):
         ordered = sorted(before, key=key, reverse=reverse)
         with _LOCK:
             self._check()
-            if len(self) != len(before) or any(
-                a is not b for a, b in zip(self, before, strict=True)
-            ):
+            if not _unchanged(self, before):
                 raise RuntimeError(
                     f"`{self._anchor.member if self._anchor else 'list'}` "
                     "changed on another thread while it was sorted; sort it again"

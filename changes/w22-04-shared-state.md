@@ -7,4 +7,5 @@
   noticed the fork replaced the cache's lock one after the other, and then
   held different locks over the same handles. Registering a vocabulary
   (`medh5.labels.register`) and editing a document's live views from several
-  threads are locked too.
+  threads are locked too, and no code of the caller's runs under that lock
+  (an index's `__index__`, an item's `__eq__`).

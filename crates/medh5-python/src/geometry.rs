@@ -158,7 +158,7 @@ impl Grid {
         };
         let mut extras = Vec::new();
         if let Some(extra) = extra {
-            for (k, v) in extra.iter() {
+            for (k, v) in crate::convert::dict_items(extra)? {
                 extras.push((k.extract::<String>()?, py_to_attr(&v)?));
             }
         }

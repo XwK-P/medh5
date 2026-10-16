@@ -170,7 +170,8 @@ impl AnnotationPayload {
     pub fn current(&self, py: Python<'_>) -> R<Payload> {
         // What the payload holds, taken under the lock; the dicts handed
         // out are read after it, since reading them runs NumPy on what a
-        // caller put there.
+        // caller put there, each taken whole first (another thread may be
+        // editing it).
         let (mut p, datasets, attrs) = {
             let state = self.state.read()?;
             let mut p = Payload::new(&state.inner.kind);
@@ -186,12 +187,12 @@ impl AnnotationPayload {
             (p, handed(&state.datasets), handed(&state.attrs))
         };
         if let Some(found) = datasets {
-            for (k, v) in found.bind(py).iter() {
+            for (k, v) in crate::convert::dict_items(found.bind(py))? {
                 p.datasets.insert(k.extract()?, data_arg(&v)?);
             }
         }
         if let Some(found) = attrs {
-            for (k, v) in found.bind(py).iter() {
+            for (k, v) in crate::convert::dict_items(found.bind(py))? {
                 p.attrs.push((k.extract()?, py_to_attr(&v)?));
             }
         }

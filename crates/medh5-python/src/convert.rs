@@ -148,7 +148,7 @@ fn is_sequence(obj: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// A dict's items as they stand, taken in one step (`dict.items()` is
 /// atomic): iterating the dict itself panics if another thread resizes it
 /// meanwhile, as one may on free-threaded CPython.
-fn dict_items<'py>(dict: &Bound<'py, PyDict>) -> PyResult<Vec<(Bound<'py, PyAny>, Bound<'py, PyAny>)>> {
+pub(crate) fn dict_items<'py>(dict: &Bound<'py, PyDict>) -> PyResult<Vec<(Bound<'py, PyAny>, Bound<'py, PyAny>)>> {
     dict.items().iter().map(|item| item.extract()).collect()
 }
 

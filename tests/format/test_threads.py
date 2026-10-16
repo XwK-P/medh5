@@ -618,6 +618,121 @@ class TestOneThreadAtATime:
         assert set(doc.extra["log"]["items"]) == every
         assert set(doc.extra["log"]["seen"]) == every
 
+    @pytest.mark.parametrize(
+        "op",
+        [
+            "imul",
+            "setitem",
+            "slice",
+            "delitem",
+            "insert",
+            "pop",
+            "remove",
+            "key",
+            "setdefault",
+        ],
+    )
+    def test_no_callers_code_runs_under_the_live_views_lock(self, op: str):
+        """An index's `__index__`, an item's `__eq__` and a key's `__hash__`
+        are the caller's code, and may wait on another thread's edit of the
+        same document: they run before the live views' lock is taken, so that
+        edit lands (under the lock, it waited for the first and the first for
+        it)."""
+        from medh5.document import new_document
+
+        doc = new_document("s")
+        doc.extra["log"] = {"items": ["a", "b", "c"], "seen": {}}
+        member = doc.extra["log"]
+        items, seen = member["items"], member["seen"]
+        landed: list[bool] = []
+        waiting: list[threading.Thread] = []
+
+        def hook() -> None:
+            if landed or waiting:
+                return
+            other = threading.Thread(target=seen.__setitem__, args=("other", 1))
+            other.start()
+            other.join(timeout=5)
+            if other.is_alive():
+                waiting.append(other)
+            landed.append(not other.is_alive())
+
+        class Index:
+            def __init__(self, n: int) -> None:
+                self.n = n
+
+            def __index__(self) -> int:
+                hook()
+                return self.n
+
+        class Equal:
+            __hash__ = None  # type: ignore[assignment]
+
+            def __eq__(self, other: object) -> bool:
+                hook()
+                return other == "b"
+
+        class Key(str):
+            __slots__ = ()
+
+            def __hash__(self) -> int:
+                hook()
+                return str.__hash__(self)
+
+            def __eq__(self, other: object) -> bool:
+                hook()
+                return str.__eq__(self, other)
+
+        ops: dict[str, Callable[[], object]] = {
+            "imul": lambda: items.__imul__(Index(1)),
+            "setitem": lambda: items.__setitem__(Index(0), "x"),
+            "slice": lambda: items.__setitem__(slice(Index(0), Index(1)), ["x"]),
+            "delitem": lambda: items.__delitem__(Index(0)),
+            "insert": lambda: items.insert(Index(0), "x"),
+            "pop": lambda: items.pop(Index(0)),
+            "remove": lambda: items.remove(Equal()),
+            "key": lambda: seen.__setitem__(Key("k"), 2),
+            "setdefault": lambda: seen.setdefault(Key("k"), 2),
+        }
+        try:
+            ops[op]()
+        finally:
+            for other in waiting:  # pragma: no cover - the failure
+                other.join()
+        # A key is hashed as the `str` it spells: its hook need not run.
+        assert landed in ([], [True])
+        assert doc.extra["log"]["seen"].get("other") == (1 if landed else None)
+        assert doc.extra["log"]["items"] == list(items)
+
+    def test_a_payload_reads_whole_while_its_dicts_change(self):
+        """Threads adding and removing a payload's datasets and attributes
+        while others describe it: each dict is read as it stands in one step,
+        so every read ends whole."""
+        from medh5.annotations.base import AnnotationPayload
+
+        payload = AnnotationPayload("points")
+        datasets, attrs = payload.datasets, payload.attrs
+        threads = 4
+
+        def edit(k: int) -> Callable[[], None]:
+            count = iter(range(10**9))
+
+            def call() -> None:
+                n = next(count)
+                datasets[f"{k}.{n}"] = np.zeros(1)
+                attrs[f"{k}.{n}"] = n
+                if n:
+                    del datasets[f"{k}.{n - 1}"], attrs[f"{k}.{n - 1}"]
+
+            return call
+
+        def read() -> None:
+            assert payload.describe()["kind"] == "points"
+
+        calls = [edit(k) for k in range(threads)] + [read] * threads
+        assert hammered(calls, rounds=500) == 0
+        assert len(payload.describe()["datasets"]) == threads
+
 
 class TestShared:
     """What threads may share: an open sample, read from many at once, and the
