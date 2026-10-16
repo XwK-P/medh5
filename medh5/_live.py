@@ -149,6 +149,28 @@ class _Anchor:
                 raise
 
 
+def _refresh(view: dict[str, Any], held: dict[str, Any]) -> None:
+    """Make *view* hold *held*, in its order, a key at a time: a thread
+    reading the view without the lock (``view[key]``, ``len``, iteration)
+    sees each key as it was or as it is, never a view cleared to be refilled.
+    A key the document moved to the end (deleted and added again) moves
+    there; the keys before it stay where they are."""
+    for key in [k for k in dict.keys(view) if k not in held]:
+        dict.__delitem__(view, key)
+    order = list(held)
+    kept = 0
+    for key in dict.keys(view):
+        if kept < len(order) and order[kept] == key:
+            kept += 1
+    for at, key in enumerate(order):
+        value = held[key]
+        if at >= kept:
+            dict.pop(view, key, None)
+            dict.__setitem__(view, key, value)
+        elif dict.__getitem__(view, key) is not value:
+            dict.__setitem__(view, key, value)
+
+
 class Members(dict[str, Any]):
     """One free-form member mapping of a document (``extra``, ``acquisition``
     or ``quality``), writing every edit through to the document."""
@@ -190,8 +212,7 @@ class Members(dict[str, Any]):
                     anchor = _Anchor(self._document, self._field, key, token)
                     anchor.root = held[key] = _adopted(value, anchor)
                 anchors[key] = anchor
-            dict.clear(self)
-            dict.update(self, held)
+            _refresh(self, held)
             self._anchors = anchors
 
     # -- mutation ----------------------------------------------------------------

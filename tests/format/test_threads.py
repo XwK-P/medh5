@@ -582,6 +582,27 @@ class TestOneThreadAtATime:
 
         hammered([replace] + [read] * 3, rounds=2000)
 
+    def test_a_view_read_while_another_thread_edits_it_is_never_empty(self):
+        """A thread editing a document's `extra` while others read the same
+        view without its lock: every read finds the key nobody touches.  The
+        view is brought up to date a key at a time, not cleared and filled
+        again."""
+        from medh5.document import new_document
+
+        extra = new_document("s").extra
+        extra["kept"] = 0
+        count = iter(range(10**9))
+
+        def edit() -> None:
+            extra["edited"] = next(count)
+
+        def read() -> None:
+            assert extra["kept"] == 0
+            assert len(extra) >= 1
+            assert "kept" in dict(extra)
+
+        hammered([edit] + [read] * 3, rounds=2000)
+
     @pytest.mark.parametrize("threads", [8])
     def test_threads_setting_one_default_all_get_it(self, threads: int):
         """Threads calling `setdefault` for one missing key, of a document's
