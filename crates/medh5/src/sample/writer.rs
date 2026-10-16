@@ -1169,13 +1169,7 @@ impl SampleWriter {
         modality: &str,
         options: ImageOptions,
     ) -> Result<hdf5::Dataset> {
-        validate_id(image_id, "image id")?;
-        if self.images.contains_key(image_id) {
-            return Err(Error::invalid(format!("image {} already exists", repr_str(image_id))));
-        }
-        let value_type = options.value_type.clone().unwrap_or_else(|| "intensity".into());
-        super::image::check_value_type(&value_type)?;
-        let target = self.grid_ref(grid)?.clone();
+        let (target, value_type) = self.check_image(image_id, grid, &options)?;
         let shape: Vec<i64> = data.shape().iter().map(|v| *v as i64).collect();
         if shape != target.shape {
             return Err(Error::coded(
@@ -1189,6 +1183,57 @@ impl SampleWriter {
                 ),
             ));
         }
+        let chunks = self.chunks_for(&target, data.dtype().itemsize(), 0)?;
+        let layout = dataset_layout(
+            &data.shape(),
+            data.dtype().itemsize(),
+            &self.profile(options.codec.as_deref())?,
+            Role::Image,
+            Some(chunks),
+        );
+        let parent = self.group("images")?;
+        let node = data::create(&parent, image_id, data, &layout)?;
+        self.finish_image(&parent, node, image_id, grid, modality, value_type, options)
+    }
+
+    /// An image of `dtype` on `grid`, created empty for the caller to fill
+    /// region by region ([`data::write_region`]), with its chunk shape: what
+    /// a derivation too large to hold whole writes ([`crate::transforms::resample`]).
+    /// The commit digests what the regions wrote.
+    pub(crate) fn create_image(
+        &mut self,
+        image_id: &str,
+        dtype: crate::array::DType,
+        grid: &str,
+        modality: &str,
+        options: ImageOptions,
+    ) -> Result<(hdf5::Dataset, Option<Vec<usize>>)> {
+        let (target, value_type) = self.check_image(image_id, grid, &options)?;
+        let shape = target.shape_usize();
+        let chunks = self.chunks_for(&target, dtype.itemsize(), 0)?;
+        let layout = dataset_layout(
+            &shape,
+            dtype.itemsize(),
+            &self.profile(options.codec.as_deref())?,
+            Role::Image,
+            Some(chunks),
+        );
+        let parent = self.group("images")?;
+        let node = data::create_empty(&parent, image_id, dtype, &shape, &layout)?;
+        let chunks = layout.chunks.clone();
+        Ok((self.finish_image(&parent, node, image_id, grid, modality, value_type, options)?, chunks))
+    }
+
+    /// Refuse an image the sample cannot take before anything is written:
+    /// its grid and `value_type`, and the grid's channel names.
+    fn check_image(&self, image_id: &str, grid: &str, options: &ImageOptions) -> Result<(Grid, String)> {
+        validate_id(image_id, "image id")?;
+        if self.images.contains_key(image_id) {
+            return Err(Error::invalid(format!("image {} already exists", repr_str(image_id))));
+        }
+        let value_type = options.value_type.clone().unwrap_or_else(|| "intensity".into());
+        super::image::check_value_type(&value_type)?;
+        let target = self.grid_ref(grid)?.clone();
         if let Some(names) = &options.channel_names {
             let ok = match target.channel_axis() {
                 Some(axis) => names.len() as i64 == target.shape[axis],
@@ -1201,16 +1246,21 @@ impl SampleWriter {
                 ));
             }
         }
-        let chunks = self.chunks_for(&target, data.dtype().itemsize(), 0)?;
-        let layout = dataset_layout(
-            &data.shape(),
-            data.dtype().itemsize(),
-            &self.profile(options.codec.as_deref())?,
-            Role::Image,
-            Some(chunks),
-        );
-        let parent = self.group("images")?;
-        let node = data::create(&parent, image_id, data, &layout)?;
+        Ok((target, value_type))
+    }
+
+    /// Write an image dataset's attributes and register it.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_image(
+        &mut self,
+        parent: &hdf5::Group,
+        node: hdf5::Dataset,
+        image_id: &str,
+        grid: &str,
+        modality: &str,
+        value_type: String,
+        options: ImageOptions,
+    ) -> Result<hdf5::Dataset> {
         let mut values: Vec<(&str, Option<AttrValue>)> = vec![
             ("grid", Some(AttrValue::Str(grid.into()))),
             ("modality", Some(AttrValue::Str(modality.into()))),
@@ -1225,7 +1275,7 @@ impl SampleWriter {
             ("prov", options.prov.map(AttrValue::Str)),
         ];
         values.retain(|(_, v)| v.is_some());
-        self.or_unlink(&parent, image_id, attrs::write_all(&node, &values))?;
+        self.or_unlink(parent, image_id, attrs::write_all(&node, &values))?;
         self.images.insert(image_id.to_string(), (grid.to_string(), modality.to_string()));
         self.image_multiscale.insert(image_id.to_string(), false);
         Ok(node)

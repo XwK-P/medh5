@@ -143,6 +143,7 @@ pub fn command() -> Command {
         .subcommand(dataset())
         .subcommands(convert())
         .subcommands(perf())
+        .subcommand(resample())
         .subcommand(conformance())
         .subcommand(clinical())
         .subcommand(task())
@@ -947,6 +948,66 @@ fn convert() -> Vec<Command> {
             .arg(codec()),
     );
     vec![convert, migrate]
+}
+
+/// `medh5 resample`: images onto another grid, recorded (§10.2, §11.1).
+fn resample() -> Command {
+    Command::new("resample")
+        .about("resample images onto another grid, recorded as a `resample` activity (§10.2, §11.1)")
+        .arg(positional("path", "the sample holding the images"))
+        .arg(append("image", "image", "an image to resample (repeatable)").value_name("ID").required(true))
+        .arg(opt("onto", "onto", "an existing grid of the sample to resample onto").value_name("GRID"))
+        .arg(
+            opt(
+                "spacing",
+                "spacing",
+                "a new spacing, one value per spatial axis in stored order (as the grid's `spacing` lists them); \
+                 the new grid keeps the source's frame and covers its extent edge to edge",
+            )
+            .value_name("S1,S2[,S3]")
+            .value_parser(spacing_values)
+            .requires("grid_id"),
+        )
+        .arg(opt("grid_id", "grid-id", "the id of the new grid --spacing makes").value_name("NEW").requires("spacing"))
+        .group(ArgGroup::new("target").args(["onto", "spacing"]).required(true))
+        .arg(
+            opt("suffix", "suffix", "appended to each source id to name its output (default: _on_<grid>)")
+                .value_name("S"),
+        )
+        .arg(
+            opt("interpolation", "interpolation", "linear (default), nearest or cubic")
+                .value_parser(["linear", "nearest", "cubic"])
+                .default_value("linear"),
+        )
+        .arg(
+            opt("fill", "fill", "the stored value of a voxel whose source point lies outside the source (default 0)")
+                .value_name("V")
+                .value_parser(clap::value_parser!(f64))
+                .allow_negative_numbers(true),
+        )
+        .arg(
+            opt(
+                "dtype",
+                "dtype",
+                "the dtype to write (default: the source's under nearest, float32 under linear and cubic); integers \
+                 are rounded half to even and clipped",
+            )
+            .value_name("T"),
+        )
+        .arg(opt("out", "out", "write a new file here, and leave the source as it is").short('o').value_name("OUT"))
+        .arg(json())
+}
+
+/// `--spacing 2,1,1`: positive numbers, comma-separated.
+fn spacing_values(text: &str) -> Result<Vec<f64>, String> {
+    let values = text
+        .split(',')
+        .map(|part| part.trim().parse::<f64>().map_err(|_| format!("{part:?} in {text:?} is not a number")))
+        .collect::<Result<Vec<f64>, String>>()?;
+    if values.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+        return Err(format!("{text} is no spacing: every value must be finite and positive"));
+    }
+    Ok(values)
 }
 
 fn perf() -> Vec<Command> {
