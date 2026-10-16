@@ -544,11 +544,50 @@ class TestOneThreadAtATime:
         def read() -> None:
             seen = prov.to_json()["activities"][0]["params"]["seen"]
             assert all(isinstance(v, int) for v in seen.values())
+            assert all(
+                isinstance(v, int) for v in act.to_json()["params"]["seen"].values()
+            )
 
         calls = [edit(k) for k in range(threads)] + [read] * threads
         assert hammered(calls, rounds=rounds) == 0
         every = {f"{k}.{n}" for k in range(threads) for n in range(rounds)}
         assert set(prov.to_json()["activities"][0]["params"]["seen"]) == every
+
+    @pytest.mark.parametrize("threads", [8])
+    def test_threads_setting_one_default_all_get_it(self, threads: int):
+        """Threads calling `setdefault` for one missing key, of a document's
+        `extra` and of a dict nested in it: every caller gets the one default
+        kept, and the document holds it, because the look and the write are
+        one step."""
+        from medh5.document import new_document
+
+        doc = new_document("s")
+        doc.extra["log"] = {}
+        extra, member = doc.extra, doc.extra["log"]
+        got: dict[str, set[int]] = {}
+        lock = threading.Lock()
+        rounds = 100
+
+        def call(k: int) -> Callable[[], None]:
+            count = iter(range(10**9))
+
+            def run() -> None:
+                n = next(count)
+                pairs = [
+                    (f"m{n}", extra.setdefault(f"m{n}", k)),
+                    (f"n{n}", member.setdefault(f"n{n}", k)),
+                ]
+                with lock:
+                    for key, value in pairs:
+                        got.setdefault(key, set()).add(value)
+
+            return run
+
+        assert hammered([call(k) for k in range(threads)], rounds=rounds) == 0
+        stored = doc.extra
+        for n in range(rounds):
+            assert got[f"m{n}"] == {stored[f"m{n}"]}
+            assert got[f"n{n}"] == {stored["log"][f"n{n}"]}
 
     @pytest.mark.parametrize("threads", [8])
     def test_threads_editing_one_nested_member_keep_every_edit(self, threads: int):

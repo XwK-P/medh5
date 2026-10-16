@@ -174,33 +174,41 @@ class Members(dict[str, Any]):
             self._sync()
 
     def setdefault(self, key: str, default: Any = None) -> Any:
-        if self._document is not None:
+        if self._document is None:
+            return super().setdefault(key, default)
+        # Converted first, so the caller's code runs outside the lock (a
+        # quality record is the engine's own); the look and the write are one
+        # step, so one default is the member.
+        value = default if self._field == "quality" else self._document._plain(default)
+        with _LOCK:
             self._sync()
-        if key not in self:
-            self[key] = default
-        return self[key]
+            if key not in self:
+                self[key] = value
+            return self[key]
 
     def pop(self, key: str, *default: Any) -> Any:
         if self._document is None:
             return super().pop(key, *default)
-        self._sync()
-        if key not in self:
-            if default:
-                return default[0]
-            raise KeyError(key)
-        # Detached: the member it was is gone from the document.
-        value = copy.deepcopy(self[key])
-        del self[key]
-        return value
+        with _LOCK:
+            self._sync()
+            if key not in self:
+                if default:
+                    return default[0]
+                raise KeyError(key)
+            # Detached: the member it was is gone from the document.
+            value = copy.deepcopy(self[key])
+            del self[key]
+            return value
 
     def popitem(self) -> tuple[str, Any]:
         if self._document is None:
             return super().popitem()
-        self._sync()
-        if not self:
-            raise KeyError("popitem(): dictionary is empty")
-        key = next(reversed(self))
-        return key, self.pop(key)
+        with _LOCK:
+            self._sync()
+            if not self:
+                raise KeyError("popitem(): dictionary is empty")
+            key = next(reversed(self))
+            return key, self.pop(key)
 
     def clear(self) -> None:
         if self._document is None:
@@ -264,9 +272,13 @@ class _NestedDict(dict[str, Any]):
             self._changed()
 
     def setdefault(self, key: str, default: Any = None) -> Any:
-        if key not in self:
-            self[key] = default
-        return self[key]
+        value = self._adopt(default)
+        with _LOCK:
+            if key not in self:
+                self._check()
+                super().__setitem__(key, value)
+                self._changed()
+            return self[key]
 
     def pop(self, key: str, *default: Any) -> Any:
         with _LOCK:

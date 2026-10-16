@@ -561,7 +561,11 @@ macro_rules! record_class {
                 if self.held.is_untouched() {
                     return Ok((self.inner.clone(), self.json.clone()));
                 }
-                let merged = $crate::records::merged_json(py, $py, &self.json, Self::FIELDS, &self.held)?;
+                // Under the lock an edit to an anchored container holds with
+                // its rewrite (`medh5._live`): one state of every container.
+                let merged = $crate::document::under_live_lock(py, || {
+                    $crate::records::merged_json(py, $py, &self.json, Self::FIELDS, &self.held)
+                })?;
                 let parse: fn(&serde_json::Value) -> medh5::Result<$engine> = $parse;
                 let dump: fn(&$engine) -> serde_json::Value = $dump;
                 let inner = parse(&merged)?;
