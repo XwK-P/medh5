@@ -1034,7 +1034,9 @@ class TestDicom:
         with pytest.raises(MEDH5ValidationError, match="no DICOM"):
             from_dicom(tmp_path / "empty", tmp_path / "x.medh5")
 
-    def test_dicom_enhanced_objects_and_monochrome1_are_reported(self, tmp_path: Path):
+    def test_dicom_a_broken_enhanced_object_and_monochrome1_are_reported(
+        self, tmp_path: Path
+    ):
         from pydicom.dataset import Dataset, FileMetaDataset
         from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
@@ -1042,8 +1044,9 @@ class TestDicom:
         from medh5.io.report import ConversionReport
 
         root = tmp_path / "dicom"
+        study = generate_uid()
         series = write_dicom_series(
-            root / "ct", patient_id="P", study_uid=generate_uid(), study_date="20260101"
+            root / "ct", patient_id="P", study_uid=study, study_date="20260101"
         )
         for file in series["paths"]:
             ds = pydicom.dcmread(file)
@@ -1057,6 +1060,8 @@ class TestDicom:
         enhanced.SOPClassUID = pydicom.uid.EnhancedMRImageStorage
         enhanced.SOPInstanceUID = enhanced.file_meta.MediaStorageSOPInstanceUID
         enhanced.Modality = "MR"
+        enhanced.PatientID = "P"
+        enhanced.StudyInstanceUID = study
         enhanced.SeriesInstanceUID = generate_uid()
         enhanced.NumberOfFrames = 4
         (root / "mr").mkdir()
@@ -1064,17 +1069,379 @@ class TestDicom:
 
         report = ConversionReport(converter="test")
         found = scan_dicom(root, report=report)
-        assert [s.modality for s in found] == ["CT"]
-        unsupported = report.of_kind("unsupported")
-        assert unsupported and unsupported[0].severity == "warning"
-        assert "MR" not in [s.modality for s in found]
+        assert sorted(s.modality for s in found) == ["CT", "MR"]
+        assert not report.of_kind("unsupported")
 
         report = ConversionReport(converter="test")
-        read_series(found[0], report=report)
+        read_series(next(s for s in found if s.modality == "CT"), report=report)
         assert report.of_kind("photometric")
 
         report = from_dicom(root, tmp_path / "out.medh5")
         assert not report.ok  # both are warnings, and warnings fail the command
+        # The enhanced object states no frame's position: left out, saying so.
+        (left_out,) = report.of_kind("series")
+        assert "MR series" in left_out.message
+        assert "frame 1 of instance" in left_out.message
+        assert "ImagePositionPatient" in left_out.message
         with medh5.open(tmp_path / "out.medh5") as sample:
             acquisition = sample.document.acquisition["CT_tp0"]
             assert acquisition["PhotometricInterpretation"] == "MONOCHROME1"
+
+
+_LEGACY = {
+    "CT": ("LegacyConvertedEnhancedCTImage", "CTImageStorage"),
+    "MR": ("LegacyConvertedEnhancedMRImage", "MRImageStorage"),
+    "PT": ("LegacyConvertedEnhancedPETImage", "PositronEmissionTomographyImageStorage"),
+}
+
+
+"""The highdicom class converting a classic series of each modality, and the
+storage class its slices must declare for it."""
+
+
+def _enhanced(paths: list[str], modality: str = "CT") -> Any:
+    """The classic slices at *paths* as one legacy-converted enhanced object."""
+    hd = pytest.importorskip("highdicom")
+    import pydicom.uid
+    from pydicom.uid import generate_uid
+
+    converter, storage = _LEGACY[modality]
+    slices = []
+    for path in paths:
+        ds = pydicom.dcmread(path)
+        ds.SOPClassUID = ds.file_meta.MediaStorageSOPClassUID = getattr(
+            pydicom.uid, storage
+        )
+        # What highdicom 0.23 (the floor) reads off every slice, where later
+        # versions default it.
+        ds.setdefault("ReferringPhysicianName", "")
+        ds.setdefault("ImageType", ["ORIGINAL", "PRIMARY", "AXIAL"])
+        slices.append(ds)
+    return getattr(hd.legacy, converter)(
+        slices,
+        series_instance_uid=generate_uid(),
+        series_number=2,
+        sop_instance_uid=generate_uid(),
+        instance_number=1,
+    )
+
+
+def _save(dataset: Any, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    dataset.save_as(str(path), enforce_file_format=True)
+    return path
+
+
+def _frame(dataset: Any, index: int) -> Any:
+    """Frame *index*'s own functional groups."""
+    return dataset.PerFrameFunctionalGroupsSequence[index]
+
+
+def _concatenation(dataset: Any, directory: Path, split: int) -> list[Path]:
+    """*dataset* as a concatenation of two instances, frames ``[:split]`` and
+    ``[split:]`` --- the second part written first, so file order is not the
+    concatenation's."""
+    from copy import deepcopy
+
+    from pydicom.sequence import Sequence
+    from pydicom.uid import generate_uid
+
+    frames = int(dataset.NumberOfFrames)
+    size = int(dataset.Rows) * int(dataset.Columns) * int(dataset.BitsAllocated) // 8
+    concatenation = generate_uid()
+    written = []
+    for number, (start, stop) in enumerate(((0, split), (split, frames)), start=1):
+        part = deepcopy(dataset)
+        part.SOPInstanceUID = part.file_meta.MediaStorageSOPInstanceUID = generate_uid()
+        part.NumberOfFrames = stop - start
+        part.PerFrameFunctionalGroupsSequence = Sequence(
+            list(dataset.PerFrameFunctionalGroupsSequence)[start:stop]
+        )
+        part.PixelData = dataset.PixelData[start * size : stop * size]
+        part.ConcatenationUID = concatenation
+        part.SOPInstanceUIDOfConcatenationSource = dataset.SOPInstanceUID
+        part.InConcatenationNumber = number
+        part.InConcatenationTotalNumber = 2
+        part.ConcatenationFrameOffsetNumber = start
+        written.append(_save(part, directory / f"part{3 - number}.dcm"))
+    return written
+
+
+class TestEnhancedMultiFrame:
+    """Enhanced and legacy-converted multi-frame objects (PS3.3 C.7.6.16).
+
+    One object carries every slice as a frame, and each frame's position,
+    orientation, spacing and rescale in its functional groups --- the frame's
+    own or the shared ones.  A stack of frames imports as the classic series
+    it was converted from would: the same grid, the same values.
+    """
+
+    @staticmethod
+    def _classic(tmp_path: Path, modality: str = "CT", **options: Any) -> Any:
+        from pydicom.uid import generate_uid
+
+        return write_dicom_series(
+            tmp_path / "classic" / modality.lower(),
+            patient_id="P1",
+            study_uid=generate_uid(),
+            study_date="20260101",
+            modality=modality,
+            **options,
+        )
+
+    @staticmethod
+    def _imported(root: Path, out: Path, **options: Any) -> Path:
+        from medh5.io.dicom import from_dicom
+
+        report = from_dicom(root, out, **options)
+        assert not report.of_kind("series"), report.of_kind("series")
+        return out
+
+    @staticmethod
+    def _same(left: Path, right: Path, image: str, grid: str) -> None:
+        with medh5.open(left) as a, medh5.open(right) as b:
+            ga, gb = a.grids[grid], b.grids[grid]
+            assert ga.shape == gb.shape
+            assert np.allclose(ga.spacing, gb.spacing)
+            assert np.allclose(ga.origin, gb.origin)
+            assert np.allclose(ga.direction, gb.direction)
+            assert ga.frame_uid == gb.frame_uid
+            ia, ib = a.images[image], b.images[image]
+            assert ia.digest == ib.digest
+            assert ia.rescale == ib.rescale
+            assert np.array_equal(ia.read(), ib.read())
+            assert a.document.acquisition[image] == b.document.acquisition[image]
+
+    def test_enhanced_ct_imports_as_the_classic_series(self, tmp_path):
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        left = self._imported(tmp_path / "classic", tmp_path / "classic.medh5")
+        right = self._imported(tmp_path / "enhanced", tmp_path / "enhanced.medh5")
+        self._same(left, right, "CT_tp0", "ct_tp0")
+        with medh5.open(right) as sample:
+            assert sample.timepoints["tp0"].series_uids == {
+                "CT_tp0": str(enhanced.SeriesInstanceUID)
+            }
+        assert validate_file(right).ok
+
+    @pytest.mark.parametrize("modality", ["MR", "PT"])
+    def test_enhanced_mr_and_pet_import_as_their_classic_series(
+        self, tmp_path, modality
+    ):
+        classic = self._classic(tmp_path, modality)
+        # The classic MR and PET image modules define no rescale, and older
+        # highdicom drops it on conversion; the fixture writes one for all.
+        for path in classic["paths"]:
+            ds = pydicom.dcmread(path)
+            del ds.RescaleSlope, ds.RescaleIntercept
+            ds.save_as(path)
+        _save(_enhanced(classic["paths"], modality), tmp_path / "enhanced" / "x.dcm")
+        left = self._imported(tmp_path / "classic", tmp_path / "classic.medh5")
+        right = self._imported(tmp_path / "enhanced", tmp_path / "enhanced.medh5")
+        self._same(left, right, f"{modality}_tp0", f"{modality.lower()}_tp0")
+
+    def test_scan_finds_an_enhanced_object_as_one_series(self, tmp_path):
+        from medh5.io.dicom import scan_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        path = _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        report = ConversionReport(converter="test")
+        (series,) = scan_dicom(tmp_path / "enhanced", report=report)
+        assert not report.of_kind("unsupported")
+        assert series.series_uid == str(enhanced.SeriesInstanceUID)
+        assert series.paths == [str(path)]
+        assert series.n_slices == 6 and series.stack is None
+        assert sorted(index for _, index in series.frames) == list(range(6))
+
+    def test_enhanced_two_stacks_are_two_series(self, tmp_path):
+        from medh5.io.dicom import from_dicom, scan_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        positions = []
+        for index in range(6):
+            content = _frame(enhanced, index).FrameContentSequence[0]
+            content.StackID = "1" if index < 3 else "2"
+            content.InStackPositionNumber = index % 3 + 1
+            plane = _frame(enhanced, index).PlanePositionSequence[0]
+            positions.append(float(plane.ImagePositionPatient[0]))
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        stacks = scan_dicom(tmp_path / "enhanced")
+        assert [s.stack for s in stacks] == ["1", "2"]
+        assert [s.n_slices for s in stacks] == [3, 3]
+        report = from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+        assert not report.of_kind("series")
+        with medh5.open(tmp_path / "out.medh5") as sample:
+            assert sorted(sample.images) == ["CT_1_tp0", "CT_2_tp0"]
+            first, second = sample.grids["ct_1_tp0"], sample.grids["ct_2_tp0"]
+            assert first.shape == second.shape == (3, 16, 20)
+            # Each stack is placed by its own frames. The slice normal of
+            # this orientation is -x, so a stack starts at its largest x.
+            assert first.origin[0] == max(positions[:3])
+            assert second.origin[0] == max(positions[3:])
+            volume = np.stack(
+                [pydicom.dcmread(p).pixel_array for p in classic["paths"]]
+            )
+            both = np.concatenate(
+                [sample.images["CT_1_tp0"].read(), sample.images["CT_2_tp0"].read()]
+            )
+            # Classic slice k lies at origin - k * spacing: stacked by position,
+            # the slices run the other way.
+            assert np.array_equal(np.sort(both, axis=None), np.sort(volume, axis=None))
+
+    def test_an_irregular_stack_is_refused(self, tmp_path):
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        plane = _frame(enhanced, 2).PlanePositionSequence[0]
+        position = [float(v) for v in plane.ImagePositionPatient]
+        position[0] += 1.1
+        plane.ImagePositionPatient = position
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        with pytest.raises(MEDH5ValidationError, match="irregular slice gaps"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
+    def test_frames_out_of_their_stack_order_are_refused(self, tmp_path):
+        """``InStackPositionNumber`` says where a frame sits in its stack; a
+        number its position contradicts is refused, not re-sorted by guess."""
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        for index in range(6):  # the frames are in geometric order
+            _frame(enhanced, index).FrameContentSequence[0].InStackPositionNumber = (
+                index + 1
+            )
+        first = _frame(enhanced, 0).FrameContentSequence[0]
+        third = _frame(enhanced, 2).FrameContentSequence[0]
+        first.InStackPositionNumber, third.InStackPositionNumber = (
+            third.InStackPositionNumber,
+            first.InStackPositionNumber,
+        )
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        with pytest.raises(MEDH5ValidationError, match="InStackPositionNumber"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
+    def test_a_frame_with_no_position_is_refused_with_the_reason(self, tmp_path):
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        del _frame(enhanced, 4).PlanePositionSequence
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        with pytest.raises(
+            MEDH5ValidationError, match="frame 5 .*ImagePositionPatient"
+        ):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
+    def test_frames_are_decoded_one_at_a_time(self, tmp_path, monkeypatch):
+        """No frame is decoded with the rest: an enhanced object of thousands
+        of frames is held once, as the volume, not twice."""
+        from pydicom.dataset import Dataset
+
+        classic = self._classic(tmp_path)
+        _save(_enhanced(classic["paths"]), tmp_path / "enhanced" / "ct.dcm")
+
+        def whole(self: Any) -> Any:
+            raise AssertionError("the whole pixel array was decoded")
+
+        monkeypatch.setattr(Dataset, "pixel_array", property(whole))
+        out = self._imported(tmp_path / "enhanced", tmp_path / "out.medh5")
+        with medh5.open(out) as sample:
+            assert sample.images["CT_tp0"].shape == (6, 16, 20)
+
+    def test_enhanced_per_frame_rescale_follows_per_slice_rescale(self, tmp_path):
+        """Frames stating their own rescale are a series of slices that do:
+        refused, unless ``per_slice_rescale="apply"``, which stores each
+        frame's physical values as the classic import does."""
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path, "CT", shape=(6, 4, 5))
+        for k, path in enumerate(classic["paths"]):
+            ds = pydicom.dcmread(path)
+            ds.RescaleSlope = (0.5, 0.5, 0.75, 1.25, 1.25, 2.0)[k]
+            ds.RescaleIntercept = (0.0, 0.0, 0.0, -3.0, -3.0, 0.0)[k]
+            ds.save_as(path)
+        _save(_enhanced(classic["paths"]), tmp_path / "enhanced" / "ct.dcm")
+        with pytest.raises(MEDH5ValidationError, match="per_slice_rescale"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "refused.medh5")
+        left = self._imported(
+            tmp_path / "classic", tmp_path / "classic.medh5", per_slice_rescale="apply"
+        )
+        right = self._imported(
+            tmp_path / "enhanced",
+            tmp_path / "enhanced.medh5",
+            per_slice_rescale="apply",
+        )
+        self._same(left, right, "CT_tp0", "ct_tp0")
+        with medh5.open(right) as sample:
+            assert not sample.images["CT_tp0"].is_rescaled
+
+    def test_enhanced_acquisition_attributes_come_from_the_functional_groups(
+        self, tmp_path
+    ):
+        """An enhanced MR states its echo time per frame, as
+        ``EffectiveEchoTime``, and its repetition time in the shared groups."""
+        from pydicom.dataset import Dataset
+
+        classic = self._classic(tmp_path, "MR")
+        enhanced = _enhanced(classic["paths"], "MR")
+        timing = Dataset()
+        timing.RepetitionTime = 2200.0
+        timing.FlipAngle = 9.0
+        enhanced.SharedFunctionalGroupsSequence[
+            0
+        ].MRTimingAndRelatedParametersSequence = [timing]
+        for index in range(6):
+            echo = Dataset()
+            echo.EffectiveEchoTime = 2.5
+            _frame(enhanced, index).MREchoSequence = [echo]
+        _save(enhanced, tmp_path / "enhanced" / "mr.dcm")
+        out = self._imported(tmp_path / "enhanced", tmp_path / "out.medh5")
+        with medh5.open(out) as sample:
+            acquisition = sample.document.acquisition["MR_tp0"]
+        assert acquisition["RepetitionTime"] == 2200.0
+        assert acquisition["FlipAngle"] == 9.0
+        assert acquisition["EchoTime"] == 2.5
+
+    def test_a_concatenation_is_one_object(self, tmp_path):
+        from medh5.io.dicom import scan_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        parts = _concatenation(enhanced, tmp_path / "enhanced", split=4)
+        (series,) = scan_dicom(tmp_path / "enhanced")
+        assert series.n_slices == 6
+        assert sorted(series.paths) == sorted(str(p) for p in parts)
+        left = self._imported(tmp_path / "classic", tmp_path / "classic.medh5")
+        right = self._imported(tmp_path / "enhanced", tmp_path / "enhanced.medh5")
+        self._same(left, right, "CT_tp0", "ct_tp0")
+
+    def test_a_concatenation_missing_a_part_is_refused(self, tmp_path):
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        first, second = _concatenation(enhanced, tmp_path / "enhanced", split=4)
+        second.unlink()
+        with pytest.raises(MEDH5ValidationError, match="concatenation .* 1 of its 2"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
+    def test_an_enhanced_ultrasound_volume_is_still_skipped(self, tmp_path):
+        from pydicom.uid import EnhancedUSVolumeStorage
+
+        from medh5.io.dicom import scan_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        enhanced.SOPClassUID = enhanced.file_meta.MediaStorageSOPClassUID = (
+            EnhancedUSVolumeStorage
+        )
+        _save(enhanced, tmp_path / "enhanced" / "us.dcm")
+        report = ConversionReport(converter="test")
+        assert scan_dicom(tmp_path / "enhanced", report=report) == []
+        (warning,) = report.of_kind("unsupported")
+        assert "Enhanced US Volume" in warning.message

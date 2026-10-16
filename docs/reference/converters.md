@@ -223,13 +223,25 @@ everything else stays out (§11.4). The importer does not de-identify, and
 writes no de-identification record: the report says so, and the validator
 reports such a file (`W903`).
 
-**Enhanced multi-frame objects are reported, not read.** The importer reads
-classic single-frame series. An Enhanced CT/MR/PET object keeps its geometry
-in per-frame functional groups it does not read, so such files are skipped
-and named in the report as a warning — an import that found nothing says
-why. Convert them to classic instances first. Other multi-frame objects are
-skipped with a warning too, and an object that carries a patient position
-but is not an image — an RT Dose grid — with a note.
+**Enhanced multi-frame objects are read as their stacks.** Enhanced and
+legacy-converted CT, MR and PET objects (PS3.3 C.7.6.16) are split into
+stacks by `StackID` and by every dimension of `DimensionIndexSequence` that
+does not order a stack (`InStackPositionNumber` and `ImagePositionPatient`
+order one). Each stack becomes a series, with `Series.frames` naming its
+`(file, frame index)` pairs and `Series.stack` the stack where an object
+holds several, and is imported as a classic series would be: every frame
+read as a slice whose position, orientation, pixel spacing, rescale and
+acquisition attributes come from its own functional groups, else the shared
+ones, else the object's top level (an enhanced MR's `EffectiveEchoTime` is
+its `EchoTime`). Frames are decoded one at a time. A frame that states no
+position, a stack that is not a regular grid, and a stack whose
+`InStackPositionNumber` runs against its positions are refused with the
+reason. Frames with different rescales follow `per_slice_rescale`. A
+concatenation's instances are joined by `ConcatenationUID` in
+`InConcatenationNumber` order, and one missing a part is refused. Enhanced
+ultrasound volumes and other multi-frame objects are skipped with a warning,
+and an object that carries a patient position but is not an image — an RT
+Dose grid — with a note.
 
 **One series does not stop the tree.** A series the importer refuses is left
 out with a warning (`series`) naming it and the reason, and the rest are
