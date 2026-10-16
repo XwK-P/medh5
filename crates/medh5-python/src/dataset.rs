@@ -53,15 +53,19 @@ impl CollectionHandle {
     fn path(&self) -> Option<String> {
         self.path.clone()
     }
+    /// Closing waits, detached, for a call another thread is making through
+    /// the collection, then closes it with the lock let go.
     fn close(&self, py: Python<'_>) {
-        let taken = self.inner.lock().unwrap_or_else(PoisonError::into_inner).take();
-        if let Some(mut c) = taken {
-            crate::h5(py, move || c.close());
-        }
+        crate::h5(py, || {
+            let taken = self.inner.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(mut c) = taken {
+                c.close();
+            }
+        })
     }
     #[getter]
-    fn is_open(&self) -> bool {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner).is_some()
+    fn is_open(&self, py: Python<'_>) -> bool {
+        crate::h5(py, || self.inner.lock().unwrap_or_else(PoisonError::into_inner).is_some())
     }
     fn keys(&self, py: Python<'_>) -> R<Vec<String>> {
         self.with(py, |c| c.keys())
