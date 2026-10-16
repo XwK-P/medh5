@@ -158,7 +158,7 @@ fn io_error(message: String) -> PyErr {
 /// `(errno, reason, the path as a Python literal)` from `[Errno N] reason:
 /// 'path'` ([`medh5::error::os_error`]'s words), or `(errno, reason, None)`
 /// from `reason (os error N)` (an `std::io::Error`'s).
-fn errno_message(message: &str) -> Option<(i32, String, Option<String>)> {
+pub(crate) fn errno_message(message: &str) -> Option<(i32, String, Option<String>)> {
     if let Some(rest) = message.strip_prefix("[Errno ") {
         let (number, rest) = rest.split_once("] ")?;
         let errno = number.parse().ok()?;

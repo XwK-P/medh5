@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ import pytest
 import medh5
 from medh5.errors import MEDH5ValidationError
 from medh5.validate import validate_file
+from tests.helpers import disk_full_while
 from tests.kits import Organs
 
 nib = pytest.importorskip("nibabel")
@@ -1504,32 +1506,7 @@ class TestExportsOwnTheirVolumeStatements:
             sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(".")) == []
         )
 
-    def test_an_interrupted_overwrite_never_reads_another_timeline(
-        self, tmp_path, monkeypatch
-    ):
-        """The old timing is withdrawn before the image is replaced: an export
-        that fails between them leaves the old image with its timing
-        unmeasured, not the new one with the old image's."""
-        from medh5.io import nifti
-
-        out = tmp_path / "dce.nii.gz"
-        to_nifti(self._series(tmp_path / "a.medh5", [0.0, 1.0, 3.0]), "DCE", out)
-        withdraw = nifti._withdraw_volume_statements
-
-        def interrupted(*args: Any) -> Any:
-            """Withdrawn, and the export stops before its image is renamed."""
-            withdraw(*args)
-            raise OSError("interrupted")
-
-        monkeypatch.setattr(nifti, "_withdraw_volume_statements", interrupted)
-        with pytest.raises(OSError, match="interrupted"):
-            to_nifti(self._series(tmp_path / "b.medh5", [0.0, 5.0, 6.0]), "DCE", out)
-        monkeypatch.undo()
-        _, geometry = read_nifti(out)
-        assert not geometry["time_measured"]
-        assert not (tmp_path / "dce.json").exists()
-        assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]
-
+    @pytest.mark.skipif(sys.platform == "win32", reason="a file size limit")
     @pytest.mark.parametrize("old", ["series", "dwi"])
     def test_an_export_that_cannot_write_its_image_changes_nothing(
         self, tmp_path, monkeypatch, old
@@ -1538,8 +1515,10 @@ class TestExportsOwnTheirVolumeStatements:
         serialised, so an export that failed to write it --- a full disk, a
         type NIfTI cannot hold --- left the old image with its timing or its
         b-values gone.  The image is written first;
-        until it is whole, nothing beside the file is touched."""
-        import nibabel
+        until it is whole, nothing beside the file is touched.  (That an
+        export interrupted after the old statements are withdrawn leaves the
+        old image unmeasured is the engine's test,
+        `s3_2_an_interrupted_overwrite_never_reads_another_timeline`.)"""
 
         out = tmp_path / "old.nii.gz"
         if old == "series":
@@ -1554,11 +1533,8 @@ class TestExportsOwnTheirVolumeStatements:
         stated = ("leading_kind", "time_values", "time_measured")
         expected = {k: read_nifti(out)[1][k] for k in stated}
 
-        def full(*args: Any, **kwargs: Any) -> None:
-            raise OSError("disk full")
-
-        monkeypatch.setattr(nibabel, "save", full)
-        with pytest.raises(OSError, match="disk full"):
+        disk_full_while(monkeypatch, medh5._core, "nifti_to")
+        with pytest.raises(OSError):
             to_nifti(self._series(tmp_path / "b.medh5", [0.0, 5.0, 6.0]), "DCE", out)
         monkeypatch.undo()
         assert {p.name: p.read_bytes() for p in beside} == before
@@ -1658,32 +1634,22 @@ class TestExportsOwnTheirVolumeStatements:
 
 class TestExportsAreWrittenWhole:
     """A NIfTI export replaces its file through the engine's replace
-    (§14.4): nibabel writes a staged temporary, renamed over the file only
-    once it is whole."""
+    (§14.4): the image is written to a staged temporary, renamed over the
+    file only once it is whole."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="a file size limit")
     def test_S14_4_an_interrupted_save_leaves_the_previous_file(
         self, tmp_path, monkeypatch
     ):
-        import nibabel
-
         from medh5.io.nifti import write_nifti
 
         out = tmp_path / "ct.nii.gz"
         write_nifti(np.zeros((4, 3, 2), np.int16), np.eye(4), out)
         before = out.read_bytes()
-        written: list[Path] = []
-
-        def crashed(image: Any, filename: Any, *args: Any, **kwargs: Any) -> None:
-            """nibabel stopped half way through the file."""
-            written.append(Path(filename))
-            Path(filename).write_bytes(before[: len(before) // 2])
-            raise OSError("interrupted")
-
-        monkeypatch.setattr(nibabel, "save", crashed)
-        with pytest.raises(OSError, match="interrupted"):
+        disk_full_while(monkeypatch, medh5._core, "nifti_write")
+        with pytest.raises(OSError):
             write_nifti(np.ones((4, 3, 2), np.int16), np.eye(4), out)
         monkeypatch.undo()
-        assert written and written[0] != out, "nibabel wrote a temporary"
         assert out.read_bytes() == before
         assert [p.name for p in tmp_path.iterdir()] == ["ct.nii.gz"]
 

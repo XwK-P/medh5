@@ -19,14 +19,20 @@
 
 pub mod header;
 mod import;
+mod qform;
 mod read;
+mod write;
 
 use ndarray::Array2;
 use serde_json::{json, Value};
 
 pub use header::{Element, Header, Version};
-pub use import::{from_nifti, grid_axes, read_nifti};
+pub use import::{from_nifti, grid_axes, import_seg_nifti, read_nifti, read_stored, StoredNifti};
 pub use read::Voxels;
+pub use write::{
+    embed_plane, for_export, nifti_target, sidecar_path, to_nifti, write_field, write_nifti, ExportOptions,
+    WriteOptions, NIFTI_SUFFIXES,
+};
 
 use crate::array::NdArray;
 use crate::json::{num, repr_str};
@@ -220,6 +226,83 @@ impl ImportOptions {
             assume_geometry: self.assume_geometry,
             plane_as_volume: self.plane_as_volume,
         }
+    }
+}
+
+/// How [`import_seg_nifti`] adds masks to a sample.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct SegOptions {
+    /// The annotation's id.
+    pub ann_id: String,
+    /// The grid the masks sit on; by default the reference grid.
+    pub grid: Option<String>,
+    /// May only repeat the grid's coordinate system.
+    pub coord_system: Option<String>,
+    pub transpose: bool,
+    /// Which classes were looked for (§11.3).
+    pub annotated_classes: Annotated,
+    /// Take a mask's voxels as the grid's when their geometries disagree,
+    /// recording that as a guess: for a header known to be wrong.
+    pub assume_aligned: bool,
+    pub assume_geometry: bool,
+    pub plane_as_volume: bool,
+}
+
+impl Default for SegOptions {
+    fn default() -> Self {
+        SegOptions {
+            ann_id: "seg".into(),
+            grid: None,
+            coord_system: None,
+            transpose: true,
+            annotated_classes: Annotated::AllGiven,
+            assume_aligned: false,
+            assume_geometry: false,
+            plane_as_volume: false,
+        }
+    }
+}
+
+impl SegOptions {
+    pub fn with_ann_id(mut self, value: impl Into<String>) -> Self {
+        self.ann_id = value.into();
+        self
+    }
+
+    pub fn with_grid(mut self, value: impl Into<String>) -> Self {
+        self.grid = Some(value.into());
+        self
+    }
+
+    pub fn with_coord_system(mut self, value: impl Into<String>) -> Self {
+        self.coord_system = Some(value.into());
+        self
+    }
+
+    pub fn with_transpose(mut self, value: bool) -> Self {
+        self.transpose = value;
+        self
+    }
+
+    pub fn with_annotated_classes(mut self, value: Annotated) -> Self {
+        self.annotated_classes = value;
+        self
+    }
+
+    pub fn with_assume_aligned(mut self, value: bool) -> Self {
+        self.assume_aligned = value;
+        self
+    }
+
+    pub fn with_assume_geometry(mut self, value: bool) -> Self {
+        self.assume_geometry = value;
+        self
+    }
+
+    pub fn with_plane_as_volume(mut self, value: bool) -> Self {
+        self.plane_as_volume = value;
+        self
     }
 }
 

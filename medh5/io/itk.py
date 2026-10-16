@@ -23,7 +23,8 @@ moving frame, and a ``composite`` between the two grids' frames, which earns
 ``reg`` (1.0 §1.3) and is the one shortest route between them.
 
 Parsed with the standard library (``.tfm``/``.txt``, and ANTs' MATLAB v4
-``.mat`` with :mod:`struct`); fields need nibabel (the ``nifti`` extra).
+``.mat`` with :mod:`struct`); fields are NIfTI, read and written by the
+engine.
 ITK's HDF5 transform files and B-splines are not read before medh5 2.2.
 """
 
@@ -80,9 +81,6 @@ _FIXED_DIMENSION = {
 }
 
 _MAGIC = "#Insight Transform File V1.0"
-
-_INTENT_DISPVECT = 1006
-"""NIfTI's intent for a displacement vector field."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -800,40 +798,29 @@ def _read_field(
 ) -> dict[str, Any]:
     """A NIfTI displacement field as ``(S, *spatial)`` world vectors in
     *fixed_grid*'s convention and units, with its geometry in the same."""
-    from medh5.geometry import MM_PER_UNIT
-    from medh5.io.nifti import require_nibabel
-
-    nib = require_nibabel()
-    from medh5.geometry import decompose_affine
-    from medh5.io.nifti import _units, convert_world
+    from medh5.geometry import MM_PER_UNIT, decompose_affine
+    from medh5.io.nifti import _read_stored, convert_world
 
     where = os.fspath(path)
-    try:
-        image = nib.load(where)
-    except nib.filebasedimages.ImageFileError as exc:
-        raise MEDH5ValidationError(f"{where} is not a NIfTI file: {exc}") from None
-    if not isinstance(image, nib.Nifti1Pair):
-        raise MEDH5ValidationError(
-            f"{where} is not a NIfTI file: nibabel reads it as {type(image).__name__}"
-        )
+    stored, header = _read_stored(where)
     n = len(fixed_grid.spacing)
-    data = np.asarray(image.dataobj, dtype=np.float64)
+    data = np.asarray(stored, dtype=np.float64)
+    if header["rescale"] is not None:
+        slope, inter = header["rescale"]
+        data = data * slope + inter
     if data.ndim == 5 and data.shape[3] == 1:
         data = data[:, :, :, 0, :]
     if data.ndim != 4 or data.shape[3] != n or n != 3:
         raise MEDH5ValidationError(
-            f"{what} {where} has shape {image.shape}; a 3-D displacement field "
+            f"{what} {where} has shape {stored.shape}; a 3-D displacement field "
             "is (X, Y, Z, 1, 3)"
         )
-    if (
-        int(image.header.get_sform(coded=True)[1] or 0) == 0
-        and int(image.header.get_qform(coded=True)[1] or 0) == 0
-    ):
+    if header["sform_code"] == 0 and header["qform_code"] == 0:
         raise MEDH5ValidationError(
             f"{what} {where} declares no spatial mapping (sform_code = "
             "qform_code = 0), so where its vectors sit is unknown"
         )
-    intent = int(image.header["intent_code"])
+    intent = int(header["intent_code"])
     log.decision(
         "vectors",
         f"the {what}'s vectors were read as {vectors.upper()}, as the caller "
@@ -842,7 +829,7 @@ def _read_field(
     )
     # The file's lengths, its affine's and its vectors', in its spatial unit;
     # millimetres where it states none, as read_nifti reads them.
-    unit, stated = _units(image)
+    unit, stated = header["units"], header["units_stated"]
     if stated is not None:
         log.guess(
             "units",
@@ -852,7 +839,7 @@ def _read_field(
         )
     to_mm = MM_PER_UNIT[unit]
     scale = MM_PER_UNIT[fixed_grid.units]
-    in_mm = np.array(image.affine, dtype=np.float64)
+    in_mm = np.array(header["affine"], dtype=np.float64)
     in_mm[:3, :] *= to_mm
     affine = convert_world(in_mm, source="RAS", target=fixed_grid.coord_system)
     spacing, origin, direction = decompose_affine(affine)
@@ -869,7 +856,7 @@ def _read_field(
     field = field * (flip * to_mm / scale)[:, None, None, None]
     return {
         "field": np.ascontiguousarray(field, dtype=np.float32)
-        if image.get_data_dtype() == np.float32
+        if stored.dtype == np.float32
         else np.ascontiguousarray(field),
         "shape": tuple(int(v) for v in field.shape[1:]),
         "spacing": [float(v) for v in spacing],
@@ -1061,11 +1048,10 @@ def _write_field(
     log: ConversionReport,
 ) -> Path:
     from medh5.geometry import MM_PER_UNIT
-    from medh5.io.nifti import for_export, require_nibabel
+    from medh5.io.nifti import for_export
     from medh5.transforms import to_world_vectors
 
     vectors = _check_vectors(vectors, "a warp")
-    nib = require_nibabel()
     grid = transform.field_grid
     path = Path(target)
     if not path.name.endswith((".nii", ".nii.gz")):
@@ -1089,11 +1075,8 @@ def _write_field(
     affine[:3, :] *= scale
     dtype = np.float32 if transform.field.dtype == np.float32 else np.float64
     data = np.ascontiguousarray(data[:, :, :, None, :], dtype=dtype)
-    image = nib.Nifti1Image(data, affine)
-    image.header.set_intent(_INTENT_DISPVECT)
-    image.header.set_xyzt_units(xyz="mm")
-    with _core.stage_file(path) as staged:
-        nib.save(image, str(staged.path))
+    # NIfTI's DISPVECT intent, lengths in millimetres; replaced once whole.
+    _core.nifti_write_field(data, affine, os.fspath(path))
     log.decision(
         "vectors",
         f"the field's vectors were written as {vectors.upper()} millimetres, "
