@@ -905,6 +905,8 @@ class TestRepositoryGates:
         assert f"CFLAGS: {cflags}" in job
         assert "ASAN_OPTIONS: detect_leaks=0" in job
         assert 'llvm=$(rustc +"$FUZZ_TOOLCHAIN" -vV' in job
+        # What the targets exclude is tested in every run.
+        assert "rustc --edition 2021 --test src/lib.rs" in job
         # Only the pinned key is trusted, not whatever else the file holds.
         assert 'test "$primaries" = "$LLVM_KEY"' in job
         assert '"clang-$llvm" "libclang-rt-$llvm-dev"' in job
