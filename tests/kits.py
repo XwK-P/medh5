@@ -575,10 +575,12 @@ class Meds:
         name: str | None = NAME,
         rename: dict[str, str] | None = None,
         extra: dict[str, tuple[Any, list[Any]]] | None = None,
+        row_group_size: int | None = None,
     ) -> Path:
         """Write the dataset at *root*: *rows* (the kit's by default) over
         *shards* files, columns renamed by *rename*, and *extra* columns
-        ``{name: (pyarrow type, values)}``.  Returns *root*."""
+        ``{name: (pyarrow type, values)}``, in Parquet row groups of
+        *row_group_size* rows.  Returns *root*."""
         import json
 
         import pyarrow as pa
@@ -609,7 +611,11 @@ class Meds:
             }
             for column, (kind, values) in extra.items():
                 arrays[column] = pa.array([values[i] for i in part], kind)
-            pq.write_table(pa.table(arrays), root / "data" / f"{k}.parquet")
+            pq.write_table(
+                pa.table(arrays),
+                root / "data" / f"{k}.parquet",
+                row_group_size=row_group_size,
+            )
         return root
 
     @staticmethod

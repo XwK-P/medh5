@@ -51,6 +51,7 @@ import math
 import os
 from collections import Counter
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -68,8 +69,9 @@ from medh5.clinical import (
     augment,
 )
 from medh5.errors import MEDH5ValidationError
+from medh5.io import _clinical
 from medh5.io._clinical import Timeline, option_map, wall_datetime, zone_of
-from medh5.io.report import ConversionReport
+from medh5.io.report import CohortImport, ConversionReport, SubjectImport
 
 BIRTH = "MEDS_BIRTH"
 """The MEDS code of a subject's birth."""
@@ -197,61 +199,154 @@ def read_meds(
     import pyarrow.dataset as ds
 
     report = ConversionReport(source=os.fspath(source), converter="from-meds")
-    names = {c: c for c in COLUMNS[:5]}
-    names.update(option_map(columns, "columns", COLUMNS))
-    systems = option_map(code_systems, "code_systems")
-    kinds_by = option_map(kinds, "kinds")
-    for prefix, kind in kinds_by.items():
-        if kind not in EVENT_KINDS:
-            raise MEDH5ValidationError(
-                f"kinds[{prefix!r}] is {kind!r}; an event kind is one of "
-                f"{', '.join(EVENT_KINDS)}"
-            )
-    if status not in STATUSES:
-        raise MEDH5ValidationError(
-            f"status {status!r} is not one of {', '.join(STATUSES)}"
-        )
-    if both_values not in BOTH_VALUES:
-        raise MEDH5ValidationError(
-            f"both_values {both_values!r} is not one of {', '.join(BOTH_VALUES)}"
-        )
-    day_prefixes = tuple(day_precision)
-    documents_of = frozenset(document_codes)
-    excluded = frozenset(exclude_codes)
-    timeline = Timeline(clock, timezone=timezone, origin=origin, converter="from-meds")
-
-    root, shards = _shards(Path(os.fspath(source)))
-    if code_system is None:
-        name = _dataset_name(root)
-        if name is None:
-            raise MEDH5ValidationError(
-                f"{root} has no metadata/dataset.json naming the dataset, so its "
-                "codes have no system: give code_system"
-            )
-        code_system = f"meds:{name}"
-    if not code_system:
-        raise MEDH5ValidationError("code_system cannot be empty")
-    own_system: str = code_system
-
-    dataset = ds.dataset([os.fspath(s) for s in shards], format="parquet")
-    present = set(dataset.schema.names)
-    if names["subject_id"] not in present:
-        hint = (
-            ": a dataset older than MEDS 0.3 names it patient_id --- pass "
-            'columns={"subject_id": "patient_id"}'
-            if "patient_id" in present
-            else ""
-        )
-        raise MEDH5ValidationError(
-            f"{source} has no column {names['subject_id']!r}{hint}"
-        )
-    for key in ("time", "code", *(k for k in ("unit", "available") if k in names)):
-        if names[key] not in present:
-            raise MEDH5ValidationError(f"{source} has no column {names[key]!r}")
-    wanted = [names[k] for k in names if names[k] in present]
-    table = dataset.to_table(
-        columns=wanted, filter=ds.field(names["subject_id"]) == int(subject_id)
+    rules = _Rules.of(
+        code_systems=code_systems,
+        kinds=kinds,
+        status=status,
+        day_precision=day_precision,
+        document_codes=document_codes,
+        exclude_codes=exclude_codes,
+        texts=texts,
+        both_values=both_values,
+        columns=columns,
     )
+    timeline = Timeline(clock, timezone=timezone, origin=origin, converter="from-meds")
+    scan = _Scan.of(source, rules, code_system)
+    table = scan.dataset.to_table(
+        columns=scan.wanted,
+        filter=ds.field(rules.names["subject_id"]) == int(subject_id),
+    )
+    records = _records(pa, rules, scan, int(subject_id), table, timeline, report)
+    return records, report
+
+
+@dataclass(frozen=True, slots=True)
+class _Rules:
+    """``read_meds``'s options, checked: how every subject's rows are read."""
+
+    names: dict[str, str]
+    systems: dict[str, str]
+    kinds: dict[str, str]
+    status: str
+    both_values: str
+    day_prefixes: tuple[str, ...]
+    documents_of: frozenset[str]
+    excluded: frozenset[str]
+    texts: bool
+
+    @classmethod
+    def of(
+        cls,
+        *,
+        code_systems: Mapping[str, str] | None,
+        kinds: Mapping[str, str] | None,
+        status: str,
+        day_precision: Iterable[str],
+        document_codes: Iterable[str],
+        exclude_codes: Iterable[str],
+        texts: bool,
+        both_values: str,
+        columns: Mapping[str, str] | None,
+    ) -> _Rules:
+        names = {c: c for c in COLUMNS[:5]}
+        names.update(option_map(columns, "columns", COLUMNS))
+        kinds_by = option_map(kinds, "kinds")
+        for prefix, kind in kinds_by.items():
+            if kind not in EVENT_KINDS:
+                raise MEDH5ValidationError(
+                    f"kinds[{prefix!r}] is {kind!r}; an event kind is one of "
+                    f"{', '.join(EVENT_KINDS)}"
+                )
+        if status not in STATUSES:
+            raise MEDH5ValidationError(
+                f"status {status!r} is not one of {', '.join(STATUSES)}"
+            )
+        if both_values not in BOTH_VALUES:
+            raise MEDH5ValidationError(
+                f"both_values {both_values!r} is not one of {', '.join(BOTH_VALUES)}"
+            )
+        return cls(
+            names=names,
+            systems=option_map(code_systems, "code_systems"),
+            kinds=kinds_by,
+            status=status,
+            both_values=both_values,
+            day_prefixes=tuple(day_precision),
+            documents_of=frozenset(document_codes),
+            excluded=frozenset(exclude_codes),
+            texts=texts,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _Scan:
+    """The dataset a read scans: its columns and the codes' own system."""
+
+    source: str
+    dataset: Any
+    present: set[str]
+    wanted: list[str]
+    own_system: str
+
+    @classmethod
+    def of(
+        cls, source: str | os.PathLike[str], rules: _Rules, code_system: str | None
+    ) -> _Scan:
+        import pyarrow.dataset as ds
+
+        names = rules.names
+        root, shards = _shards(Path(os.fspath(source)))
+        if code_system is None:
+            name = _dataset_name(root)
+            if name is None:
+                raise MEDH5ValidationError(
+                    f"{root} has no metadata/dataset.json naming the dataset, so its "
+                    "codes have no system: give code_system"
+                )
+            code_system = f"meds:{name}"
+        if not code_system:
+            raise MEDH5ValidationError("code_system cannot be empty")
+        dataset = ds.dataset([os.fspath(s) for s in shards], format="parquet")
+        present = set(dataset.schema.names)
+        if names["subject_id"] not in present:
+            hint = (
+                ": a dataset older than MEDS 0.3 names it patient_id --- pass "
+                'columns={"subject_id": "patient_id"}'
+                if "patient_id" in present
+                else ""
+            )
+            raise MEDH5ValidationError(
+                f"{source} has no column {names['subject_id']!r}{hint}"
+            )
+        for key in ("time", "code", *(k for k in ("unit", "available") if k in names)):
+            if names[key] not in present:
+                raise MEDH5ValidationError(f"{source} has no column {names[key]!r}")
+        wanted = [names[k] for k in names if names[k] in present]
+        return cls(os.fspath(source), dataset, present, wanted, code_system)
+
+
+def _records(
+    pa: Any,
+    rules: _Rules,
+    scan: _Scan,
+    subject_id: int,
+    table: Any,
+    timeline: Timeline,
+    report: ConversionReport,
+) -> ClinicalRecords:
+    """One subject's rows, *table*, as clinical records on *timeline*'s clock,
+    noting in *report* what the mapping decided.  Every import reads a
+    subject's rows here, so a cohort's subject is mapped as one alone is."""
+    source = scan.source
+    names, present = rules.names, scan.present
+    systems, kinds_by = rules.systems, rules.kinds
+    status, both_values, texts = rules.status, rules.both_values, rules.texts
+    day_prefixes, documents_of, excluded = (
+        rules.day_prefixes,
+        rules.documents_of,
+        rules.excluded,
+    )
+    own_system = scan.own_system
     if table.num_rows == 0:
         raise MEDH5ValidationError(
             f"{source} holds no row of MEDS subject {subject_id}"
@@ -260,7 +355,7 @@ def read_meds(
         "subject",
         f"MEDS subject {subject_id} is this sample's subject: the mapping is "
         "the caller's, and MEDS's id is not written",
-        {"meds_subject_id": int(subject_id), "rows": table.num_rows},
+        {"meds_subject_id": subject_id, "rows": table.num_rows},
     )
 
     times, time_zone = _times(pa, table.column(names["time"]), names["time"])
@@ -322,7 +417,7 @@ def read_meds(
             number = None
         word = words[i]
         identity = {
-            "subject_id": int(subject_id),
+            "subject_id": subject_id,
             "time": times[i],
             "code": code,
             "numeric_value": number,
@@ -420,9 +515,11 @@ def read_meds(
         )
     _notes(report, skipped, counts, timeline, names, texts, len(events))
     records = ClinicalRecords.from_json(
-        ClinicalRecords(clock, tuple(events), tuple(documents), tuple(links)).to_json()
+        ClinicalRecords(
+            timeline.clock, tuple(events), tuple(documents), tuple(links)
+        ).to_json()
     )
-    return records, report
+    return records
 
 
 def _notes(
@@ -533,4 +630,157 @@ def augment_from_meds(
     return result, report
 
 
-__all__ = ["BIRTH", "BOTH_VALUES", "COLUMNS", "augment_from_meds", "read_meds"]
+def augment_cohort_from_meds(
+    dataset: str | os.PathLike[str],
+    mapping: Mapping[int, str | os.PathLike[str]],
+    *,
+    out_dir: str | os.PathLike[str] | None = None,
+    clock: Clock | None = None,
+    timezone: str | datetime.tzinfo | None = None,
+    origin: str | datetime.datetime | None = None,
+    code_system: str | None = None,
+    code_systems: Mapping[str, str] | None = None,
+    kinds: Mapping[str, str] | None = None,
+    status: str = "unknown",
+    day_precision: Iterable[str] = (),
+    document_codes: Iterable[str] = (),
+    exclude_codes: Iterable[str] = (BIRTH,),
+    texts: bool = False,
+    both_values: str = "refuse",
+    columns: Mapping[str, str] | None = None,
+) -> CohortImport:
+    """Import every subject *mapping* names from one MEDS *dataset*, each into
+    its sample, in one pass over the shards.
+
+    *mapping* maps a MEDS ``subject_id`` to the sample its rows augment, in
+    place or, with *out_dir*, into a file of the sample's name there.  Each
+    subject's rows are mapped exactly as :func:`read_meds` maps them for that
+    subject alone, onto *clock* or, when it is ``None``, onto each sample's
+    own clinical clock, so a subject's sample is byte for byte the one
+    :func:`augment_from_meds` writes: the batch changes the cost, never the
+    answer.  The other options are :func:`read_meds`'s.
+
+    The dataset is opened once and read twice, a Parquet row group at a
+    time: its subject column, to count each mapped subject's rows, then the
+    mapped subjects' rows, skipping the row groups whose statistics hold
+    none.  A subject is imported as soon as its last row is read, so a
+    dataset in MEDS order (sorted by subject) holds one row group and one
+    subject's rows in memory at a time.
+    Subjects the mapping does not name are counted in an ``info`` note and
+    never read.  A subject that refuses --- no rows, a sample without a
+    clock, ids already present --- is reported in the result, and the others
+    are still written.
+    """
+    pa = _pyarrow()
+    import pyarrow.compute as pc
+    import pyarrow.dataset as ds
+
+    for key in mapping:
+        if isinstance(key, bool) or not isinstance(key, int):
+            raise MEDH5ValidationError(
+                f"the mapping's key {key!r} is not a MEDS subject_id (an integer)"
+            )
+    targets = _clinical.cohort_targets(mapping, out_dir)
+    rules = _Rules.of(
+        code_systems=code_systems,
+        kinds=kinds,
+        status=status,
+        day_precision=day_precision,
+        document_codes=document_codes,
+        exclude_codes=exclude_codes,
+        texts=texts,
+        both_values=both_values,
+        columns=columns,
+    )
+    scan = _Scan.of(dataset, rules, code_system)
+    cohort = CohortImport(
+        source=scan.source,
+        converter="from-meds",
+        report=ConversionReport(source=scan.source, converter="from-meds"),
+    )
+    column = rules.names["subject_id"]
+
+    # The subject column alone, to know when each subject's rows are all read.
+    expected: Counter[int] = Counter()
+    others: set[int] = set()
+    other_rows = 0
+    for group in _row_groups(scan, [column], None):
+        found = pc.value_counts(group.column(0))
+        values = found.field("values").to_pylist()
+        for value, n in zip(values, found.field("counts").to_pylist(), strict=True):
+            if value in mapping:
+                expected[value] += n
+            else:
+                others.add(value)
+                other_rows += n
+    if others:
+        cohort.report.add(
+            "subject",
+            f"{len(others)} subject(s) of the dataset are not in the mapping, "
+            f"and their {other_rows} row(s) were not read",
+            detail={"subjects": len(others), "rows": other_rows},
+        )
+
+    places = {subject: (sample, out) for subject, sample, out in targets}
+    results: dict[int, SubjectImport] = {}
+
+    def finish(subject: int, table: Any) -> None:
+        def read(on: Clock) -> tuple[ClinicalRecords, ConversionReport]:
+            report = ConversionReport(source=scan.source, converter="from-meds")
+            timeline = Timeline(
+                on, timezone=timezone, origin=origin, converter="from-meds"
+            )
+            records = _records(pa, rules, scan, subject, table, timeline, report)
+            return records, report
+
+        sample, out = places[subject]
+        results[subject] = _clinical.import_subject(subject, sample, out, clock, read)
+
+    pending: dict[int, list[Any]] = {}
+    read_rows: Counter[int] = Counter()
+    if expected:
+        for group in _row_groups(
+            scan, scan.wanted, ds.field(column).isin(sorted(expected))
+        ):
+            ids = group.column(column)
+            for subject in pc.unique(ids).to_pylist():
+                rows = group.filter(pc.equal(ids, subject))
+                pending.setdefault(subject, []).append(rows)
+                read_rows[subject] += rows.num_rows
+                if read_rows[subject] == expected[subject]:
+                    finish(subject, pa.concat_tables(pending.pop(subject)))
+    for subject, sample, out in targets:
+        if subject not in results:
+            # No row of it: refused as read_meds refuses it.
+            def none(on: Clock, subject: int = subject) -> Any:
+                raise MEDH5ValidationError(
+                    f"{scan.source} holds no row of MEDS subject {subject}"
+                )
+
+            results[subject] = _clinical.import_subject(
+                subject, sample, out, clock, none
+            )
+        cohort.subjects.append(results[subject])
+    return cohort
+
+
+def _row_groups(scan: _Scan, columns: list[str], where: Any) -> Iterable[Any]:
+    """The dataset's rows a Parquet row group at a time, in the order a
+    filtered ``to_table`` returns them, each group read only when reached:
+    *where* skips the groups whose statistics rule them out."""
+    schema = scan.dataset.schema
+    for fragment in scan.dataset.get_fragments(filter=where):
+        for group in fragment.split_by_row_group(where, schema=schema):
+            yield group.to_table(
+                schema=schema, columns=columns, filter=where, use_threads=False
+            )
+
+
+__all__ = [
+    "BIRTH",
+    "BOTH_VALUES",
+    "COLUMNS",
+    "augment_cohort_from_meds",
+    "augment_from_meds",
+    "read_meds",
+]

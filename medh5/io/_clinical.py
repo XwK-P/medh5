@@ -12,13 +12,16 @@ by both, and one that never occurred (the spring-forward gap) is refused.
 from __future__ import annotations
 
 import datetime
+import os
 import re
 import zoneinfo
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
-from medh5.clinical import DAY, HOUR, Bounds, Clock, utc_us
-from medh5.errors import MEDH5ValidationError
+from medh5.clinical import DAY, HOUR, Bounds, ClinicalRecords, Clock, augment, utc_us
+from medh5.errors import MEDH5Error, MEDH5ValidationError
+from medh5.io.report import ConversionReport, SubjectImport
 
 _NAIVE_EPOCH = datetime.datetime(1970, 1, 1)
 _UTC = datetime.timezone.utc
@@ -202,6 +205,59 @@ def option_map(
                 f"{', '.join(allowed)}"
             )
     return found
+
+
+def cohort_targets(
+    mapping: Mapping[Any, str | os.PathLike[str]],
+    out_dir: str | os.PathLike[str] | None,
+) -> list[tuple[Any, Path, Path | None]]:
+    """Each mapped subject, the sample it augments, and where the result is
+    written: the sample itself, or a file of its name in *out_dir*."""
+    if not mapping:
+        raise MEDH5ValidationError("the mapping names no subject to import")
+    out = None if out_dir is None else Path(os.fspath(out_dir))
+    if out is not None:
+        out.mkdir(parents=True, exist_ok=True)
+    targets = []
+    for subject, sample in mapping.items():
+        path = Path(os.fspath(sample))
+        targets.append((subject, path, None if out is None else out / path.name))
+    return targets
+
+
+def sample_clock(path: Path) -> Clock:
+    """The clinical clock of the sample at *path*: what a cohort import puts
+    a subject's times on when no clock is given."""
+    from medh5.sample import open_sample
+
+    with open_sample(path) as found:
+        clinical = found.clinical
+        if clinical is None:
+            raise MEDH5ValidationError(
+                f"{path} has no clinical clock to import onto: give clock "
+                "(--clock-id and --clock)"
+            )
+        clock: Clock = clinical.clock
+        return clock
+
+
+def import_subject(
+    subject: Any,
+    sample: Path,
+    out: Path | None,
+    clock: Clock | None,
+    read: Callable[[Clock], tuple[ClinicalRecords, ConversionReport]],
+) -> SubjectImport:
+    """Read one subject's records onto *clock* (else the sample's own) and
+    add them to *sample*, as the per-sample importer does; a refusal is the
+    subject's result, never the cohort's."""
+    try:
+        records, report = read(clock if clock is not None else sample_clock(sample))
+        result = augment(sample, records, out=out)
+    except (MEDH5Error, OSError) as refusal:
+        return SubjectImport(subject, os.fspath(sample), error=str(refusal))
+    report.outputs.append(str(result["path"]))
+    return SubjectImport(subject, os.fspath(sample), result, report)
 
 
 __all__: list[str] = []

@@ -379,6 +379,35 @@ mod tests {
         assert!(host.handed.take().is_empty());
     }
 
+    #[test]
+    fn s10_a_cohort_import_is_handed_to_python() {
+        let argv = |rest: &[&str]| -> Vec<String> {
+            ["clinical", "augment-cohort"].iter().chain(rest).map(|a| a.to_string()).collect()
+        };
+        let host = Recording { runs: true, handed: Default::default() };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let meds = argv(&["--from-meds", "meds", "--mapping", "map.csv", "--out-dir", "out", "--kind", "LOINC=lab"]);
+        assert_eq!(run_with(&meds, &mut out, &mut err, &host), EXIT_OK);
+        let handed = host.handed.take();
+        assert_eq!(handed.len(), 1);
+        let (command, args) = &handed[0];
+        assert_eq!(command, "clinical-augment-cohort");
+        assert_eq!(args["from_meds"], "meds");
+        assert_eq!(args["mapping"], "map.csv");
+        assert_eq!(args["out_dir"], "out");
+        assert_eq!(args["kind"], serde_json::json!(["LOINC=lab"]));
+        // A source and a mapping, or a usage error before Python runs.
+        for wrong in [argv(&["--mapping", "map.csv"]), argv(&["--from-meds", "meds"])] {
+            assert_eq!(run_with(&wrong, &mut out, &mut err, &host), EXIT_USAGE, "{wrong:?}");
+        }
+        assert!(host.handed.take().is_empty());
+        // No Python to hand it to: what to install, and exit 1.
+        let host = Recording { runs: false, handed: Default::default() };
+        let mut err = Vec::new();
+        assert_eq!(run_with(&meds, &mut out, &mut err, &host), EXIT_ERROR);
+        assert!(String::from_utf8(err).unwrap().contains("MEDH5_PYTHON"));
+    }
+
     /// A stdout every write to which fails with `error()`.
     struct Failing(fn() -> std::io::Error);
 

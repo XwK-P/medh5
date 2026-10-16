@@ -30,7 +30,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from medh5 import _core
-from medh5.errors import MEDH5Error
+from medh5.errors import MEDH5Error, MEDH5ValidationError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5.io.report import ConversionReport
@@ -258,6 +258,10 @@ def _files(
     elif command == "clinical-augment":
         read("the sample this command amends", "path")
         read("the FHIR Bundle this command imports", "from_fhir")
+        if (root := given("from_meds")) is not None:
+            trees.append(("the MEDS dataset this command reads", root))
+    elif command == "clinical-augment-cohort":
+        read("the mapping this command reads", "mapping")
         if (root := given("from_meds")) is not None:
             trees.append(("the MEDS dataset this command reads", root))
     if out is not None:
@@ -677,16 +681,95 @@ def _clinical_augment(args: Any) -> int:
     return EXIT_OK if report.ok else EXIT_ERROR
 
 
+def _clinical_augment_cohort(args: Any) -> int:
+    """``medh5 clinical augment-cohort --from-meds DIR --mapping MAP.csv``."""
+    from medh5.io.meds import augment_cohort_from_meds
+
+    mapping = _cohort_mapping(Path(args.mapping), meds=True)
+    common = {
+        "out_dir": args.out_dir,
+        "clock": _given_clock(args),
+        "timezone": args.timezone,
+        "origin": args.origin,
+        "texts": args.with_text,
+    }
+    cohort = augment_cohort_from_meds(
+        args.from_meds,
+        mapping,
+        code_systems=_pairs(args.code_system, "code-system"),
+        kinds=_pairs(args.kind, "kind"),
+        day_precision=args.day_precision or (),
+        document_codes=args.document_code or (),
+        both_values=args.both_values or "refuse",
+        **common,
+    )
+    found = cohort.to_json()
+    if args.report:
+        _write_report(Path(args.report), json.dumps(found, indent=2) + "\n")
+    if args.json:
+        print(json.dumps(found, indent=2))
+    else:
+        print(cohort.format(verbose=True))
+    return EXIT_OK if cohort.ok else EXIT_ERROR
+
+
+def _cohort_mapping(path: Path, *, meds: bool) -> dict[Any, Path]:
+    """``--mapping``: a CSV whose header is ``subject,sample``, a row per
+    subject; a relative sample path is the CSV's."""
+    import csv
+
+    with path.open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.reader(stream))
+    if not rows or [c.strip() for c in rows[0]] != ["subject", "sample"]:
+        raise MEDH5ValidationError(
+            f"{path}: a mapping's first line is the header subject,sample"
+        )
+    mapping: dict[Any, Path] = {}
+    for number, row in enumerate(rows[1:], 2):
+        if not any(c.strip() for c in row):
+            continue
+        if len(row) != 2:
+            raise MEDH5ValidationError(
+                f"line {number} of {path} has {len(row)} field(s); a mapping "
+                "row is subject,sample"
+            )
+        subject, sample = (c.strip() for c in row)
+        key: Any = subject
+        if meds:
+            try:
+                key = int(subject)
+            except ValueError:
+                raise MEDH5ValidationError(
+                    f"line {number} of {path}: {subject!r} is not a MEDS "
+                    "subject_id (an integer)"
+                ) from None
+        if key in mapping:
+            raise MEDH5ValidationError(
+                f"line {number} of {path} maps subject {subject} again"
+            )
+        mapping[key] = path.parent / sample
+    return mapping
+
+
+def _given_clock(args: Any) -> Any:
+    """The clock ``--clock-id`` and ``--clock`` name, or ``None``."""
+    from medh5.clinical import Clock
+
+    if not args.clock_id:
+        return None
+    if args.clock == "relative":
+        origin = args.origin or "an origin not given"
+        return Clock.relative(args.clock_id, f"{origin}, as given at import")
+    return Clock(args.clock_id, args.clock)
+
+
 def _import_clock(args: Any, sample: str) -> Any:
     """The clock ``--clock-id`` and ``--clock`` name, else the sample's."""
-    from medh5.clinical import Clock
     from medh5.sample import open_sample
 
-    if args.clock_id:
-        if args.clock == "relative":
-            origin = args.origin or "an origin not given"
-            return Clock.relative(args.clock_id, f"{origin}, as given at import")
-        return Clock(args.clock_id, args.clock)
+    given = _given_clock(args)
+    if given is not None:
+        return given
     with open_sample(sample) as found:
         clinical = found.clinical
         if clinical is None:
@@ -699,6 +782,7 @@ def _import_clock(args: Any, sample: str) -> Any:
 
 _HANDLERS: dict[str, Callable[[Any], int]] = {
     "clinical-augment": _clinical_augment,
+    "clinical-augment-cohort": _clinical_augment_cohort,
     "from-nifti": _from_nifti,
     "import-seg-nifti": _import_seg_nifti,
     "to-nifti": _to_nifti,

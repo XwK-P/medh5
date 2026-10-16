@@ -1115,6 +1115,7 @@ fn clinical() -> Command {
             .arg(opt("out", "out", "write a new file instead of replacing the sample").short('o'))
             .arg(json()),
         )
+        .subcommand(cohort_importer())
         .subcommand(
             Command::new("strip")
                 .about("write the imaging projection: the sample without its clinical profile (a reported loss)")
@@ -1128,40 +1129,79 @@ fn clinical() -> Command {
 /// place of a logical-record bundle, read in the Python package (W21-12).
 fn importer(cmd: Command) -> Command {
     let only = |arg: Arg| arg.conflicts_with("records");
-    cmd.arg(
-        opt("from_meds", "from-meds", "import a MEDS dataset (its root, or one shard) instead of RECORDS")
-            .requires("meds_subject")
-            .conflicts_with_all(["records", "from_fhir"]),
-    )
-    .arg(int("meds_subject", "meds-subject", "the MEDS subject_id whose rows this sample holds").requires("from_meds"))
-    .arg(
-        opt("from_fhir", "from-fhir", "import a FHIR R4 Bundle (JSON) instead of RECORDS")
-            .requires("fhir_subject")
-            .conflicts_with("records"),
-    )
-    .arg(
-        opt("fhir_subject", "fhir-subject", "the subject reference whose resources this sample holds (Patient/123)")
+    let cmd = cmd
+        .arg(
+            opt("from_meds", "from-meds", "import a MEDS dataset (its root, or one shard) instead of RECORDS")
+                .requires("meds_subject")
+                .conflicts_with_all(["records", "from_fhir"]),
+        )
+        .arg(
+            int("meds_subject", "meds-subject", "the MEDS subject_id whose rows this sample holds")
+                .requires("from_meds"),
+        )
+        .arg(
+            opt("from_fhir", "from-fhir", "import a FHIR R4 Bundle (JSON) instead of RECORDS")
+                .requires("fhir_subject")
+                .conflicts_with("records"),
+        )
+        .arg(
+            opt(
+                "fhir_subject",
+                "fhir-subject",
+                "the subject reference whose resources this sample holds (Patient/123)",
+            )
             .requires("from_fhir"),
-    )
-    .arg(only(opt("clock_id", "clock-id", "the clock's id (default: the sample's clock)").requires("clock")))
-    .arg(only(
-        opt("clock", "clock", "the clock's reference (default: the sample's clock)")
-            .value_parser(["utc", "shifted_utc", "relative"])
-            .requires("clock_id"),
-    ))
-    .arg(only(opt("origin", "origin", "the instant a relative clock's zero is (ISO 8601)")))
-    .arg(only(opt("timezone", "timezone", "the IANA zone of the source's times without an offset")))
-    .arg(only(append("code_system", "code-system", "PREFIX=URI: codes under PREFIX are that system's (MEDS)")))
-    .arg(only(append("kind", "kind", "PREFIX=KIND: the event kind of codes under PREFIX (MEDS)")))
-    .arg(only(append("day_precision", "day-precision", "codes under PREFIX are known to the day (MEDS)")))
-    .arg(only(append("document_code", "document-code", "rows of CODE are documents (MEDS)")))
-    .arg(only(flag("with_text", "with-text", "import free text: report and document texts")))
-    .arg(only(
-        opt("both_values", "both-values", "a row holding both values: refuse (default), numeric or text")
-            .value_parser(["refuse", "numeric", "text"]),
-    ))
-    .arg(only(opt("report", "report", "write the conversion report as JSON to this file")))
-    .after_help("--from-meds and --from-fhir run in the Python package (MEDS needs pip install 'medh5[meds]').")
+        );
+    import_options(cmd, only)
+        .after_help("--from-meds and --from-fhir run in the Python package (MEDS needs pip install 'medh5[meds]').")
+}
+
+/// `clinical augment-cohort`: one MEDS dataset into the samples a mapping
+/// names, a subject each, in the Python package (W22-09).
+fn cohort_importer() -> Command {
+    let cmd = Command::new("augment-cohort")
+        .about("import a MEDS dataset into the samples a mapping names (1.1 §10)")
+        .arg(opt("from_meds", "from-meds", "import a MEDS dataset (its root, or one shard)").required(true))
+        .arg(
+            opt(
+                "mapping",
+                "mapping",
+                "a CSV with a subject,sample header: the MEDS subject_id whose records each sample takes (a relative \
+                 path is the CSV's)",
+            )
+            .required(true),
+        )
+        .arg(opt(
+            "out_dir",
+            "out-dir",
+            "write each result here, under its sample's name, and leave the samples as they are",
+        ));
+    import_options(cmd, |arg| arg)
+        .arg(json())
+        .after_help("It runs in the Python package (MEDS needs pip install 'medh5[meds]').")
+}
+
+/// The options both importers read: the clock, the source's times and
+/// codes, text, and the conversion report.
+fn import_options(cmd: Command, only: impl Fn(Arg) -> Arg) -> Command {
+    cmd.arg(only(opt("clock_id", "clock-id", "the clock's id (default: the sample's clock)").requires("clock")))
+        .arg(only(
+            opt("clock", "clock", "the clock's reference (default: the sample's clock)")
+                .value_parser(["utc", "shifted_utc", "relative"])
+                .requires("clock_id"),
+        ))
+        .arg(only(opt("origin", "origin", "the instant a relative clock's zero is (ISO 8601)")))
+        .arg(only(opt("timezone", "timezone", "the IANA zone of the source's times without an offset")))
+        .arg(only(append("code_system", "code-system", "PREFIX=URI: codes under PREFIX are that system's (MEDS)")))
+        .arg(only(append("kind", "kind", "PREFIX=KIND: the event kind of codes under PREFIX (MEDS)")))
+        .arg(only(append("day_precision", "day-precision", "codes under PREFIX are known to the day (MEDS)")))
+        .arg(only(append("document_code", "document-code", "rows of CODE are documents (MEDS)")))
+        .arg(only(flag("with_text", "with-text", "import free text: report and document texts")))
+        .arg(only(
+            opt("both_values", "both-values", "a row holding both values: refuse (default), numeric or text")
+                .value_parser(["refuse", "numeric", "text"]),
+        ))
+        .arg(only(opt("report", "report", "write the conversion report as JSON to this file")))
 }
 
 /// `--source-root DIR` and `--any-source-path`: where a task's sources may be

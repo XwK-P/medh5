@@ -14,7 +14,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from medh5.io.report import ConversionReport, Note, merge_reports
+from medh5.io.report import (
+    CohortImport,
+    ConversionReport,
+    Note,
+    SubjectImport,
+    merge_reports,
+)
 
 _LAZY: dict[str, str] = {
     "from_nifti": "medh5.io.nifti",
@@ -45,6 +51,7 @@ _LAZY: dict[str, str] = {
     "build_label_set": "medh5.io.legacy",
     "read_meds": "medh5.io.meds",
     "augment_from_meds": "medh5.io.meds",
+    "augment_cohort_from_meds": "medh5.io.meds",
     "read_fhir": "medh5.io.fhir",
     "augment_from_fhir": "medh5.io.fhir",
     "group_by_subject": "medh5.io.grouping",
@@ -65,4 +72,11 @@ def __dir__() -> list[str]:
     return sorted({*globals(), *_LAZY})
 
 
-__all__ = ["ConversionReport", "Note", "merge_reports", *sorted(_LAZY)]
+__all__ = [
+    "CohortImport",
+    "ConversionReport",
+    "Note",
+    "SubjectImport",
+    "merge_reports",
+    *sorted(_LAZY),
+]
