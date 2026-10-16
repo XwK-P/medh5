@@ -2,13 +2,15 @@ name: Fuzz
 
 # The engine's readers, fuzzed: `open_validate` (any file through the
 # strictest validation), `clinical_columns` (a documents table's offsets and
-# bytes, read deferred and scanned), and the Zstandard and Blosc2 filters
-# decoding chunks they did not write.  A report or a refusal is fine; a crash,
-# a sanitizer's report, a timeout or running out of memory fails the run.  The
-# input that did it is not uploaded: a public repository's artifacts are
-# public, and a crashing input works as an exploit until its fix ships, so
-# reproduce a failure by running its target locally.  A finding becomes a
-# minimised regression test in the crate it hit, never a committed input.
+# bytes, read deferred and scanned), the Zstandard and Blosc2 filters
+# decoding chunks they did not write, and `nifti_header` (NIfTI headers and
+# files, gzip among them, read as the converter reads them).  A report or a
+# refusal is fine; a crash, a sanitizer's report, a timeout or running out of
+# memory fails the run.  The input that did it is not uploaded: a public
+# repository's artifacts are public, and a crashing input works as an exploit
+# until its fix ships, so reproduce a failure by running its target locally.
+# A finding becomes a minimised regression test in the crate it hit, never a
+# committed input.
 on:
   schedule:
     - cron: "23 3 * * 2,5"
@@ -52,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [open_validate, clinical_columns, zstd_filter, blosc2_filter]
+        target: [open_validate, clinical_columns, zstd_filter, blosc2_filter, nifti_header]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The Rust rust-toolchain.toml pins builds cargo-fuzz; the nightly, the

@@ -21,6 +21,8 @@ arbitrary = { version = "1.5.0", features = ["derive"] }
 # HDF5 through `medh5::hdf5`, the one the engine links.
 medh5 = { path = "../crates/medh5" }
 medh5-sys = { path = "../crates/medh5-sys" }
+# gzip for the NIfTI target's compressed files, as the engine inflates them.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 
 [profile.release]
 debug = 1
@@ -57,6 +59,13 @@ bench = false
 [[bin]]
 name = "blosc2_filter"
 path = "fuzz_targets/blosc2_filter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nifti_header"
+path = "fuzz_targets/nifti_header.rs"
 test = false
 doc = false
 bench = false

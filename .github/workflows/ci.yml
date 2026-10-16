@@ -93,6 +93,26 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # No zlib gzip-file function is linked (SECURITY.md, CVE-2026-85091):
+      # NIfTI's gzip is inflated in Rust, and zlib serves memory buffers only.
+      # A debug build, reusing the test build's crates, keeps the symbol
+      # table the release profile strips.
+      - name: No zlib gz* symbol is linked
+        run: |
+          cargo build --locked -p medh5-cli -p medh5-python
+          for f in target/debug/medh5 target/debug/lib_core.so; do
+            # Read whole, then searched: under pipefail, a `grep -q` that
+            # stops at the first match fails `nm` with SIGPIPE.
+            symbols=$(nm "$f")
+            if ! grep -q ' inflate$' <<<"$symbols"; then
+              echo "::error::$f has no zlib symbol, so this check saw nothing"
+              exit 1
+            fi
+            if grep -E ' [A-Za-z] gz[A-Za-z0-9_]*$' <<<"$symbols"; then
+              echo "::error::$f links zlib's gzip file interface"
+              exit 1
+            fi
+          done
       # The three crates as crates.io receives them, each built from its own
       # package (the unpublished ones resolved from these): the release's
       # `cargo publish` must not be the first build of a published crate.
@@ -132,7 +152,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test -p medh5 --lib --locked
+      # And the NIfTI parity corpus: 2.1.0's records hold on every platform.
+      - run: cargo test -p medh5 --lib --test nifti_parity --locked
 
   msrv:
     # `rust-version` in Cargo.toml is a promise to everyone who depends on the

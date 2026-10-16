@@ -41,6 +41,9 @@ hex = "0.4"
 regex = "1"
 thiserror = "2"
 jsonschema = { version = "0.58", default-features = false }
+# gzip for NIfTI, in pure Rust (miniz_oxide): no zlib gz* symbol is linked.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+unicode-normalization = "0.1"
 libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 clap = { version = "4.5", features = ["string", "wrap_help"] }

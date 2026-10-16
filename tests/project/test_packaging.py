@@ -578,13 +578,14 @@ class TestRepositoryGates:
         """The engine's Rust tests ran on Linux alone, `medh5.torch` never on
         Windows, the standalone binary's hand-over to Python nowhere, two of
         the five wheels only through the corpus, and no crate was built from
-        its package before the release published it."""
+        its package before the release published it.  The NIfTI parity test
+        runs off Linux too: 2.1.0's records hold on every platform (E3)."""
         jobs = _jobs(CI.read_text(encoding="utf-8"))
         assert (
             "cargo package --locked -p medh5-sys -p medh5 -p medh5-cli" in jobs["rust"]
         )
         platforms = jobs["rust-platforms"]
-        assert "cargo test -p medh5 --lib --locked" in platforms
+        assert "cargo test -p medh5 --lib --test nifti_parity --locked" in platforms
         assert "[windows-latest, macos-15]" in platforms
         extras = re.search(r"\[(dev,[\w,]+)\]", jobs["test-windows"])
         assert extras and "torch" in extras.group(1).split(",")
