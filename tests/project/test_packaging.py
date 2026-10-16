@@ -938,7 +938,7 @@ class TestDistribution:
             for name, job in jobs.items()
             if re.search(r"^    continue-on-error: true$", job, re.M)
         }
-        assert informational == {"test-python-next", "test-no-gil"}
+        assert informational == {"test-python-next"}
         assert sorted(needs) == sorted(set(jobs) - informational)
         assert re.search(r"^    if: always\(\)$", gate, re.M)
         # A cancelled job fails the gate too, named apart in the summary.
@@ -997,7 +997,7 @@ class TestDistribution:
             if targets:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
-        assert downloading == 16
+        assert downloading == 15
 
     def test_every_shipped_target_is_built_released_and_noticed(self):
         """The targets were listed four times --- the build jobs, the
@@ -1028,8 +1028,8 @@ class TestDistribution:
     def test_free_threaded_python_gets_a_wheel_of_its_own(self):
         """Free-threaded CPython cannot load an abi3 extension, so medh5 did
         not install there without a compiler.  Each build makes a second,
-        cp314t wheel (the module still asks for the GIL); a gating job tests
-        it, and one with the GIL forced off informs."""
+        cp314t wheel, and a gating job tests it with the GIL off: the whole
+        suite, then the format and tools tests from four threads at once."""
         build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
         assert "MEDH5_FT_PYTHON=/opt/python/cp314-cp314t/bin/python" in build
         assert '--interpreter "$MEDH5_FT_PYTHON"' in build
@@ -1039,11 +1039,14 @@ class TestDistribution:
             workflow
         )
         jobs = _jobs(CI.read_text(encoding="utf-8"))
-        for name in ("test-free-threaded", "test-no-gil"):
-            assert 'python-version: "3.14t"' in jobs[name], name
-            assert "dist/*-cp314t-*.whl" in jobs[name], name
-        assert 'PYTHON_GIL: "0"' in jobs["test-no-gil"]
-        assert "sys._is_gil_enabled()" in jobs["test-free-threaded"]
+        job = jobs["test-free-threaded"]
+        assert 'python-version: "3.14t"' in job
+        assert "dist/*-cp314t-*.whl" in job
+        assert 'PYTHON_GIL: "0"' in job
+        assert "not sys._is_gil_enabled()" in job
+        assert "pytest tests/format tests/tools" in job
+        assert "--parallel-threads=4" in job
+        assert "test-no-gil" not in jobs, "folded into test-free-threaded"
         # Every other job installs the abi3 wheel by name: two wheels match
         # `dist/*.whl` now.
         for name, job in jobs.items():
