@@ -81,7 +81,7 @@ home; the [API documentation](https://docs.rs/medh5) has every item.
 | `storage` | §14 — codec profiles, chunking, the sampling index |
 | `validate`, `codes` | §15 — the validator and the diagnostic code table |
 | `collection` | §2.2 — `.medh5c` shards |
-| `convert` | Appendix B — the 0.x migration, and the `ConversionReport` every importer fills |
+| `convert` | Appendix B — the 0.x migration; NIfTI import (`convert::nifti`: `read_nifti`, `from_nifti`); the `ConversionReport` every importer fills |
 | `array` | `NdArray`, the array every reader returns and every writer takes |
 | `dataset`, `sampling` | cohort manifests, splits and statistics; patch sampling |
 | `bench` | reproducing the performance targets |
