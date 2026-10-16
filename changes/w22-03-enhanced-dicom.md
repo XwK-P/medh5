@@ -10,6 +10,6 @@
   `per_slice_rescale`, acquisition attributes come from the shared and
   per-frame groups, and a concatenation is joined into one object. A frame
   with no position, an irregular stack, a stack whose
-  `InStackPositionNumber` its positions contradict and a concatenation
-  missing a part are refused with the reason. `Series` gains `frames` and
-  `stack`.
+  `InStackPositionNumber` its positions contradict or that skips a number,
+  and a concatenation missing a part are refused with the reason. `Series`
+  gains `frames` and `stack`.

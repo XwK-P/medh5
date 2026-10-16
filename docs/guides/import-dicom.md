@@ -164,11 +164,11 @@ been, under the same checks: placed by its frames' positions, refused when
 they do not form a regular grid, and decoded one frame at a time. Two stacks
 of one object become two images (`CT_1_tp0`, `CT_2_tp0`). A frame stating no
 position is refused, never sorted by guess, and so is a stack whose
-`InStackPositionNumber` its positions contradict. Frames stating different
-rescales follow `--per-slice-rescale`, as slices do. A concatenation (one
-object split across instances) is joined by its `ConcatenationUID`, and
-refused when a part is missing. Enhanced ultrasound volumes are still
-skipped with a warning.
+`InStackPositionNumber` its positions contradict or that skips a number.
+Frames stating different rescales follow `--per-slice-rescale`, as slices
+do. A concatenation (one object split across instances) is joined by its
+`ConcatenationUID`, and refused when a part is missing. Enhanced ultrasound
+volumes are still skipped with a warning.
 
 One thing is assumed rather than refused, and the report records it as a guess
 (`slice_spacing`): a single-slice series that states no `SliceThickness` has no

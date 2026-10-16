@@ -175,9 +175,10 @@ groups, so its frames are held to exactly the checks a classic series'
 slices are: ordered by geometry, measured, and refused when they do not form
 a grid. `InStackPositionNumber` is checked against the positions rather than
 trusted or overruled — a stack whose numbering its geometry contradicts is a
-broken object, and re-sorting it by either would be a guess. Objects this
-importer still does not read — an ultrasound volume, other multi-frame
-objects — are skipped and reported as a warning rather than refused, so the
+broken object, and re-sorting it by either would be a guess. A number skipped
+is a plane missing, and is refused though the positions left are regular.
+Objects this importer still does not read — an ultrasound volume, other
+multi-frame objects — are skipped and reported as a warning rather than refused, so the
 classic series beside them still import; before 1.3.0 such objects were
 skipped silently, and before 2.2.0 that included every enhanced CT, MR and
 PET object.

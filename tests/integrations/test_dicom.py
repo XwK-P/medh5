@@ -1325,6 +1325,21 @@ class TestEnhancedMultiFrame:
         with pytest.raises(MEDH5ValidationError, match="InStackPositionNumber"):
             from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
 
+    def test_a_stack_whose_numbers_skip_a_frame_is_refused(self, tmp_path):
+        """``InStackPositionNumber`` counts a stack's frames from 1 (C.7.6.16.2.2.4);
+        a gap says a plane is missing, though the positions left are regular."""
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        for index, number in enumerate([1, 2, 3, 4, 5, 7]):
+            _frame(enhanced, index).FrameContentSequence[
+                0
+            ].InStackPositionNumber = number
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        with pytest.raises(MEDH5ValidationError, match=r"InStackPositionNumber.*\[6\]"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
     def test_a_frame_with_no_position_is_refused_with_the_reason(self, tmp_path):
         from medh5.io.dicom import from_dicom
 
@@ -1459,6 +1474,28 @@ class TestEnhancedMultiFrame:
         from_dicom(tmp_path / "enhanced", tmp_path / "whole.medh5")
         parts[0].unlink()
         with pytest.raises(MEDH5ValidationError, match=r"numbered \[2\]"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
+    @pytest.mark.parametrize(
+        ("totals", "match"),
+        [((None, 3), "2 of its 3"), ((2, 3), "states its total as")],
+    )
+    def test_a_concatenation_total_is_read_from_every_part(
+        self, tmp_path, totals, match
+    ):
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        parts = _concatenation(enhanced, tmp_path / "enhanced", split=4)
+        for path, total in zip(parts, totals, strict=True):
+            part = pydicom.dcmread(path)
+            if total is None:
+                del part.InConcatenationTotalNumber
+            else:
+                part.InConcatenationTotalNumber = total
+            part.save_as(path)
+        with pytest.raises(MEDH5ValidationError, match=match):
             from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
 
     def test_an_enhanced_ultrasound_volume_is_still_skipped(self, tmp_path):

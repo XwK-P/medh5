@@ -235,8 +235,9 @@ acquisition attributes come from its own functional groups, else the shared
 ones, else the object's top level (an enhanced MR's `EffectiveEchoTime` is
 its `EchoTime`). Frames are decoded one at a time. A frame that states no
 position, a stack that is not a regular grid, and a stack whose
-`InStackPositionNumber` runs against its positions are refused with the
-reason. Frames with different rescales follow `per_slice_rescale`. A
+`InStackPositionNumber` runs against its positions or skips a number (it
+counts a stack's frames from 1, so a gap is a missing plane) are refused with
+the reason. Frames with different rescales follow `per_slice_rescale`. A
 concatenation's instances are joined by `ConcatenationUID` in
 `InConcatenationNumber` order, and one missing a part is refused: the parts
 are counted against `InConcatenationTotalNumber`, and where that optional

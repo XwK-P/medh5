@@ -681,7 +681,15 @@ def _check_concatenation(series: Series, headers: Sequence[Any]) -> None:
     uid = _text(getattr(headers[0], "ConcatenationUID", None))
     if uid is None:
         return
-    total = _number(headers[0], "InConcatenationTotalNumber")
+    # Optional, and any part may state it: every stated total must agree.
+    totals = sorted({_number(h, "InConcatenationTotalNumber") for h in headers} - {0})
+    if len(totals) > 1:
+        raise MEDH5ValidationError(
+            f"series {series.series_uid}: concatenation {uid} states its total "
+            f"as {totals} in different instances; which instances are missing "
+            "cannot be told"
+        )
+    total = totals[0] if totals else 0
     numbers = sorted(_number(h, "InConcatenationNumber") for h in headers)
     if len(set(numbers)) != len(numbers):
         raise MEDH5ValidationError(
@@ -707,15 +715,29 @@ def _check_concatenation(series: Series, headers: Sequence[Any]) -> None:
 
 
 def _check_stack_order(slices: Sequence[Any], series: Series) -> None:
-    """Refuse a stack whose ``InStackPositionNumber`` its positions contradict.
+    """Refuse a stack whose ``InStackPositionNumber`` its positions contradict,
+    or that skips a number.
 
     *slices* are in geometric order.  The number orders a frame within its
     stack (C.7.6.16.2.2.4), so it runs one way along the slice normal; one
     that does not is a broken object, and re-sorting it by either would be a
     guess about which one is wrong.
     """
-    numbers = [getattr(s, "InStackPositionNumber", None) for s in slices]
-    if len(numbers) < 2 or None in numbers:
+    stated = [getattr(s, "InStackPositionNumber", None) for s in slices]
+    if None in stated:
+        return
+    numbers = [int(n) for n in stated if n is not None]
+    # An ordinal from 1 (C.7.6.16.2.2.4): a gap is a missing plane, though
+    # the positions left are regular.
+    missing = sorted(set(range(1, len(numbers) + 1)) - set(numbers))
+    if missing and len(set(numbers)) == len(numbers):
+        raise MEDH5ValidationError(
+            f"series {series.series_uid}: its frames' InStackPositionNumber are "
+            f"{sorted(numbers)}, which count a stack from 1 without a gap, so "
+            f"the frame(s) numbered {missing} are missing; a stack with a plane "
+            "missing is not a volume"
+        )
+    if len(numbers) < 2:
         return
     steps = np.diff(np.asarray(numbers, dtype=np.int64))
     if np.all(steps > 0) or np.all(steps < 0):
