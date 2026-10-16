@@ -16,7 +16,7 @@
 
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use flate2::read::MultiGzDecoder;
 
@@ -61,6 +61,8 @@ pub(crate) struct Image {
     pub header: Header,
     /// The file the voxels are in, spelled as the reader spells paths.
     pub image_name: String,
+    /// The same file, as the filesystem names it.
+    pub image_path: PathBuf,
     /// The voxels' shape, NIfTI order (`x` fastest).
     pub shape: Vec<i64>,
     /// Where the voxels start.
@@ -94,6 +96,29 @@ pub(crate) fn spelled(path: &Path) -> String {
         _ => text.clone(),
     };
     crate::pyval::py_path(Path::new(&expanded))
+}
+
+/// The file `wanted` (`name`, or its companion) is, for the filesystem:
+/// `wanted` itself, or, where `path` is not UTF-8 (a Unix name in another
+/// encoding, which `name` spells lossily), `path`'s own bytes with the ASCII
+/// suffix `wanted` changes, so the file opened is the one named.
+fn fs_path(path: &Path, name: &str, wanted: &str) -> PathBuf {
+    #[cfg(unix)]
+    if path.to_str().is_none() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let bytes = path.as_os_str().as_bytes();
+        let mut out = match (bytes.strip_prefix(b"~"), home()) {
+            (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with(b"/") => [home.as_bytes(), rest].concat(),
+            _ => bytes.to_vec(),
+        };
+        let common = name.bytes().zip(wanted.bytes()).take_while(|(a, b)| a == b).count();
+        out.truncate(out.len().saturating_sub(name.len() - common));
+        out.extend_from_slice(&wanted.as_bytes()[common..]);
+        return PathBuf::from(std::ffi::OsString::from_vec(out));
+    }
+    #[cfg(not(unix))]
+    let _ = (path, name);
+    PathBuf::from(wanted)
 }
 
 fn home() -> Option<String> {
@@ -150,8 +175,8 @@ fn compression(name: &str) -> Option<&'static str> {
 }
 
 /// A file as a byte stream, inflated when its name ends in `.gz`.
-fn open(name: &str) -> io::Result<Box<dyn Read>> {
-    let file = File::open(name)?;
+fn open(path: &Path, name: &str) -> io::Result<Box<dyn Read>> {
+    let file = File::open(path)?;
     if is_gzip(name) {
         Ok(Box::new(MultiGzDecoder::new(BufReader::new(file))))
     } else {
@@ -172,8 +197,8 @@ fn skip(stream: &mut dyn Read, limit: u64) -> io::Result<u64> {
 }
 
 /// The first kilobyte of `name`, or `None` where it cannot be read.
-fn sniff(name: &str) -> Option<Vec<u8>> {
-    let mut stream = open(name).ok()?;
+fn sniff(path: &Path, name: &str) -> Option<Vec<u8>> {
+    let mut stream = open(path, name).ok()?;
     read_up_to(&mut *stream, SNIFF_BYTES).ok()
 }
 
@@ -270,14 +295,15 @@ impl Candidate {
 /// the format it is instead.
 pub(crate) fn load(path: &Path) -> std::result::Result<Loaded, LoadError> {
     let name = spelled(path);
-    let meta = std::fs::metadata(&name).map_err(|_| LoadError::NotFound)?;
+    let fs = |wanted: &str| fs_path(path, &name, wanted);
+    let meta = std::fs::metadata(fs(&name)).map_err(|_| LoadError::NotFound)?;
     if meta.len() == 0 {
         return Err(LoadError::NotAnImage(format!("Empty file: '{name}'")));
     }
     if let Some(format) = compression(&name) {
         // 2.1.0 read these through Python's codecs; this reader inflates
         // gzip only.
-        return Err(LoadError::NotAnImage(match signature(&name) {
+        return Err(LoadError::NotAnImage(match signature(&fs(&name), &name) {
             Some(message) => message,
             None => format!("{name} is {format}-compressed, and only gzip is read; decompress it first"),
         }));
@@ -289,7 +315,7 @@ pub(crate) fn load(path: &Path) -> std::result::Result<Loaded, LoadError> {
         }
         let meta_name = if candidate.pair() { companion(root, ext, addext, ".hdr") } else { name.clone() };
         let image_name = if candidate.pair() { companion(root, ext, addext, ".img") } else { name.clone() };
-        let block = || sniff(&meta_name).unwrap_or_default();
+        let block = || sniff(&fs(&meta_name), &meta_name).unwrap_or_default();
         let found = match candidate {
             Candidate::Nifti1Pair | Candidate::Nifti1Image => nifti1_magic(&block()),
             Candidate::Nifti2Pair | Candidate::Nifti2Image => sizeof_either(&block(), 540),
@@ -315,20 +341,24 @@ pub(crate) fn load(path: &Path) -> std::result::Result<Loaded, LoadError> {
         }
         return match candidate {
             Candidate::Nifti1Pair | Candidate::Nifti1Image => {
-                Ok(Loaded::Nifti(Box::new(load_nifti(&meta_name, image_name, Version::One, !candidate.pair())?)))
+                let files = (fs(&meta_name), meta_name, fs(&image_name), image_name);
+                Ok(Loaded::Nifti(Box::new(load_nifti(files, Version::One, !candidate.pair())?)))
             }
             Candidate::Nifti2Pair | Candidate::Nifti2Image => {
-                Ok(Loaded::Nifti(Box::new(load_nifti(&meta_name, image_name, Version::Two, !candidate.pair())?)))
+                let files = (fs(&meta_name), meta_name, fs(&image_name), image_name);
+                Ok(Loaded::Nifti(Box::new(load_nifti(files, Version::Two, !candidate.pair())?)))
             }
             other => Ok(Loaded::Other(other.name())),
         };
     }
-    Err(LoadError::NotAnImage(signature(&name).unwrap_or_else(|| format!("Cannot work out file type of \"{name}\""))))
+    Err(LoadError::NotAnImage(
+        signature(&fs(&name), &name).unwrap_or_else(|| format!("Cannot work out file type of \"{name}\"")),
+    ))
 }
 
 /// Why a compressed file's first bytes are not what its suffix says, if
 /// they are not.
-fn signature(name: &str) -> Option<String> {
+fn signature(path: &Path, name: &str) -> Option<String> {
     let lower = name.to_ascii_lowercase();
     let (magic, format): (&[u8], &str) = if lower.ends_with(".gz") {
         (b"\x1f\x8b", "gzip")
@@ -340,7 +370,7 @@ fn signature(name: &str) -> Option<String> {
         return None;
     };
     let mut head = Vec::new();
-    match File::open(name).and_then(|f| f.take(magic.len() as u64).read_to_end(&mut head)) {
+    match File::open(path).and_then(|f| f.take(magic.len() as u64).read_to_end(&mut head)) {
         Err(_) => Some(format!("Could not read file: {name}")),
         Ok(_) if head.starts_with(magic) => None,
         Ok(_) => Some(format!("File {name} is not a {format} file")),
@@ -349,8 +379,10 @@ fn signature(name: &str) -> Option<String> {
 
 /// Read and check a NIfTI header, step over its extensions, and work out
 /// where and what its voxels are.
-fn load_nifti(meta_name: &str, image_name: String, version: Version, single: bool) -> Result<Image> {
-    let mut stream = open(meta_name).map_err(|e| open_error(&e, meta_name))?;
+/// `files` is the header's path and name, then the voxels'.
+fn load_nifti(files: (PathBuf, String, PathBuf, String), version: Version, single: bool) -> Result<Image> {
+    let (meta_path, meta_name, image_path, image_name) = files;
+    let mut stream = open(&meta_path, &meta_name).map_err(|e| open_error(&e, &meta_name))?;
     let block = read_up_to(&mut *stream, version.size() as u64).map_err(gzip_error)?;
     let mut header = Header::decode(&block, version)?;
     header.check_fix()?;
@@ -362,7 +394,7 @@ fn load_nifti(meta_name: &str, image_name: String, version: Version, single: boo
         VoxOffset::Int(v) => v.max(0) as u64,
     };
     let slope_inter = header.slope_inter()?;
-    Ok(Image { header, image_name, shape, offset, slope_inter })
+    Ok(Image { header, image_name, image_path, shape, offset, slope_inter })
 }
 
 /// `int(vox_offset)`.
@@ -461,8 +493,13 @@ impl Image {
         if n_bytes < 0 {
             return Err(Error::Value("negative count".into()));
         }
+        // Nor can any machine hold more bytes than an address counts, which
+        // numpy refuses for any array: refused before a byte is read.
+        if n_bytes > isize::MAX as i128 {
+            return Err(too_big());
+        }
         let compressed = is_gzip(&self.image_name);
-        let file = File::open(&self.image_name).map_err(|e| open_error(&e, &self.image_name))?;
+        let file = File::open(&self.image_path).map_err(|e| open_error(&e, &self.image_name))?;
         if n_bytes == 0 {
             // A file mapped from a non-zero offset keeps its declared shape,
             // when numpy can make an array of it; read, or when numpy refuses
@@ -524,7 +561,9 @@ fn too_big() -> Error {
 fn read_capped(stream: &mut dyn Read, wanted: u64, available: Option<u64>) -> io::Result<Vec<u8>> {
     const START: u64 = 64 << 20;
     let reserve = wanted.min(available.unwrap_or(START)).min(usize::MAX as u64) as usize;
-    let mut out = Vec::with_capacity(reserve);
+    let mut out = Vec::new();
+    // Up front only where the memory is there; reading grows it either way.
+    let _ = out.try_reserve_exact(reserve);
     stream.take(wanted).read_to_end(&mut out)?;
     Ok(out)
 }
@@ -674,6 +713,44 @@ mod tests {
         let path = dir.path().join("empty.nii");
         std::fs::write(&path, single(&h, &[])).unwrap();
         assert_eq!(nifti(&path).read_voxels().unwrap().shape, vec![1 << 40, 4, 0]);
+    }
+
+    #[test]
+    fn s02_2_more_bytes_than_an_address_counts_are_refused_unread() {
+        // 2^31 x 2^31 two-byte voxels: 2^63 bytes, past isize::MAX, though
+        // an i128 counts them.
+        let dir = tempfile::tempdir().unwrap();
+        let h = header(Version::Two, &[1 << 31, 1 << 31]);
+        let path = dir.path().join("huge.nii");
+        std::fs::write(&path, single(&h, &[0; 64])).unwrap();
+        let err = nifti(&path).read_voxels().unwrap_err();
+        assert!(matches!(&err, Error::Value(m) if m.starts_with("array is too big")), "{err:?}");
+    }
+
+    // Linux only: macOS refuses a file name that is not UTF-8.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn s02_2_a_name_in_another_encoding_opens_its_own_files() {
+        // "caf\xe9": Latin-1, no UTF-8. The name is spelled lossily; the
+        // files opened, the companion included, are the ones named.
+        use std::os::unix::ffi::OsStringExt;
+        let dir = tempfile::tempdir().unwrap();
+        let named = |suffix: &str| {
+            dir.path().join(std::ffi::OsString::from_vec([b"caf\xe9".as_slice(), suffix.as_bytes()].concat()))
+        };
+        let data = voxels(24);
+        std::fs::write(named(".nii"), single(&header(Version::One, &[4, 3, 2]), &data)).unwrap();
+        let image = nifti(&named(".nii"));
+        assert!(image.image_name.ends_with("caf\u{fffd}.nii"), "{}", image.image_name);
+        assert_eq!(image.read_voxels().unwrap().bytes, data);
+        let mut h = header(Version::One, &[4, 3, 2]);
+        h.magic = *b"ni1\0";
+        h.vox_offset = VoxOffset::Float(0.0);
+        std::fs::write(named(".hdr"), h.encode()).unwrap();
+        std::fs::write(named(".img"), &data).unwrap();
+        for suffix in [".hdr", ".img"] {
+            assert_eq!(nifti(&named(suffix)).read_voxels().unwrap().bytes, data, "{suffix}");
+        }
     }
 
     #[test]
