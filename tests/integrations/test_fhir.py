@@ -285,8 +285,9 @@ def test_clinical_augment_from_fhir(tmp_path, capsys):
 # -- a bulk export into a cohort (W22-09) -------------------------------------
 
 
-BULK = {"clock": Clock.utc("ehr"), "texts": True, "timezone": "UTC"}
-"""The options every bulk test imports with."""
+BULK = {"clock": Clock.utc("ehr"), "texts": True, "timezone": datetime.timezone.utc}
+"""The options every bulk test imports with: a zone that needs no IANA data,
+so they run on Windows without tzdata too."""
 
 
 def _export(tmp_path, *subjects):
@@ -487,7 +488,7 @@ def test_clinical_augment_cohort_from_fhir_bulk(tmp_path, capsys):
     argv = [
         "clinical", "augment-cohort", "--from-fhir-bulk", str(export),
         "--mapping", str(mapping), "--clock-id", "ehr", "--clock", "utc",
-        "--timezone", "UTC", "--out-dir", str(tmp_path / "out"),
+        "--out-dir", str(tmp_path / "out"),
     ]  # fmt: skip
     assert main([*argv, "--kind", "LOINC=lab"]) == EXIT_ERROR
     assert "--kind: MEDS options" in capsys.readouterr().err
