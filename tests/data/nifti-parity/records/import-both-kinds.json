@@ -1,0 +1,13 @@
+{
+ "id": "import-both-kinds",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "the sidecar beside both-kinds.nii.gz states both EchoTime and VolumeTiming per volume, so it says the fourth axis is a channel axis and a time axis at once (§3.6) --- pass `fourth_axis=` to settle it"
+ },
+ "files": []
+}

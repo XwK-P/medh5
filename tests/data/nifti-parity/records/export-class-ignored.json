@@ -1,0 +1,15 @@
+{
+ "id": "export-class-ignored",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "annotation 'ignored' ignores 2 voxel(s) (§7.7), which a one-class mask cannot mark --- its 0 would say they were examined and found absent; export the whole annotation instead (without a class), whose labelmap writes them as its ignore id 65535"
+ },
+ "files": [
+  "ct.medh5"
+ ]
+}

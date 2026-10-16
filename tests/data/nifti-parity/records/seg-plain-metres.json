@@ -1,0 +1,213 @@
+{
+ "id": "seg-plain-metres",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "report": {
+  "source": "{corpus}/inputs/mask-metres.nii.gz",
+  "converter": "import-seg-nifti",
+  "outputs": [
+   "{out}/plain.medh5"
+  ],
+  "ok": true,
+  "counts": {
+   "info": 0,
+   "decision": 2,
+   "guess": 0,
+   "warning": 0
+  },
+  "notes": [
+   {
+    "kind": "label_set",
+    "message": "class ids were minted from the mask names in sorted order, and keys from the names as a class key allows them; review the generated label set before applying it cohort-wide",
+    "severity": "decision",
+    "detail": {
+     "ids": {
+      "liver": 1
+     }
+    }
+   },
+   {
+    "kind": "encoding",
+    "message": "masks were stored as 'labelmap'",
+    "severity": "decision",
+    "detail": {
+     "kind": "labelmap"
+    }
+   }
+  ]
+ },
+ "sample": {
+  "root": {
+   "content_id": "sha256:d789ff60805a5919c824525076fbc29e314516901f84cf35e4c28acd60bce855",
+   "digest_algo": "sha256",
+   "generator": "medh5 2.1.0",
+   "medh5_kind": "sample",
+   "medh5_profiles": [
+    "core",
+    "seg"
+   ],
+   "medh5_version": "1.0"
+  },
+  "meta": {
+   "identity": {
+    "sample_id": "plain",
+    "subject_id": "plain"
+   },
+   "timepoints": [
+    {
+     "id": "tp0",
+     "index": 0
+    }
+   ],
+   "label_set": {
+    "id": "converted",
+    "version": "1.0.0",
+    "sha256": "d9454851c6dd0c7232814f4e98080ff069259b7828b46635b2cd7661eb0c501e",
+    "form": "inline",
+    "classes": [
+     {
+      "id": 1,
+      "key": "liver",
+      "name": "Liver"
+     }
+    ]
+   },
+   "provenance": {
+    "agents": [
+     {
+      "id": "s1",
+      "type": "software",
+      "name": "medh5",
+      "version": "2.1.0"
+     }
+    ],
+    "activities": [
+     {
+      "id": "act_import_1",
+      "type": "import",
+      "agent": "s1",
+      "tool": "medh5.io.nifti.import_seg_nifti"
+     }
+    ]
+   }
+  },
+  "objects": {
+   "annotations": {
+    "type": "group",
+    "attrs": {}
+   },
+   "annotations/seg": {
+    "type": "group",
+    "attrs": {
+     "annotated_class_ids": [
+      1
+     ],
+     "class_ids": [
+      1
+     ],
+     "closure": "explicit",
+     "grid": "g",
+     "kind": "labelmap",
+     "prov": "act_import_1",
+     "task": "segmentation"
+    }
+   },
+   "annotations/seg/data": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:933f640d76bb2651825c4523b42c0ab8ff20f04399755179c78d0fc32b313203"
+    },
+    "dtype": "|u1",
+    "shape": [
+     2,
+     3,
+     4
+    ]
+   },
+   "grids": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids/g": {
+    "type": "group",
+    "attrs": {
+     "axis_kinds": [
+      "spatial",
+      "spatial",
+      "spatial"
+     ],
+     "axis_names": [
+      "z",
+      "y",
+      "x"
+     ],
+     "coord_system": "LPS",
+     "direction": [
+      [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      [
+       0.0,
+       -1.0,
+       0.0
+      ],
+      [
+       1.0,
+       0.0,
+       0.0
+      ]
+     ],
+     "origin": [
+      10.0,
+      20.0,
+      5.0
+     ],
+     "shape": [
+      2,
+      3,
+      4
+     ],
+     "spacing": [
+      2.0,
+      0.9,
+      0.8
+     ],
+     "timepoint": "tp0",
+     "units": "mm"
+    }
+   },
+   "images": {
+    "type": "group",
+    "attrs": {}
+   },
+   "images/CT": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:33ba7a748aa75f5dbd114d9d888397c9f10b87afee4de4d1009b5cf965fbacc9",
+     "grid": "g",
+     "modality": "CT",
+     "value_type": "intensity"
+    },
+    "dtype": "<i2",
+    "shape": [
+     2,
+     3,
+     4
+    ]
+   },
+   "meta": {
+    "type": "dataset",
+    "attrs": {},
+    "dtype": "|O",
+    "shape": []
+   }
+  }
+ },
+ "outcome": "ok",
+ "files": [
+  "plain.medh5"
+ ]
+}

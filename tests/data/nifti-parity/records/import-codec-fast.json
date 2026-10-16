@@ -1,0 +1,13 @@
+{
+ "id": "import-codec-fast",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "unknown codec profile 'fast'; expected one of archive, balanced, portable, training"
+ },
+ "files": []
+}

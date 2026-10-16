@@ -1,0 +1,213 @@
+{
+ "id": "import-vector5",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "report": {
+  "source": "{corpus}/inputs/vector5.nii.gz",
+  "converter": "from-nifti",
+  "outputs": [
+   "{out}/import-vector5.medh5"
+  ],
+  "ok": true,
+  "counts": {
+   "info": 0,
+   "decision": 3,
+   "guess": 2,
+   "warning": 0
+  },
+  "notes": [
+   {
+    "kind": "coord_system",
+    "message": "NIfTI is RAS+; the grid was written in LPS (sign flip on the first two world axes, applied to the affine only)",
+    "severity": "decision",
+    "detail": {
+     "source": "RAS",
+     "target": "LPS"
+    }
+   },
+   {
+    "kind": "axis_order",
+    "message": "trailing axes of extent 1 beyond (x, y, z) carry nothing and were dropped, so the grid describes the data rather than the file",
+    "severity": "decision",
+    "detail": {
+     "axes": [
+      3
+     ]
+    }
+   },
+   {
+    "kind": "axis_kinds",
+    "message": "the series is on NIfTI's fifth dimension, which NIfTI-1 gives a voxel's components, and nothing says what they are; it was read as a `channel` axis (§3.6) --- pass `fourth_axis=` to say otherwise",
+    "severity": "guess",
+    "detail": {
+     "channels": 3
+    }
+   },
+   {
+    "kind": "axis_order",
+    "message": "NIfTI (x, y, z) was reordered to (z, y, x), any trailing time axis moved in front of them, and the spacing, direction and axis names follow",
+    "severity": "decision",
+    "detail": {
+     "order": [
+      3,
+      2,
+      1,
+      0
+     ]
+    }
+   },
+   {
+    "kind": "identity",
+    "message": "no subject_id was given and NIfTI states none, so the sample was written as a subject of its own (subject_id = 'import-vector5'); pass subject_id= (--subject-id) to file it under its subject",
+    "severity": "guess",
+    "detail": {
+     "subject_id": "import-vector5"
+    }
+   }
+  ]
+ },
+ "sample": {
+  "root": {
+   "content_id": "sha256:d9c84a0d9ee30d2f8fe9059b62d3b5bc4da14c2258674cbf6e97de702bfb2d39",
+   "digest_algo": "sha256",
+   "generator": "medh5 2.1.0",
+   "medh5_kind": "sample",
+   "medh5_profiles": [
+    "core"
+   ],
+   "medh5_version": "1.0"
+  },
+  "meta": {
+   "identity": {
+    "sample_id": "import-vector5",
+    "subject_id": "import-vector5"
+   },
+   "timepoints": [
+    {
+     "id": "tp0",
+     "index": 0
+    }
+   ],
+   "provenance": {
+    "agents": [
+     {
+      "id": "s1",
+      "type": "software",
+      "name": "medh5",
+      "version": "2.1.0"
+     }
+    ],
+    "activities": [
+     {
+      "id": "act_import_1",
+      "type": "import",
+      "agent": "s1",
+      "tool": "medh5 convert from-nifti",
+      "inputs": [
+       "nifti:vector5.nii.gz"
+      ],
+      "params": {
+       "coord_system": "LPS",
+       "transpose": true
+      }
+     }
+    ]
+   }
+  },
+  "objects": {
+   "annotations": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids/ref": {
+    "type": "group",
+    "attrs": {
+     "axis_kinds": [
+      "channel",
+      "spatial",
+      "spatial",
+      "spatial"
+     ],
+     "axis_names": [
+      "c",
+      "z",
+      "y",
+      "x"
+     ],
+     "coord_system": "LPS",
+     "direction": [
+      [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      [
+       0.0,
+       -1.0,
+       0.0
+      ],
+      [
+       1.0,
+       0.0,
+       0.0
+      ]
+     ],
+     "origin": [
+      10.0,
+      20.0,
+      5.0
+     ],
+     "shape": [
+      3,
+      2,
+      3,
+      4
+     ],
+     "spacing": [
+      2.0,
+      0.8999999761581421,
+      0.800000011920929
+     ],
+     "timepoint": "tp0",
+     "units": "mm"
+    }
+   },
+   "images": {
+    "type": "group",
+    "attrs": {}
+   },
+   "images/image": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:a139aaa45c189a72f06a32d959e87015f5d9e9176489d23c22aa4aa3984a4ed3",
+     "grid": "ref",
+     "modality": "OT",
+     "prov": "act_import_1",
+     "value_type": "intensity"
+    },
+    "dtype": "<i2",
+    "shape": [
+     3,
+     2,
+     3,
+     4
+    ]
+   },
+   "meta": {
+    "type": "dataset",
+    "attrs": {},
+    "dtype": "|O",
+    "shape": []
+   }
+  }
+ },
+ "outcome": "ok",
+ "files": [
+  "import-vector5.medh5"
+ ]
+}

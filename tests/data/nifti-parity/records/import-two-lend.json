@@ -1,0 +1,245 @@
+{
+ "id": "import-two-lend",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "report": {
+  "source": "{corpus}/inputs/cine-unitless.nii.gz, {corpus}/inputs/cine-sec.nii.gz",
+  "converter": "from-nifti",
+  "outputs": [
+   "{out}/import-two-lend.medh5"
+  ],
+  "ok": true,
+  "counts": {
+   "info": 0,
+   "decision": 4,
+   "guess": 2,
+   "warning": 0
+  },
+  "notes": [
+   {
+    "kind": "time_values",
+    "message": "'B' states its frame times and the first volume does not, so the grid takes them",
+    "severity": "decision",
+    "detail": {
+     "from": "B",
+     "time_units": "s"
+    }
+   },
+   {
+    "kind": "coord_system",
+    "message": "NIfTI is RAS+; the grid was written in LPS (sign flip on the first two world axes, applied to the affine only)",
+    "severity": "decision",
+    "detail": {
+     "source": "RAS",
+     "target": "LPS"
+    }
+   },
+   {
+    "kind": "axis_kinds",
+    "message": "the source does not say whether the fourth axis is time or channel; it was read as time (§3.6) --- pass `fourth_axis=` to say otherwise",
+    "severity": "guess",
+    "detail": {
+     "frames": 3
+    }
+   },
+   {
+    "kind": "time_values",
+    "message": "frame times were read from the NIfTI temporal zoom and toffset",
+    "severity": "decision",
+    "detail": {
+     "time_units": "s",
+     "frames": 3
+    }
+   },
+   {
+    "kind": "axis_order",
+    "message": "NIfTI (x, y, z) was reordered to (z, y, x), any trailing time axis moved in front of them, and the spacing, direction and axis names follow",
+    "severity": "decision",
+    "detail": {
+     "order": [
+      3,
+      2,
+      1,
+      0
+     ]
+    }
+   },
+   {
+    "kind": "identity",
+    "message": "no subject_id was given and NIfTI states none, so the sample was written as a subject of its own (subject_id = 'import-two-lend'); pass subject_id= (--subject-id) to file it under its subject",
+    "severity": "guess",
+    "detail": {
+     "subject_id": "import-two-lend"
+    }
+   }
+  ]
+ },
+ "sample": {
+  "root": {
+   "content_id": "sha256:fdc3befbd1013ee75315aa7cf239e3f35eb637e2b272be069bcfab299e9db8a0",
+   "digest_algo": "sha256",
+   "generator": "medh5 2.1.0",
+   "medh5_kind": "sample",
+   "medh5_profiles": [
+    "core"
+   ],
+   "medh5_version": "1.0"
+  },
+  "meta": {
+   "identity": {
+    "sample_id": "import-two-lend",
+    "subject_id": "import-two-lend"
+   },
+   "timepoints": [
+    {
+     "id": "tp0",
+     "index": 0
+    }
+   ],
+   "provenance": {
+    "agents": [
+     {
+      "id": "s1",
+      "type": "software",
+      "name": "medh5",
+      "version": "2.1.0"
+     }
+    ],
+    "activities": [
+     {
+      "id": "act_import_1",
+      "type": "import",
+      "agent": "s1",
+      "tool": "medh5 convert from-nifti",
+      "inputs": [
+       "nifti:cine-unitless.nii.gz",
+       "nifti:cine-sec.nii.gz"
+      ],
+      "params": {
+       "coord_system": "LPS",
+       "transpose": true
+      }
+     }
+    ]
+   }
+  },
+  "objects": {
+   "annotations": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids": {
+    "type": "group",
+    "attrs": {}
+   },
+   "grids/ref": {
+    "type": "group",
+    "attrs": {
+     "axis_kinds": [
+      "time",
+      "spatial",
+      "spatial",
+      "spatial"
+     ],
+     "axis_names": [
+      "t",
+      "z",
+      "y",
+      "x"
+     ],
+     "coord_system": "LPS",
+     "direction": [
+      [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      [
+       0.0,
+       -1.0,
+       0.0
+      ],
+      [
+       1.0,
+       0.0,
+       0.0
+      ]
+     ],
+     "origin": [
+      10.0,
+      20.0,
+      5.0
+     ],
+     "shape": [
+      3,
+      2,
+      3,
+      4
+     ],
+     "spacing": [
+      2.0,
+      0.8999999761581421,
+      0.800000011920929
+     ],
+     "time_units": "s",
+     "time_values": [
+      2.0,
+      2.5,
+      3.0
+     ],
+     "timepoint": "tp0",
+     "units": "mm"
+    }
+   },
+   "images": {
+    "type": "group",
+    "attrs": {}
+   },
+   "images/A": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:3beba714d98d2094f6f53799368fd27c2d78e88f6e119b9a6b88e5ee08156188",
+     "grid": "ref",
+     "modality": "OT",
+     "prov": "act_import_1",
+     "value_type": "intensity"
+    },
+    "dtype": "<i2",
+    "shape": [
+     3,
+     2,
+     3,
+     4
+    ]
+   },
+   "images/B": {
+    "type": "dataset",
+    "attrs": {
+     "digest": "sha256:c5bbac64c6e047abf10c55cff778737bcab001b130e6d6fb869f0ea4fb50bb98",
+     "grid": "ref",
+     "modality": "OT",
+     "prov": "act_import_1",
+     "value_type": "intensity"
+    },
+    "dtype": "<i2",
+    "shape": [
+     3,
+     2,
+     3,
+     4
+    ]
+   },
+   "meta": {
+    "type": "dataset",
+    "attrs": {},
+    "dtype": "|O",
+    "shape": []
+   }
+  }
+ },
+ "outcome": "ok",
+ "files": [
+  "import-two-lend.medh5"
+ ]
+}

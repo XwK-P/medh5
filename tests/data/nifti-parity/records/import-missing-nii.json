@@ -1,0 +1,13 @@
+{
+ "id": "import-missing-nii",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "FileNotFoundError",
+  "code": null,
+  "message": "[Errno 2] No such file or no access: '{corpus}/inputs/missing.nii'"
+ },
+ "files": []
+}

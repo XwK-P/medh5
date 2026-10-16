@@ -1,0 +1,15 @@
+{
+ "id": "export-name-ct-img",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "{out}/ct.img is not a NIfTI file name: an export writes one ending in .nii or .nii.gz"
+ },
+ "files": [
+  "plain.medh5"
+ ]
+}

@@ -1,0 +1,16 @@
+{
+ "id": "export-directory",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "{out}/folder.nii is a directory; name the .nii or .nii.gz file to write"
+ },
+ "files": [
+  "folder.nii",
+  "plain.medh5"
+ ]
+}

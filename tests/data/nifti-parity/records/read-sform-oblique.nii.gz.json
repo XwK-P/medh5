@@ -1,0 +1,79 @@
+{
+ "id": "read-sform-oblique.nii.gz",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "read": {
+  "geometry": {
+   "notes": [],
+   "spacing": [
+    1.9999999712153886,
+    0.8999999939613029,
+    0.7999999922112934
+   ],
+   "origin": [
+    10.0,
+    20.0,
+    5.0
+   ],
+   "direction": [
+    [
+     -0.12940952368066244,
+     0.48296292946935987,
+     -0.8660253966723364
+    ],
+    [
+     0.22414386595025124,
+     -0.8365162932044651,
+     -0.5000000123185223
+    ],
+    [
+     0.9659258266231522,
+     0.25881904868427985,
+     0.0
+    ]
+   ],
+   "coord_system": "LPS",
+   "shape": [
+    2,
+    3,
+    4
+   ],
+   "axis_order": [
+    2,
+    1,
+    0
+   ],
+   "time_values": null,
+   "time_units": null,
+   "time_measured": false,
+   "leading_kind": "spatial",
+   "leading_stated": false,
+   "b_values": null,
+   "channel_field": null,
+   "channel_values": null,
+   "stated_by": null,
+   "squeezed": [],
+   "units": "mm",
+   "dtype": "int16",
+   "rescale": null,
+   "plane_as_volume": null,
+   "header": {
+    "descrip": "",
+    "scl_slope": null,
+    "scl_inter": null
+   }
+  },
+  "array": {
+   "dtype": "<i2",
+   "shape": [
+    2,
+    3,
+    4
+   ],
+   "sha256": "1550de2a4567eb12d42bcccfd73c56ac2f77e02be98bbc25a5e0652134c0330b"
+  }
+ },
+ "outcome": "ok",
+ "files": []
+}

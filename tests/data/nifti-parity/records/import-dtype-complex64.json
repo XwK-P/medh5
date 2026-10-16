@@ -1,0 +1,13 @@
+{
+ "id": "import-dtype-complex64",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "TypeError",
+  "code": null,
+  "message": "arrays of dtype complex64 cannot be stored; use a boolean, integer or floating dtype"
+ },
+ "files": []
+}

@@ -1,0 +1,120 @@
+{
+ "id": "export-pet-mask",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "returned": "{out}/m.nii.gz",
+ "report": {
+  "source": "",
+  "converter": "to-nifti",
+  "outputs": [],
+  "ok": true,
+  "counts": {
+   "info": 0,
+   "decision": 0,
+   "guess": 0,
+   "warning": 0
+  },
+  "notes": []
+ },
+ "export": {
+  "m.nii.gz": {
+   "gzip": true,
+   "endianness": "<",
+   "header": {
+    "sizeof_hdr": 348,
+    "data_type": "",
+    "db_name": "",
+    "extents": 0,
+    "session_error": 0,
+    "regular": "",
+    "dim_info": 0,
+    "dim": [
+     3,
+     2,
+     2,
+     1,
+     1,
+     1,
+     1,
+     1
+    ],
+    "intent_p1": 0.0,
+    "intent_p2": 0.0,
+    "intent_p3": 0.0,
+    "intent_code": 0,
+    "datatype": 512,
+    "bitpix": 16,
+    "slice_start": 0,
+    "pixdim": [
+     1.0,
+     1.600000023841858,
+     1.600000023841858,
+     4.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ],
+    "vox_offset": 352.0,
+    "scl_slope": 1.0,
+    "scl_inter": 0.0,
+    "slice_end": 0,
+    "slice_code": 0,
+    "xyzt_units": 2,
+    "cal_max": 0.0,
+    "cal_min": 0.0,
+    "slice_duration": 0.0,
+    "toffset": 0.0,
+    "glmax": 0,
+    "glmin": 0,
+    "descrip": "",
+    "aux_file": "",
+    "qform_code": 0,
+    "sform_code": 2,
+    "quatern_b": 0.0,
+    "quatern_c": 0.0,
+    "quatern_d": 0.0,
+    "qoffset_x": -30.0,
+    "qoffset_y": -40.0,
+    "qoffset_z": 50.0,
+    "srow_x": [
+     1.600000023841858,
+     0.0,
+     0.0,
+     -30.0
+    ],
+    "srow_y": [
+     0.0,
+     1.600000023841858,
+     0.0,
+     -40.0
+    ],
+    "srow_z": [
+     0.0,
+     0.0,
+     4.0,
+     50.0
+    ],
+    "intent_name": "",
+    "magic": "n+1"
+   },
+   "data": {
+    "dtype": "<u2",
+    "shape": [
+     2,
+     2,
+     1
+    ],
+    "bytes": 8,
+    "trailing": 0,
+    "sha256": "f9d10b77126ab15bc3488ce712403813f59b1dc4781f4cf22bef2feacd0a2868"
+   }
+  }
+ },
+ "outcome": "ok",
+ "files": [
+  "m.nii.gz",
+  "pet.medh5"
+ ]
+}

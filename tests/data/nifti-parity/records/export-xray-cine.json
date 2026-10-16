@@ -1,0 +1,15 @@
+{
+ "id": "export-xray-cine",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "grid 'g' is a 2-D plane with a time axis, which no NIfTI layout this exporter writes can state; export its planes one at a time"
+ },
+ "files": [
+  "xray-cine.medh5"
+ ]
+}

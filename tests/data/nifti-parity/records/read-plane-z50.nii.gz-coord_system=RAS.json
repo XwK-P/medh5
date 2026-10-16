@@ -1,0 +1,13 @@
+{
+ "id": "read-plane-z50.nii.gz-coord_system=RAS",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "{corpus}/inputs/plane-z50.nii.gz is a 2-D plane at world z = 50 mm, and a 2-D grid (§3.6) has no z to keep it at: imported, it would lie at z = 0, on one grid with planes from any other slice; save it as (x, y, 1), or pass plane_as_volume=True (--plane-as-volume), to import it as a single-slice 3-D volume, which keeps its z"
+ },
+ "files": []
+}

@@ -1,0 +1,13 @@
+{
+ "id": "import-bad-datatype-nii",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "HeaderDataError",
+  "code": null,
+  "message": "data code 77 not recognized"
+ },
+ "files": []
+}

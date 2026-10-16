@@ -1,0 +1,13 @@
+{
+ "id": "read-random.nii",
+ "generator": "medh5 2.1.0",
+ "nibabel": "5.4.2",
+ "numpy": "2.5.4",
+ "outcome": "refused",
+ "error": {
+  "type": "MEDH5ValidationError",
+  "code": null,
+  "message": "{corpus}/inputs/random.nii is not a NIfTI file: Cannot work out file type of \"{corpus}/inputs/random.nii\""
+ },
+ "files": []
+}
