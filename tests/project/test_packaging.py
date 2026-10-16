@@ -190,10 +190,15 @@ def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
     assert 'bin.install "medh5"' in text
 
     # macOS on Intel was dropped in 2.2.0: an Intel Mac is refused by the
-    # formula, not sent to an archive no release has.
+    # formula, not sent to an archive no release has.  Its one download sits
+    # outside any `on_arm`, since Homebrew reads the URL before it checks the
+    # dependency, and a formula with no URL there could not be read at all.
     assert "x86_64-apple-darwin" not in text
     macos = text.split("  on_macos do\n", 1)[1].split("\n  end\n", 1)[0]
-    assert "depends_on arch: :arm64" in macos and "on_intel" not in macos
+    arm = brew.archive("2.0.0", "aarch64-apple-darwin")
+    assert macos == (
+        f'    depends_on arch: :arm64\n    url "{base}/{arm}"\n    sha256 "{sums[arm]}"'
+    )
     linux = text.split("  on_linux do\n", 1)[1].split("\n  end\n", 1)[0]
     assert "depends_on" not in linux and "on_intel" in linux
 
