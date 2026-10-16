@@ -827,6 +827,31 @@ The conversion report prints after the augmentation, `--report` keeps it as
 JSON, and the command exits 1 when it holds a warning, as `medh5 convert`
 does.
 
+### `medh5 clinical augment-cohort`
+
+```
+medh5 clinical augment-cohort (--from-meds DIR | --from-fhir-bulk DIR) --mapping MAP.csv
+                              [--out-dir DIR] [--clock-id ID --clock {utc,shifted_utc,relative}]
+                              [--origin ISO] [--timezone TZ] [--code-system PREFIX=URI]...
+                              [--kind PREFIX=KIND]... [--day-precision PREFIX]...
+                              [--document-code CODE]... [--with-text]
+                              [--both-values {refuse,numeric,text}] [--report FILE] [--json]
+```
+
+A MEDS dataset or a FHIR Bulk Data export (a directory of NDJSON files) into
+the samples `--mapping` names, each subject's records added to its sample as
+`clinical augment` adds one subject's: in place, or under the sample's name in
+`--out-dir`. The mapping is a CSV with the header `subject,sample`, a MEDS
+`subject_id` or a FHIR subject reference per row, and a relative sample path
+is the CSV's. The source is read once, not once per sample; see
+[Import from MEDS or FHIR](../guides/clinical-import.md#a-cohort). The other
+options are `clinical augment`'s, applied to every subject; without
+`--clock-id` and `--clock` each subject goes on its sample's own clock. A
+subject that refuses is listed and the others are written; subjects the
+mapping does not name are counted. `--report` keeps the whole result as JSON,
+`--json` prints it, and the command exits 1 when a subject was refused or a
+report holds a warning.
+
 ### `medh5 clinical strip`
 
 ```

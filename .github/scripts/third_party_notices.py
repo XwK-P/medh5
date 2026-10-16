@@ -10,8 +10,8 @@ notice to travel with the binary, so it does --- in the wheel's
 `.dist-info/licenses/`, beside the binary in every release archive, and in the
 sdist.
 
-The crates are Cargo.lock's, read through `cargo metadata` for the five targets
-the project ships, so the file is regenerated rather than maintained: CI runs
+The crates are Cargo.lock's, read through `cargo metadata` for the targets the
+project ships, so the file is regenerated rather than maintained: CI runs
 `--check`, which fails when the checked-in file differs from what this writes.
 """
 
@@ -39,7 +39,6 @@ TARGETS = (
     "x86_64-unknown-linux-musl",
     "aarch64-unknown-linux-musl",
     "aarch64-apple-darwin",
-    "x86_64-apple-darwin",
     "x86_64-pc-windows-msvc",
 )
 

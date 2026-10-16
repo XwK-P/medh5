@@ -55,8 +55,8 @@ inputs, until their availability is known (1.1 §5.2, §9.1). A dataset older
 than MEDS 0.3 names its subject column `patient_id`; pass
 `columns={"subject_id": "patient_id"}`.
 
-The dataset is scanned once per call. Importing a whole cohort calls it once
-per sample.
+The dataset is scanned once per call. For a whole cohort, use
+`augment_cohort_from_meds` (see [A cohort](#a-cohort)), which reads it once.
 
 ## From FHIR R4
 
@@ -101,6 +101,62 @@ assert result["events"] == 1 and not report.guesses
 | `component[]` | one event per component, `record_id` `…c<i>`, sharing the resource's times and status |
 | `subject`, `encounter` | only resources of `subject=`; the others are counted. `encounter` is `encounter_id` |
 | `DiagnosticReport` | a `document` event. Its `text/plain` `presentedForm`, else its `conclusion`, is the document's text, only with `texts=True`. An `imagingStudy` becomes a `describes` link to an image only through `image_studies={reference: image_id}`; `result` is not linked |
+
+## A cohort
+
+A MEDS dataset or a FHIR Bulk Data export holds many subjects. The cohort
+importers read it once, rather than once per sample, and write each subject
+into the sample a mapping names:
+
+<!-- illustrative -->
+```python
+from medh5.clinical import Clock
+from medh5.io.fhir import augment_cohort_from_fhir
+from medh5.io.meds import augment_cohort_from_meds
+
+cohort = augment_cohort_from_meds(
+    "meds/",
+    {1001: "P-0001.medh5", 1002: "P-0002.medh5"},   # subject_id -> sample
+    out_dir="imported/",           # else each sample in place
+    timezone="America/New_York",   # the clock: each sample's own, unless clock=
+    code_systems={"LOINC": "http://loinc.org"},
+)
+for subject in cohort.refused:
+    print(subject.subject, subject.error)
+
+bulk = augment_cohort_from_fhir(
+    "export/",                     # Observation.ndjson, DiagnosticReport.ndjson, ...
+    {"Patient/p1": "P-0001.medh5"},
+    clock=Clock.utc("ehr"),
+)
+```
+
+Each subject is mapped exactly as the per-sample importer maps it alone, so
+its sample is the one `augment_from_meds` or `augment_from_fhir` would write,
+and its entry in `cohort.subjects` carries the same augmentation and report.
+The batch changes the cost, never the answer:
+
+- **MEDS.** The dataset is opened once and read twice, a Parquet row group at
+  a time: the subject column to count each mapped subject's rows, then the
+  mapped subjects' rows, skipping row groups whose statistics hold none. A
+  subject is imported as soon as its last row is read, so a dataset in MEDS
+  order holds one row group and one subject in memory at a time.
+- **FHIR.** The NDJSON files are read once to find where each mapped
+  subject's Observations and DiagnosticReports are, then once per subject to
+  read them, in file and line order, as a Bundle of them would be read. Where
+  they are is kept in a temporary file, not in memory, so an export of
+  millions of resources holds one subject's in memory at a time.
+
+A subject that refuses (no rows, a sample without a clock, ids already there)
+is listed in `cohort.refused` with its reason, and the others are still
+written. Subjects the mapping does not name are counted in an `info` note of
+`cohort.report`, and never read; they are counted in a temporary file, so a
+dataset of millions of them costs no memory for it. `cohort.to_json()` is the
+whole result. A sample holds one subject, so a mapping that would write two
+subjects to one file (the same sample twice, a link to it, two samples of one
+name into `out_dir`, or of names that differ only in case) is refused before
+anything is written, as is a sample written inside or over the dataset, shard
+or export it reads.
 
 ## The report
 
@@ -153,6 +209,22 @@ command prints the augmentation and the report; `--report` keeps the report as
 JSON, and `--json` prints both. It exits 1 when the report holds a warning, as
 every converter does. The file is still written: read the warnings. A MEDS
 import without an `available` column always warns.
+
+A cohort takes a mapping as CSV, with the header `subject,sample` (a relative
+sample path is the CSV's):
+
+```bash
+medh5 clinical augment-cohort --from-meds meds/ --mapping cohort.csv \
+    --timezone America/New_York --code-system LOINC=http://loinc.org \
+    --out-dir imported/ --report cohort.import.json
+medh5 clinical augment-cohort --from-fhir-bulk export/ --mapping cohort.csv \
+    --clock-id ehr --clock utc
+```
+
+It prints each subject's result and report; a refused subject is listed and
+the others written. It exits 1 when a subject was refused or a report holds a
+warning. Neither `--out-dir` nor `--report` may lie inside the dataset or
+export it reads, and `--report` may not name a sample it reads or writes.
 
 The importers run in the Python package. The standalone binary hands them to
 Python, as it hands over `medh5 convert`.
