@@ -104,9 +104,12 @@ fn is_bulk(dataset: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// `portable` when every dataset of the file needs only HDF5's own filters,
 /// else `balanced` --- what an amend of the file defaults to.
 #[pyfunction]
-fn profile_family(path: PathBuf) -> R<&'static str> {
-    let file = medh5::h5::file::open_read(&path).map_err(|e| path_error(e, &path))?;
-    Ok(codecs::profile_family(&file.as_group()?)?)
+fn profile_family(py: Python<'_>, path: PathBuf) -> R<&'static str> {
+    // Opened, read and closed detached: each may wait for HDF5's lock.
+    crate::h5(py, || {
+        let file = medh5::h5::file::open_read(&path).map_err(|e| path_error(e, &path))?;
+        Ok(codecs::profile_family(&file.as_group()?)?)
+    })
 }
 
 // -- chunking ------------------------------------------------------------------------------

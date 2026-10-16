@@ -154,8 +154,11 @@ fn is_collection(obj: &Bound<'_, PyAny>) -> R<bool> {
         }
     }
     let path: PathBuf = obj.extract()?;
-    let file = crate::h5(py, || medh5::h5::file::open_read(&path)).map_err(|e| path_error(e, &path))?;
-    Ok(crate::h5(py, || coll::is_collection(&file))?)
+    // Opened, read and closed detached: each may wait for HDF5's lock.
+    crate::h5(py, || {
+        let file = medh5::h5::file::open_read(&path).map_err(|e| path_error(e, &path))?;
+        Ok(coll::is_collection(&file)?)
+    })
 }
 
 #[pyfunction]
