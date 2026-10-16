@@ -174,7 +174,7 @@ def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
     build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
     # The targets ci.yml passes to build.yml, one job each.
     built = set(re.findall(r"^      target: (\S+)$", ci, re.M))
-    assert len(built) == 5
+    assert len(built) == 4
     assert set(brew.TARGETS.values()) <= built
     assert all(target in release for target in built)
     assert 'name="medh5-$version-$target"' in build
@@ -189,8 +189,16 @@ def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
         assert f'sha256 "{sums[name]}"' in text
     assert 'bin.install "medh5"' in text
 
-    del sums[brew.archive("2.0.0", "x86_64-apple-darwin")]
-    with pytest.raises(SystemExit, match="x86_64-apple-darwin"):
+    # macOS on Intel was dropped in 2.2.0: an Intel Mac is refused by the
+    # formula, not sent to an archive no release has.
+    assert "x86_64-apple-darwin" not in text
+    macos = text.split("  on_macos do\n", 1)[1].split("\n  end\n", 1)[0]
+    assert "depends_on arch: :arm64" in macos and "on_intel" not in macos
+    linux = text.split("  on_linux do\n", 1)[1].split("\n  end\n", 1)[0]
+    assert "depends_on" not in linux and "on_intel" in linux
+
+    del sums[brew.archive("2.0.0", "x86_64-unknown-linux-gnu")]
+    with pytest.raises(SystemExit, match="x86_64-unknown-linux-gnu"):
         brew.formula("2.0.0", sums, "medh5-project/medh5")
     listing = f"{'a' * 64}  medh5-2.0.0-x.tar.gz\n\n{'b' * 64} *y.zip\n"
     assert brew.read_sums(listing) == {
@@ -465,7 +473,7 @@ class TestRepositoryGates:
             "build", "crates", "msvc-from-crates-io", "rust", "rust-platforms",
             "sdist", "semver",
         ]  # fmt: skip
-        # `build` is build.yml's, which the five platform jobs call.
+        # `build` is build.yml's, which the four platform jobs call.
         callers = [
             name
             for name, job in _jobs(CI.read_text(encoding="utf-8")).items()
@@ -475,7 +483,6 @@ class TestRepositoryGates:
             "build-linux-aarch64",
             "build-linux-x86_64",
             "build-macos-arm64",
-            "build-macos-x86_64",
             "build-windows-x86_64",
         ]
 
@@ -589,11 +596,7 @@ class TestRepositoryGates:
         build = _jobs(BUILD.read_text(encoding="utf-8"))["build"]
         for bridged in ("MEDH5_PYTHON=python ", "MEDH5_PYTHON=/nonexistent "):
             assert bridged in build
-        for name, target in (
-            ("test-linux-aarch64", "aarch64-unknown-linux-gnu"),
-            ("test-macos-x86_64", "x86_64-apple-darwin"),
-        ):
-            assert f"name: ci-dist-{target}\n" in jobs[name], name
+        assert "name: ci-dist-aarch64-unknown-linux-gnu\n" in jobs["test-linux-aarch64"]
         assert "-rs" in jobs["test-monai"]
         assert "tests/integrations/test_meds.py -v -rs" in jobs["test-meds"]
         # SimpleITK, which the ITK cross-check needs, is installed where it runs
@@ -983,7 +986,7 @@ class TestDistribution:
             for name, job in jobs.items()
             if "uses: ./.github/workflows/build.yml" in job
         }
-        assert len(build_of) == 5
+        assert len(build_of) == 4
         downloading = 0
         for name, job in jobs.items():
             targets = set(re.findall(r"name: ci-(?:dist|cli)-([\w-]+)$", job, re.M))
@@ -997,7 +1000,7 @@ class TestDistribution:
             if targets:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
-        assert downloading == 16
+        assert downloading == 15
 
     def test_every_shipped_target_is_built_released_and_noticed(self):
         """The targets were listed four times --- the build jobs, the
@@ -1049,39 +1052,31 @@ class TestDistribution:
         for name, job in jobs.items():
             assert "dist/*.whl" not in job, name
 
-    def test_macos_x86_64_is_cross_built_and_tested_on_every_run(self):
-        """The Intel Mac build was the slowest job of every run (14 to 23
-        minutes), so it ran only in the merge queue, where a break particular
-        to it (#51) cost a whole re-queue; and GitHub's last Intel image
-        retires in 2027.  It is cross-built on Apple silicon, its wheel tested
-        there under Rosetta by an x64 Python, on every event, pull requests
-        included; and no job runs on an Intel or a retired image."""
+    def test_macos_on_intel_is_not_built(self):
+        """2.2.0 dropped macOS on Intel.  Its build was the slowest of every
+        run on an Intel runner, then cross-built on Apple silicon and tested
+        under Rosetta (#70); now nothing builds, tests or ships it, and every
+        job runs on every event, pull requests included, on a current image."""
         text = CI.read_text(encoding="utf-8")
         jobs = _jobs(text)
         for name, job in jobs.items():
             assert "github.event_name != 'pull_request'" not in job, name
         runners = set(re.findall(r"(?:runner|runs-on): \[?.*?\b(macos-[\w.-]+)", text))
         assert runners == {"macos-15"}, runners
-        build = jobs["build-macos-x86_64"]
-        assert re.search(r"^      runner: macos-15$", build, re.M)
-        assert re.search(r"^      rosetta: true$", build, re.M)
-        # setup-python's macOS Pythons are universal2: an `x64` one still runs
-        # its arm64 half, unless the shell that starts it runs under Rosetta.
-        test = jobs["test-macos-x86_64"]
-        assert re.search(r"^    runs-on: macos-15$", test, re.M)
-        assert "        shell: arch -x86_64 /bin/bash -eo pipefail {0}\n" in test
-        assert "platform.machine() == 'x86_64'" in test
-        assert re.search(r"^    needs: build-macos-x86_64$", test, re.M)
+        assert "x86_64-apple-darwin" not in text
+        assert not any("macos-x86_64" in name for name in jobs)
+        assert "arch -x86_64" not in text
         # The gate accepts no skip but the one `changes` asks for.
         gate = jobs["ci-ok"]
-        assert "build-macos-x86_64" not in gate.split("steps:", 1)[1]
         assert "EVENT" not in gate
-        # The build's two checks of the wheel run under Rosetta too.
+        # Nothing is left of the Rosetta checks.
         workflow = BUILD.read_text(encoding="utf-8")
-        assert "ROSETTA: ${{ inputs.rosetta && 'x86_64' || '' }}" in workflow
-        reexec = 'then exec arch -"$ROSETTA" /bin/bash -eo pipefail "$0"; fi'
-        assert workflow.count(reexec) == 2
+        assert "rosetta" not in workflow.lower()
         assert "architecture:" not in workflow
+        release = RELEASE.read_text(encoding="utf-8")
+        assert (
+            "x86_64-apple-darwin" not in release and "macosx_11_0_x86_64" not in release
+        )
 
     def test_every_build_names_its_target(self):
         """build-dist.sh built for its host alone: it passed no `--target`, and

@@ -20,12 +20,6 @@ on:
         description: A manylinux image, by digest, to build in; none elsewhere.
         type: string
         default: ""
-      rosetta:
-        description: >-
-          The target is macOS x86_64, cross-built on Apple silicon: the wheel
-          and the binary are checked under Rosetta.
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -47,7 +41,6 @@ jobs:
     env:
       # The oldest macOS the wheel and the binary support; ignored elsewhere.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
-      ROSETTA: ${{ inputs.rosetta && 'x86_64' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -99,15 +92,9 @@ jobs:
           # time and a memory bound.
           "$exe" conformance build --robustness "$RUNNER_TEMP/robustness"
           python .github/scripts/damaged.py "$exe" "$RUNNER_TEMP/corpus-native" --structural "$RUNNER_TEMP/robustness"
-      # macOS's Pythons are universal2, and run their arm64 half on Apple
-      # silicon unless the shell that starts them runs under Rosetta; then
-      # every program it starts prefers x86_64 too.  So a cross-built wheel's
-      # checks run again in an x86_64 bash (the build itself needs no x86_64
-      # Python: the target, not the interpreter, names the wheel's platform).
       - name: The wheel installs and runs the conformance corpus
         shell: bash
         run: |
-          if [[ "$ROSETTA" && "$(uname -m)" != "$ROSETTA" ]]; then exec arch -"$ROSETTA" /bin/bash -eo pipefail "$0"; fi
           python -c "import platform; print(platform.machine())"
           pip install dist/*-abi3-*.whl
           cd "$RUNNER_TEMP"
@@ -122,7 +109,6 @@ jobs:
       - name: The binary hands the converters to the wheel's Python
         shell: bash
         run: |
-          if [[ "$ROSETTA" && "$(uname -m)" != "$ROSETTA" ]]; then exec arch -"$ROSETTA" /bin/bash -eo pipefail "$0"; fi
           exe="$PWD/target/${{ inputs.target }}/release/medh5"
           if [[ -f "$exe.exe" ]]; then exe="$exe.exe"; fi
           cd "$RUNNER_TEMP"

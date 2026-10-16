@@ -276,20 +276,6 @@ jobs:
       target: aarch64-apple-darwin
       runner: macos-15
 
-  build-macos-x86_64:
-    # Cross-built on Apple silicon, where Rosetta runs the wheel's checks and
-    # the binary.  On an Intel
-    # runner this was the slowest build of every run (14 to 23 minutes), so it
-    # ran only in the merge queue, where a break particular to it cost a whole
-    # re-queue; and GitHub's last Intel image retires in 2027.
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    uses: ./.github/workflows/build.yml
-    with:
-      target: x86_64-apple-darwin
-      runner: macos-15
-      rosetta: true
-
   build-windows-x86_64:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -586,8 +572,8 @@ jobs:
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
   test-linux-aarch64:
-    # The two wheels no job above tests, as published: Linux on aarch64 and
-    # macOS on x86_64 (their binaries run the corpus in their builds).
+    # The wheel no job above tests, as published: Linux on aarch64 (its
+    # binary runs the corpus in its build).
     needs: build-linux-aarch64
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
@@ -601,32 +587,6 @@ jobs:
           name: ci-dist-aarch64-unknown-linux-gnu
           path: dist/
       - run: pip install "$(ls dist/*-abi3-*.whl)[dev,torch,nifti,dicom,dicomseg]"
-      - run: rm -rf medh5
-      - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
-
-  test-macos-x86_64:
-    # On Apple silicon, under Rosetta.  The Python is universal2, and runs its
-    # x86_64 half only when the shell that starts it does; then it loads only
-    # an x86_64 extension, and pip installs x86_64 packages.  PyTorch has
-    # published no macOS x86_64 wheel since 2.2, which predates NumPy 2, so
-    # this one goes without `torch`.
-    needs: build-macos-x86_64
-    runs-on: macos-15
-    timeout-minutes: 45
-    defaults:
-      run:
-        shell: arch -x86_64 /bin/bash -eo pipefail {0}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - run: python -c "import platform; assert platform.machine() == 'x86_64', platform.machine()"
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ci-dist-x86_64-apple-darwin
-          path: dist/
-      - run: pip install "$(ls dist/*-abi3-*.whl)[dev,nifti,dicom,dicomseg]"
       - run: rm -rf medh5
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
@@ -999,7 +959,6 @@ jobs:
       - build-linux-x86_64
       - build-linux-aarch64
       - build-macos-arm64
-      - build-macos-x86_64
       - build-windows-x86_64
       - sdist
       - msvc-from-crates-io
@@ -1008,7 +967,6 @@ jobs:
       - test-macos
       - test-windows
       - test-linux-aarch64
-      - test-macos-x86_64
       - test-min-deps
       - test-monai
       - test-meds

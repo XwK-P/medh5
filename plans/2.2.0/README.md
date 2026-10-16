@@ -35,7 +35,8 @@ first (its rules hold here too, with `w22/` branches and `W22-` titles), then
    binary converts NIfTI without Python.
 3. **More DICOM.** Enhanced and legacy-converted multi-frame CT, MR and PET.
 4. **Free-threaded Python, more platforms.** `gil_used = false` after an audit;
-   musllinux; macOS x86_64 cross-built before GitHub retires Intel runners.
+   musllinux. macOS on Intel is dropped (E12), after first being cross-built
+   before GitHub retires Intel runners.
 5. **De-identification that finishes the job.** Collections, and rewriting
    clinical text with spans kept valid.
 6. **Registration and clinical import at scale.** ITK's HDF5 transform files,
@@ -75,17 +76,18 @@ release names).
 | [W22-02](w22-02-native-nifti.md) | A native NIfTI converter | L | 6 | 3: item 1; items 2–3; items 4–6 | W21-13 PRs 1, 5, 6 (helpers, float64 qform, `--plane-as-volume`, `import-seg-nifti`) |
 | [W22-03](w22-03-enhanced-dicom.md) | Enhanced multi-frame DICOM import | L | 3 | 1 | W21-13 PRs 1, 5 (`_frames.py`, per-slice rescale) |
 | [W22-04](w22-04-free-threading.md) | Free-threading | L | 4 | 1 (`gil_used = false` its last commit) | W21-01 PR 3 (cp314t wheels), W21-15 PR 1 (GIL) |
-| [W22-05](w22-05-platforms.md) | Platforms: musllinux, macOS x86_64, `abi3t` | L | 4 | 2: item 2 (the enabler); items 1, 3, 4 | W21-00 PR 7 (`build.yml`) |
+| [W22-05](w22-05-platforms.md) | Platforms: musllinux, macOS x86_64, `abi3t` | L | 5 | 3: item 2 (the enabler); items 1, 3, 4; item 5 (E12) | W21-00 PR 7 (`build.yml`) |
 | [W22-06](w22-06-fuzzing.md) | Fuzzing the C libraries | M | 2 | 1 | W21-01 PR 1 |
 | [W22-07](w22-07-deidentification.md) | De-identification: collections, clinical text | L | 2 | 1 | W21-10 |
 | [W22-08](w22-08-registration.md) | Registration I/O: ITK HDF5 files, B-splines | M | 2 | 1 | W21-07 PR 4 |
 | [W22-09](w22-09-clinical-cohorts.md) | Clinical import across a cohort | M | 2 | 1 | W21-12 |
 | [W22-10](w22-10-resample.md) | Resampling as a recorded derivation | L | 2 | 2: item 1; item 2 | `transform_between` and its visit refusal (D28), the inverse of a chain (W21-07), one replace routine (W21-05 PR 1) |
 
-So 2.2.0 lands as 14 pull requests and the release pull request. W22-02 is
-split because it is large (a codec, an importer and an exporter, each
-reviewed on its own) and because W22-10 waits on its last third. W22-10 is
-split because its second item waits on W22-02.
+So 2.2.0 lands as 15 pull requests and the release pull request (W22-05's
+item 5, E12, was added after the plan). W22-02 is split because it is large (a
+codec, an importer and an exporter, each reviewed on its own) and because W22-10
+waits on its last third. W22-10 is split because its second item waits on
+W22-02.
 
 ## Order of work
 
@@ -111,7 +113,7 @@ and the stress job pass (E4).
 
 | Lane | Sequence | Branches |
 |---|---|---|
-| A, platform | W22-05 PR 2 (enabler) → W22-05 → W22-06 | `w22/platforms-x86`, `w22/platforms`, `w22/fuzzing` |
+| A, platform | W22-05 PR 2 (enabler) → W22-05 → W22-06, and W22-05 item 5 (E12) | `w22/platforms-x86`, `w22/platforms`, `w22/fuzzing` |
 | B, format | W22-01 → W22-08 | `w22/format-1.2`, `w22/registration` |
 | C, NIfTI | W22-02 PR 1 → W22-02 PRs 2–3 → W22-02 PRs 4–6 | `w22/native-nifti`, `w22/native-nifti-2`, `w22/native-nifti-3` |
 | D, Python | W22-04 | `w22/free-threading` |

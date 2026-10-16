@@ -7,7 +7,7 @@
 | Lands after | v2.1.0 released |
 | Builds on (2.1.0) | `build.yml` and the per-platform callers (W21-00 PR 7); the wheel checks in `release.yml` (W21-01 PR 3) |
 | Owns | the pyo3 feature line in `Cargo.toml`, `.github/workflows/{ci.yml,build.yml,release.yml}` platform lists, `.github/scripts/build-dist.sh`, `tests/project/test_packaging.py` |
-| Decisions | E5 (the floor stays), E6, E10 |
+| Decisions | E5 (the floor stays), E6, E10, E12 (macOS on Intel dropped) |
 
 ## Session prompt
 
@@ -33,6 +33,7 @@
 | 2 | 05.2 macOS x86_64 cross-built on arm64 | S–M |
 | 3 | 05.3 `abi3t`, if its conditions hold | S |
 | 4 | 05.4 HDF5's own close-on-exec, if released | S |
+| 5 | 05.5 Drop macOS on Intel (E12), from `w22/platforms-x86` again | S |
 
 Item 2 lands first and alone, as lane A's enabler: every queue run of 2.2.0
 waits on the Intel Mac chain until it does. Items 1, 3 and 4 then land as one
@@ -90,6 +91,7 @@ is withdrawn (E5): 3.10 stays supported in 2.2.0.
   rewritten to pin whichever was chosen; the release tuples, `TARGETS` and the
   Homebrew table still agree.
 - **Changelog.** `<!-- no entry: CI only -->`.
+- **Landed** as #70; superseded by 05.5, which removes the target.
 
 ### 05.3 `abi3t`, if its conditions hold (PR 3, E6)
 
@@ -105,3 +107,16 @@ is withdrawn (E5): 3.10 stays supported in 2.2.0.
   2.1.0 filed), bump it: `SECURITY.md`'s native inventory row, every advisory
   re-read, the VEX statement if needed, `THIRD_PARTY_NOTICES`. The engine's mark
   stays, as a no-op for safety. Otherwise, nothing.
+
+### 05.5 Drop macOS on Intel (PR 5, E12)
+
+- **Change.** Remove `build-macos-x86_64` and `test-macos-x86_64` from
+  `ci.yml` and `ci-ok`, `build.yml`'s `rosetta` input and its two re-executions
+  under Rosetta, `x86_64-apple-darwin` from `release.yml`'s platforms and
+  `third_party_notices.py`'s `TARGETS`, and macOS Intel from the Homebrew
+  formula, which refuses there instead. `docs/install.md`, `README.md` and
+  `CONTRIBUTING.md` stop listing it. Apple silicon stays on `macos-15`.
+- **Tests.** `test_macos_x86_64_is_cross_built_and_tested_on_every_run`
+  becomes `test_macos_on_intel_is_not_built`; the Homebrew test checks the
+  refusal; the target lists still agree.
+- **Changelog.** Behaviour changes, area `platform`.

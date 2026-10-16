@@ -74,13 +74,12 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
   anchor, including links into the specification by clause.
 
 CI also builds the wheel and the native binary for every platform the project
-ships — Linux x86_64 and aarch64 (manylinux_2_28), macOS arm64 and x86_64
-(cross-built on Apple silicon), Windows x64 — and runs the conformance corpus
-through each, and each binary's hand-over of the converters to Python. It runs
-the suite against every wheel: on Python 3.10–3.14 on Linux x86_64, on macOS
-arm64 (for the `spawn` start method), on Windows (for the atomic-replace paths,
-`medh5.torch`'s handle cache among them), on Linux aarch64 and macOS x86_64
-(under Rosetta), and at every floor `pyproject.toml` declares (NumPy's, each
+ships — Linux x86_64 and aarch64 (manylinux_2_28), macOS arm64, Windows x64 —
+and runs the conformance corpus through each, and each binary's hand-over of
+the converters to Python. It runs the suite against every wheel: on Python
+3.10–3.14 on Linux x86_64, on macOS arm64 (for the `spawn` start method), on
+Windows (for the atomic-replace paths, `medh5.torch`'s handle cache among them),
+on Linux aarch64, and at every floor `pyproject.toml` declares (NumPy's, each
 extra's, and the test suite's HDF5 tools'); and on the next Python (3.15) for
 information, not as a gate, until what the suite needs publishes for it. It
 reads every valid corpus case, and its samples under each Blosc2 profile, with

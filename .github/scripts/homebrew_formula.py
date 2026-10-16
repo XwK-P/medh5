@@ -4,7 +4,8 @@
 
 ``SHA256SUMS`` is the release's checksum file, ``<sha256>  <archive>`` per
 line, as the release workflow writes it.  The formula installs the prebuilt
-binary on macOS and Linux, arm64 and x86_64; the release pushes it to the tap.
+binary on macOS (Apple silicon) and Linux (arm64 and x86_64); the release
+pushes it to the tap.
 Nothing here touches the network.
 """
 
@@ -19,9 +20,10 @@ from pathlib import Path
 LICENSES = ("MIT", "BSD-3-Clause", "BSD-2-Clause", "Zlib", "Apache-2.0", "MIT-0")
 
 # Homebrew's (OS, architecture) blocks and the Rust target built for each.
+# macOS on Intel is not among them (2.2.0 dropped it): there the formula
+# refuses to install, rather than offering a download that does not exist.
 TARGETS = {
     ("macos", "arm"): "aarch64-apple-darwin",
-    ("macos", "intel"): "x86_64-apple-darwin",
     ("linux", "arm"): "aarch64-unknown-linux-gnu",
     ("linux", "intel"): "x86_64-unknown-linux-gnu",
 }
@@ -48,7 +50,11 @@ def formula(version: str, sums: dict[str, str], repository: str) -> str:
     blocks = []
     for os_name in ("macos", "linux"):
         arches = []
+        if (os_name, "intel") not in TARGETS:
+            arches.append("    depends_on arch: :arm64")
         for arch in ("arm", "intel"):
+            if (os_name, arch) not in TARGETS:
+                continue
             name = archive(version, TARGETS[(os_name, arch)])
             if name not in sums:
                 raise SystemExit(f"SHA256SUMS lists no {name}")

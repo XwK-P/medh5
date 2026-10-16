@@ -8,8 +8,7 @@
 # cover --- and the binary, archived with its licence, the notices of what it
 # links and its README, to cli/.  CI runs this on every
 # platform the project ships --- inside a manylinux_2_28 container on Linux, so
-# both run on any glibc from 2.28, and for macOS x86_64 on Apple silicon --- and
-# the release publishes what CI built.
+# both run on any glibc from 2.28 --- and the release publishes what CI built.
 set -euo pipefail
 
 target="$1"
@@ -58,8 +57,8 @@ else
   compatibility=()
 fi
 # The Rust rust-toolchain.toml pins, which rustup reads from the checkout, as
-# every cargo below does, with the standard library of the target: on Apple
-# silicon, x86_64-apple-darwin is a cross-build (a no-op for the host's own).
+# every cargo below does, with the standard library of the target (a no-op for
+# the host's own).
 rustup toolchain install --no-self-update
 rustup target add "$target"
 
