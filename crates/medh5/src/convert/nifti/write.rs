@@ -21,6 +21,7 @@ use ndarray::{Array2, ArrayD, Axis, IxDyn};
 use serde_json::{json, Map, Value};
 
 use super::header::{Element, Header, Version, VoxOffset, NIFTI1_SINGLE_OFFSET};
+use super::import::swap_suffix;
 use super::qform::qform;
 use crate::array::{DType, NdArray};
 use crate::convert::report::ConversionReport;
@@ -185,12 +186,13 @@ pub fn nifti_target(path: &Path) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-/// The file beside a NIfTI file sharing its stem and ending in `suffix`.
+/// The file beside a NIfTI file sharing its stem and ending in `suffix`,
+/// the stem in the name's own bytes (a name that is not UTF-8 keeps them).
 pub fn sidecar_path(target: &Path, suffix: &str) -> PathBuf {
-    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    for extension in NIFTI_SUFFIXES {
-        if let Some(stem) = name.strip_suffix(extension) {
-            return target.with_file_name(format!("{stem}{suffix}"));
+    if let Some(name) = target.file_name() {
+        let shown = name.to_string_lossy();
+        if let Some(extension) = NIFTI_SUFFIXES.iter().find(|e| shown.ends_with(*e)) {
+            return target.with_file_name(swap_suffix(name, extension.len(), suffix));
         }
     }
     target.with_extension(suffix.trim_start_matches('.'))
@@ -1069,6 +1071,15 @@ mod tests {
     fn s3_sidecars_share_the_stem() {
         assert_eq!(sidecar_path(Path::new("/d/x.nii.gz"), ".json"), Path::new("/d/x.json"));
         assert_eq!(sidecar_path(Path::new("/d/x.nii"), ".bval"), Path::new("/d/x.bval"));
+        #[cfg(unix)]
+        {
+            // "caf\xe9": no UTF-8.  Its sidecar keeps the byte the reader
+            // looks for, not the lossy "caf\u{fffd}".
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt;
+            let target = Path::new("/d").join(OsStr::from_bytes(b"caf\xe9.nii.gz"));
+            assert_eq!(sidecar_path(&target, ".json"), Path::new("/d").join(OsStr::from_bytes(b"caf\xe9.json")));
+        }
         assert!(nifti_target(Path::new("/d/x.img")).is_err());
     }
 }

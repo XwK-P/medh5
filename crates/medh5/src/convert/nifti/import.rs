@@ -253,7 +253,7 @@ fn sidecar(path: &Path, suffix: &str) -> Option<PathBuf> {
 /// `name` less its last `cut` bytes, an ASCII suffix, then `suffix`.  On Unix
 /// the stem keeps the name's own bytes, so a name that is not UTF-8 finds its
 /// own sidecars, as 2.1.0 did through `surrogateescape`.
-fn swap_suffix(name: &OsStr, cut: usize, suffix: &str) -> OsString {
+pub(super) fn swap_suffix(name: &OsStr, cut: usize, suffix: &str) -> OsString {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
