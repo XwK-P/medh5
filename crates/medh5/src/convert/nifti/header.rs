@@ -458,7 +458,7 @@ impl Header {
     /// The byte order a block is stored in, guessed as 2.1.0 guessed it:
     /// `dim[0]` from 1 to 7 is this machine's order, 0 is settled by
     /// `sizeof_hdr`, and anything else is the other order.
-    pub fn guess_big_endian(block: &[u8], version: Version) -> bool {
+    fn guess_big_endian(block: &[u8], version: Version) -> bool {
         let (dim0, _) = probe(block, version, NATIVE_BIG);
         match dim0 {
             0 => {
@@ -475,7 +475,8 @@ impl Header {
     }
 
     /// Decode `block`, exactly `version.size()` bytes, in the byte order
-    /// [`guess_big_endian`](Self::guess_big_endian) finds.  Nothing is
+    /// 2.1.0 would have guessed for it (a block of another size is refused,
+    /// not probed).  Nothing is
     /// checked: see [`check_fix`](Self::check_fix).
     pub fn decode(block: &[u8], version: Version) -> Result<Header> {
         if block.len() != version.size() {
@@ -486,7 +487,7 @@ impl Header {
     }
 
     /// Decode `block` in the given byte order.
-    pub fn decode_as(block: &[u8], version: Version, big: bool) -> Header {
+    fn decode_as(block: &[u8], version: Version, big: bool) -> Header {
         let f = Fields { block, big };
         let mut h = Header::new(version);
         h.big_endian = big;
