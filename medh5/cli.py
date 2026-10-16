@@ -262,6 +262,24 @@ def _files(
             trees.append(("the MEDS dataset this command reads", root))
     elif command == "clinical-augment-cohort":
         read("the mapping this command reads", "mapping")
+        # Each sample the mapping names is amended in place, or read and
+        # written under its name in --out-dir; a mapping that does not
+        # parse is refused by the command itself.
+        mapping = given("mapping")
+        out_dir = given("out_dir")
+        with contextlib.suppress(OSError, ValueError, MEDH5ValidationError):
+            cohort = (
+                {}
+                if mapping is None
+                else _cohort_mapping(mapping, meds=bool(args.get("from_meds")))
+            )
+            for subject, sample in cohort.items():
+                whose = f"subject {subject}'s sample, which this command"
+                if out_dir is None:
+                    reads.append((f"{whose} amends", sample))
+                else:
+                    reads.append((f"{whose} reads", sample))
+                    writes.append((f"{whose} writes", out_dir / sample.name))
         if (root := given("from_meds")) is not None:
             trees.append(("the MEDS dataset this command reads", root))
         if (root := given("from_fhir_bulk")) is not None:

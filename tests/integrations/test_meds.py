@@ -4,6 +4,7 @@ nothing invented --- no zone, no origin, no unit, no availability, no code."""
 from __future__ import annotations
 
 import datetime
+import os
 import sys
 import zoneinfo
 from pathlib import Path
@@ -512,6 +513,43 @@ def test_a_cohort_mapping_is_checked_before_anything_is_read(tmp_path):
         assert found.clinical is None
 
 
+def test_a_cohort_never_writes_two_subjects_to_one_sample(tmp_path):
+    """A sample holds one subject's history: a mapping that would write two
+    subjects to one file --- the same sample, a link to it, two samples of
+    one name into `out_dir`, or one subject over another's source --- is
+    refused before anything is written."""
+    from medh5.io.meds import augment_cohort_from_meds
+
+    dataset = Meds.write(tmp_path / "meds", _cohort_rows((1, 2)))
+    sample = Meds.sample(tmp_path / "s.medh5")
+    link = tmp_path / "link.medh5"
+    os.link(sample, link)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    a = Meds.sample(tmp_path / "a" / "s.medh5")
+    b = Meds.sample(tmp_path / "b" / "s.medh5")
+    out = tmp_path / "out"
+    for mapping, out_dir in (
+        ({1: sample, 2: sample}, None),
+        ({1: sample, 2: link}, None),
+        ({1: sample, 2: tmp_path / "sub" / ".." / "s.medh5"}, None),
+        ({1: a, 2: b}, out),
+        ({1: a, 2: out / "s.medh5"}, out),
+    ):
+        with pytest.raises(MEDH5ValidationError, match="both be written to"):
+            augment_cohort_from_meds(dataset, mapping, out_dir=out_dir, **COHORT)
+    assert not out.exists()
+    for path in (sample, a, b):
+        with open_sample(path) as found:
+            assert found.clinical is None
+    # Into the samples' own directory, each subject is written to itself.
+    other = Meds.sample(tmp_path / "t.medh5")
+    cohort = augment_cohort_from_meds(
+        dataset, {1: a, 2: other}, out_dir=tmp_path / "a", **COHORT
+    )
+    assert not cohort.refused
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="peak RSS is POSIX's")
 def test_memory_is_bounded_by_one_subject(tmp_path):
     """A dataset in MEDS order, a subject per row group, is read a row group
@@ -612,6 +650,19 @@ def test_clinical_augment_cohort_from_meds(tmp_path, capsys):
     inside = [*argv[:-1], str(dataset / "report.json")]
     assert main(inside) == EXIT_ERROR
     assert "inside the MEDS dataset" in capsys.readouterr().err
+    # So is a report that would replace a sample it reads or writes.
+    mapping.write_text("subject,sample\n1,s1.medh5\n", encoding="utf-8")
+    for named, what in (
+        (tmp_path / "out" / "s1.medh5", "which this command writes"),
+        (tmp_path / "s1.medh5", "which this command reads"),
+    ):
+        assert main([*argv[:-1], str(named)]) == EXIT_ERROR
+        assert f"subject 1's sample, {what}" in capsys.readouterr().err
+    in_place = [*argv[:-4], "--report", str(tmp_path / "s1.medh5")]
+    assert main(in_place) == EXIT_ERROR
+    assert "which this command amends" in capsys.readouterr().err
+    with open_sample(tmp_path / "s1.medh5") as s:
+        assert s.clinical is None
     # One source, and a mapping.
     assert main(argv[:4]) == EXIT_USAGE
     capsys.readouterr()

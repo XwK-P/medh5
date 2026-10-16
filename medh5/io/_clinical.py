@@ -11,6 +11,7 @@ by both, and one that never occurred (the spring-forward gap) is refused.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import os
 import re
@@ -216,13 +217,43 @@ def cohort_targets(
     if not mapping:
         raise MEDH5ValidationError("the mapping names no subject to import")
     out = None if out_dir is None else Path(os.fspath(out_dir))
-    if out is not None:
-        out.mkdir(parents=True, exist_ok=True)
     targets = []
     for subject, sample in mapping.items():
         path = Path(os.fspath(sample))
         targets.append((subject, path, None if out is None else out / path.name))
+    # A sample holds one subject: two subjects written to one file, or one
+    # written over another's source, would put two histories in it.  Checked
+    # before anything is written.
+    sources = {_identity(path): subject for subject, path, _ in targets}
+    written: dict[Any, Any] = {}
+    for subject, path, target in targets:
+        where = path if target is None else target
+        key = _identity(where)
+        other = written.get(key, sources.get(key, subject))
+        if other != subject:
+            raise MEDH5ValidationError(
+                f"subjects {other!r} and {subject!r} would both be written to "
+                f"{where}: a sample holds one subject's history, so map each "
+                "subject to a sample of its own"
+            )
+        written[key] = subject
+    if out is not None:
+        out.mkdir(parents=True, exist_ok=True)
     return targets
+
+
+def _identity(path: Path) -> Any:
+    """What tells two paths to one file apart: the file itself, by device
+    and inode, where it exists (a link, a hard link, ``sub/../a``), else
+    the resolved path."""
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):  # RuntimeError: a link loop
+        resolved = path.absolute()
+    with contextlib.suppress(OSError):
+        found = resolved.stat()
+        return (found.st_dev, found.st_ino)
+    return resolved
 
 
 def sample_clock(path: Path) -> Clock:
