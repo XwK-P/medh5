@@ -507,8 +507,10 @@ annotations only. An absent follow-up is censoring under the task's policy, neve
   `/meta`'s dates, effective and available bounds alike, so a selection at a cutoff moved by that
   shift admits the same versions; the clock becomes `shifted_utc` under a new `clock.id`, and
   event, record and document ids are replaced consistently. The versions it writes are new versions
-  of a new sample, not amendments of the source's (§7.3). Text it does not rewrite is attested as
-  de-identified by whoever did, with the digests of the bytes attested.
+  of a new sample, not amendments of the source's (§7.3). Text it rewrites is a new document owned
+  by a new version of its event (§6), every span into it moved through the edit, and a span that
+  overlaps a rewritten range refuses the derivation rather than move. Text it does not rewrite is
+  attested as de-identified by whoever did, with the digests of the bytes attested.
 - **MEDS** rows map from `subject_id`, `time`, `code`, `numeric_value` and `text_value` (MEDS 0.3)
   onto the event's subject, effective time, `code`, `value_num` and `value_text`; MEDS
   subject ids need an explicit mapping, and availability bounds, revisions, units and imaging

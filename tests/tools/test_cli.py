@@ -1901,7 +1901,6 @@ class TestCuration:
             ["seg", "convert", "{}", "organs_tp0", "--to", "bitmask"],
             ["agree", "{}", "organs_tp0", "organs_tp0"],
             ["fix", "{}"],
-            ["scrub", "{}"],
         ],
     )
     def test_S2_2_a_command_on_one_sample_names_the_way_to_a_member(

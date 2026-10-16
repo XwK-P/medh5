@@ -10,13 +10,14 @@ untouched. **A file this tool calls clean may still be identifying.** Pixel
 de-identification is a separate job, and this page assumes you have done it or
 established that you do not need to.
 
-**Nor does it rewrite clinical text** (format 1.1). It reads the clinical
+**Nor does it clear clinical text** (format 1.1). It reads the clinical
 profile — its clock, its ids, and its text one document at a time — and finds
 names, dates, UIDs and record numbers there, but a report is free text no rule
-can clear, and a rewritten text would move every span that points into it. So
-the text must be de-identified by a tool or a person who can, and attested as
-such (section 4); until then the sample is never clean and `--apply` refuses
-it. If the history is not needed, share the imaging projection instead:
+can clear. `--redact-text` replaces what the rules find with placeholders, as
+new documents with every span moved (section 4); the rest of the text must be
+de-identified by a tool or a person who can, and attested as such. Until then
+the sample is never clean and `--apply` refuses it. If the history is not
+needed, share the imaging projection instead:
 `medh5 clinical strip case.medh5 --out case.imaging.medh5` writes the sample
 without its clinical records, as a different file.
 
@@ -274,6 +275,49 @@ timepoint whose `date` was
 added after the shift is reported: its `days_from_baseline` puts it apart from
 the dates that moved together, and a person has to decide what it should say.
 
+### A collection
+
+A collection (`.medh5c`, §2.2) is scanned and scrubbed member by member, and
+`--apply` writes a **new collection**: `--out NEW.medh5c` (or `--out-dir DIR`,
+where it keeps its own name) is required, and the source is only read.
+
+```bash
+medh5 scrub cohort.medh5c --apply --salt "$SALT" --pseudonymise-ids \
+    --date-shift-range=-400:-100 --out shared/cohort.medh5c
+```
+
+<!-- illustrative -->
+```python
+report = scrub.apply(
+    "cohort.medh5c",
+    salt=SALT,
+    pseudonymise_ids=True,
+    date_shift_range=(-400, -100),
+    out="shared/cohort.medh5c",
+)
+```
+
+Each member is scrubbed by the sample rules with the one salt, so it gets
+what it would get as a file of its own: the same pseudonyms, the same
+re-minted clinical ids, and — from a range — its subject's shift, which every
+member of that subject shares. Under `--pseudonymise-ids` a member is keyed by
+its pseudonymised sample id, as `--out-dir` names a file, since a member key is
+usually the sample id; otherwise it keeps its key, and a key that is itself an
+identifier is reported (`file_name`, at `KEY::member key`). Each member's
+`content_id` is the one its scrub computed, and the collection's member list is
+rebuilt from them.
+
+The report is one, for the collection: each finding's `where` names its member
+(`KEY::timepoints[0].date`), with the key it had in the source, and what the
+re-scan of the written collection still finds is under the key it was written
+as. Its `uid_map` keeps a re-minted clinical id under its member
+(`KEY::event:visit`), since two subjects' histories re-mint apart; the
+pseudonym of an id or a UID is the salt's alone, and one entry serves every
+member. A member that refuses — a clinical sample with unattested text, say —
+fails the whole collection, and nothing is written. `--skip-refused`
+(`skip_refused=True`) leaves it out instead, and lists it as a
+`refused_member` finding.
+
 ## 3. Record what was done
 
 The record is part of the file, not a note in a README:
@@ -302,7 +346,7 @@ the profile adds four rules:
 |---|---|---|
 | `clinical_clock` | a `utc` clock: every time on it is the subject's own | moves every time by the shift |
 | `clinical_id` | the clock's id, encounter ids, and event, record or document ids holding a name, a date, a UID or the sample's ids | re-mints them, with a salt |
-| `clinical_text` | a name, date, UID or one of the sample's ids in a document or a short text column, with its byte span | refuses while a name, UID or id is there |
+| `clinical_text` | a name, date, UID or one of the sample's ids in a document or a short text column, with its byte span | refuses while a name, UID or id is there; `--redact-text` replaces it |
 | `clinical` | each document, and the short text columns, that no one has attested as de-identified | refuses until attested |
 
 Text is read one document at a time, so a long report never sits in memory
@@ -353,6 +397,31 @@ report = scrub.apply(
 )
 report.uid_map["event:rep_v2"]    # the new id of event rep_v2
 ```
+
+**Or redact what the rules find.** `--redact-text` (`redact_text=True`)
+rewrites each hit of the `clinical_text` rules — names, dates, UIDs and the
+sample's ids — as its placeholder, `[NAME]`, `[DATE]` or `[ID]`. A name is
+replaced through its last component, so `Smith^Alice^Beth` is one `[NAME]`:
+
+<!-- illustrative -->
+```bash
+medh5 scrub case.medh5 --apply --salt "$SALT" --redact-text --attest-text "reviewed by RAD-07"
+```
+
+A document with a hit is a new document, owned by a new version of its event
+(1.1 §6): the same record, the same availability, a new id, and the
+attestation of the old bytes does not follow it. Every span that pointed into
+the old text is moved through the edit, so it cites the same words in the new
+one; a span that overlaps a redacted range is refused, naming the link,
+rather than moved by a guess. A short text with a hit (`value_text`,
+`missing_reason`) makes a new version of its event too. The run records the
+redaction in a `deidentify` activity of its own (scope
+`clinical_text_redaction`, tool `medh5 scrub`), with its rules, their
+placeholders and the digest of every text it wrote. It records nothing more:
+the rules find names, dates, UIDs and record numbers, not everything that
+identifies a person, so the text it writes still needs `--attest-text` from
+whoever de-identified the rest. It needs `--salt`, since the history is
+written again with re-minted ids.
 
 `report.uid_map` keys a re-minted id by its kind (`event:`, `record:`,
 `document:`, `encounter:`, `clock:`), since an event and its record often

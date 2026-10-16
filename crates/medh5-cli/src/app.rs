@@ -375,7 +375,7 @@ fn curation() -> Vec<Command> {
             .arg(json()),
         Command::new("scrub")
             .about("find identifiers in the container and attest to it (§11.4)")
-            .arg(paths("one or more files"))
+            .arg(paths("one or more sample or collection files"))
             .arg(
                 opt("profile", "profile", "how hard to look: basic (default) or strict")
                     .value_parser(SCRUB_PROFILES)
@@ -415,7 +415,12 @@ fn curation() -> Vec<Command> {
                 "withhold-shift",
                 "with --apply: record that dates were shifted, not by how much (one known date restores every other)",
             ))
-            .arg(opt("out", "out", "with --apply: write the scrubbed sample here, and leave the source as it is"))
+            .arg(opt(
+                "out",
+                "out",
+                "with --apply: write the scrubbed sample (or collection, which needs it or --out-dir) here, and leave \
+                 the source as it is",
+            ))
             .arg(opt(
                 "out_dir",
                 "out-dir",
@@ -431,6 +436,18 @@ fn curation() -> Vec<Command> {
                 )
                 .value_name("TOOL"),
             )
+            .arg(flag(
+                "redact_text",
+                "redact-text",
+                "with --apply and --salt: replace each name, date, UID and sample id found in a clinical sample's text \
+                 with a placeholder, as new documents and event versions, every span moved; new text needs \
+                 --attest-text",
+            ))
+            .arg(flag(
+                "skip_refused",
+                "skip-refused",
+                "with --apply on a collection: leave out a member that refuses, and list it, rather than write nothing",
+            ))
             .arg(json()),
         Command::new("splits")
             .about("audit split claims across files (§12.3)")
