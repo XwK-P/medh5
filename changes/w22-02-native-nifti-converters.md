@@ -24,3 +24,10 @@
   overlapping classes into one labelmap was a Python `UserWarning` on stderr
   from the command line; it is now a warning in the report, as the other
   notes are. `to_nifti` in Python still warns, as it did.
+
+### Fixed
+
+- **A scaled complex-valued NIfTI mask keeps its imaginary voxels.** Under
+  `scl_slope`, 2.1.0 tested only each voxel's real part, so a voxel such as
+  `0+1i` was dropped from the mask; a voxel is now in the mask when either
+  physical part is non-zero, as it already was unscaled.

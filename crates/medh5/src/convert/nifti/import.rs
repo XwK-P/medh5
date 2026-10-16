@@ -1244,7 +1244,7 @@ fn write_sample(
         }
         let value_units = lookup(&options.value_units, &name).filter(|u| !u.is_empty());
         let modality = lookup(&options.modalities, &name).unwrap_or_else(|| "OT".into());
-        let array = voxels.to_ndarray()?;
+        let array = voxels.into_ndarray()?;
         writer.add_image(
             &name,
             &array,
