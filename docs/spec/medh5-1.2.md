@@ -29,7 +29,6 @@ What 1.2 deliberately does not include, and what it would need:
 |---|---|
 | Clinical extension columns (FHIR `interpretation` and `referenceRange`, MEDS code modifiers) | 1.1 §4 closes a clinical table's column set (E804); whether a 1.1 projection can drop an unknown column of a known table without misreading the rest needs its own study. If it cannot, they need a new table, an object a projection can drop. |
 | Annotation pyramids | reserved (1.0 §16); `nearest` under an even factor and `max` over class ids are undefined |
-| A `bspline` transform kind | an ITK B-spline is imported, where it can be exactly, as a sampled displacement field; a kind of its own needs a case the field cannot represent |
 | `rle` | reserved (1.0 §16); a minor could add it as `polylines` is added here, but it needs a measured case `instances` serves badly (1.0 §7.0) |
 | Subjects with no image | E111 and E201 are core errors a 1.1 reader still applies to a newer file's projection, so no 1.x minor can relax them: a 2.0 |
 
