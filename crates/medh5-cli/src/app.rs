@@ -781,12 +781,18 @@ fn convert() -> Vec<Command> {
                     opt(
                         "open_curves",
                         "open-curves",
-                        "what an ROI of open curves becomes: omit (left out with a warning; polylines arrive in \
-                         2.2.0)",
+                        "what an ROI of open curves becomes: omit (left out with a warning) or polylines (a \
+                         polylines annotation, which writes the sample at format 1.2)",
                     )
-                    .value_parser(["omit"])
+                    .value_parser(["omit", "polylines"])
                     .default_value("omit"),
                 )
+                .arg(opt(
+                    "curves_id",
+                    "curves-id",
+                    "with --open-curves polylines: id for the polylines annotation open curves import into \
+                     (default: the contours' id + _curves)",
+                ))
                 .arg(opt(
                     "frame_salt",
                     "frame-salt",
@@ -810,6 +816,11 @@ fn convert() -> Vec<Command> {
                     .value_name("TEXT"),
                 )
                 .arg(opt("points", "points", "a points annotation to write as POINT ROIs (MARKER)"))
+                .arg(opt(
+                    "curves",
+                    "curves",
+                    "a polylines annotation to write as OPEN_PLANAR or OPEN_NONPLANAR ROIs",
+                ))
                 .arg(opt(
                     "frame_salt",
                     "frame-salt",

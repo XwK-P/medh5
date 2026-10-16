@@ -1005,6 +1005,18 @@ E404. A polygon with `axis = −1` takes part in no combination. A writer
 **SHOULD NOT** store crossing polygons of one class in one plane, since
 readers that combine by exclusive-or cancel their overlap.
 
+**RTSTRUCT's contour types** (informative). An RTSTRUCT ROI is drawn in one
+`ContourGeometricType` (PS3.3 C.8.8.6), and each has one home:
+
+| `ContourGeometricType` | Stored as |
+|---|---|
+| `CLOSED_PLANAR`, `CLOSEDPLANAR_XOR` | `contours` (this section); exclusive-or contours that nest are its holes |
+| `POINT` | `points` (§8.5), a row per contour |
+| `OPEN_PLANAR`, `OPEN_NONPLANAR` | `polylines` ([1.2](medh5-1.2.md) §3), a polyline per contour, `OPEN_PLANAR` ones with their `polyline_plane` |
+
+An open curve is never a `contours` polygon: closing it would make a region
+nobody drew.
+
 ### 8.7 `mesh`
 
 | Dataset | Shape | dtype | Meaning |

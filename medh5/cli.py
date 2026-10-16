@@ -537,6 +537,7 @@ def _from_rtstruct(args: Any) -> int:
         roi_classes=_numbered(getattr(args, "roi_classes", None), "roi"),
         points_id=getattr(args, "points_id", None),
         open_curves=getattr(args, "open_curves", None) or "omit",
+        curves_id=getattr(args, "curves_id", None),
         mask_id=args.mask_id,
         annotated_classes=_annotated(args.annotated_classes),
     )
@@ -559,6 +560,7 @@ def _to_rtstruct(args: Any) -> int:
         frame_salt=args.frame_salt,
         report=report,
         points=getattr(args, "points", None),
+        curves=getattr(args, "curves", None),
     )
     return _finish(report, args)
 
