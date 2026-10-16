@@ -1485,6 +1485,47 @@ class TestEnhancedMultiFrame:
         # Named by the StackID and the temporal index.
         assert [s.stack for s in stacks] == ["1-1", "1-2"]
 
+    @pytest.mark.parametrize(
+        ("same_place", "pointers", "expected"),
+        [
+            # A single-plane time series indexed by the frames' time.
+            (True, [0x00189151], [1] * 6),
+            # Each slice's own time in one volume: one stack.
+            (False, [0x00189151], [6]),
+            # Two per-frame indices: which tells the time points apart is
+            # not known, so the coincident frames stay one stack (refused).
+            (True, [0x00189151, 0x00209156], [6]),
+        ],
+    )
+    def test_the_one_dimension_telling_coincident_frames_apart_splits_them(
+        self, tmp_path, same_place, pointers, expected
+    ):
+        """``FrameReferenceDateTime`` is a frame's time: each slice's own in
+        one volume, or one time point's in a single-plane series.  It names
+        no acquisition by itself, and splits only frames at one place that
+        nothing else tells apart."""
+        from medh5.io.dicom import scan_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        for index in range(6):
+            content = _frame(enhanced, index).FrameContentSequence[0]
+            content.InStackPositionNumber = 1 if same_place else index + 1
+            if same_place:
+                first = _frame(enhanced, 0).PlanePositionSequence[0]
+                plane = _frame(enhanced, index).PlanePositionSequence[0]
+                plane.ImagePositionPatient = list(first.ImagePositionPatient)
+        self._dimensions(
+            enhanced, [*pointers, 0x00200032], lambda i: [i + 1] * len(pointers) + [1]
+        )
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        stacks = scan_dicom(tmp_path / "enhanced")
+        assert [s.n_slices for s in stacks] == expected
+        if expected == [1] * 6:
+            out = self._imported(tmp_path / "enhanced", tmp_path / "out.medh5")
+            with medh5.open(out) as sample:
+                assert len(sample.images) == 6
+
     def test_an_irregular_stack_is_refused(self, tmp_path):
         from medh5.io.dicom import from_dicom
 

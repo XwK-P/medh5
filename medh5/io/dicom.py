@@ -542,8 +542,13 @@ def _separating(
     per-frame or per-plane number (``FrameAcquisitionNumber``) splits
     nothing, and nor does a value a plane-varying attribute repeats --- a
     tube current alternating between two values --- where no position
-    repeats.  With a position unknown, every dimension is kept, as before
-    positions were read.
+    repeats.  Frames at one position that no dimension kept so far tells
+    apart are told apart by the one other dimension that does, if only one
+    does: a single-plane time series indexed by ``FrameReferenceDateTime``,
+    a frame's time, which may as well be each slice's own in one volume and
+    so names no acquisition by itself.  Where two would do it, neither is
+    chosen, and the frames are refused as coincident.  With a position
+    unknown, every dimension is kept, as before positions were read.
     """
     count = len(values[0]) if values else 0
     if any(position is None for position in positions):
@@ -567,7 +572,13 @@ def _separating(
         tells = any(len({values[n][d] for n in frames}) > 1 for frames in repeats)
         if spans and tells:
             keep.append(d)
-    return keep
+    for frames in repeats:
+        if any(len({values[n][d] for n in frames}) > 1 for d in keep):
+            continue
+        telling = [d for d in range(count) if len({values[n][d] for n in frames}) > 1]
+        if len(telling) == 1:
+            keep.append(telling[0])
+    return sorted(set(keep))
 
 
 def _stack_key(group: Any, dimensions: Sequence[int]) -> tuple[Any, ...]:

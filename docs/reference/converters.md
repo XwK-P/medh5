@@ -253,34 +253,38 @@ the same position and a value of it is shared by frames at different
 positions. So a dimension that numbers frames or planes
 (`FrameAcquisitionNumber`) splits nothing, and nor does a value that a
 plane-varying attribute repeats over distinct planes (a tube current
-alternating between two values). An acquisition indexed only by such a
-dimension, whose planes motion has shifted so that none repeats, is read with
-the others as one stack, which is refused unless its planes still form a
-regular grid. Each stack becomes a series, with `Series.frames` naming its
-`(file, frame index)` pairs and `Series.stack` the stack where an object holds
-several, and is imported as a classic series would be: every frame read as a
-slice whose position, orientation, pixel spacing, rescale and acquisition
-attributes come from its own functional groups, else the shared ones, else the
-object's top level (an enhanced MR's `EffectiveEchoTime` is its `EchoTime`).
-Frames are decoded one at a time. A frame that states no position, a stack
-that is not a regular grid, and a stack whose `InStackPositionNumber` runs
-against its positions or skips a number (it counts a stack's frames from 1, so
-a gap is a missing plane) are refused with the reason. Frames with different
-rescales follow `per_slice_rescale`. A concatenation's instances are joined by
-`ConcatenationUID` in `InConcatenationNumber` order, and one missing a part is
-refused: the parts are counted against `InConcatenationTotalNumber`, and where
-that optional total is absent their numbers must run from 1 without a gap.
-Each part that states `ConcatenationFrameOffsetNumber` must start where the
-frames of the parts before it end, or frames between them are missing. An
-instance with no `ConcatenationUID` whose markers make it a part (a number or
-total above 1, or a frame offset) is refused rather than read as the whole
-object, and so is an instance whose `NumberOfFrames` is absent or disagrees
-with its per-frame functional groups, which hold one item per frame. One
-instance found at two paths is refused rather than read twice, and so is a
-frame whose position, orientation or pixel spacing is not numbers. Enhanced
-ultrasound volumes and other multi-frame objects are skipped with a warning,
-and an object that carries a patient position but is not an image — an RT Dose
-grid — with a note.
+alternating between two values). Frames at one position that nothing else
+tells apart are split by the one dimension that does, if only one does: a
+single-plane time series indexed by `FrameReferenceDateTime`, a frame's time,
+which in one volume may as well be each slice's own. An acquisition indexed
+only by such a dimension, whose planes motion has shifted so that none
+repeats, is read with the others as one stack, which is refused unless its
+planes still form a regular grid. Each stack becomes a series, with
+`Series.frames` naming its `(file, frame index)` pairs and `Series.stack` the
+stack where an object holds several, and is imported as a classic series would
+be: every frame read as a slice whose position, orientation, pixel spacing,
+rescale and acquisition attributes come from its own functional groups, else
+the shared ones, else the object's top level (an enhanced MR's
+`EffectiveEchoTime` is its `EchoTime`). Frames are decoded one at a time. A
+frame that states no position, a stack that is not a regular grid, and a stack
+whose `InStackPositionNumber` runs against its positions or skips a number (it
+counts a stack's frames from 1, so a gap is a missing plane) are refused with
+the reason. Frames with different rescales follow `per_slice_rescale`. A
+concatenation's instances are joined by `ConcatenationUID` in
+`InConcatenationNumber` order, and one missing a part is refused: the parts
+are counted against `InConcatenationTotalNumber`, and where that optional
+total is absent their numbers must run from 1 without a gap. Each part that
+states `ConcatenationFrameOffsetNumber` must start where the frames of the
+parts before it end, or frames between them are missing. An instance with no
+`ConcatenationUID` whose markers make it a part (a number or total above 1, or
+a frame offset) is refused rather than read as the whole object, and so is an
+instance whose `NumberOfFrames` is absent or disagrees with its per-frame
+functional groups, which hold one item per frame. One instance found at two
+paths is refused rather than read twice, and so is a frame whose position,
+orientation or pixel spacing is not numbers. Enhanced ultrasound volumes and
+other multi-frame objects are skipped with a warning, and an object that
+carries a patient position but is not an image — an RT Dose grid — with a
+note.
 
 **One series does not stop the tree.** A series the importer refuses is left
 out with a warning (`series`) naming it and the reason, and the rest are
