@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ import pytest
 import medh5
 from medh5.errors import MEDH5ValidationError
 from medh5.validate import validate_file
-from tests.helpers import disk_full_while
+from tests.helpers import ROOT, disk_full_while
 from tests.kits import Organs
 
 nib = pytest.importorskip("nibabel")
@@ -23,6 +24,7 @@ from medh5.io.nifti import (  # noqa: E402
     from_nifti,
     import_seg_nifti,
     read_nifti,
+    require_nibabel,
     to_nifti,
 )
 
@@ -1837,3 +1839,82 @@ class TestNiftiInputs:
         assert _os_error(IsADirectoryError(21, "Is a directory", "out")) == (
             "out: Is a directory"
         )
+
+
+# Every converter that reads or writes NIfTI, run where nibabel cannot be
+# imported: a ``None`` in ``sys.modules`` makes ``import nibabel`` raise.
+_WITHOUT_NIBABEL = """
+import sys
+from pathlib import Path
+
+sys.modules["nibabel"] = None
+
+import numpy as np
+
+import medh5
+from medh5.io.itk import from_itk_transform, to_itk_transform
+from medh5.io.nifti import from_nifti, import_seg_nifti, read_nifti, to_nifti
+from medh5.io.nnunetv2 import to_nnunetv2
+from tests.integrations.test_itk import DATA, _pair
+
+work, warp = Path(sys.argv[1]), Path(sys.argv[2])
+shape = (4, 5, 6)
+source = work / "source.medh5"
+with medh5.create(source, sample_id="s", codec="portable") as w:
+    w.add_grid("g", shape=shape, spacing=(2.0, 1.0, 1.0))
+    ct = np.arange(np.prod(shape), dtype=np.int16).reshape(shape)
+    w.add_image("CT", ct, grid="g", modality="CT")
+    mask = np.zeros(shape, bool)
+    mask[1:3, 1:3, 1:3] = True
+    w.add_segmentation("seg", grid="g", masks={1: mask})
+
+image = to_nifti(source, "CT", work / "ct.nii.gz")
+organ = to_nifti(source, "CT", work / "organ.nii", annotation="seg", class_key=1)
+assert np.array_equal(read_nifti(image)[0], ct)
+back = work / "back.medh5"
+assert from_nifti({"CT": image}, back).ok
+assert import_seg_nifti(back, {"organ": organ}).ok
+assert to_nnunetv2([source], work / "nn", dataset_name="Dataset001_s").ok
+
+pair = _pair(work / "pair.medh5")
+report = from_itk_transform(
+    DATA / "ants_affine.mat", pair, transform_id="reg", fixed="fixed",
+    moving="moving", warp=warp, vectors="lps",
+)
+assert report.ok, report.format(verbose=True)
+written = to_itk_transform(
+    pair, work / "out.mat", transform_id="reg", warp_out=work / "out_warp.nii.gz",
+    vectors="lps",
+)
+assert written.ok, written.format(verbose=True)
+assert (work / "out_warp.nii.gz").is_file()
+assert sys.modules["nibabel"] is None
+print("converted without nibabel")
+"""
+
+
+def test_every_nifti_converter_runs_without_nibabel(tmp_path: Path) -> None:
+    """2.2.0 reads and writes NIfTI in the engine: nibabel is a test
+    dependency, and no converter imports it.  The one input made here with
+    nibabel is the ANTs warp the ITK import reads."""
+    from tests.integrations.test_itk import _warp
+
+    warp = _warp(tmp_path / "warp.nii.gz", (1.0, 0.5, -0.25))
+    work = tmp_path / "work"
+    work.mkdir()
+    done = subprocess.run(
+        [sys.executable, "-c", _WITHOUT_NIBABEL, str(work), str(warp)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "converted without nibabel"
+
+
+def test_require_nibabel_says_medh5_no_longer_needs_it(monkeypatch) -> None:
+    assert require_nibabel() is nib
+    monkeypatch.setitem(sys.modules, "nibabel", None)
+    with pytest.raises(ImportError, match="pip install nibabel"):
+        require_nibabel()

@@ -27,6 +27,7 @@ none of them needs nibabel: the header codec, gzip and every rule are
 
 from __future__ import annotations
 
+import importlib
 import os
 import warnings
 from collections.abc import Mapping, Sequence
@@ -37,7 +38,6 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
-from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry import COORD_SYSTEMS, MM_PER_UNIT
 from medh5.io.report import ConversionReport
@@ -62,12 +62,19 @@ sidecar and ``.bval`` this module finds beside them."""
 
 
 def require_nibabel() -> Any:
-    """Import nibabel, or raise an ``ImportError`` naming the extra to install.
+    """Import nibabel, or raise an ``ImportError`` saying how to install it.
 
-    No converter needs it since 2.2.0, when NIfTI moved into the engine; it
-    is kept for code that used it to reach nibabel itself.
+    No converter needs it since 2.2.0, when NIfTI moved into the engine, and
+    the ``nifti`` extra no longer installs it; it is kept for code that used
+    it to reach nibabel itself.
     """
-    return require("nibabel", extra="nifti", purpose="NIfTI conversion")
+    try:
+        return importlib.import_module("nibabel")
+    except ImportError as exc:
+        raise ImportError(
+            "nibabel is not installed, and medh5 no longer needs it for NIfTI; "
+            "install it with: pip install nibabel"
+        ) from exc
 
 
 def convert_world(

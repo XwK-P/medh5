@@ -3,9 +3,10 @@
 One native application over the format engine (the ``medh5-cli`` crate): the
 same grammar, output and exit codes --- 0 success, 1 a handled error, 2 a usage
 error --- whether it runs as the standalone ``medh5`` binary or as this
-package's console script.  The commands only Python can run are handed back to
-the package: the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, ITK, nnU-Net),
-which wrap nibabel, pydicom and highdicom, and the PyTorch dataloader
+package's console script.  NIfTI is converted by the engine itself.  The
+commands only Python can run are handed back to the package: the other format
+converters (DICOM, DICOM SEG, RTSTRUCT, ITK, nnU-Net), which wrap pydicom and
+highdicom or write NIfTI through the engine, and the PyTorch dataloader
 benchmark.  The standalone binary reaches them by running this module's
 ``main`` in a Python interpreter that has the package (``python3`` --- ``python``
 on Windows --- or the one ``MEDH5_PYTHON`` names), with the current directory
