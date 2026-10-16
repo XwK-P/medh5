@@ -270,18 +270,31 @@ impl Provenance {
 
     /// The graph as it stands: its activities as edited.
     pub fn current(&self, py: Python<'_>) -> R<prov_engine::Provenance> {
-        let (agents, objects) = {
-            let state = self.state.read()?;
-            let Some(objects) = &state.activities else { return Ok(state.inner.clone()) };
-            let objects = objects.iter().map(|o| o.clone_ref(py)).collect::<Vec<_>>();
-            (state.inner.agents().cloned().collect(), objects)
-        };
-        // Read under the lock a document's activity takes for an edit to its
-        // `params`, so the graph is one state of every activity.
-        let activities = crate::document::under_live_lock(py, || {
-            objects.iter().map(|a| activity_arg(a.bind(py).as_any())).collect::<R<Vec<_>>>()
-        })?;
-        Ok(prov_engine::Provenance::new(agents, activities)?)
+        loop {
+            let objects = {
+                let state = self.state.read()?;
+                let Some(objects) = &state.activities else { return Ok(state.inner.clone()) };
+                objects.iter().map(|o| o.clone_ref(py)).collect::<Vec<_>>()
+            };
+            // Read under the lock a document's activity takes for an edit to
+            // its `params`, so the graph is one state of every activity; the
+            // objects are read outside this provenance's lock (reading them
+            // runs Python), so the graph is taken as it was read only if it
+            // still holds them, and its agents with them.  An activity
+            // replaced meanwhile, and edited by whoever kept it, reads again.
+            let read = crate::document::under_live_lock(py, || {
+                let activities = objects.iter().map(|a| activity_arg(a.bind(py).as_any())).collect::<R<Vec<_>>>()?;
+                let state = self.state.read()?;
+                let held = state
+                    .activities
+                    .as_ref()
+                    .is_some_and(|now| now.len() == objects.len() && now.iter().zip(&objects).all(|(a, b)| a.is(b)));
+                Ok(held.then(|| (state.inner.agents().cloned().collect::<Vec<_>>(), activities)))
+            })?;
+            if let Some((agents, activities)) = read {
+                return Ok(prov_engine::Provenance::new(agents, activities)?);
+            }
+        }
     }
 }
 

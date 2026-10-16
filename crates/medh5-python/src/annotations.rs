@@ -168,10 +168,12 @@ impl AnnotationPayload {
 
     /// The payload as it stands, for the engine.
     pub fn current(&self, py: Python<'_>) -> R<Payload> {
-        // What the payload holds, taken under the lock; the dicts handed
-        // out are read after it, since reading them runs NumPy on what a
-        // caller put there, each taken whole first (another thread may be
-        // editing it).
+        // What the payload holds, taken under the lock: the dicts handed out
+        // too, each taken whole in one step (another thread may be editing
+        // it) while the lock still says they are the payload's.  A dict
+        // replaced after, and edited by whoever kept it, is no longer read.
+        // Their values are converted after the lock, since that runs NumPy
+        // on what a caller put there.
         let (mut p, datasets, attrs) = {
             let state = self.state.read()?;
             let mut p = Payload::new(&state.inner.kind);
@@ -183,18 +185,15 @@ impl AnnotationPayload {
             if state.attrs.is_none() {
                 p.attrs = state.inner.attrs.clone();
             }
-            let handed = |d: &Option<Py<PyDict>>| d.as_ref().map(|d| d.clone_ref(py));
-            (p, handed(&state.datasets), handed(&state.attrs))
+            let handed =
+                |d: &Option<Py<PyDict>>| d.as_ref().map(|d| crate::convert::dict_items(d.bind(py))).transpose();
+            (p, handed(&state.datasets)?, handed(&state.attrs)?)
         };
-        if let Some(found) = datasets {
-            for (k, v) in crate::convert::dict_items(found.bind(py))? {
-                p.datasets.insert(k.extract()?, data_arg(&v)?);
-            }
+        for (k, v) in datasets.into_iter().flatten() {
+            p.datasets.insert(k.extract()?, data_arg(&v)?);
         }
-        if let Some(found) = attrs {
-            for (k, v) in crate::convert::dict_items(found.bind(py))? {
-                p.attrs.push((k.extract()?, py_to_attr(&v)?));
-            }
+        for (k, v) in attrs.into_iter().flatten() {
+            p.attrs.push((k.extract()?, py_to_attr(&v)?));
         }
         Ok(p)
     }

@@ -553,6 +553,35 @@ class TestOneThreadAtATime:
         every = {f"{k}.{n}" for k in range(threads) for n in range(rounds)}
         assert set(prov.to_json()["activities"][0]["params"]["seen"]) == every
 
+    @pytest.mark.parametrize("document", [False, True])
+    def test_a_replaced_activity_is_not_read_as_the_graphs(self, document: bool):
+        """A thread replacing an activity, then editing the one it replaced,
+        while others read the provenance: no read holds the edit, made after
+        the activity left the graph.  The activities are read outside the
+        provenance's lock, so a read is kept only if the graph still holds
+        what was read."""
+        from medh5.curation import Activity, Provenance
+        from medh5.document import new_document
+
+        def fresh() -> Activity:
+            return Activity("a", "import", params={"left": False})
+
+        if document:
+            prov = new_document("s").provenance
+            prov.add_activity(fresh())
+        else:
+            prov = Provenance(activities=[fresh()])
+
+        def replace() -> None:
+            old = prov.activities[0]
+            prov.add_activity(fresh(), replace=True)
+            old.params["left"] = True
+
+        def read() -> None:
+            assert prov.to_json()["activities"][0]["params"] == {"left": False}
+
+        hammered([replace] + [read] * 3, rounds=2000)
+
     @pytest.mark.parametrize("threads", [8])
     def test_threads_setting_one_default_all_get_it(self, threads: int):
         """Threads calling `setdefault` for one missing key, of a document's
@@ -830,6 +859,26 @@ class TestOneThreadAtATime:
         calls = [edit(k) for k in range(threads)] + [read] * threads
         assert hammered(calls, rounds=500) == 0
         assert len(payload.describe()["datasets"]) == threads
+
+    def test_a_replaced_dict_is_not_read_as_the_payloads(self):
+        """A thread replacing a payload's datasets, then editing the dict it
+        replaced, while others describe the payload: no description holds
+        the edit, made after the dict left the payload.  Each dict is taken
+        whole while the payload's lock says it is the payload's."""
+        from medh5.annotations.base import AnnotationPayload
+
+        payload = AnnotationPayload("points")
+        payload.datasets = {"kept": np.zeros(1)}
+
+        def replace() -> None:
+            old = payload.datasets
+            payload.datasets = {"kept": np.zeros(1)}
+            old["left"] = np.zeros(1)
+
+        def read() -> None:
+            assert list(payload.describe()["datasets"]) == ["kept"]
+
+        hammered([replace] + [read] * 3, rounds=2000)
 
 
 class TestShared:
