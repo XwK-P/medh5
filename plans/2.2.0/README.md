@@ -22,8 +22,9 @@ first (its rules hold here too, with `w22/` branches and `W22-` titles), then
   workstream adds beside them and changes none. The deprecations 2.1.0
   announced stay
   deprecated: their removal is 3.0's (the ledger in plans/README.md).
-- **Platforms.** Nothing is dropped. Python 3.10 stays supported (E5), reversing
-  the 3.11 floor 2.1.0's D36 had planned for this release.
+- **Platforms.** One is dropped: macOS on Intel (E12), which the maintainer
+  decided after the plan. Nothing else is. Python 3.10 stays supported (E5),
+  reversing the 3.11 floor 2.1.0's D36 had planned for this release.
 
 ## Themes
 
