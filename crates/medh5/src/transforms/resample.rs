@@ -312,6 +312,10 @@ pub fn resample(source: &Path, plan: &ResamplePlan) -> Result<Resampled> {
             return Err(e);
         }
     };
+    // Everything opened on the source closes before the amendment replaces
+    // it: the resolved transforms hold groups of their own, which outlive the
+    // sample's file identifier, and Windows cannot replace an open file.
+    drop(prepared);
     drop(sample);
     result.content_id = writer.commit(true)?;
     result.path = out;
@@ -1424,6 +1428,35 @@ mod tests {
             TEST_CROP_BUDGET.with(|b| b.set(CROP_BUDGET));
             assert_eq!(results[0], results[1], "{interpolation}");
         }
+    }
+
+    /// A resample in place through a transform closes everything it opened
+    /// on the source before the amendment replaces it: Windows cannot
+    /// replace an open file, and the resolved transform held one.
+    #[test]
+    fn s14_4_the_source_is_closed_before_the_replace() {
+        use crate::sample::writer_annotations::TransformSpec;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.medh5");
+        let mut w = create(&path, Some("s"), Some("s"), "portable", &[]).unwrap();
+        let frame = |uid: &str| GridOptions { frame_uid: Some(uid.into()), ..Default::default() };
+        w.add_grid("g", &[4, 4, 4], &[1.0, 1.0, 1.0], frame("F0")).unwrap();
+        let image = NdArray::from_vec(&[4, 4, 4], vec![1.0f32; 64]).unwrap();
+        w.add_image("img", &image, "g", "CT", ImageOptions::default()).unwrap();
+        w.add_grid("h", &[4, 4, 4], &[1.0, 1.0, 1.0], frame("F1")).unwrap();
+        let identity = TransformSpec { matrix: Some(Array2::<f64>::eye(4).into_dyn()), ..Default::default() };
+        w.add_transform("t", "affine", "F1", "F0", identity).unwrap();
+        w.commit(true).unwrap();
+        let seen = std::rc::Rc::new(std::cell::Cell::new(None));
+        let record = seen.clone();
+        crate::h5::file::before_rename(Some(Box::new(move |target: &Path| {
+            record.set(Some(crate::h5::file::held_on(target)))
+        })));
+        let result = resample(&path, &ResamplePlan::onto(["img"], "h"));
+        crate::h5::file::before_rename(None);
+        result.unwrap();
+        assert_eq!(seen.get(), Some(0), "the source was still open at the rename");
     }
 
     #[test]
