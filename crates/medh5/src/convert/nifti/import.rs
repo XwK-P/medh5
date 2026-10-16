@@ -431,6 +431,9 @@ fn c_order(bytes: Vec<u8>, item: usize, shape: &[usize], order: &[usize]) -> Vec
     let n = shape.len();
     // An F-order array is its reversed-shape C-order array: a full reversal
     // moves no byte, and nor does any order over one axis that is not 1.
+    if shape.contains(&0) {
+        return Vec::new();
+    }
     let reversed = order.iter().copied().eq((0..n).rev());
     let kept: Vec<usize> = order.iter().copied().filter(|k| shape[*k] != 1).collect();
     if reversed || kept.len() <= 1 || kept.windows(2).all(|w| w[0] > w[1]) {

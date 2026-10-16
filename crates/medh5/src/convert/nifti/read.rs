@@ -472,10 +472,13 @@ impl Image {
         let compressed = is_gzip(&self.image_name);
         let file = File::open(&self.image_name).map_err(|e| open_error(&e, &self.image_name))?;
         if n_bytes == 0 {
-            // A file mapped from a non-zero offset keeps its declared shape;
-            // read, an empty array is `(0,)`.
-            let mapped =
-                !compressed && self.offset > 0 && file.metadata().map(|m| m.len() >= self.offset).unwrap_or(false);
+            // A file mapped from a non-zero offset keeps its declared shape,
+            // when numpy can make an array of it; read, or when numpy refuses
+            // the shape, an empty array is `(0,)`.
+            let mapped = !compressed
+                && self.offset > 0
+                && numpy_holds(&self.shape, element.itemsize())
+                && file.metadata().map(|m| m.len() >= self.offset).unwrap_or(false);
             return Ok(empty(if mapped { self.dims()? } else { vec![0] }));
         }
         let wanted = u64::try_from(n_bytes).unwrap_or(u64::MAX);
@@ -504,6 +507,19 @@ impl Image {
     fn dims(&self) -> Result<Vec<usize>> {
         self.shape.iter().map(|v| usize::try_from(*v).map_err(|_| too_big())).collect()
     }
+}
+
+/// Whether numpy makes an array of `shape`: no extent negative, and the
+/// non-zero extents' bytes counted in an `npy_intp` (an empty array's other
+/// extents still count, so `(2^63 - 1, 3, 0)` is too big).
+fn numpy_holds(shape: &[i64], itemsize: usize) -> bool {
+    let limit = isize::MAX as i64;
+    shape.iter().all(|v| *v >= 0)
+        && shape
+            .iter()
+            .filter(|v| **v != 0)
+            .try_fold(itemsize as i64, |acc, v| acc.checked_mul(*v).filter(|n| *n <= limit))
+            .is_some()
 }
 
 /// numpy's refusal of an array larger than the address space.
@@ -652,12 +668,20 @@ mod tests {
         std::fs::write(&path, single(&h, &[1, 2, 3, 4])).unwrap();
         let err = nifti(&path).read_voxels().unwrap_err();
         assert!(matches!(&err, Error::Value(m) if m.starts_with("array is too big")), "{err:?}");
-        // A zero dimension beside a negative one: empty, but no array's shape.
-        let h = header(Version::Two, &[0, -3, 2]);
-        let path = dir.path().join("negative.nii");
+        // Empty, mapped, and a shape numpy refuses (a negative extent, or
+        // non-zero extents past an npy_intp): nibabel fell back to reading,
+        // and an empty read is (0,), as 2.1.0 gave.
+        for dims in [[0, -3, 2], [i64::MAX, 3, 0], [1 << 62, 4, 0], [i64::MAX, 1, 0]] {
+            let h = header(Version::Two, &dims);
+            let path = dir.path().join("empty.nii");
+            std::fs::write(&path, single(&h, &[])).unwrap();
+            assert_eq!(nifti(&path).read_voxels().unwrap().shape, vec![0], "{dims:?}");
+        }
+        // One numpy makes keeps its shape.
+        let h = header(Version::Two, &[1 << 40, 4, 0]);
+        let path = dir.path().join("empty.nii");
         std::fs::write(&path, single(&h, &[])).unwrap();
-        let err = nifti(&path).read_voxels().unwrap_err();
-        assert!(matches!(&err, Error::Value(m) if m.starts_with("array is too big")), "{err:?}");
+        assert_eq!(nifti(&path).read_voxels().unwrap().shape, vec![1 << 40, 4, 0]);
     }
 
     #[test]
