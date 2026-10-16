@@ -117,7 +117,7 @@ def _fail(message: str) -> int:
 
 
 def _convert(command: str, args: Mapping[str, Any]) -> int:
-    """Run converter *command* (``from-nifti``, ``to-dicom-seg``, ...) on its
+    """Run converter *command* (``from-dicom``, ``to-dicom-seg``, ...) on its
     parsed arguments, keyed as the 1.x parser named them; the exit code.
 
     A handled failure --- a format error (an input that is not the format
@@ -199,18 +199,7 @@ def _files(
             reads.append((what, path))
 
     out = given("out")
-    if command in ("from-nifti", "import-seg-nifti"):
-        for flag in ("image", "mask"):
-            for entry in args.get(flag) or []:
-                name, _, value = str(entry).partition("=")
-                if value:
-                    reads.append(
-                        (f"{flag} {name!r}, which this command reads", Path(value))
-                    )
-        read("the label set this command reads", "label_set")
-        # `import-seg-nifti` amends its sample in place, like `from-dicom-seg`.
-        read("the sample this command amends", "sample")
-    elif command in ("to-nifti", "to-dicom-seg", "to-rtstruct"):
+    if command in ("to-dicom-seg", "to-rtstruct"):
         read("the sample this command reads", "path")
         for source in args.get("source") or []:
             reads.append(("a source image this command reads", Path(source)))
@@ -408,64 +397,6 @@ def _write_report(path: Path, text: str) -> None:
     from medh5 import _core
 
     _core.write_atomic(path, text)
-
-
-def _from_nifti(args: Any) -> int:
-    from medh5.io.nifti import from_nifti
-
-    report = from_nifti(
-        _pairs(args.image, "image"),
-        args.out,
-        masks=_pairs(args.mask, "mask") or None,
-        modalities=_pairs(args.modality, "modality") or None,
-        coord_system=args.coord_system,
-        fourth_axis=args.fourth_axis,
-        assume_geometry=args.assume_geometry,
-        plane_as_volume=args.plane_as_volume,
-        sample_id=args.sample_id,
-        subject_id=args.subject_id,
-        value_units=_pairs(args.value_units, "value-units") or None,
-        codec=args.codec,
-        annotated_classes=_annotated(args.annotated_classes),
-        label_set=args.label_set,
-    )
-    return _finish(report, args)
-
-
-def _import_seg_nifti(args: Any) -> int:
-    from medh5.io.nifti import import_seg_nifti
-
-    report = import_seg_nifti(
-        _sample_file(args.sample),
-        _pairs(args.mask, "mask"),
-        ann_id=args.ann_id,
-        grid=args.grid,
-        annotated_classes=_annotated(args.annotated_classes),
-        assume_aligned=args.assume_aligned,
-        assume_geometry=args.assume_geometry,
-        plane_as_volume=args.plane_as_volume,
-    )
-    return _finish(report, args)
-
-
-def _to_nifti(args: Any) -> int:
-    """An export prints the file it wrote, as it always has; ``--json``
-    prints the report instead, and ``--report`` keeps it."""
-    from medh5.io.nifti import to_nifti
-    from medh5.io.report import ConversionReport
-
-    report = ConversionReport(converter="to-nifti", source=args.path)
-    written = to_nifti(
-        _sample_file(args.path),
-        args.image,
-        args.out,
-        physical=not args.stored,
-        annotation=args.annotation,
-        class_key=args.class_key,
-        report=report,
-    )
-    report.outputs.append(str(written))
-    return _finish(report, args, text=str(written))
 
 
 def _from_dicom(args: Any) -> int:
@@ -700,9 +631,6 @@ def _import_clock(args: Any, sample: str) -> Any:
 
 _HANDLERS: dict[str, Callable[[Any], int]] = {
     "clinical-augment": _clinical_augment,
-    "from-nifti": _from_nifti,
-    "import-seg-nifti": _import_seg_nifti,
-    "to-nifti": _to_nifti,
     "from-dicom": _from_dicom,
     "from-dicom-seg": _from_dicom_seg,
     "to-dicom-seg": _to_dicom_seg,
