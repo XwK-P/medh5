@@ -2671,7 +2671,8 @@ class TestScrubCollection:
             scrubber.apply(source, out=out, salt="pep", withhold_shift=True)
         said = str(no.value)
         assert "member 'visit' of" in said and "--skip-refused" in said
-        assert f"{source}::visit" in said and ".scrub-" not in said
+        # Quoted as Python quotes it, so a Windows path's backslashes double.
+        assert repr(f"{source}::visit") in said and ".scrub-" not in said
         assert not out.exists() and not self._scratch(tmp_path)
         # Left out and listed, the others written.
         report = scrubber.apply(
