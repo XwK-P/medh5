@@ -12,7 +12,8 @@
   joined into one object. A frame with no position, an irregular stack, a
   stack whose `InStackPositionNumber` its positions contradict or that skips a
   number, a concatenation missing a part, a part with no `ConcatenationUID`,
-  and an instance whose `NumberOfFrames` its per-frame groups contradict are
+  an instance whose `NumberOfFrames` its per-frame groups contradict, one
+  instance at two paths and a frame whose geometry is not numbers are
   refused with the reason. `Series` gains `frames` and `stack`.
 
 ### Fixed

@@ -361,8 +361,15 @@ def scan_dicom(
         if sop_class in enhanced:
             if getattr(header, "SeriesInstanceUID", None) is not None:
                 # A concatenation is one object split across instances
-                # (C.7.6.16.2.2.4): its parts are joined by their UID.
-                key = _text(getattr(header, "ConcatenationUID", None)) or str(path)
+                # (C.7.6.16.2.2.4): its parts are joined by their UID, and
+                # any other object by its own, so a copy of it at a second
+                # path joins it (and is refused) rather than becoming a
+                # second acquisition.
+                key = (
+                    _text(getattr(header, "ConcatenationUID", None))
+                    or _text(getattr(header, "SOPInstanceUID", None))
+                    or str(path)
+                )
                 objects.setdefault(key, []).append((str(path), header))
             continue
         uid = getattr(header, "SeriesInstanceUID", None)
@@ -951,6 +958,13 @@ def _check_concatenation(series: Series, headers: Sequence[Any]) -> None:
     its frames are one object's, and a part of them is not a volume."""
     uid = _text(getattr(headers[0], "ConcatenationUID", None))
     if uid is None:
+        if len(headers) > 1:
+            sop = _text(getattr(headers[0], "SOPInstanceUID", None))
+            raise MEDH5ValidationError(
+                f"series {series.series_uid}: instance {sop} is in "
+                f"{len(headers)} files ({', '.join(series.paths)}); its frames "
+                "would be read twice, so remove the duplicate files"
+            )
         _check_not_a_part(series, headers[0])
         return
     # Optional, and any part may state it: every stated total must agree.
@@ -1757,6 +1771,7 @@ def _write_subject(
             writer.identity(**{ID_SOURCE: {"sample_id": source, "subject_id": source}})
             tool = writer.software("medh5", medh5.__version__)
             written = 0
+            units: set[str] = set()
             for index, occasion in enumerate(group.occasions):
                 written += _write_occasion(
                     writer,
@@ -1768,24 +1783,17 @@ def _write_subject(
                     planned[index],
                     log,
                     refused,
+                    units,
                 )
             if not written:
                 raise _NothingWritten
-            # What the rescale gives is each image's value_units: HU for a
-            # CT unless its RescaleType names another quantity.
-            units = sorted(
-                {
-                    _values(e.modality, p.geometry["rescale_type"])["value_units"]
-                    or "no units"
-                    for o in planned
-                    for e, p in o
-                }
-            )
+            # What the rescale gives is each written image's value_units: HU
+            # for a CT unless its RescaleType names another quantity.
             log.decision(
                 "value_scale",
                 "RescaleSlope/Intercept were stored, not applied; "
                 "read(physical=True) returns the rescaled values, in each image's "
-                f"value_units ({', '.join(units)}), and read() returns stored "
+                f"value_units ({', '.join(sorted(units))}), and read() returns stored "
                 "values (§4.2)"
                 + (
                     f"; except in series {', '.join(applied)}, whose per-slice "
@@ -1884,8 +1892,11 @@ def _write_occasion(
     planned: Sequence[tuple[Series, _Planned]],
     log: ConversionReport,
     refused: list[MEDH5ValidationError],
+    units: set[str],
 ) -> int:
-    """Write one visit's series and then its timepoint; how many were written."""
+    """Write one visit's series and then its timepoint; how many were written.
+
+    The ``value_units`` of each image written are added to *units*."""
     tp = f"tp{index}"
     written: dict[str, Series] = {}
     # By position, not by SeriesInstanceUID: the stacks of one enhanced object
@@ -1922,12 +1933,13 @@ def _write_occasion(
             frame_uid=geometry["frame_uid"],
         )
         rescale = geometry["rescale"]
+        values = _values(entry.modality, geometry["rescale_type"])
         writer.add_image(
             image_id,
             volume,
             grid=grid_id,
             modality=entry.modality,
-            **_values(entry.modality, geometry["rescale_type"]),
+            **values,
             rescale_slope=None if rescale is None else rescale[0],
             rescale_intercept=None if rescale is None else rescale[1],
             prov=activity,
@@ -1935,6 +1947,7 @@ def _write_occasion(
         if geometry["acquisition"]:
             writer.acquisition(image_id, **geometry["acquisition"])
         written[image_id] = entry
+        units.add(values["value_units"] or "no units")
     writer.add_timepoint(
         tp,
         index=index,

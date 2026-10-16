@@ -275,7 +275,9 @@ frames of the parts before it end, or frames between them are missing. An
 instance with no `ConcatenationUID` whose markers make it a part (a number or
 total above 1, or a frame offset) is refused rather than read as the whole
 object, and so is an instance whose `NumberOfFrames` is absent or disagrees
-with its per-frame functional groups, which hold one item per frame. Enhanced
+with its per-frame functional groups, which hold one item per frame. One
+instance found at two paths is refused rather than read twice, and so is a
+frame whose position, orientation or pixel spacing is not numbers. Enhanced
 ultrasound volumes and other multi-frame objects are skipped with a warning,
 and an object that carries a patient position but is not an image — an RT Dose
 grid — with a note.

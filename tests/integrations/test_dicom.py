@@ -1760,6 +1760,63 @@ class TestEnhancedMultiFrame:
         with pytest.raises(MEDH5ValidationError, match="RescaleType"):
             from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
 
+    def test_one_instance_at_two_paths_is_refused(self, tmp_path):
+        """A copy of an enhanced instance is the same object, not a second
+        acquisition: its frames would be read twice, so it is refused, as
+        duplicate classic slices are."""
+        from medh5.io.dicom import from_dicom, scan_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        _save(enhanced, tmp_path / "enhanced" / "a" / "ct.dcm")
+        _save(enhanced, tmp_path / "enhanced" / "b" / "ct.dcm")
+        (series,) = scan_dicom(tmp_path / "enhanced")
+        assert len(series.paths) == 2
+        with pytest.raises(MEDH5ValidationError, match="remove the duplicate files"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
+    def test_a_frame_position_that_is_not_numbers_refuses_its_series(self, tmp_path):
+        """A malformed position refuses the object it is in, by frame, and
+        the tree's other series still import."""
+        from pydicom.dataelem import RawDataElement
+        from pydicom.tag import Tag
+
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        # Raw bytes: pydicom refuses to set a DS that is not a number.
+        tag = Tag(0x00200032)
+        _frame(enhanced, 2).PlanePositionSequence[0][tag] = RawDataElement(
+            tag, "DS", 10, b"left\\0\\0 ", 0, False, True
+        )
+        _save(enhanced, tmp_path / "classic" / "enhanced" / "ct.dcm")
+        report = from_dicom(tmp_path / "classic", tmp_path / "out.medh5")
+        (left_out,) = report.of_kind("series")
+        assert "frame 3 of instance" in left_out.message
+        assert "ImagePositionPatient" in left_out.message
+        with medh5.open(tmp_path / "out.medh5") as sample:
+            assert list(sample.images) == ["CT_tp0"]
+
+    def test_value_scale_names_only_the_units_of_images_written(self, tmp_path):
+        """A series refused when its pixels are decoded is not written, so
+        the units its rescale would have given are not reported."""
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        shared = _shared(enhanced, "PixelValueTransformationSequence")
+        shared.PixelValueTransformationSequence[0].RescaleType = "MGML"
+        enhanced.PixelData = enhanced.PixelData[: len(enhanced.PixelData) // 2]
+        _save(enhanced, tmp_path / "classic" / "enhanced" / "ct.dcm")
+        report = from_dicom(tmp_path / "classic", tmp_path / "out.medh5")
+        assert report.of_kind("series")
+        with medh5.open(tmp_path / "out.medh5") as sample:
+            assert [image.value_units for image in sample.images.values()] == ["HU"]
+        (scale,) = report.of_kind("value_scale")
+        assert "(HU)" in scale.message
+        assert "MGML" not in scale.message
+
     def test_enhanced_acquisition_attributes_come_from_the_functional_groups(
         self, tmp_path
     ):

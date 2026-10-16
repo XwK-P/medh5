@@ -99,12 +99,30 @@ def _groups(dataset: Any) -> tuple[Any, list[Any]]:
     return shared, list(getattr(dataset, "PerFrameFunctionalGroupsSequence", []))
 
 
+def _numbers(
+    value: Any, count: int, frame: str, keyword: str
+) -> npt.NDArray[np.float64]:
+    """*value*, which *frame* states as *keyword*, as *count* finite numbers,
+    or a refusal naming the frame: a component that is not a number would
+    otherwise escape as a ``ValueError`` and stop every series in the tree."""
+    try:
+        numbers = np.asarray([float(v) for v in value], dtype=np.float64)
+    except (TypeError, ValueError):
+        numbers = None
+    if numbers is None or numbers.shape != (count,) or not np.isfinite(numbers).all():
+        raise MEDH5ValidationError(
+            f"{frame} states {keyword} as {value!r}, which is not {count} "
+            "finite numbers, so it cannot be placed"
+        )
+    return numbers
+
+
 def _orientation(group: Any, shared: Any, frame: str) -> npt.NDArray[np.float64]:
     for holder in (group, shared):
         plane = _first_item(holder, "PlaneOrientationSequence")
         if plane is not None and hasattr(plane, "ImageOrientationPatient"):
-            return np.asarray(
-                [float(v) for v in plane.ImageOrientationPatient], dtype=np.float64
+            return _numbers(
+                plane.ImageOrientationPatient, 6, frame, "ImageOrientationPatient"
             )
     raise MEDH5ValidationError(
         f"{frame} carries no ImageOrientationPatient, in its own functional "
@@ -116,8 +134,8 @@ def _position(group: Any, shared: Any, frame: str) -> npt.NDArray[np.float64]:
     for holder in (group, shared):
         plane = _first_item(holder, "PlanePositionSequence")
         if plane is not None and hasattr(plane, "ImagePositionPatient"):
-            return np.asarray(
-                [float(v) for v in plane.ImagePositionPatient], dtype=np.float64
+            return _numbers(
+                plane.ImagePositionPatient, 3, frame, "ImagePositionPatient"
             )
     raise MEDH5ValidationError(
         f"{frame} carries no ImagePositionPatient, in its own functional groups "
@@ -129,9 +147,7 @@ def _pixel_spacing(group: Any, shared: Any, frame: str) -> npt.NDArray[np.float6
     for holder in (group, shared):
         measures = _first_item(holder, "PixelMeasuresSequence")
         if measures is not None and getattr(measures, "PixelSpacing", None):
-            return np.asarray(
-                [float(v) for v in measures.PixelSpacing], dtype=np.float64
-            )
+            return _numbers(measures.PixelSpacing, 2, frame, "PixelSpacing")
     raise MEDH5ValidationError(
         f"{frame} carries no PixelSpacing, in its own functional groups or the "
         "shared ones; where its pixels lie is not stated, and it is refused "
@@ -143,7 +159,11 @@ def _between(group: Any, shared: Any) -> float | None:
     for holder in (group, shared):
         measures = _first_item(holder, "PixelMeasuresSequence")
         if measures is not None and getattr(measures, "SpacingBetweenSlices", None):
-            return float(measures.SpacingBetweenSlices)
+            try:
+                between = float(measures.SpacingBetweenSlices)
+            except (TypeError, ValueError):
+                return None
+            return between if np.isfinite(between) else None
     return None
 
 
