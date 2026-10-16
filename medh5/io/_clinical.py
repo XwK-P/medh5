@@ -217,16 +217,18 @@ def cohort_targets(
     source: str | os.PathLike[str],
 ) -> list[tuple[Any, Path, Path | None]]:
     """Each mapped subject, the sample it augments, and where the result is
-    written: the sample itself, or a file of its name in *out_dir*, which
-    may not lie inside *source*, the dataset or export the import reads."""
+    written: the sample itself, or a file of its name in *out_dir*.  Nothing
+    is written inside *source*, the dataset, shard or export the import
+    reads, nor over it."""
     if not mapping:
         raise MEDH5ValidationError("the mapping names no subject to import")
+    root = Path(os.fspath(source))
     out = None if out_dir is None else Path(os.fspath(out_dir))
-    if out is not None and _inside(out, Path(os.fspath(source))):
+    if out is not None and _inside(out, root):
         raise MEDH5ValidationError(
-            f"out_dir {out} is inside {os.fspath(source)}, which this import "
-            "reads: a sample written there could replace a file it reads, so "
-            "write the samples outside it"
+            f"out_dir {out} is inside {root}, which this import reads: a "
+            "sample written there could replace a file it reads, so write the "
+            "samples outside it"
         )
     targets = []
     for subject, sample in mapping.items():
@@ -237,9 +239,16 @@ def cohort_targets(
     # before anything is written.
     sources = {file_identity(path): subject for subject, path, _ in targets}
     written: dict[Any, Any] = {}
+    read = file_identity(root)
     for subject, path, target in targets:
         where = path if target is None else target
         key = file_identity(where)
+        if key == read or _inside(where, root):
+            raise MEDH5ValidationError(
+                f"subject {subject!r} would be written to {where}, inside or "
+                f"over {root}, which this import reads: write the samples "
+                "outside it"
+            )
         other = written.get(key, sources.get(key, subject))
         if other != subject:
             raise MEDH5ValidationError(

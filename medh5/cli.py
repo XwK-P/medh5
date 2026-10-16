@@ -288,6 +288,10 @@ def _files(
                 if mapping is None
                 else _cohort_mapping(mapping, meds=bool(args.get("from_meds")))
             )
+            if out_dir is not None:
+                writes.append(
+                    ("the directory this command writes the samples into", out_dir)
+                )
             for subject, sample in cohort.items():
                 whose = f"subject {subject}'s sample, which this command"
                 if out_dir is None:

@@ -542,9 +542,15 @@ def test_a_cohort_never_writes_two_subjects_to_one_sample(tmp_path):
         with pytest.raises(MEDH5ValidationError, match="both be written to"):
             augment_cohort_from_meds(dataset, mapping, out_dir=out_dir, **COHORT)
     assert not out.exists()
-    # Nor into the dataset, whose files it reads.
+    # Nor into the dataset, whose files it reads, nor over a shard read alone.
     with pytest.raises(MEDH5ValidationError, match="inside .*which this import"):
         augment_cohort_from_meds(dataset, {1: a}, out_dir=dataset / "data", **COHORT)
+    (shard,) = (dataset / "data").glob("*.parquet")
+    (tmp_path / "src").mkdir()
+    named = Meds.sample(tmp_path / "src" / shard.name)
+    for mapping, out_dir in (({1: named}, shard.parent), ({1: shard}, None)):
+        with pytest.raises(MEDH5ValidationError, match="inside or over"):
+            augment_cohort_from_meds(shard, mapping, out_dir=out_dir, **COHORT)
     for path in (sample, a, b):
         with open_sample(path) as found:
             assert found.clinical is None
@@ -721,6 +727,11 @@ def test_clinical_augment_cohort_from_meds(tmp_path, capsys):
     assert main(within) == EXIT_ERROR
     assert "is inside the MEDS dataset this command reads" in capsys.readouterr().err
     assert not (shards / "s1.medh5").exists()
+    # Nor is the report the directory the samples are written into.
+    fresh_out = [*argv[:-4], "--out-dir", str(fresh), "--report", str(fresh)]
+    assert main(fresh_out) == EXIT_ERROR
+    assert "the directory this command writes the samples" in capsys.readouterr().err
+    assert not fresh.exists()
     with open_sample(tmp_path / "s1.medh5") as s:
         assert s.clinical is None
     # One source, and a mapping.
