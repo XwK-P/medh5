@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5.errors import MEDH5ValidationError
+from medh5.errors import MEDH5ValidationError, MEDH5VersionError
 from medh5.io.report import ConversionReport
 from medh5.validate import validate_file
 from tests.helpers import square_contour as _square
@@ -1395,9 +1395,11 @@ class TestPointRois:
             self._import(case, {4: ("marker", [("POINT", two)])})
         assert case.path.read_bytes() == before
 
-    def test_S8_5_open_curves_take_only_omit(self, case):
-        with pytest.raises(MEDH5ValidationError, match="2.2.0"):
-            self._import(case, self._rois(case.grid), open_curves="polylines")
+    def test_S8_5_open_curves_take_omit_or_polylines(self, case):
+        before = case.path.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="'omit'.*'polylines'"):
+            self._import(case, self._rois(case.grid), open_curves="fill")
+        assert case.path.read_bytes() == before
 
     def test_S8_5_annotated_classes_split_across_points_and_contours(self, case):
         rois = self._rois(case.grid)
@@ -1499,3 +1501,223 @@ class TestPointRois:
             "ORGAN",
             "MARKER",
         }
+
+
+class TestOpenCurves:
+    """An RTSTRUCT's OPEN_PLANAR and OPEN_NONPLANAR ROIs are a `polylines`
+    annotation with ``open_curves="polylines"`` (format 1.2 §3).  They were
+    left out with a warning, whatever was asked."""
+
+    @pytest.fixture
+    def case(self, tmp_path: Path) -> SimpleNamespace:
+        return _dicom_case(tmp_path)
+
+    @staticmethod
+    def _rois(grid: Any) -> dict:
+        organ = _square(grid, 2, (2, 7), (2, 7))
+        # A curve in slice 2, one of two points in slice 3, and an
+        # applicator's path through the slices.
+        line = grid.index_to_world(
+            np.array([[2, 2.0, 2.0], [2, 2.0, 8.0], [2, 8.0, 8.5]])
+        )
+        short = grid.index_to_world(np.array([[3, 1.0, 1.0], [3, 9.0, 12.0]]))
+        path = grid.index_to_world(np.array([[k, 4.0 + k, 6.0] for k in range(6)]))
+        return {
+            1: ("organ", [(CLOSED, organ)]),
+            2: ("line", [("OPEN_PLANAR", line), ("OPEN_PLANAR", short)]),
+            3: ("applicator", [("OPEN_NONPLANAR", path)]),
+        }
+
+    def _import(self, case: SimpleNamespace, rois: dict, **kw: Any):
+        from medh5.io.rtstruct import from_rtstruct
+
+        rt = _structure_set(case.tmp / "rt.dcm", rois, [FRAME_A])
+        kw.setdefault("open_curves", "polylines")
+        return from_rtstruct(rt, case.path, ann_id="rois", **kw)
+
+    def test_v1_2_S3_open_planar_imports_as_polylines(self, case):
+        rois = self._rois(case.grid)
+        report = self._import(case, rois)
+        with medh5.open(case.path) as sample:
+            curves = sample.annotations["rois_curves"]
+            line = sample.label_set["line"]
+            assert (curves.kind, curves.space, curves.task) == (
+                "polylines",
+                "world",
+                "other",
+            )
+            assert curves.header.frame_uid == sample.grids[curves.grid_id].frame_uid
+            assert curves.grid_id == sample.annotations["rois"].grid_id
+            planar = [p for p in curves.polylines() if p.class_id == line.id]
+            assert [p.plane for p in planar] == [(0, 2), (0, 3)]
+            for found, (_, drawn) in zip(planar, rois[2][1], strict=True):
+                np.testing.assert_allclose(found.vertices, drawn, atol=1e-4)
+            assert curves.offsets.tolist() == [0, 3, 5, 11]
+            assert [c.key for c in curves.annotated_classes] == ["line", "applicator"]
+            contours = sample.annotations["rois"]
+            assert [c.key for c in contours.annotated_classes] == ["organ"]
+            assert len(list(contours.polygons())) == 1, "no line filled as an area"
+        assert not report.of_kind("contour_type"), "nothing left out"
+        [note] = report.of_kind("curves")
+        assert note.severity == "decision"
+        assert note.detail["rois"] == {"2": "line", "3": "applicator"}
+        assert note.detail["planar"] == 2
+        assert validate_file(case.path, level="integrity").ok
+
+    def test_v1_2_S3_open_nonplanar_has_no_plane(self, case):
+        grid = case.grid
+        rois = {3: self._rois(grid)[3]}
+        # Planar, but between two slices, and planar on a column of the grid.
+        between = grid.index_to_world(np.array([[2.5, 1.0, 1.0], [3.5, 9.0, 4.0]]))
+        sagittal = grid.index_to_world(np.array([[1, 2.0, 7.0], [4, 9.0, 7.0]]))
+        rois[4] = ("drawn", [("OPEN_PLANAR", between), ("OPEN_PLANAR", sagittal)])
+        report = self._import(case, rois, curves_id="tracks", rasterize=True)
+        with medh5.open(case.path) as sample:
+            assert sorted(sample.annotations) == ["tracks"], "no contours written"
+            curves = sample.annotations["tracks"]
+            assert [p.plane for p in curves.polylines()] == [(-1, 0), (-1, 0), (2, 7)]
+            assert curves.planes.tolist() == [[-1, 0], [-1, 0], [2, 7]]
+        [note] = report.of_kind("curve_plane")
+        assert note.detail["rois"] == {"drawn": 1}
+        [note] = report.of_kind("rasterization")
+        assert note.severity == "warning", "nothing to rasterise"
+        assert validate_file(case.path).ok
+
+    def test_v1_2_S3_polylines_raise_the_version_to_1_2(self, case, tmp_path):
+        with medh5.open(case.path) as sample:
+            assert sample.version == "1.0"
+        omitted = _dicom_case(tmp_path / "omitted")
+        report = self._import(omitted, self._rois(omitted.grid), open_curves="omit")
+        with medh5.open(omitted.path) as sample:
+            assert sample.version == "1.0", "omit leaves the version alone"
+            assert "rois_curves" not in sample.annotations
+        assert not report.of_kind("version")
+        report = self._import(case, self._rois(case.grid))
+        with medh5.open(case.path) as sample:
+            assert sample.version == "1.2"
+        [note] = report.of_kind("version")
+        assert note.detail == {"from": "1.0", "to": "1.2"}
+        assert "W913" in note.message
+
+    def test_v1_2_S2_2_curves_into_a_projection_meet_its_refusal(self, case):
+        """A version of the same major that is not numbers (`1.x`) is read as
+        a projection (1.2 §2.2), which is never amended: the import reaches
+        that refusal, rather than failing on the version in its report."""
+        h5py = pytest.importorskip("h5py")
+        from tests.helpers import encode_attr
+
+        with h5py.File(case.path, "r+") as handle:
+            handle.attrs["medh5_version"] = encode_attr("1.x")
+        with pytest.raises(MEDH5VersionError, match="only as a projection"):
+            self._import(case, self._rois(case.grid))
+
+    def test_v1_2_S3_a_curve_of_one_point_is_dropped_with_a_warning(self, case):
+        grid = case.grid
+        rois = self._rois(grid)
+        dot = grid.index_to_world(np.array([[2, 5.0, 5.0]]))
+        rois[5] = ("dot", [("OPEN_PLANAR", dot)])
+        rois[2] = ("line", [*rois[2][1], ("OPEN_PLANAR", dot)])
+        report = self._import(case, rois)
+        notes = report.of_kind("dropped_contours")
+        assert sorted((n.detail["roi"], n.detail["contours"]) for n in notes) == [
+            ("dot", 1),
+            ("line", 1),
+        ]
+        assert any("nor was the ROI" in n.message for n in notes)
+        with medh5.open(case.path) as sample:
+            assert len(sample.annotations["rois_curves"]) == 3
+
+    def test_v1_2_S3_curves_round_trip_through_to_rtstruct(self, case, tmp_path):
+        from medh5.io.rtstruct import read_rtstruct, to_rtstruct
+
+        rois = self._rois(case.grid)
+        self._import(case, rois)
+        out = case.tmp / "out.dcm"
+        report = ConversionReport()
+        to_rtstruct(
+            case.path,
+            "rois",
+            case.series["paths"],
+            out,
+            curves="rois_curves",
+            report=report,
+        )
+        written = pydicom.dcmread(out)
+        names = {r.ROINumber: r.ROIName for r in written.StructureSetROISequence}
+        number = {name: n for n, name in names.items()}
+        kinds = {
+            o.ReferencedROINumber: o.RTROIInterpretedType
+            for o in written.RTROIObservationsSequence
+        }
+        assert kinds[number["organ"]] == "ORGAN"
+        assert kinds[number["line"]] == kinds[number["applicator"]] == ""
+        _, meta = read_rtstruct(out)
+        for name, drawn in (rois[2], rois[3]):
+            found = meta["curves"][number[name]]
+            assert [k for k, _ in found] == [k for k, _ in drawn]
+            for (_, back), (_, there) in zip(found, drawn, strict=True):
+                np.testing.assert_allclose(back, there, rtol=0, atol=1e-4)
+        [note] = report.of_kind("curves")
+        assert (note.detail["planar"], note.detail["nonplanar"]) == (2, 1)
+        # And back in: the same curves, planes and classes.
+        again = _dicom_case(tmp_path / "again")
+        from medh5.io.rtstruct import from_rtstruct
+
+        from_rtstruct(out, again.path, ann_id="rois", open_curves="polylines")
+        with medh5.open(case.path) as first, medh5.open(again.path) as second:
+            a = list(first.annotations["rois_curves"].polylines())
+            b = list(second.annotations["rois_curves"].polylines())
+            assert [p.plane for p in a] == [p.plane for p in b]
+            for x, y in zip(a, b, strict=True):
+                np.testing.assert_allclose(x.vertices, y.vertices, atol=1e-4)
+
+    def test_v1_2_S3_a_class_in_curves_and_contours_is_refused_on_export(self, case):
+        from medh5.io.rtstruct import to_rtstruct
+
+        grid = case.grid
+        rois = self._rois(grid)
+        rois[6] = ("line", [(CLOSED, _square(grid, 4, (2, 3), (2, 3)))])
+        self._import(case, rois)
+        with pytest.raises(MEDH5ValidationError, match="'line'"):
+            to_rtstruct(
+                case.path,
+                "rois",
+                case.series["paths"],
+                case.tmp / "out.dcm",
+                curves="rois_curves",
+            )
+        with pytest.raises(MEDH5ValidationError, match="as curves=") as error:
+            to_rtstruct(
+                case.path,
+                "rois",
+                case.series["paths"],
+                case.tmp / "out.dcm",
+                curves="rois",
+            )
+        assert error.value.code == "E401"
+
+    def test_v1_2_S3_annotated_classes_split_across_curves(self, case):
+        self._import(case, self._rois(case.grid), annotated_classes=["organ", "line"])
+        with medh5.open(case.path) as sample:
+            seen = {
+                ann: [c.key for c in sample.annotations[ann].annotated_classes]
+                for ann in ("rois", "rois_curves")
+            }
+        assert seen == {"rois": ["organ"], "rois_curves": ["line"]}
+
+    def test_curves_come_in_and_go_out_through_the_command_line(self, case):
+        from medh5.cli import main
+
+        rt = _structure_set(case.tmp / "rt.dcm", self._rois(case.grid), [FRAME_A])
+        command = ["convert", "from-rtstruct", str(rt), str(case.path)]
+        assert main([*command, "--open-curves", "polylines", "--curves-id", "c"]) == 0
+        out = case.tmp / "out.dcm"
+        sources = [arg for p in case.series["paths"] for arg in ("--source", str(p))]
+        command = ["convert", "to-rtstruct", str(case.path), "contours", str(out)]
+        assert main([*command, *sources, "--curves", "c"]) == 0
+        written = pydicom.dcmread(out)
+        assert {
+            c.ContourGeometricType
+            for item in written.ROIContourSequence
+            for c in item.ContourSequence
+        } == {"CLOSED_PLANAR", "OPEN_PLANAR", "OPEN_NONPLANAR"}

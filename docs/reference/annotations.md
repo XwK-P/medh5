@@ -379,6 +379,39 @@ Contours stay contours. Rasterising them is a separate, opt-in step whose rule
 is recorded in provenance, because "even-odd fill at voxel centres" is a
 decision somebody should be able to find later.
 
+### Polylines
+
+Open curves: vessel centrelines, catheter and applicator paths, needle tracks,
+and RTSTRUCT's `OPEN_PLANAR` and `OPEN_NONPLANAR` contours
+([format 1.2](../spec/medh5-1.2.md) §3). A `Polyline` is ordered vertices,
+each joined to the next and the last not joined to the first, so it encloses
+nothing:
+
+```python
+from medh5.annotations import Polyline
+
+centreline = np.array([[4.0, 2.0, 2.0], [4.0, 6.0, 3.0], [4.0, 9.0, 7.0]])
+track = np.array([[1.0, 8.0, 8.0], [6.0, 9.0, 8.5], [9.0, 9.5, 9.0]])
+w.add_polylines("vessels",
+                [Polyline(centreline, "liver", plane=(0, 4)),
+                 Polyline(track, "liver")],
+                grid="ct", instance_ids=[11, 12])
+```
+
+`plane` is the `(axis, index)` of the grid plane a planar curve lies in, as for
+a contour, and `(-1, 0)` (the default) for one that crosses slices. A polyline
+has at least two vertices (`E404`), and its `polyline_offsets` delimit the
+concatenated `vertices` (`E408`). The reader is a `PolylinesAnnotation`:
+`ann.polyline(i)` is one curve's vertices, `ann.polylines()` every curve with
+its class and plane, and `ann.offsets` and `ann.planes` the columns.
+
+A polylines annotation is never rasterised and satisfies neither `seg` nor
+`det`, whatever its `task` (`other` by default). **It raises the file's
+version to 1.2**: a sample is written at the lowest version its content needs,
+so a 1.1 reader reads it as its projection, the curves left out as `W913`, and
+removing the last polylines annotation writes the file at the version the rest
+needs again (1.2 §2.1).
+
 ### Meshes
 
 ```python

@@ -7,7 +7,7 @@ use super::{
     dtype_name, grid_spatial, has_member, int_set, kinds_known, loc, read_f64, read_i64, str_attr, strs_attr,
     sub_dataset, Context,
 };
-use crate::annotations::header::{is_known_kind, RESERVED_KINDS, TASKS, VOXEL_KINDS};
+use crate::annotations::header::{is_kind_of, kind_since, RESERVED_KINDS, TASKS, VOXEL_KINDS};
 use crate::annotations::layout::{self, mask_problems};
 use crate::annotations::payload::{contains_value, SLAB_BYTES};
 use crate::annotations::select::greedy_colour;
@@ -38,6 +38,7 @@ pub fn required_datasets(kind: &str) -> &'static [&'static str] {
         "keypoints" => &["points", "keypoint_class_ids", "class_ids"],
         "points" => &["points"],
         "contours" => &["vertices", "contour_offsets", "contour_class_ids"],
+        "polylines" => &["vertices", "polyline_offsets", "polyline_class_ids"],
         "mesh" => &["vertices", "faces"],
         "classification" => &["class_ids", "values"],
         _ => &[],
@@ -67,6 +68,12 @@ pub fn geometric_dtypes(kind: &str) -> &'static [(&'static str, &'static [&'stat
         "keypoints" => &[("points", &["float32", "float64"]), ("visibility", &["uint8"])],
         "points" => &[("points", &["float32", "float64"])],
         "contours" => &[("vertices", &["float32", "float64"]), ("contour_offsets", &["int64"])],
+        "polylines" => &[
+            ("vertices", &["float32", "float64"]),
+            ("polyline_offsets", &["int64"]),
+            ("polyline_class_ids", &["uint16"]),
+            ("polyline_plane", &["int32"]),
+        ],
         "mesh" => &[("vertices", &["float32", "float64"]), ("faces", &["int32", "int64"])],
         "classification" => &[("class_ids", &["uint16"]), ("values", &["float32", "float64"])],
         _ => &[],
@@ -127,8 +134,18 @@ fn check_annotation(ctx: &Context, name: &str, group: &Node, sample: &Sample<'_>
         ));
         return Ok(out);
     }
-    if !is_known_kind(&kind) {
-        out.push(ctx.unknown("E401", location, format!("unknown annotation kind {}", repr_str(&kind))));
+    if !is_kind_of(&kind, ctx.version.as_deref()) {
+        // A kind a later version defines is no kind a file of this one holds
+        // (1.2 §2): a writer of it writes that version.
+        let message = match (kind_since(&kind), ctx.version.as_deref()) {
+            (Some(since), Some(version)) => format!(
+                "annotation kind {} is defined by MEDH5 {since}, and this file declares {version}; a sample holding \
+                 it is written at {since} or later",
+                repr_str(&kind)
+            ),
+            _ => format!("unknown annotation kind {}", repr_str(&kind)),
+        };
+        out.push(ctx.unknown("E401", location, message));
         return Ok(out);
     }
     // What a reader would otherwise assume: a `closure` it took as
@@ -763,6 +780,7 @@ fn class_columns(kind: &str) -> &'static [&'static str] {
         "instances" | "boxes" | "obb" | "points" | "classification" => &["class_ids"],
         "keypoints" => &["class_ids", "keypoint_class_ids"],
         "contours" => &["contour_class_ids"],
+        "polylines" => &["polyline_class_ids"],
         "mesh" => &["vertex_class_ids", "mesh_class_ids"],
         "layers" => &["layer_class_ids"],
         "bitmask" => &["bit_class_ids"],
@@ -894,8 +912,9 @@ pub fn check_instance_identity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let mut table: BTreeMap<u64, BTreeMap<i64, Vec<String>>> = BTreeMap::new();
     for (name, group) in ctx.children("annotations")? {
-        let (Some(ids_ds), Some(cls_ds)) = (sub_dataset(&group, "instance_ids"), sub_dataset(&group, "class_ids"))
-        else {
+        // A polyline's class is its `polyline_class_ids` (1.2 §3).
+        let classes = sub_dataset(&group, "class_ids").or_else(|| sub_dataset(&group, "polyline_class_ids"));
+        let (Some(ids_ds), Some(cls_ds)) = (sub_dataset(&group, "instance_ids"), classes) else {
             continue;
         };
         let ids: Vec<u64> = data::read(&ids_ds)?.cast::<u64>().iter().copied().collect();

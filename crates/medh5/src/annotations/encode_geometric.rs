@@ -490,6 +490,140 @@ pub fn encode_contours(polygons: &[Polygon], ndim: Option<usize>) -> Result<Payl
     Ok(p)
 }
 
+// -- polylines (1.2 §3) ----------------------------------------------------------------
+
+/// One open curve handed to [`encode_polylines`] (1.2 §3): ordered vertices,
+/// each joined to the next, the last not joined to the first.
+///
+/// Built by [`Polyline::new`] and the [`Polyline::plane`] and
+/// [`Polyline::instance_id`] builders, so it can grow without breaking a
+/// caller.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Polyline {
+    /// `(V, S)` vertices, in order; at least two.
+    pub vertices: ArrayD<f64>,
+    pub class_id: i64,
+    /// `(axis, index)` of the grid plane the curve lies in; `axis = -1`, the
+    /// default, for none.
+    pub plane: (i64, i64),
+    /// The physical object the curve traces (1.0 §7.4).
+    pub instance_id: Option<u64>,
+}
+
+impl Polyline {
+    /// A curve through `vertices` (`(V, S)`), of class `class_id`, in no plane.
+    pub fn new(vertices: ArrayD<f64>, class_id: i64) -> Polyline {
+        Polyline { vertices, class_id, plane: (-1, 0), instance_id: None }
+    }
+
+    /// The grid plane the curve lies in: `axis` and the `index` along it.
+    pub fn plane(mut self, axis: i64, index: i64) -> Polyline {
+        self.plane = (axis, index);
+        self
+    }
+
+    /// The object the curve traces, an id equal across annotations and
+    /// timepoints for one object (1.0 §7.4).
+    pub fn instance_id(mut self, id: u64) -> Polyline {
+        self.instance_id = Some(id);
+        self
+    }
+}
+
+/// Concatenate open curves with an offset table (1.2 §3).
+///
+/// Each curve has at least two vertices (E404), every curve the same
+/// spatial rank (E405), and either every curve an instance id or none
+/// (E405).  `polyline_plane` is written when a curve names a plane.  An
+/// empty annotation --- the verified negative --- needs `ndim` to shape its
+/// vertex table.
+pub fn encode_polylines(polylines: &[Polyline], ndim: Option<usize>) -> Result<Payload> {
+    let mut p = Payload::new("polylines");
+    if polylines.is_empty() {
+        let Some(ndim) = ndim else {
+            return Err(Error::coded(
+                "E410",
+                "no polylines were supplied; an empty polylines annotation needs ndim= to shape its vertex table",
+            ));
+        };
+        p.datasets.insert("vertices".into(), NdArray::zeros(DType::F32, &[0, ndim]).into());
+        p.datasets.insert("polyline_offsets".into(), NdArray::zeros(DType::I64, &[1]).into());
+        p.datasets.insert("polyline_class_ids".into(), NdArray::zeros(DType::U16, &[0]).into());
+        return Ok(p);
+    }
+    let dim = polylines[0].vertices.shape().get(1).copied().unwrap_or(0);
+    for (i, line) in polylines.iter().enumerate() {
+        if line.vertices.ndim() != 2 || line.vertices.shape()[1] != dim {
+            return Err(Error::coded(
+                "E405",
+                format!("polyline {i} has shape {}; expected (V, {dim})", repr_int_tuple(line.vertices.shape())),
+            ));
+        }
+        let n = line.vertices.shape()[0];
+        if n < 2 {
+            return Err(Error::coded(
+                "E404",
+                format!(
+                    "polyline {i} has {n} vertex(es); a polyline joins each vertex to the next, so it has at least \
+                     two (1.2 §3)"
+                ),
+            ));
+        }
+    }
+    let mut class_ids = Vec::with_capacity(polylines.len());
+    for line in polylines {
+        class_ids.push(check_class_id(line.class_id)?);
+    }
+    // `polyline_plane` is int32 (1.2 §3); a value past its range is refused
+    // rather than wrapped onto another plane by the cast.
+    if let Some((i, line)) = polylines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| i32::try_from(l.plane.0).is_err() || i32::try_from(l.plane.1).is_err())
+    {
+        return Err(Error::coded(
+            "E405",
+            format!(
+                "polyline {i}'s plane ({}, {}) does not fit the int32 `polyline_plane` stores it in",
+                line.plane.0, line.plane.1
+            ),
+        ));
+    }
+    let named = polylines.iter().filter(|l| l.instance_id.is_some()).count();
+    if named != 0 && named != polylines.len() {
+        return Err(Error::coded(
+            "E405",
+            format!(
+                "{named} of {} polylines carry an instance id; `instance_ids` holds one for each of them, so give \
+                 every polyline one or none",
+                polylines.len()
+            ),
+        ));
+    }
+    let mut offsets = vec![0i64];
+    let mut vertices: Vec<f32> = Vec::new();
+    for line in polylines {
+        vertices.extend(line.vertices.iter().map(|v| *v as f32));
+        offsets.push(offsets.last().unwrap() + line.vertices.shape()[0] as i64);
+    }
+    let total = *offsets.last().unwrap() as usize;
+    let m = polylines.len();
+    p.datasets.insert("vertices".into(), NdArray::from_vec(&[total, dim], vertices)?.into());
+    p.datasets.insert("polyline_offsets".into(), NdArray::from_vec(&[m + 1], offsets)?.into());
+    p.datasets.insert("polyline_class_ids".into(), NdArray::from_vec(&[m], class_ids)?.into());
+    if polylines.iter().any(|l| l.plane.0 != -1) {
+        let planes: Vec<i32> = polylines.iter().flat_map(|l| [l.plane.0 as i32, l.plane.1 as i32]).collect();
+        p.datasets.insert("polyline_plane".into(), NdArray::from_vec(&[m, 2], planes)?.into());
+    }
+    if named > 0 {
+        let ids: Vec<u64> = polylines.iter().filter_map(|l| l.instance_id).collect();
+        p.datasets.insert("instance_ids".into(), PayloadData::Array(instance_id_array(&ids)));
+    }
+    p.class_ids = sorted_unique(polylines.iter().map(|l| l.class_id));
+    Ok(p)
+}
+
 // -- mesh -----------------------------------------------------------------------------
 
 /// Pack a triangle surface mesh (spec §8.7).
@@ -705,6 +839,41 @@ mod tests {
             let a = Assertions { class_ids: vec![1, 2], values, ..Default::default() };
             assert_eq!(encode_classification(&a, "sample", true).unwrap_err().code(), Some("E405"));
         }
+    }
+
+    fn line(rows: usize) -> Polyline {
+        Polyline::new(ArrayD::from_shape_fn(IxDyn(&[rows, 3]), |i| (i[0] * 3 + i[1]) as f64), 2)
+    }
+
+    #[test]
+    fn v1_2_s3_polylines_concatenate_with_offsets() {
+        let p = encode_polylines(&[line(2), line(3).plane(0, 4)], None).unwrap();
+        assert_eq!(p.kind, "polylines");
+        assert_eq!(p.array("polyline_offsets").unwrap().to_f64().iter().copied().collect::<Vec<_>>(), [0.0, 2.0, 5.0]);
+        assert_eq!(p.array("vertices").unwrap().shape(), [5, 3]);
+        assert_eq!(
+            p.array("polyline_plane").unwrap().to_f64().iter().copied().collect::<Vec<_>>(),
+            [-1.0, 0.0, 0.0, 4.0]
+        );
+        assert!(!p.datasets.contains_key("instance_ids"));
+        assert_eq!(p.class_ids, [2]);
+        // No plane named, no plane column; ids for every curve or none.
+        let p = encode_polylines(&[line(2).instance_id(7), line(2).instance_id(9)], None).unwrap();
+        assert!(!p.datasets.contains_key("polyline_plane"));
+        assert_eq!(p.array("instance_ids").unwrap().shape(), [2]);
+        let refused = encode_polylines(&[line(2).instance_id(7), line(2)], None).unwrap_err();
+        assert_eq!(refused.code(), Some("E405"));
+    }
+
+    #[test]
+    fn v1_2_s3_a_polyline_has_two_vertices_and_one_rank() {
+        assert_eq!(encode_polylines(&[line(1)], None).unwrap_err().code(), Some("E404"));
+        let flat = Polyline::new(ArrayD::zeros(IxDyn(&[2, 2])), 1);
+        assert_eq!(encode_polylines(&[line(2), flat], None).unwrap_err().code(), Some("E405"));
+        assert_eq!(encode_polylines(&[], None).unwrap_err().code(), Some("E410"));
+        let empty = encode_polylines(&[], Some(3)).unwrap();
+        assert_eq!(empty.array("vertices").unwrap().shape(), [0, 3]);
+        assert_eq!(encode_polylines(&[line(2).plane(0, 1i64 << 33)], None).unwrap_err().code(), Some("E405"));
     }
 
     #[test]

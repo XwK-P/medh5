@@ -430,8 +430,9 @@ nothing about fails too --- silence about a file you were handed is not a pass.
 Diagnostic *messages* are yours to write; only the codes are normative.
 
 **An implementation of an earlier version is scored on what it was told
-about.** Each case states its `format_version` (the latest version among the
-codes it expects; not always the one its file declares), and the manifest the
+about.** Each case states its `format_version` (the latest of the version
+whose clause it holds and those of the codes it expects; not always the one its
+file declares), and the manifest the
 `codes_revision` of the code table it was built against. `--format-version
 1.0` scores only the cases addressed to 1.0, and `--codes-revision 1` only
 those whose codes revision 1 holds, ignoring any later code you report; the

@@ -88,7 +88,7 @@ home; the [API documentation](https://docs.rs/medh5) has every item.
 | `rng` | the generator behind sampling, the same stream in every frontend |
 | `error` | the one `medh5::Error` type, and the code each error carries |
 | `conformance` | the conformance corpus |
-| `version` | [1.1](../spec/medh5-1.1.md) §2 — which versions are read fully, read as a projection, or refused |
+| `version` | [1.1](../spec/medh5-1.1.md) §2 and [1.2](../spec/medh5-1.2.md) §2 — which versions are read fully, read as a projection, or refused, and which version content needs |
 | `clinical` | [1.1](../spec/medh5-1.1.md) §3–§10 — the clinical profile: records, columns, checks, selection, augmentation |
 | `companion` | [task-cache-1](../spec/task-cache-1.md) — task manifests, source pins, preflight row views, feature caches |
 | `h5`, `json`, `numeric`, `pyval` | plumbing, outside semver (below) |

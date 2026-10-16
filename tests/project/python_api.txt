@@ -391,6 +391,7 @@ medh5.SampleWriter.add_mask	method	(ann_id, mask, *, grid, task='other', prov=No
 medh5.SampleWriter.add_mesh	method	(ann_id, vertices, faces, *, grid=None, space='world', frame_uid=None, normals=None, vertex_class_ids=None, mesh_offsets=None, mesh_class_ids=None, annotated_classes=None, closure='explicit', timepoints=None, prov=None, quality=None, derived_from=None, task='segmentation', codec=None)
 medh5.SampleWriter.add_obb	method	(ann_id, centers, sizes, rotations, class_ids, *, grid=None, space='index', frame_uid=None, instance_ids=None, scores=None, attributes=None, annotated_classes=None, closure='explicit', timepoints=None, prov=None, quality=None, derived_from=None, task='detection', codec=None)
 medh5.SampleWriter.add_points	method	(ann_id, points, *, grid=None, space='index', frame_uid=None, class_ids=None, instance_ids=None, names=None, weights=None, correspondence=None, annotated_classes=None, closure='explicit', timepoints=None, prov=None, quality=None, derived_from=None, task='detection', codec=None)
+medh5.SampleWriter.add_polylines	method	(ann_id, polylines, *, grid=None, space='index', frame_uid=None, instance_ids=None, annotated_classes=None, closure='explicit', timepoints=None, prov=None, quality=None, derived_from=None, task='other', codec=None)
 medh5.SampleWriter.add_pyramid	method	(image_id, levels, *, grid_levels, modality, value_type='intensity', downsample_method='mean', value_units=None, rescale_slope=None, rescale_intercept=None, prov=None, codec=None)
 medh5.SampleWriter.add_records	method	(records)
 medh5.SampleWriter.add_segmentation	method	(ann_id, *, grid, masks=None, probabilities=None, instances=None, labelmap=None, label_values=None, ignore_value=None, encoding='auto', threshold=None, annotated_classes=None, closure='explicit', ignore=None, ignore_mask=None, timepoints=None, prov=None, quality=None, derived_from=None, task='segmentation', codec=None)
@@ -992,6 +993,50 @@ medh5.annotations.Polygon.class_id	field
 medh5.annotations.Polygon.plane	field
 medh5.annotations.Polygon.role	field
 medh5.annotations.Polygon.vertices	field
+medh5.annotations.Polyline	class	(vertices, class_id, plane=(-1, 0)) bases=
+medh5.annotations.Polyline.class_id	field
+medh5.annotations.Polyline.plane	field
+medh5.annotations.Polyline.vertices	field
+medh5.annotations.PolylinesAnnotation	class	(handle) bases=medh5.annotations.geometric.GeometricAnnotation
+medh5.annotations.PolylinesAnnotation.__len__	method	()
+medh5.annotations.PolylinesAnnotation.ann_id	property
+medh5.annotations.PolylinesAnnotation.annotated_class_ids	property
+medh5.annotations.PolylinesAnnotation.annotated_classes	property
+medh5.annotations.PolylinesAnnotation.attributes	property
+medh5.annotations.PolylinesAnnotation.class_ids	property
+medh5.annotations.PolylinesAnnotation.class_key	method	(class_id)
+medh5.annotations.PolylinesAnnotation.classes	property
+medh5.annotations.PolylinesAnnotation.closure	property
+medh5.annotations.PolylinesAnnotation.frame_uid	property
+medh5.annotations.PolylinesAnnotation.grid	property
+medh5.annotations.PolylinesAnnotation.grid_id	property
+medh5.annotations.PolylinesAnnotation.group	property
+medh5.annotations.PolylinesAnnotation.has_ignore_region	property
+medh5.annotations.PolylinesAnnotation.header	property
+medh5.annotations.PolylinesAnnotation.ignore_id	property
+medh5.annotations.PolylinesAnnotation.instance_ids	property
+medh5.annotations.PolylinesAnnotation.is_annotated	method	(class_key)
+medh5.annotations.PolylinesAnnotation.is_fully_covered	property
+medh5.annotations.PolylinesAnnotation.kind	property
+medh5.annotations.PolylinesAnnotation.label_set	property
+medh5.annotations.PolylinesAnnotation.n_spatial	property
+medh5.annotations.PolylinesAnnotation.object_class_ids	property
+medh5.annotations.PolylinesAnnotation.offsets	property
+medh5.annotations.PolylinesAnnotation.planes	property
+medh5.annotations.PolylinesAnnotation.polyline	method	(index)
+medh5.annotations.PolylinesAnnotation.polylines	method	()
+medh5.annotations.PolylinesAnnotation.prov	property
+medh5.annotations.PolylinesAnnotation.quality_key	property
+medh5.annotations.PolylinesAnnotation.resolve_class	method	(class_key)
+medh5.annotations.PolylinesAnnotation.resolve_classes	method	(keys)
+medh5.annotations.PolylinesAnnotation.scores	property
+medh5.annotations.PolylinesAnnotation.space	property
+medh5.annotations.PolylinesAnnotation.summary	method	()
+medh5.annotations.PolylinesAnnotation.task	property
+medh5.annotations.PolylinesAnnotation.timepoints	property
+medh5.annotations.PolylinesAnnotation.to_index	method	(coords, *, grid=None)
+medh5.annotations.PolylinesAnnotation.to_world	method	(coords, *, grid=None)
+medh5.annotations.PolylinesAnnotation.vertices	property
 medh5.annotations.READERS	constant	dict
 medh5.annotations.RESERVED_KINDS	constant	tuple
 medh5.annotations.SCOPES	constant	tuple
@@ -1487,6 +1532,50 @@ medh5.annotations.geometric.Polygon.class_id	field
 medh5.annotations.geometric.Polygon.plane	field
 medh5.annotations.geometric.Polygon.role	field
 medh5.annotations.geometric.Polygon.vertices	field
+medh5.annotations.geometric.Polyline	class	(vertices, class_id, plane=(-1, 0)) bases=
+medh5.annotations.geometric.Polyline.class_id	field
+medh5.annotations.geometric.Polyline.plane	field
+medh5.annotations.geometric.Polyline.vertices	field
+medh5.annotations.geometric.PolylinesAnnotation	class	(handle) bases=medh5.annotations.geometric.GeometricAnnotation
+medh5.annotations.geometric.PolylinesAnnotation.__len__	method	()
+medh5.annotations.geometric.PolylinesAnnotation.ann_id	property
+medh5.annotations.geometric.PolylinesAnnotation.annotated_class_ids	property
+medh5.annotations.geometric.PolylinesAnnotation.annotated_classes	property
+medh5.annotations.geometric.PolylinesAnnotation.attributes	property
+medh5.annotations.geometric.PolylinesAnnotation.class_ids	property
+medh5.annotations.geometric.PolylinesAnnotation.class_key	method	(class_id)
+medh5.annotations.geometric.PolylinesAnnotation.classes	property
+medh5.annotations.geometric.PolylinesAnnotation.closure	property
+medh5.annotations.geometric.PolylinesAnnotation.frame_uid	property
+medh5.annotations.geometric.PolylinesAnnotation.grid	property
+medh5.annotations.geometric.PolylinesAnnotation.grid_id	property
+medh5.annotations.geometric.PolylinesAnnotation.group	property
+medh5.annotations.geometric.PolylinesAnnotation.has_ignore_region	property
+medh5.annotations.geometric.PolylinesAnnotation.header	property
+medh5.annotations.geometric.PolylinesAnnotation.ignore_id	property
+medh5.annotations.geometric.PolylinesAnnotation.instance_ids	property
+medh5.annotations.geometric.PolylinesAnnotation.is_annotated	method	(class_key)
+medh5.annotations.geometric.PolylinesAnnotation.is_fully_covered	property
+medh5.annotations.geometric.PolylinesAnnotation.kind	property
+medh5.annotations.geometric.PolylinesAnnotation.label_set	property
+medh5.annotations.geometric.PolylinesAnnotation.n_spatial	property
+medh5.annotations.geometric.PolylinesAnnotation.object_class_ids	property
+medh5.annotations.geometric.PolylinesAnnotation.offsets	property
+medh5.annotations.geometric.PolylinesAnnotation.planes	property
+medh5.annotations.geometric.PolylinesAnnotation.polyline	method	(index)
+medh5.annotations.geometric.PolylinesAnnotation.polylines	method	()
+medh5.annotations.geometric.PolylinesAnnotation.prov	property
+medh5.annotations.geometric.PolylinesAnnotation.quality_key	property
+medh5.annotations.geometric.PolylinesAnnotation.resolve_class	method	(class_key)
+medh5.annotations.geometric.PolylinesAnnotation.resolve_classes	method	(keys)
+medh5.annotations.geometric.PolylinesAnnotation.scores	property
+medh5.annotations.geometric.PolylinesAnnotation.space	property
+medh5.annotations.geometric.PolylinesAnnotation.summary	method	()
+medh5.annotations.geometric.PolylinesAnnotation.task	property
+medh5.annotations.geometric.PolylinesAnnotation.timepoints	property
+medh5.annotations.geometric.PolylinesAnnotation.to_index	method	(coords, *, grid=None)
+medh5.annotations.geometric.PolylinesAnnotation.to_world	method	(coords, *, grid=None)
+medh5.annotations.geometric.PolylinesAnnotation.vertices	property
 medh5.annotations.geometric.ROTATION_TOL	constant	float
 medh5.annotations.geometric.SPACES	constant	tuple
 medh5.annotations.geometric.VISIBILITY	constant	dict
@@ -2570,7 +2659,7 @@ medh5.dataset.Finding.message	field
 medh5.dataset.Finding.severity	field
 medh5.dataset.Finding.to_json	method	()
 medh5.dataset.Finding.where	field
-medh5.dataset.Manifest	class	(entries=<factory>, root=None, generator='medh5 2.1.0', format='1.1') bases=
+medh5.dataset.Manifest	class	(entries=<factory>, root=None, generator='medh5 2.1.0', format='1.2') bases=
 medh5.dataset.Manifest.__getitem__	method	(index)
 medh5.dataset.Manifest.__iter__	method	()
 medh5.dataset.Manifest.__len__	method	()
@@ -2689,7 +2778,7 @@ medh5.dataset.manifest.Entry.subject_id	field
 medh5.dataset.manifest.Entry.timepoints	field
 medh5.dataset.manifest.Entry.to_json	method	()
 medh5.dataset.manifest.GROUPABLE	constant	tuple
-medh5.dataset.manifest.Manifest	class	(entries=<factory>, root=None, generator='medh5 2.1.0', format='1.1') bases=
+medh5.dataset.manifest.Manifest	class	(entries=<factory>, root=None, generator='medh5 2.1.0', format='1.2') bases=
 medh5.dataset.manifest.Manifest.__getitem__	method	(index)
 medh5.dataset.manifest.Manifest.__iter__	method	()
 medh5.dataset.manifest.Manifest.__len__	method	()
@@ -3107,7 +3196,7 @@ medh5.io.from_dicom_seg	function	(path, sample, *, ann_id='seg', grid=None, anno
 medh5.io.from_itk_transform	function	(path, sample, *, transform_id, fixed, moving, warp=None, vectors=None, inverse_warp=None, report=None)
 medh5.io.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None, plane_as_volume=False, label_set=None)
 medh5.io.from_nnunetv2	function	(root, out, *, case_ids=None, coord_system='LPS', codec='balanced', report=None, include_test=False)
-medh5.io.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None, roi_classes=None, points_id=None, open_curves='omit')
+medh5.io.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None, roi_classes=None, points_id=None, open_curves='omit', curves_id=None)
 medh5.io.group_by_subject	function	(occasions, *, mode='subject', report=None)
 medh5.io.grouping	module
 medh5.io.grouping.FALLBACK_PREFIX	constant	str
@@ -3234,15 +3323,15 @@ medh5.io.report.SEVERITIES	constant	tuple
 medh5.io.report.merge_reports	function	(reports, converter='')
 medh5.io.rtstruct	module
 medh5.io.rtstruct.MIN_POLYGON_VERTICES	constant	int
-medh5.io.rtstruct.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None, roi_classes=None, points_id=None, open_curves='omit')
+medh5.io.rtstruct.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None, roi_classes=None, points_id=None, open_curves='omit', curves_id=None)
 medh5.io.rtstruct.read_rtstruct	function	(path)
-medh5.io.rtstruct.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None, points=None)
+medh5.io.rtstruct.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None, points=None, curves=None)
 medh5.io.scan_dicom	function	(root, *, report=None)
 medh5.io.to_dicom_seg	function	(sample, ann_id, source_images, out, *, classes=None, series_description='medh5 segmentation', frame_salt=None, report=None, segmentation_type='binary', fractional_type='PROBABILITY')
 medh5.io.to_itk_transform	function	(sample, out, *, transform_id, warp_out=None, vectors=None)
 medh5.io.to_nifti	function	(path, image_id, out, *, physical=True, annotation=None, class_key=None, report=None)
 medh5.io.to_nnunetv2	function	(paths, out, *, dataset_name='Dataset001_medh5', file_ending='.nii.gz', annotation='seg', classes=None, unlabeled='refuse', report=None, split=None, replace=False)
-medh5.io.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None, points=None)
+medh5.io.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None, points=None, curves=None)
 medh5.io.write_itk_transform	function	(path, transform)
 medh5.labels	module
 medh5.labels.BACKGROUND_ID	constant	int
@@ -3462,6 +3551,7 @@ medh5.sample.SampleWriter.add_mask	method	(ann_id, mask, *, grid, task='other', 
 medh5.sample.SampleWriter.add_mesh	method	(ann_id, vertices, faces, *, grid=None, space='world', frame_uid=None, normals=None, vertex_class_ids=None, mesh_offsets=None, mesh_class_ids=None, annotated_classes=None, closure='explicit', timepoints=None, prov=None, quality=None, derived_from=None, task='segmentation', codec=None)
 medh5.sample.SampleWriter.add_obb	method	(ann_id, centers, sizes, rotations, class_ids, *, grid=None, space='index', frame_uid=None, instance_ids=None, scores=None, attributes=None, annotated_classes=None, closure='explicit', timepoints=None, prov=None, quality=None, derived_from=None, task='detection', codec=None)
 medh5.sample.SampleWriter.add_points	method	(ann_id, points, *, grid=None, space='index', frame_uid=None, class_ids=None, instance_ids=None, names=None, weights=None, correspondence=None, annotated_classes=None, closure='explicit', timepoints=None, prov=None, quality=None, derived_from=None, task='detection', codec=None)
+medh5.sample.SampleWriter.add_polylines	method	(ann_id, polylines, *, grid=None, space='index', frame_uid=None, instance_ids=None, annotated_classes=None, closure='explicit', timepoints=None, prov=None, quality=None, derived_from=None, task='other', codec=None)
 medh5.sample.SampleWriter.add_pyramid	method	(image_id, levels, *, grid_levels, modality, value_type='intensity', downsample_method='mean', value_units=None, rescale_slope=None, rescale_intercept=None, prov=None, codec=None)
 medh5.sample.SampleWriter.add_records	method	(records)
 medh5.sample.SampleWriter.add_segmentation	method	(ann_id, *, grid, masks=None, probabilities=None, instances=None, labelmap=None, label_values=None, ignore_value=None, encoding='auto', threshold=None, annotated_classes=None, closure='explicit', ignore=None, ignore_mask=None, timepoints=None, prov=None, quality=None, derived_from=None, task='segmentation', codec=None)

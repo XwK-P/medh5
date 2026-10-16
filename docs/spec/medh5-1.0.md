@@ -677,6 +677,7 @@ absent from the file.
 | `contours` | seg | §8.6 | planar polygons (DICOM RTSTRUCT interop) |
 | `mesh` | seg | §8.7 | triangle surface mesh |
 | `classification` | cls | §9 | labels at sample/timepoint/grid/roi/slice scope, incl. change across timepoints |
+| `polylines` | — | [1.2](medh5-1.2.md) §3 | open curves: centrelines, catheter and applicator paths (format 1.2) |
 
 The Task column says which tasks a kind serves. Which one an annotation serves is its own `task`
 attribute (§6.2), and that is what the `det` profile reads (§1.3): an `instances` annotation written
@@ -1003,6 +1004,18 @@ disagrees is reported W919. A `contour_role` other than `0` or `1` is
 E404. A polygon with `axis = −1` takes part in no combination. A writer
 **SHOULD NOT** store crossing polygons of one class in one plane, since
 readers that combine by exclusive-or cancel their overlap.
+
+**RTSTRUCT's contour types** (informative). An RTSTRUCT ROI is drawn in one
+`ContourGeometricType` (PS3.3 C.8.8.6), and each has one home:
+
+| `ContourGeometricType` | Stored as |
+|---|---|
+| `CLOSED_PLANAR`, `CLOSEDPLANAR_XOR` | `contours` (this section); exclusive-or contours that nest are its holes |
+| `POINT` | `points` (§8.5), a row per contour |
+| `OPEN_PLANAR`, `OPEN_NONPLANAR` | `polylines` ([1.2](medh5-1.2.md) §3), a polyline per contour, `OPEN_PLANAR` ones with their `polyline_plane` |
+
+An open curve is never a `contours` polygon: closing it would make a region
+nobody drew.
 
 ### 8.7 `mesh`
 
@@ -1820,16 +1833,16 @@ a patient's name, and the sample's `content_id` would follow the machine.
 
 Sections §2–§15 are **implemented** by the `medh5` format engine — the Rust crate `medh5`, which the
 Python package and the `medh5` command line wrap — and exercised by a conformance corpus (§15) of
-172 files: valid samples covering every encoding, annotation kind, transform kind,
+175 files: valid samples covering every encoding, annotation kind, transform kind,
 dimensionality, profile and container kind, plus at least one case per diagnostic code: a
 deliberately invalid file for each error, and a file drawing each warning.
-The corpus includes the cases of the [1.1](medh5-1.1.md) `clinical` profile, which the same engine
-implements.
+The corpus includes the cases of the [1.1](medh5-1.1.md) `clinical` profile and of the
+[1.2](medh5-1.2.md) `polylines` kind, which the same engine implements.
 Running the corpus against a validator is how a third-party implementation demonstrates conformance:
 
 ```
 $ medh5 conformance run ./corpus
-172/172 cases pass
+175/175 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `cargo clippy` and `rustfmt`

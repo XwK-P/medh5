@@ -3,8 +3,8 @@
 The MEDH5 format engine.  A `.medh5` file is **one subject at one or more
 timepoints**, with every image, annotation, transform and curation record about
 them, in one self-describing HDF5 container.  This crate is the canonical
-implementation of formats 1.0 and 1.1 ([the specification], and [1.1] for the
-optional clinical profile): the data model, HDF5 I/O, validation, chunked
+implementation of formats 1.0, 1.1 and 1.2 ([the specification], [1.1] for
+the optional clinical profile, and [1.2] for open curves): the data model, HDF5 I/O, validation, chunked
 access, compression, geometry and transforms, annotations, provenance,
 integrity — and, for 1.1, clinical events on a subject clock, strict
 prospective selection, and the [task and cache contract] training builds on.
@@ -99,6 +99,7 @@ code the validator reports for the same defect (§15.2, [1.1] §11.2).
 
 [the specification]: https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/
 [1.1]: https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/
+[1.2]: https://medh5.readthedocs.io/en/stable/spec/medh5-1.2/
 [task and cache contract]: https://medh5.readthedocs.io/en/stable/spec/task-cache-1/
 [`version`]: https://docs.rs/medh5/latest/medh5/version/
 [`clinical`]: https://docs.rs/medh5/latest/medh5/clinical/

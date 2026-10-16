@@ -103,6 +103,8 @@ compiled extension the modules re-export from, not an API of its own.
 | `open_annotation` | function | The reader class for an annotation handle's `kind`. |  |
 | `PointsAnnotation` | class | A point set: landmarks, seeds, or half a correspondence (§8.5). |  |
 | `Polygon` | class | One planar polygon handed to `encode_contours`. | [Annotation kinds › Contours](annotations.md#contours) |
+| `Polyline` | class | One open curve handed to `add_polylines` (format 1.2 §3): ordered `(V, S)` vertices, each joined to the next, the last not joined to the first. | [Annotation kinds › Polylines](annotations.md#polylines) |
+| `PolylinesAnnotation` | class | Open curves with an offset table (format 1.2 §3): vessel centrelines, catheter and applicator paths, RTSTRUCT's open contours. | [Annotation kinds › Polylines](annotations.md#polylines) |
 | `READERS` | constant (`dict`) | `kind` -&gt; reader class, for every kind. |  |
 | `RESERVED_KINDS` | constant (`tuple`) | Kinds a 1.0 writer must not write (spec §16). |  |
 | `SCOPES` | constant (`tuple`) |  |  |
@@ -165,6 +167,8 @@ compiled extension the modules re-export from, not an API of its own.
 | `ObbAnnotation` | class | Oriented boxes: centre, full edge lengths, rotation (§8.3). |  |
 | `PointsAnnotation` | class | A point set: landmarks, seeds, or half a correspondence (§8.5). |  |
 | `Polygon` | class | One planar polygon handed to `encode_contours`. | [Annotation kinds › Contours](annotations.md#contours) |
+| `Polyline` | class | One open curve handed to `add_polylines` (format 1.2 §3): ordered `(V, S)` vertices, each joined to the next, the last not joined to the first. | [Annotation kinds › Polylines](annotations.md#polylines) |
+| `PolylinesAnnotation` | class | Open curves with an offset table (format 1.2 §3): vessel centrelines, catheter and applicator paths, RTSTRUCT's open contours. | [Annotation kinds › Polylines](annotations.md#polylines) |
 | `ROTATION_TOL` | constant (`float`) |  |  |
 | `SPACES` | constant (`tuple`) |  |  |
 | `VISIBILITY` | constant (`dict`) |  |  |

@@ -46,6 +46,27 @@ const KINDS_1_0: &[&str] = &[
 ];
 /// The geometric kinds 1.0 defines (§8), which 1.1 keeps.
 const GEOMETRIC_1_0: &[&str] = &["boxes", "obb", "keypoints", "points", "contours", "mesh"];
+/// The kinds 1.2 defines: 1.1's, and `polylines` (1.2 §3).
+const KINDS_1_2: &[&str] = &[
+    "labelmap",
+    "layers",
+    "bitmask",
+    "instances",
+    "probmap",
+    "mask",
+    "boxes",
+    "obb",
+    "keypoints",
+    "points",
+    "contours",
+    "mesh",
+    "classification",
+    "polylines",
+];
+/// The geometric kinds 1.2 defines: 1.1's, and `polylines` (1.2 §3).
+const GEOMETRIC_1_2: &[&str] = &["boxes", "obb", "keypoints", "points", "contours", "mesh", "polylines"];
+/// Each kind a minor after 1.0 adds, and the version that adds it.
+const ADDED_KINDS: &[(&str, &str)] = &[("polylines", "1.2")];
 
 /// Every annotation kind `version` defines (§6.3), or `None` for a version
 /// this engine does not implement ([`crate::version::format_versions`]).
@@ -53,18 +74,49 @@ const GEOMETRIC_1_0: &[&str] = &["boxes", "obb", "keypoints", "points", "contour
 /// A slice, so a later minor that adds a kind answers with a longer one and
 /// no caller's type changes.
 pub fn kinds(version: &str) -> Option<&'static [&'static str]> {
-    crate::version::format_versions().contains(&version).then_some(KINDS_1_0)
+    match version {
+        "1.0" | "1.1" => Some(KINDS_1_0),
+        "1.2" => Some(KINDS_1_2),
+        _ => None,
+    }
 }
 
 /// The geometric annotation kinds `version` defines (§8), or `None` for a
 /// version this engine does not implement.
 pub fn geometric_kinds(version: &str) -> Option<&'static [&'static str]> {
-    crate::version::format_versions().contains(&version).then_some(GEOMETRIC_1_0)
+    match version {
+        "1.0" | "1.1" => Some(GEOMETRIC_1_0),
+        "1.2" => Some(GEOMETRIC_1_2),
+        _ => None,
+    }
+}
+
+/// The version that defines `kind`: `1.0` for the kinds 1.0 defines, the
+/// minor that added it for a later one (`1.2` for `polylines`), `None` for a
+/// kind no version this engine implements defines.  What a writer writes a
+/// sample holding the kind at, at least ([`crate::version::required_for_content`]).
+pub fn kind_since(kind: &str) -> Option<&'static str> {
+    if KINDS_1_0.contains(&kind) {
+        return Some(crate::version::BASE_VERSION);
+    }
+    ADDED_KINDS.iter().find(|(k, _)| *k == kind).map(|(_, since)| *since)
 }
 
 /// Whether `kind` is one the newest version this engine implements defines.
 pub(crate) fn is_known_kind(kind: &str) -> bool {
-    KINDS_1_0.contains(&kind)
+    KINDS_1_2.contains(&kind)
+}
+
+/// Whether `kind` is one a file of `version` may hold: a kind that version
+/// defines, or for a higher minor --- read as this engine's projection ---
+/// one the newest version this engine implements defines.  A `polylines`
+/// annotation in a 1.1 file is no kind that file can hold (E401).
+pub(crate) fn is_kind_of(kind: &str, version: Option<&str>) -> bool {
+    let full = version.filter(|v| crate::version::support(v) == crate::version::Support::Full);
+    // `1` is 1.0, and a file whose version does not parse is the
+    // container's finding: either way its kinds are judged as the newest's.
+    let known = full.and_then(crate::version::parse).and_then(|(major, minor)| kinds(&format!("{major}.{minor}")));
+    known.or_else(|| kinds(crate::version::implemented())).unwrap_or(KINDS_1_2).contains(&kind)
 }
 
 /// Names reserved by spec §16.  A 1.0 writer MUST NOT emit them.
@@ -81,6 +133,7 @@ pub fn default_task_for_kind(kind: &str) -> Option<&'static str> {
         "labelmap" | "layers" | "bitmask" | "probmap" | "instances" | "contours" | "mesh" => "segmentation",
         "mask" => "other",
         "boxes" | "obb" | "keypoints" | "points" => "detection",
+        "polylines" => "other",
         "classification" => "classification",
         _ => return None,
     })
@@ -116,9 +169,10 @@ pub fn is_voxel_kind(kind: &str) -> bool {
     VOXEL_KINDS.contains(&kind)
 }
 
-/// Whether a kind is a geometric kind.
+/// Whether a kind is a geometric kind (of the newest version this engine
+/// implements).
 pub fn is_geometric_kind(kind: &str) -> bool {
-    GEOMETRIC_1_0.contains(&kind)
+    GEOMETRIC_1_2.contains(&kind)
 }
 
 /// The fixed attribute header every annotation carries (spec §6.2).
@@ -399,5 +453,25 @@ mod tests {
         let geometric = geometric_kinds("1.1").unwrap();
         assert!(geometric.iter().all(|k| kinds("1.1").unwrap().contains(k)));
         assert!(geometric.iter().all(|k| is_geometric_kind(k)));
+    }
+
+    /// 1.2 §3: 1.2 is 1.1's kinds and `polylines`, a geometric kind; the
+    /// deprecated arrays keep their length, and so 1.1's answer.
+    #[test]
+    fn v1_2_s3_polylines_is_a_kind_of_1_2_alone() {
+        let (older, newer) = (kinds("1.1").unwrap(), kinds("1.2").unwrap());
+        assert_eq!(&newer[..older.len()], older);
+        assert_eq!(&newer[older.len()..], ["polylines"]);
+        assert_eq!(geometric_kinds("1.2").unwrap().last(), Some(&"polylines"));
+        assert!(is_geometric_kind("polylines") && !is_voxel_kind("polylines"));
+        assert_eq!(kinds(crate::version::LATEST_VERSION), Some(newer));
+        assert_eq!(
+            (kind_since("polylines"), kind_since("contours"), kind_since("spline")),
+            (Some("1.2"), Some("1.0"), None)
+        );
+        assert!(is_kind_of("polylines", Some("1.2")) && is_kind_of("polylines", Some(&crate::version::later_minor())));
+        assert!(!is_kind_of("polylines", Some("1.1")) && !is_kind_of("polylines", Some("1")));
+        assert!(is_kind_of("contours", Some("1.0")));
+        assert_eq!(default_task_for_kind("polylines"), Some("other"));
     }
 }

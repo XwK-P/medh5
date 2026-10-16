@@ -537,10 +537,11 @@ medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ..
 medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G]
                                             [--rasterize [--mask-id ID]]
                                             [--roi NUMBER=KEY ...] [--points-id ID]
+                                            [--open-curves omit|polylines [--curves-id ID]]
                                             [--annotated-classes all_given|all|K1,K2]
                                             [--frame-salt S]
 medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
-                                              [--label TEXT] [--points ANN]
+                                              [--label TEXT] [--points ANN] [--curves ANN]
                                               [--frame-salt S]
 
 medh5 convert from-itk-transform TRANSFORM SAMPLE --id ID --fixed GRID --moving GRID
