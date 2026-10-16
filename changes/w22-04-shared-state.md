@@ -8,4 +8,8 @@
   held different locks over the same handles. Registering a vocabulary
   (`medh5.labels.register`) and editing a document's live views from several
   threads are locked too, and no code of the caller's runs under that lock
-  (an index's `__index__`, an item's `__eq__`).
+  (an index's `__index__`, an item's `__eq__`, a key's `__hash__`). A key
+  JSON cannot spell is refused as it is given, leaving the member editable.
+  `medh5.labels.describe()` no longer raises E305 for a vocabulary another
+  thread unregisters meanwhile, and a document's label set is read with every
+  class as it stood at one moment.

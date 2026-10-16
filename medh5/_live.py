@@ -52,11 +52,38 @@ itself."""
 
 
 def _key(key: Any) -> Any:
-    """*key* as the lock-holding step hashes it: a ``str`` subclass (whose
-    ``__hash__`` and ``__eq__`` are the caller's) as the ``str`` it spells."""
-    if type(key) is not str and isinstance(key, str):
+    """*key* as the document keeps it, made before the lock: a subclass of
+    ``str``, ``int`` or ``float`` (whose ``__hash__``, ``__eq__`` and
+    ``__str__`` are the caller's) as the built-in value it holds, an object
+    with ``__index__`` as its ``int``; any other key is refused here, as the
+    rewrite would refuse it, before anything changes."""
+    if key is None or type(key) in (str, int, float, bool):
+        return key
+    if isinstance(key, str):
         return str.__str__(key)
-    return key
+    if isinstance(key, int):
+        return int.__int__(key)
+    if isinstance(key, float):
+        return float.__float__(key)
+    if hasattr(type(key), "__index__"):
+        return operator.index(key)
+    raise TypeError(
+        f"keys must be str, int, float, bool or None, not {type(key).__name__}"
+    )
+
+
+_ABSENT = object()
+
+
+def _found(key: Any) -> Any:
+    """*key* for a lookup, as `_key` makes it; ``_ABSENT`` for a key no
+    member can hold (an unhashable one still raises, as a dict's lookup
+    would)."""
+    try:
+        return _key(key)
+    except TypeError:
+        hash(key)
+        return _ABSENT
 
 
 def _index(index: Any) -> Any:
@@ -215,16 +242,16 @@ class Members(dict[str, Any]):
     def pop(self, key: str, *default: Any) -> Any:
         if self._document is None:
             return super().pop(key, *default)
-        key = _key(key)
+        found = _found(key)
         with _LOCK:
             self._sync()
-            if key not in self:
+            if found is _ABSENT or found not in self:
                 if default:
                     return default[0]
                 raise KeyError(key)
             # Detached: the member it was is gone from the document.
-            value = copy.deepcopy(self[key])
-            del self[key]
+            value = copy.deepcopy(self[found])
+            del self[found]
             return value
 
     def popitem(self) -> tuple[str, Any]:
@@ -281,10 +308,12 @@ class _NestedDict(dict[str, Any]):
             self._changed()
 
     def __delitem__(self, key: str) -> None:
-        key = _key(key)
+        found = _found(key)
+        if found is _ABSENT:
+            raise KeyError(key)
         with _LOCK:
             self._check()
-            super().__delitem__(key)
+            super().__delitem__(found)
             self._changed()
 
     def __ior__(self, other: Any) -> _NestedDict:  # type: ignore[override,misc]
@@ -309,14 +338,14 @@ class _NestedDict(dict[str, Any]):
             return self[key]
 
     def pop(self, key: str, *default: Any) -> Any:
-        key = _key(key)
+        found = _found(key)
         with _LOCK:
-            if key not in self:
+            if found is _ABSENT or found not in self:
                 if default:
                     return default[0]
                 raise KeyError(key)
             self._check()
-            value = super().pop(key)
+            value = super().pop(found)
             self._changed()
         return copy.deepcopy(value)
 

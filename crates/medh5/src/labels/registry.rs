@@ -101,10 +101,21 @@ pub fn unregister(name: &str) {
 }
 
 /// Name -> `{id, version, classes, sha256}`, for `medh5 labels registry list`.
+///
+/// The registered vocabularies are taken in one step, so a name another
+/// thread unregisters meanwhile is either described or absent, never listed
+/// and then looked up in vain (E305).
 pub fn describe() -> Result<serde_json::Map<String, Value>> {
+    let registered = extra().lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let mut sets = BTreeMap::new();
+    for (name, text) in BUNDLED {
+        if !registered.contains_key(name) {
+            sets.insert(name.to_string(), labelset_from_doc(&serde_json::from_str(text)?)?);
+        }
+    }
+    sets.extend(registered);
     let mut out = serde_json::Map::new();
-    for name in available() {
-        let ls = load(&name)?;
+    for (name, ls) in sets {
         out.insert(name, json!({"id": ls.id, "version": ls.version, "classes": ls.len(), "sha256": ls.sha256()}));
     }
     Ok(out)

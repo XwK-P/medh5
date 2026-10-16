@@ -629,6 +629,7 @@ class TestOneThreadAtATime:
             "pop",
             "remove",
             "key",
+            "int key",
             "setdefault",
         ],
     )
@@ -683,6 +684,15 @@ class TestOneThreadAtATime:
                 hook()
                 return str.__eq__(self, other)
 
+        class Number(int):
+            def __hash__(self) -> int:
+                hook()
+                return int.__hash__(self)
+
+            def __str__(self) -> str:
+                hook()
+                return int.__str__(self)
+
         ops: dict[str, Callable[[], object]] = {
             "imul": lambda: items.__imul__(Index(1)),
             "setitem": lambda: items.__setitem__(Index(0), "x"),
@@ -692,6 +702,7 @@ class TestOneThreadAtATime:
             "pop": lambda: items.pop(Index(0)),
             "remove": lambda: items.remove(Equal()),
             "key": lambda: seen.__setitem__(Key("k"), 2),
+            "int key": lambda: seen.__setitem__(Number(7), 2),
             "setdefault": lambda: seen.setdefault(Key("k"), 2),
         }
         try:
@@ -699,10 +710,55 @@ class TestOneThreadAtATime:
         finally:
             for other in waiting:  # pragma: no cover - the failure
                 other.join()
-        # A key is hashed as the `str` it spells: its hook need not run.
+        # A key is hashed as the built-in value it holds: its hook need not run.
         assert landed in ([], [True])
         assert doc.extra["log"]["seen"].get("other") == (1 if landed else None)
         assert doc.extra["log"]["items"] == list(items)
+
+    def test_a_key_the_document_cannot_hold_is_refused_before_any_change(self):
+        """A nested dict refuses a key JSON has no spelling for as it is
+        given, and the member stays editable: refused by the rewrite, it was
+        set in the view first, which then refused every further edit."""
+        from medh5.document import new_document
+
+        doc = new_document("s")
+        doc.extra["log"] = {"seen": {}}
+        seen = doc.extra["log"]["seen"]
+        with pytest.raises(TypeError, match="keys must be"):
+            seen[("a", "b")] = 1
+        assert seen.pop(("a", "b"), None) is None
+        with pytest.raises(KeyError):
+            del seen[("a", "b")]
+        seen["b"] = 2
+        assert doc.extra["log"]["seen"] == {"b": 2}
+
+    def test_a_label_set_reads_its_classes_in_one_step(self):
+        """One thread setting a count in one class's `properties` and then
+        another's, while others read the document's label set: a read holds
+        the two counts equal or one apart, as no moment had them otherwise,
+        because the classes are read under the lock the edits take."""
+        from medh5.document import new_document
+        from medh5.labels import LabelClass, LabelSet
+
+        doc = new_document("s")
+        doc.label_set = LabelSet(
+            "v", [LabelClass(1, "a", "A"), LabelClass(2, "b", "B")]
+        )
+        ls = doc.label_set
+        first, second = ls[1].properties, ls[2].properties
+        count = iter(range(10**9))
+
+        def edit() -> None:
+            n = next(count)
+            first["n"] = n
+            second["n"] = n
+
+        def read() -> None:
+            classes = ls.to_json()["classes"]
+            a, b = (c.get("properties", {}).get("n", -1) for c in classes)
+            assert a - 1 <= b <= a, (a, b)
+
+        assert hammered([edit] + [read] * 4, rounds=300) == 0
 
     def test_a_payload_reads_whole_while_its_dicts_change(self):
         """Threads adding and removing a payload's datasets and attributes
