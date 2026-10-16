@@ -724,11 +724,13 @@ procedure is [Migrate from 0.x](../guides/migrate-0x.md).
 ```
 $ medh5 clinical augment case.medh5 --from-meds meds/ --meds-subject 1001 --clock-id ehr --clock utc --timezone UTC
 $ medh5 clinical augment case.medh5 --from-fhir bundle.json --fhir-subject Patient/p1
+$ medh5 clinical augment-cohort --from-meds meds/ --mapping cohort.csv --timezone UTC
 ```
 
 ```python
-from medh5.io.fhir import augment_from_fhir, read_fhir
-from medh5.io.meds import augment_from_meds, read_meds
+from medh5.io.fhir import augment_cohort_from_fhir, augment_from_fhir, read_fhir
+from medh5.io.meds import augment_cohort_from_meds, augment_from_meds, read_meds
+from medh5.io.report import CohortImport, SubjectImport
 ```
 
 One subject's clinical history, added to a sample's clinical profile (format
@@ -737,6 +739,13 @@ DiagnosticReports. No zone, origin, unit, code or availability is invented,
 so the report holds no guess; free text and birth instants are imported only
 when asked. The mapping tables and refusals are in
 [Import from MEDS or FHIR](../guides/clinical-import.md).
+
+`augment_cohort_from_meds` and `augment_cohort_from_fhir` (a FHIR Bulk Data
+export) import a whole cohort from one source, read once, into the samples a
+mapping names, each subject exactly as the per-sample importer maps it alone.
+They return a `CohortImport`: `subjects`, a `SubjectImport` per mapped
+subject (its augmentation and report, or the `error` it was refused with),
+`imported` and `refused`, and `report`, the notes on the source as a whole.
 
 `medh5.io.meds.COLUMNS` names the MEDS columns the importer reads,
 `medh5.io.meds.BOTH_VALUES` the choices for a row holding both values, and

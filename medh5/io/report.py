@@ -134,6 +134,102 @@ class ConversionReport:
         return cls()._update(fields)
 
 
+@dataclass(frozen=True, slots=True)
+class SubjectImport:
+    """One subject of a cohort import: the sample its records went into, or
+    why they did not.
+
+    ``augment`` and ``report`` are what the per-sample importer returns for
+    that subject alone (:func:`medh5.io.meds.augment_from_meds`,
+    :func:`medh5.io.fhir.augment_from_fhir`); ``error`` is the refusal, with
+    both ``None``.
+    """
+
+    subject: int | str
+    sample: str
+    augment: dict[str, Any] | None = None
+    report: ConversionReport | None = None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        """Imported, with no warning."""
+        return self.error is None and self.report is not None and self.report.ok
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "subject": self.subject,
+            "sample": self.sample,
+            "augment": self.augment,
+            "report": None if self.report is None else self.report.to_json(),
+            "error": self.error,
+        }
+
+
+@dataclass(slots=True)
+class CohortImport:
+    """A cohort import: each mapped subject's result, in mapping order, and
+    the notes on the source as a whole (the subjects no mapping names)."""
+
+    source: str = ""
+    converter: str = ""
+    subjects: list[SubjectImport] = field(default_factory=list)
+    report: ConversionReport = field(default_factory=ConversionReport)
+
+    @property
+    def imported(self) -> tuple[SubjectImport, ...]:
+        return tuple(s for s in self.subjects if s.error is None)
+
+    @property
+    def refused(self) -> tuple[SubjectImport, ...]:
+        return tuple(s for s in self.subjects if s.error is not None)
+
+    @property
+    def ok(self) -> bool:
+        """Every subject imported with no warning, and none on the source."""
+        return self.report.ok and all(s.ok for s in self.subjects)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "converter": self.converter,
+            "ok": self.ok,
+            "imported": len(self.imported),
+            "refused": len(self.refused),
+            "report": self.report.to_json(),
+            "subjects": [s.to_json() for s in self.subjects],
+        }
+
+    def format(self, *, verbose: bool = False) -> str:
+        lines = [
+            f"{self.source}: {len(self.imported)} subject(s) imported, "
+            f"{len(self.refused)} refused"
+        ]
+        for subject in self.subjects:
+            if subject.error is not None:
+                lines.append(
+                    f"  REFUSED  {subject.subject} -> {subject.sample}: {subject.error}"
+                )
+                continue
+            assert subject.augment is not None and subject.report is not None
+            lines.append(
+                f"  {subject.subject} -> {subject.augment['path']}: "
+                f"{subject.augment['events']} events, "
+                f"{subject.augment['documents']} documents, "
+                f"{subject.augment['links']} links"
+            )
+            if verbose:
+                lines.extend(
+                    "    " + line
+                    for line in subject.report.format(verbose=True).splitlines()
+                )
+        lines.extend(f"  {note}" for note in self.report.notes)
+        return "\n".join(lines)
+
+    def __str__(self) -> str:
+        return self.format()
+
+
 def merge_reports(
     reports: Sequence[ConversionReport], converter: str = ""
 ) -> ConversionReport:
@@ -145,4 +241,11 @@ def merge_reports(
     return out
 
 
-__all__ = ["SEVERITIES", "ConversionReport", "Note", "merge_reports"]
+__all__ = [
+    "SEVERITIES",
+    "CohortImport",
+    "ConversionReport",
+    "Note",
+    "SubjectImport",
+    "merge_reports",
+]

@@ -3097,6 +3097,16 @@ medh5.integrity.subtrees_identical	function	(a, b)
 medh5.integrity.verify_object	function	(root, path)
 medh5.integrity.verify_root	function	(root, attr_names=None, *, partial=None, check_content_id=True)
 medh5.io	module
+medh5.io.CohortImport	class	(source='', converter='', subjects=<factory>, report=<factory>) bases=
+medh5.io.CohortImport.converter	field
+medh5.io.CohortImport.format	method	(*, verbose=False)
+medh5.io.CohortImport.imported	property
+medh5.io.CohortImport.ok	property
+medh5.io.CohortImport.refused	property
+medh5.io.CohortImport.report	field
+medh5.io.CohortImport.source	field
+medh5.io.CohortImport.subjects	field
+medh5.io.CohortImport.to_json	method	()
 medh5.io.ConversionReport	class	(source='', converter='', outputs=<factory>, notes=<factory>) bases=
 medh5.io.ConversionReport.add	method	(kind, message, severity='info', detail=None)
 medh5.io.ConversionReport.converter	field
@@ -3146,6 +3156,16 @@ medh5.io.SubjectGroup.ordered_by	field
 medh5.io.SubjectGroup.subject_id	field
 medh5.io.SubjectGroup.timepoint_ids	method	()
 medh5.io.SubjectGroup.to_json	method	()
+medh5.io.SubjectImport	class	(subject, sample, augment=None, report=None, error=None) bases=
+medh5.io.SubjectImport.augment	field
+medh5.io.SubjectImport.error	field
+medh5.io.SubjectImport.ok	property
+medh5.io.SubjectImport.report	field
+medh5.io.SubjectImport.sample	field
+medh5.io.SubjectImport.subject	field
+medh5.io.SubjectImport.to_json	method	()
+medh5.io.augment_cohort_from_fhir	function	(export_dir, mapping, *, out_dir=None, clock=None, timezone=None, origin=None, texts=False, prefer_systems=(), image_studies=None)
+medh5.io.augment_cohort_from_meds	function	(dataset, mapping, *, out_dir=None, clock=None, timezone=None, origin=None, code_system=None, code_systems=None, kinds=None, status='unknown', day_precision=(), document_codes=(), exclude_codes=('MEDS_BIRTH',), texts=False, both_values='refuse', columns=None)
 medh5.io.augment_from_fhir	function	(path, source, *, out=None, **options)
 medh5.io.augment_from_meds	function	(path, source, *, out=None, **options)
 medh5.io.build_label_set	function	(paths, *, report=None)
@@ -3189,6 +3209,7 @@ medh5.io.fhir	module
 medh5.io.fhir.COMPARATORS	constant	dict
 medh5.io.fhir.STATUSES	constant	dict
 medh5.io.fhir.UCUM	constant	str
+medh5.io.fhir.augment_cohort_from_fhir	function	(export_dir, mapping, *, out_dir=None, clock=None, timezone=None, origin=None, texts=False, prefer_systems=(), image_studies=None)
 medh5.io.fhir.augment_from_fhir	function	(path, source, *, out=None, **options)
 medh5.io.fhir.read_fhir	function	(source, *, subject, clock, timezone=None, origin=None, texts=False, prefer_systems=(), image_studies=None)
 medh5.io.from_dicom	function	(root, out, *, group_by='subject', modalities=None, series_uids=None, codec='balanced', report=None, per_slice_rescale='refuse')
@@ -3272,6 +3293,7 @@ medh5.io.meds	module
 medh5.io.meds.BIRTH	constant	str
 medh5.io.meds.BOTH_VALUES	constant	tuple
 medh5.io.meds.COLUMNS	constant	tuple
+medh5.io.meds.augment_cohort_from_meds	function	(dataset, mapping, *, out_dir=None, clock=None, timezone=None, origin=None, code_system=None, code_systems=None, kinds=None, status='unknown', day_precision=(), document_codes=(), exclude_codes=('MEDS_BIRTH',), texts=False, both_values='refuse', columns=None)
 medh5.io.meds.augment_from_meds	function	(path, source, *, out=None, **options)
 medh5.io.meds.read_meds	function	(source, *, subject_id, clock, timezone=None, origin=None, code_system=None, code_systems=None, kinds=None, status='unknown', day_precision=(), document_codes=(), exclude_codes=('MEDS_BIRTH',), texts=False, both_values='refuse', columns=None)
 medh5.io.merge_reports	function	(reports, converter='')
@@ -3298,6 +3320,16 @@ medh5.io.read_itk_transform	function	(path)
 medh5.io.read_meds	function	(source, *, subject_id, clock, timezone=None, origin=None, code_system=None, code_systems=None, kinds=None, status='unknown', day_precision=(), document_codes=(), exclude_codes=('MEDS_BIRTH',), texts=False, both_values='refuse', columns=None)
 medh5.io.read_nifti	function	(path, *, coord_system='LPS', transpose=True, fourth_axis='auto', assume_geometry=False, plane_as_volume=False)
 medh5.io.report	module
+medh5.io.report.CohortImport	class	(source='', converter='', subjects=<factory>, report=<factory>) bases=
+medh5.io.report.CohortImport.converter	field
+medh5.io.report.CohortImport.format	method	(*, verbose=False)
+medh5.io.report.CohortImport.imported	property
+medh5.io.report.CohortImport.ok	property
+medh5.io.report.CohortImport.refused	property
+medh5.io.report.CohortImport.report	field
+medh5.io.report.CohortImport.source	field
+medh5.io.report.CohortImport.subjects	field
+medh5.io.report.CohortImport.to_json	method	()
 medh5.io.report.ConversionReport	class	(source='', converter='', outputs=<factory>, notes=<factory>) bases=
 medh5.io.report.ConversionReport.add	method	(kind, message, severity='info', detail=None)
 medh5.io.report.ConversionReport.converter	field
@@ -3320,6 +3352,14 @@ medh5.io.report.Note.message	field
 medh5.io.report.Note.severity	field
 medh5.io.report.Note.to_json	method	()
 medh5.io.report.SEVERITIES	constant	tuple
+medh5.io.report.SubjectImport	class	(subject, sample, augment=None, report=None, error=None) bases=
+medh5.io.report.SubjectImport.augment	field
+medh5.io.report.SubjectImport.error	field
+medh5.io.report.SubjectImport.ok	property
+medh5.io.report.SubjectImport.report	field
+medh5.io.report.SubjectImport.sample	field
+medh5.io.report.SubjectImport.subject	field
+medh5.io.report.SubjectImport.to_json	method	()
 medh5.io.report.merge_reports	function	(reports, converter='')
 medh5.io.rtstruct	module
 medh5.io.rtstruct.MIN_POLYGON_VERTICES	constant	int
