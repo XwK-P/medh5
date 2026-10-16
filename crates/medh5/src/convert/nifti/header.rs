@@ -247,6 +247,10 @@ pub struct Header {
     pub slice_start: i64,
     pub pixdim: [f64; 8],
     pub vox_offset: f64,
+    /// NIfTI-2's `vox_offset` as stored, an integer `vox_offset` rounds past
+    /// 2^53; `encode` writes it while `vox_offset` still says the same.
+    /// 0 for NIfTI-1, whose offset is a float.
+    pub vox_offset_exact: i64,
     pub scl_slope: f64,
     pub scl_inter: f64,
     pub slice_end: i64,
@@ -419,6 +423,7 @@ impl Header {
             slice_start: 0,
             pixdim,
             vox_offset: 0.0,
+            vox_offset_exact: 0,
             scl_slope: f64::NAN,
             scl_inter: f64::NAN,
             slice_end: 0,
@@ -542,7 +547,8 @@ impl Header {
                 h.intent_p2 = f.f64(88);
                 h.intent_p3 = f.f64(96);
                 h.pixdim = f.f64s(104);
-                h.vox_offset = f.i64(168) as f64;
+                h.vox_offset_exact = f.i64(168);
+                h.vox_offset = h.vox_offset_exact as f64;
                 h.scl_slope = f.f64(176);
                 h.scl_inter = f.f64(184);
                 h.cal_max = f.f64(192);
@@ -652,7 +658,7 @@ impl Header {
                 for (k, v) in self.pixdim.iter().enumerate() {
                     w.f64(104 + 8 * k, *v);
                 }
-                w.i64(168, self.vox_offset as i64);
+                w.i64(168, self.exact_offset());
                 w.f64(176, self.scl_slope);
                 w.f64(184, self.scl_inter);
                 w.f64(192, self.cal_max);
@@ -760,6 +766,16 @@ impl Header {
         match problems.into_iter().next() {
             Some(first) => Err(Error::Value(first)),
             None => Ok(()),
+        }
+    }
+
+    /// NIfTI-2's integer `vox_offset`: the stored one, unless `vox_offset`
+    /// has since been set to another value.
+    pub fn exact_offset(&self) -> i64 {
+        if self.vox_offset_exact as f64 == self.vox_offset {
+            self.vox_offset_exact
+        } else {
+            self.vox_offset as i64
         }
     }
 
@@ -961,6 +977,9 @@ mod tests {
         h.bitpix = 16;
         h.pixdim = [1.0, 0.75, 0.875, 2.0, 1.0, 1.0, 1.0, 1.0];
         h.vox_offset = version.single_offset();
+        if version == Version::Two {
+            h.vox_offset_exact = h.vox_offset as i64;
+        }
         h.scl_slope = 2.0;
         h.scl_inter = -1024.0;
         h.xyzt_units = 10;
@@ -987,6 +1006,22 @@ mod tests {
                 assert_eq!(back.encode(), block);
             }
         }
+    }
+
+    #[test]
+    fn s02_2_a_nifti2_offset_survives_decode_and_encode() {
+        // 2^53 + 1 has no f64: kept as the integer it is, and written back.
+        let mut h = sample(Version::Two, false);
+        h.vox_offset_exact = (1 << 53) + 1;
+        h.vox_offset = h.vox_offset_exact as f64;
+        let block = h.encode();
+        let back = Header::decode(&block, Version::Two).unwrap();
+        assert_eq!(back.exact_offset(), (1 << 53) + 1);
+        assert_eq!(back.encode(), block);
+        // Set to another value, the float is what is meant.
+        let mut moved = back.clone();
+        moved.vox_offset = 1024.0;
+        assert_eq!(Header::decode(&moved.encode(), Version::Two).unwrap().exact_offset(), 1024);
     }
 
     #[test]

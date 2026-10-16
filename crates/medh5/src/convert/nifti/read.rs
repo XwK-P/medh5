@@ -358,7 +358,8 @@ fn load_nifti(meta_name: &str, image_name: String, version: Version, single: boo
     let shape = header.data_shape()?;
     let offset = match version {
         Version::One => data_offset(header.vox_offset)?,
-        Version::Two => exact_offset(&block, header.big_endian),
+        // A negative offset reads from the start, as seeking before it does.
+        Version::Two => header.exact_offset().max(0) as u64,
     };
     let slope_inter = header.slope_inter()?;
     Ok(Image { header, image_name, shape, offset, slope_inter })
@@ -374,15 +375,6 @@ fn data_offset(value: f64) -> Result<u64> {
     }
     // A negative offset reads from the start, as seeking before it does.
     Ok(value.trunc().max(0.0) as u64)
-}
-
-/// A NIfTI-2 `vox_offset`, an integer, read from the header's bytes: the
-/// header's `f64` holds every offset exactly only up to 2^53.
-fn exact_offset(block: &[u8], big_endian: bool) -> u64 {
-    let raw: [u8; 8] = block[168..176].try_into().expect("a NIfTI-2 header holds its offset");
-    let value = if big_endian { i64::from_be_bytes(raw) } else { i64::from_le_bytes(raw) };
-    // A negative offset reads from the start, as seeking before it does.
-    value.max(0) as u64
 }
 
 /// Step over the header extensions, checking each is whole: up to
