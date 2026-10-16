@@ -250,7 +250,11 @@ concatenation's instances are joined by `ConcatenationUID` in
 are counted against `InConcatenationTotalNumber`, and where that optional
 total is absent their numbers must run from 1 without a gap. Each part
 that states `ConcatenationFrameOffsetNumber` must start where the frames of
-the parts before it end, or frames between them are missing. Enhanced
+the parts before it end, or frames between them are missing. An instance
+with no `ConcatenationUID` whose markers make it a part (a number or total
+above 1, or a frame offset) is refused rather than read as the whole object,
+and so is an instance whose `NumberOfFrames` is absent or disagrees with its
+per-frame functional groups, which hold one item per frame. Enhanced
 ultrasound volumes and other multi-frame objects are skipped with a warning,
 and an object that carries a patient position but is not an image — an RT
 Dose grid — with a note.

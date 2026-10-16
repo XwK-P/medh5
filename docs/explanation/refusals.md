@@ -177,6 +177,10 @@ a grid. `InStackPositionNumber` is checked against the positions rather than
 trusted or overruled — a stack whose numbering its geometry contradicts is a
 broken object, and re-sorting it by either would be a guess. A number skipped
 is a plane missing, and is refused though the positions left are regular.
+The same holds of an object's frame count and its parts: an instance whose
+`NumberOfFrames` its per-frame groups contradict, or that says it is part of
+a concatenation it cannot be joined to, would import a fraction of the
+object as all of it.
 Objects this importer still does not read — an ultrasound volume, other
 multi-frame objects — are skipped and reported as a warning rather than refused, so the
 classic series beside them still import; before 1.3.0 such objects were

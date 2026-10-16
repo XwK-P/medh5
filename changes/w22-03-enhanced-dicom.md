@@ -11,8 +11,9 @@
   per-frame groups, and a concatenation is joined into one object. A frame
   with no position, an irregular stack, a stack whose
   `InStackPositionNumber` its positions contradict or that skips a number,
-  and a concatenation missing a part are refused with the reason. `Series`
-  gains `frames` and `stack`.
+  a concatenation missing a part, a part with no `ConcatenationUID`, and an
+  instance whose `NumberOfFrames` its per-frame groups contradict are
+  refused with the reason. `Series` gains `frames` and `stack`.
 
 ### Fixed
 

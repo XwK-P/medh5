@@ -692,6 +692,8 @@ def _frame_headers(series: Series) -> list[Any]:
     headers = {path: _dcmread(path, stop_before_pixels=True) for path in series.paths}
     _check_concatenation(series, list(headers.values()))
     groups = {path: _groups(header) for path, header in headers.items()}
+    for path, header in headers.items():
+        _check_frame_count(series, header, len(groups[path][1]))
     out = []
     for path, index in series.frames:
         dataset = headers[path]
@@ -726,11 +728,47 @@ def _frame_headers(series: Series) -> list[Any]:
     return out
 
 
+def _check_frame_count(series: Series, header: Any, items: int) -> None:
+    """Refuse an instance whose ``NumberOfFrames`` is absent or disagrees
+    with its per-frame functional groups, one item per frame (C.7.6.16.1):
+    either count would leave frames unread, or read frames that are not."""
+    stated = _number(header, "NumberOfFrames")
+    if stated != items:
+        sop = str(getattr(header, "SOPInstanceUID", "?"))
+        said = (
+            f"states NumberOfFrames {stated}" if stated else "states no NumberOfFrames"
+        )
+        raise MEDH5ValidationError(
+            f"series {series.series_uid}: instance {sop} {said}, but holds "
+            f"{items} per-frame functional group item(s), one per frame; which "
+            "frames it holds cannot be told"
+        )
+
+
+def _check_not_a_part(series: Series, header: Any) -> None:
+    """Refuse an instance with no ``ConcatenationUID`` whose concatenation
+    markers say it is a part of a larger object: read alone, its frames
+    would be imported as the whole.  Markers that describe a whole object
+    (part 1 of 1, from frame 0) are harmless and pass."""
+    number = _number(header, "InConcatenationNumber")
+    total = _number(header, "InConcatenationTotalNumber")
+    offset = _number(header, "ConcatenationFrameOffsetNumber")
+    if number > 1 or total > 1 or offset > 0:
+        sop = str(getattr(header, "SOPInstanceUID", "?"))
+        raise MEDH5ValidationError(
+            f"series {series.series_uid}: instance {sop} states no "
+            f"ConcatenationUID, but is part {number or '?'} of "
+            f"{total or 'an unstated number'} from frame offset {offset}; the "
+            "concatenation it belongs to cannot be joined"
+        )
+
+
 def _check_concatenation(series: Series, headers: Sequence[Any]) -> None:
     """Refuse a concatenation some of whose instances are missing or repeated:
     its frames are one object's, and a part of them is not a volume."""
     uid = _text(getattr(headers[0], "ConcatenationUID", None))
     if uid is None:
+        _check_not_a_part(series, headers[0])
         return
     # Optional, and any part may state it: every stated total must agree.
     totals = sorted({_number(h, "InConcatenationTotalNumber") for h in headers} - {0})

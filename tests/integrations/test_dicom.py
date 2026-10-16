@@ -1082,6 +1082,7 @@ class TestDicom:
         enhanced.StudyInstanceUID = study
         enhanced.SeriesInstanceUID = generate_uid()
         enhanced.NumberOfFrames = 4
+        enhanced.PerFrameFunctionalGroupsSequence = [Dataset() for _ in range(4)]
         (root / "mr").mkdir()
         enhanced.save_as(str(root / "mr" / "enh.dcm"), enforce_file_format=True)
 
@@ -1621,6 +1622,41 @@ class TestEnhancedMultiFrame:
                 part.InConcatenationTotalNumber = total
             part.save_as(path)
         with pytest.raises(MEDH5ValidationError, match=match):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
+    @pytest.mark.parametrize("second", [False, True])
+    def test_a_part_that_lost_its_concatenation_uid_is_refused(self, tmp_path, second):
+        """Without ``ConcatenationUID`` a part is read alone, and its markers
+        still say it is a part: the frames it holds are not the object."""
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        parts = _concatenation(enhanced, tmp_path / "enhanced", split=4)
+        kept, gone = (parts[1], parts[0]) if second else (parts[0], parts[1])
+        gone.unlink()
+        part = pydicom.dcmread(kept)
+        del part.ConcatenationUID
+        part.save_as(kept)
+        with pytest.raises(MEDH5ValidationError, match="ConcatenationUID"):
+            from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
+
+    @pytest.mark.parametrize("frames", [5, None])
+    def test_a_frame_count_the_per_frame_groups_contradict_is_refused(
+        self, tmp_path, frames
+    ):
+        """One per-frame item per frame (C.7.6.16.1): an understated or absent
+        ``NumberOfFrames`` would import a prefix of the object."""
+        from medh5.io.dicom import from_dicom
+
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        if frames is None:
+            del enhanced.NumberOfFrames
+        else:
+            enhanced.NumberOfFrames = frames
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        with pytest.raises(MEDH5ValidationError, match="NumberOfFrames"):
             from_dicom(tmp_path / "enhanced", tmp_path / "out.medh5")
 
     def test_a_concatenation_whose_offsets_skip_a_frame_is_refused(self, tmp_path):
