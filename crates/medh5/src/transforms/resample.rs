@@ -940,6 +940,21 @@ thread_local! {
     /// The most target voxels one block held, for the test that a resample
     /// works a chunk at a time.
     static LARGEST_BLOCK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The most source voxels one block read.
+    static LARGEST_CROP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// [`CROP_BUDGET`], lowered by a test.
+    static TEST_CROP_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(CROP_BUDGET) };
+}
+
+/// The most source voxels (times the lanes of a leading chunk) one block of
+/// the target reads: 2^22, 32 MiB as `f64`.
+const CROP_BUDGET: usize = 1 << 22;
+
+fn crop_budget() -> usize {
+    #[cfg(test)]
+    return TEST_CROP_BUDGET.with(|budget| budget.get());
+    #[cfg(not(test))]
+    CROP_BUDGET
 }
 
 /// Resample one image block by block; the voxels filled, and where the
@@ -989,134 +1004,158 @@ fn resample_image(
     } else {
         None
     };
+    let group_max: usize = leading_shape.iter().zip(&leading_chunk).map(|(n, c)| (*c).clamp(1, (*n).max(1))).product();
     let mut valid: Option<ArrayD<bool>> = None;
     let mut filled = 0u64;
-    for block in blocks(&target_spatial, &chunk) {
-        let dims: Vec<usize> = block.iter().map(|(a, b)| b - a).collect();
-        let n: usize = dims.iter().product();
-        let mut indices = Array2::<f64>::zeros((n, s));
-        for (row, mut point) in indices.outer_iter_mut().enumerate() {
-            let mut rest = row;
-            for k in (0..s).rev() {
-                point[k] = (block[k].0 + rest % dims[k]) as f64;
-                rest /= dims[k];
-            }
-        }
-        let points = mapping.map(&indices)?;
-        let inside: Vec<bool> = points
-            .outer_iter()
-            .map(|p| p.iter().zip(&source_spatial).all(|(v, m)| *v >= -0.5 && *v <= *m as f64 - 0.5))
-            .collect();
-        let clamped = Array2::from_shape_fn((n, s), |(row, k)| {
-            if inside[row] {
-                points[[row, k]].clamp(0.0, source_spatial[k] as f64 - 1.0)
-            } else {
-                0.0
-            }
-        });
-        // The part of the source the block's inside points fall in.
-        let crop: Option<Vec<(usize, usize)>> = (0..s)
-            .map(|k| {
-                let values = clamped.column(k);
-                let mut lo = f64::INFINITY;
-                let mut hi = f64::NEG_INFINITY;
-                for (row, v) in values.iter().enumerate() {
-                    if inside[row] {
-                        lo = lo.min(*v);
-                        hi = hi.max(*v);
-                    }
-                }
-                if lo > hi {
-                    return None;
-                }
-                let lo = lo.floor() as usize;
-                let hi = (hi.ceil() as usize).min(source_spatial[k] - 1);
-                Some((lo, hi + 1))
-            })
-            .collect();
-        let roi: Option<Vec<Slice>> =
-            crop.as_ref().map(|c| c.iter().map(|(a, b)| Slice::new(*a as i64, *b as i64)).collect());
-        let nearest_rows = |crop: &[(usize, usize)]| -> Vec<Option<Vec<usize>>> {
-            (0..n)
-                .map(|row| {
-                    inside[row].then(|| {
-                        (0..s)
-                            .map(|k| {
-                                let i = (clamped[[row, k]] + 0.5).floor() as usize;
-                                i.min(source_spatial[k] - 1) - crop[k].0
-                            })
-                            .collect()
-                    })
-                })
-                .collect()
-        };
-        // Where the source holds data, for the points inside it.
-        if let (Some(_), Some(crop), Some(roi)) = (&job.source_mask, &crop, &roi) {
-            let region = sample.valid_region(&job.source, Some(roi))?;
-            for (row, at) in nearest_rows(crop).into_iter().enumerate() {
-                if let Some(at) = at {
-                    if !region[IxDyn(&at)] {
-                        invalidate(&mut valid, &target_spatial, &block, &dims, row);
-                    }
+    let mut pending: Vec<Vec<(usize, usize)>> = Vec::new();
+    for chunk_block in blocks(&target_spatial, &chunk) {
+        pending.push(chunk_block);
+        while let Some(block) = pending.pop() {
+            let dims: Vec<usize> = block.iter().map(|(a, b)| b - a).collect();
+            let n: usize = dims.iter().product();
+            let mut indices = Array2::<f64>::zeros((n, s));
+            for (row, mut point) in indices.outer_iter_mut().enumerate() {
+                let mut rest = row;
+                for k in (0..s).rev() {
+                    point[k] = (block[k].0 + rest % dims[k]) as f64;
+                    rest /= dims[k];
                 }
             }
-        }
-        for (row, ok) in inside.iter().enumerate() {
-            if !ok {
-                filled += 1;
-                invalidate(&mut valid, &target_spatial, &block, &dims, row);
-            }
-        }
-        let rows = crop.as_ref().map(|crop| nearest_rows(crop));
-        let local =
-            crop.as_ref().map(|crop| Array2::from_shape_fn((n, s), |(row, k)| clamped[[row, k]] - crop[k].0 as f64));
-        // Each chunk of the leading (time, channel) axes in turn, so a block
-        // holds one chunk of the image and no more, however many frames.
-        for lead in blocks(&leading_shape, &leading_chunk) {
-            let lead_dims: Vec<usize> = lead.iter().map(|(a, b)| b - a).collect();
-            let group: usize = lead_dims.iter().product();
-            #[cfg(test)]
-            LARGEST_BLOCK.with(|largest| largest.set(largest.get().max(n * group)));
-            let roi: Option<Vec<Slice>> = roi.as_ref().map(|spatial| {
-                let mut full: Vec<Slice> = lead.iter().map(|(a, b)| Slice::new(*a as i64, *b as i64)).collect();
-                full.extend(spatial.iter().cloned());
-                full
+            let points = mapping.map(&indices)?;
+            let inside: Vec<bool> = points
+                .outer_iter()
+                .map(|p| p.iter().zip(&source_spatial).all(|(v, m)| *v >= -0.5 && *v <= *m as f64 - 0.5))
+                .collect();
+            let clamped = Array2::from_shape_fn((n, s), |(row, k)| {
+                if inside[row] {
+                    points[[row, k]].clamp(0.0, source_spatial[k] as f64 - 1.0)
+                } else {
+                    0.0
+                }
             });
-            let values: NdArray = match plan.interpolation.as_str() {
-                "nearest" => match (&rows, &roi) {
-                    (Some(rows), Some(roi)) => {
-                        let stored = image.read(Some(roi), false, None)?;
-                        gather(&stored, group, rows, plan.fill, job.dtype)?
-                    }
-                    _ => constant(job.dtype, group, n, plan.fill)?,
-                },
-                interpolation => {
-                    let mut out = Array2::<f64>::from_elem((n, group), plan.fill);
-                    if let (Some(crop), Some(roi), Some(local)) = (&crop, &roi, &local) {
-                        let computed = if interpolation == "cubic" {
-                            let lanes = lane_indices(&leading_shape, &lead);
-                            cubic.as_ref().expect("prefiltered above").sample_components(&clamped, &lanes)?
-                        } else {
-                            let stored = image.read(Some(roi), false, Some(DType::F64))?.to_f64();
-                            let mut field_shape = vec![group];
-                            field_shape.extend(crop.iter().map(|(a, b)| b - a));
-                            let field = stored.into_shape_with_order(IxDyn(&field_shape))?;
-                            linear_sample(&field, local, "nearest")?
-                        };
-                        for (row, ok) in inside.iter().enumerate() {
-                            if *ok {
-                                out.row_mut(row).assign(&computed.row(row));
-                            }
+            // The part of the source the block's inside points fall in.
+            let crop: Option<Vec<(usize, usize)>> = (0..s)
+                .map(|k| {
+                    let values = clamped.column(k);
+                    let mut lo = f64::INFINITY;
+                    let mut hi = f64::NEG_INFINITY;
+                    for (row, v) in values.iter().enumerate() {
+                        if inside[row] {
+                            lo = lo.min(*v);
+                            hi = hi.max(*v);
                         }
                     }
-                    convert(&out, job.dtype, &job.source)?
+                    if lo > hi {
+                        return None;
+                    }
+                    let lo = lo.floor() as usize;
+                    let hi = (hi.ceil() as usize).min(source_spatial[k] - 1);
+                    Some((lo, hi + 1))
+                })
+                .collect();
+            // A chunk whose points spread over much of the source (a strong
+            // downsampling, a large warp) is halved until the source it reads fits
+            // the budget: one target voxel reads at most two source voxels an axis.
+            if let Some(crop) = &crop {
+                let source_voxels: usize = crop.iter().map(|(a, b)| b - a).product();
+                if n > 1 && source_voxels.saturating_mul(group_max) > crop_budget() {
+                    let (axis, _) = dims.iter().enumerate().max_by_key(|(_, d)| **d).expect("a spatial axis");
+                    let middle = block[axis].0 + dims[axis] / 2;
+                    let (mut first, mut second) = (block.clone(), block);
+                    first[axis].1 = middle;
+                    second[axis].0 = middle;
+                    pending.push(second);
+                    pending.push(first);
+                    continue;
                 }
+                #[cfg(test)]
+                LARGEST_CROP.with(|largest| largest.set(largest.get().max(source_voxels * group_max)));
+            }
+            let roi: Option<Vec<Slice>> =
+                crop.as_ref().map(|c| c.iter().map(|(a, b)| Slice::new(*a as i64, *b as i64)).collect());
+            let nearest_rows = |crop: &[(usize, usize)]| -> Vec<Option<Vec<usize>>> {
+                (0..n)
+                    .map(|row| {
+                        inside[row].then(|| {
+                            (0..s)
+                                .map(|k| {
+                                    let i = (clamped[[row, k]] + 0.5).floor() as usize;
+                                    i.min(source_spatial[k] - 1) - crop[k].0
+                                })
+                                .collect()
+                        })
+                    })
+                    .collect()
             };
-            let mut shape = lead_dims;
-            shape.extend(&dims);
-            let mut starts: Vec<usize> = lead.iter().map(|(a, _)| *a).collect();
-            starts.extend(block.iter().map(|(a, _)| *a));
-            data::write_region(&dataset, &values.reshape(&shape)?, &starts)?;
+            // Where the source holds data, for the points inside it.
+            if let (Some(_), Some(crop), Some(roi)) = (&job.source_mask, &crop, &roi) {
+                let region = sample.valid_region(&job.source, Some(roi))?;
+                for (row, at) in nearest_rows(crop).into_iter().enumerate() {
+                    if let Some(at) = at {
+                        if !region[IxDyn(&at)] {
+                            invalidate(&mut valid, &target_spatial, &block, &dims, row);
+                        }
+                    }
+                }
+            }
+            for (row, ok) in inside.iter().enumerate() {
+                if !ok {
+                    filled += 1;
+                    invalidate(&mut valid, &target_spatial, &block, &dims, row);
+                }
+            }
+            let rows = crop.as_ref().map(|crop| nearest_rows(crop));
+            let local = crop
+                .as_ref()
+                .map(|crop| Array2::from_shape_fn((n, s), |(row, k)| clamped[[row, k]] - crop[k].0 as f64));
+            // Each chunk of the leading (time, channel) axes in turn, so a block
+            // holds one chunk of the image and no more, however many frames.
+            for lead in blocks(&leading_shape, &leading_chunk) {
+                let lead_dims: Vec<usize> = lead.iter().map(|(a, b)| b - a).collect();
+                let group: usize = lead_dims.iter().product();
+                #[cfg(test)]
+                LARGEST_BLOCK.with(|largest| largest.set(largest.get().max(n * group)));
+                let roi: Option<Vec<Slice>> = roi.as_ref().map(|spatial| {
+                    let mut full: Vec<Slice> = lead.iter().map(|(a, b)| Slice::new(*a as i64, *b as i64)).collect();
+                    full.extend(spatial.iter().cloned());
+                    full
+                });
+                let values: NdArray = match plan.interpolation.as_str() {
+                    "nearest" => match (&rows, &roi) {
+                        (Some(rows), Some(roi)) => {
+                            let stored = image.read(Some(roi), false, None)?;
+                            gather(&stored, group, rows, plan.fill, job.dtype)?
+                        }
+                        _ => constant(job.dtype, group, n, plan.fill)?,
+                    },
+                    interpolation => {
+                        let mut out = Array2::<f64>::from_elem((n, group), plan.fill);
+                        if let (Some(crop), Some(roi), Some(local)) = (&crop, &roi, &local) {
+                            let computed = if interpolation == "cubic" {
+                                let lanes = lane_indices(&leading_shape, &lead);
+                                cubic.as_ref().expect("prefiltered above").sample_components(&clamped, &lanes)?
+                            } else {
+                                let stored = image.read(Some(roi), false, Some(DType::F64))?.to_f64();
+                                let mut field_shape = vec![group];
+                                field_shape.extend(crop.iter().map(|(a, b)| b - a));
+                                let field = stored.into_shape_with_order(IxDyn(&field_shape))?;
+                                linear_sample(&field, local, "nearest")?
+                            };
+                            for (row, ok) in inside.iter().enumerate() {
+                                if *ok {
+                                    out.row_mut(row).assign(&computed.row(row));
+                                }
+                            }
+                        }
+                        convert(&out, job.dtype, &job.source)?
+                    }
+                };
+                let mut shape = lead_dims;
+                shape.extend(&dims);
+                let mut starts: Vec<usize> = lead.iter().map(|(a, _)| *a).collect();
+                starts.extend(block.iter().map(|(a, _)| *a));
+                data::write_region(&dataset, &values.reshape(&shape)?, &starts)?;
+            }
         }
     }
     Ok((filled, valid))
@@ -1321,6 +1360,42 @@ mod tests {
                     assert!((shift - 1024.0 * t as f64).abs() < 1e-2, "{interpolation} {t}: {shift}");
                 }
             }
+        }
+    }
+
+    /// A strong downsampling spreads one target chunk over the whole
+    /// source; the chunk is split until what it reads fits the budget, and
+    /// the result is the same.
+    #[test]
+    fn a_chunk_spread_over_the_source_is_split_to_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.medh5");
+        let mut w = create(&path, Some("s"), Some("s"), "portable", &[]).unwrap();
+        let frame = || GridOptions { frame_uid: Some("F0".into()), ..Default::default() };
+        w.add_grid("g", &[32, 32, 32], &[1.0, 1.0, 1.0], frame()).unwrap();
+        let values: Vec<f32> = (0..32 * 32 * 32).map(|i| ((i * 7919) % 1000) as f32).collect();
+        w.add_image("img", &NdArray::from_vec(&[32, 32, 32], values).unwrap(), "g", "CT", ImageOptions::default())
+            .unwrap();
+        let coarse = GridOptions { origin: Some(vec![3.5; 3]), ..frame() };
+        w.add_grid("coarse", &[4, 4, 4], &[8.0, 8.0, 8.0], coarse).unwrap();
+        w.commit(true).unwrap();
+        for interpolation in ["nearest", "linear"] {
+            let mut results = Vec::new();
+            for budget in [CROP_BUDGET, 64] {
+                TEST_CROP_BUDGET.with(|b| b.set(budget));
+                LARGEST_CROP.with(|largest| largest.set(0));
+                let mut plan = ResamplePlan::onto(["img"], "coarse");
+                plan.interpolation = interpolation.into();
+                plan.suffix = Some(format!("_{interpolation}_{budget}"));
+                resample(&path, &plan).unwrap();
+                let read = LARGEST_CROP.with(|largest| largest.get());
+                assert!(read <= budget, "{interpolation}: read {read} source voxels, budget {budget}");
+                let sample = open_sample(&path).unwrap();
+                let image = sample.image(&format!("img_{interpolation}_{budget}")).unwrap();
+                results.push(image.read(None, false, Some(DType::F64)).unwrap().to_f64());
+            }
+            TEST_CROP_BUDGET.with(|b| b.set(CROP_BUDGET));
+            assert_eq!(results[0], results[1], "{interpolation}");
         }
     }
 
