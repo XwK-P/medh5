@@ -25,6 +25,7 @@ mod deprecation;
 pub mod document;
 pub mod errors;
 pub mod exclusive;
+pub mod exclusive;
 pub mod files;
 pub mod geometry;
 pub mod integrity;

@@ -24,15 +24,26 @@ than written over it, and the member's containers refuse every further edit
 A copy of a view (``copy.copy``, ``dict(view)``, ``pickle``) is a plain
 ``dict``, detached from the document; a copy of a record is a record no
 document handed out.
+
+Threads may share a view.  A rewrite compares the member's token and replaces
+it in one step, and a view rereads the document in one step, under one lock:
+two threads editing one member each write their edit over the other's, never
+over a token the other has already spent.
 """
 
 from __future__ import annotations
 
 import copy
+import threading
 from collections.abc import Iterable, Mapping
 from typing import Any, SupportsIndex
 
 __all__ = ["Members"]
+
+_LOCK = threading.RLock()
+"""Held while a member's token is compared and replaced (`_Anchor.rewrite`),
+and while a view rereads the document (`Members._sync`).  Reentrant, so
+nested use on one thread never blocks itself."""
 
 
 class _Anchor:
@@ -69,16 +80,17 @@ class _Anchor:
 
     def rewrite(self) -> None:
         """Write the member back after a change nested in it."""
-        self.check()
-        try:
-            self.token = self.document._replace_member(
-                self.field, self.key, self.token, self.root
-            )
-        except BaseException:
-            # The change is made here and not in the document: these
-            # containers no longer hold what the document holds.
-            self.stale = True
-            raise
+        with _LOCK:
+            self.check()
+            try:
+                self.token = self.document._replace_member(
+                    self.field, self.key, self.token, self.root
+                )
+            except BaseException:
+                # The change is made here and not in the document: these
+                # containers no longer hold what the document holds.
+                self.stale = True
+                raise
 
 
 class Members(dict[str, Any]):
@@ -111,19 +123,20 @@ class Members(dict[str, Any]):
     def _sync(self) -> None:
         """Hold what the document holds, keeping the containers of a member
         that has not changed (a caller may be holding them)."""
-        held: dict[str, Any] = {}
-        anchors: dict[str, _Anchor] = {}
-        for key, value, token in self._document._members(self._field):
-            anchor = self._anchors.get(key)
-            if anchor is not None and anchor.token == token and not anchor.stale:
-                held[key] = anchor.root
-            else:
-                anchor = _Anchor(self._document, self._field, key, token)
-                anchor.root = held[key] = _adopted(value, anchor)
-            anchors[key] = anchor
-        dict.clear(self)
-        dict.update(self, held)
-        self._anchors = anchors
+        with _LOCK:
+            held: dict[str, Any] = {}
+            anchors: dict[str, _Anchor] = {}
+            for key, value, token in self._document._members(self._field):
+                anchor = self._anchors.get(key)
+                if anchor is not None and anchor.token == token and not anchor.stale:
+                    held[key] = anchor.root
+                else:
+                    anchor = _Anchor(self._document, self._field, key, token)
+                    anchor.root = held[key] = _adopted(value, anchor)
+                anchors[key] = anchor
+            dict.clear(self)
+            dict.update(self, held)
+            self._anchors = anchors
 
     # -- mutation ----------------------------------------------------------------
 

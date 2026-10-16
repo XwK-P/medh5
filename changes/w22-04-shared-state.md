@@ -1,0 +1,10 @@
+<!-- area: torch -->
+### Fixed
+
+- **A forked child takes over every handle cache before its first call.** An
+  `os.register_at_fork` hook abandons the parent's handles and gives each
+  cache a new lock as the child starts: two threads of a child that both
+  noticed the fork replaced the cache's lock one after the other, and then
+  held different locks over the same handles. Registering a vocabulary
+  (`medh5.labels.register`) and editing a document's live views from several
+  threads are locked too.

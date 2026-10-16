@@ -33,6 +33,7 @@ validator's W912 says so when they are missing.
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -59,6 +60,11 @@ from medh5._core import (
 _REGISTERED: dict[str, LabelSet] = {}
 """The objects callers registered, so ``load`` hands back the same one."""
 
+_REGISTRY = threading.Lock()
+"""Held across both halves of a registration, the engine's and
+``_REGISTERED``, so threads registering and loading one name never see one
+half without the other."""
+
 
 def available() -> tuple[str, ...]:
     """Every vocabulary name :func:`load` accepts, bundled and registered."""
@@ -67,10 +73,11 @@ def available() -> tuple[str, ...]:
 
 def load(name: str) -> LabelSet:
     """A bundled or registered vocabulary by name; E305 for an unknown one."""
-    registered = _REGISTERED.get(name)
-    if registered is not None:
-        return registered
-    return _core.registry_load(name)
+    with _REGISTRY:
+        registered = _REGISTERED.get(name)
+        if registered is not None:
+            return registered
+        return _core.registry_load(name)
 
 
 def load_file(path: str | os.PathLike[str]) -> LabelSet:
@@ -80,15 +87,17 @@ def load_file(path: str | os.PathLike[str]) -> LabelSet:
 
 def register(name: str, label_set: LabelSet) -> LabelSet:
     """Make a vocabulary loadable by name for the rest of the process."""
-    _core.registry_register(name, label_set)
-    _REGISTERED[name] = label_set
+    with _REGISTRY:
+        _core.registry_register(name, label_set)
+        _REGISTERED[name] = label_set
     return label_set
 
 
 def unregister(name: str) -> None:
     """Drop a registered vocabulary; bundled ones cannot be removed."""
-    _REGISTERED.pop(name, None)
-    _core.registry_unregister(name)
+    with _REGISTRY:
+        _REGISTERED.pop(name, None)
+        _core.registry_unregister(name)
 
 
 def describe() -> dict[str, dict[str, Any]]:

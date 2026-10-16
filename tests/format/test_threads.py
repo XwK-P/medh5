@@ -437,3 +437,41 @@ class TestOneThreadAtATime:
         assert set(kept) <= set(doc.extra)
         assert len(payload.class_ids) == 1
         assert len(prov.agents) <= threads * 50
+
+
+class TestShared:
+    """What threads may share: an open sample, read from many at once, and the
+    process-wide registries."""
+
+    @pytest.mark.parametrize("threads", [8])
+    def test_registries_are_safe_across_threads(self, label_set: Any, threads: int):
+        """Threads registering, loading and dropping vocabularies meet only
+        what one of them registered under a name, or no name at all."""
+        from medh5 import labels
+
+        barrier = threading.Barrier(threads)
+        failed: list[BaseException] = []
+
+        def churn(k: int) -> None:
+            name = f"org.example.threads-{k % 2}"
+            barrier.wait()
+            try:
+                for _ in range(200):
+                    labels.register(name, label_set)
+                    try:
+                        assert labels.load(name) == label_set
+                    except medh5.MEDH5ValidationError as e:
+                        # Another thread dropped it between the two (E305).
+                        assert "E305" in str(e), e
+                    assert labels.load("binary-foreground") is not None
+                    labels.unregister(name)
+            except BaseException as e:  # pragma: no cover - the failure
+                failed.append(e)
+
+        workers = [threading.Thread(target=churn, args=(k,)) for k in range(threads)]
+        for t in workers:
+            t.start()
+        for t in workers:
+            t.join()
+        assert not failed, failed[:3]
+        assert not any(n.startswith("org.example.threads-") for n in labels.available())
