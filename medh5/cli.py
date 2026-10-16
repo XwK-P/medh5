@@ -290,16 +290,20 @@ def _files(
 
 
 def _same_file(first: Path, second: Path) -> bool:
-    """Whether two paths name one file: equal once resolved (an output not
-    written yet has no identity to compare), or one file on disk by the
-    engine's identity (a hard link, or a name the resolution cannot see
-    through)."""
+    """Whether two paths name one file: equal once resolved, one file on disk
+    by the engine's identity (a hard link, or a name the resolution cannot
+    see through), or two outputs not written yet whose names differ only in
+    case or normalisation, which a file system blind to them (macOS's,
+    Windows') would make one file."""
     from medh5 import _core
+    from medh5.io._clinical import file_identity
 
     with contextlib.suppress(OSError, RuntimeError):  # RuntimeError: a link loop
         if first.resolve() == second.resolve():
             return True
-    return _core.same_file(first, second)
+    if _core.same_file(first, second):
+        return True
+    return bool(file_identity(first) == file_identity(second))
 
 
 def _inside(path: Path, tree: Path) -> bool:

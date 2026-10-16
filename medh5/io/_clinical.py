@@ -227,11 +227,11 @@ def cohort_targets(
     # A sample holds one subject: two subjects written to one file, or one
     # written over another's source, would put two histories in it.  Checked
     # before anything is written.
-    sources = {_identity(path): subject for subject, path, _ in targets}
+    sources = {file_identity(path): subject for subject, path, _ in targets}
     written: dict[Any, Any] = {}
     for subject, path, target in targets:
         where = path if target is None else target
-        key = _identity(where)
+        key = file_identity(where)
         other = written.get(key, sources.get(key, subject))
         if other != subject:
             raise MEDH5ValidationError(
@@ -245,7 +245,7 @@ def cohort_targets(
     return targets
 
 
-def _identity(path: Path) -> Any:
+def file_identity(path: Path) -> Any:
     """What tells two paths to one file apart: the file itself, by device
     and inode, where it exists (a link, a hard link, ``sub/../a``), else its
     directory and its name, case-folded and NFC-normalised.  A file not yet

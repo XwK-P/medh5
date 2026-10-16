@@ -201,6 +201,10 @@ def test_S10_registered_is_skipped():
     assert found["obs.smoke"].value_text == "8517006"
     with pytest.raises(MEDH5ValidationError, match="no Observation"):
         _read(subject="Patient/p9")
+    # A subject that is not a Reference is refused, not read as no subject.
+    malformed = {**Fhir.resources()[1], "subject": "Patient/p1"}
+    with pytest.raises(MEDH5ValidationError, match="not a FHIR Reference"):
+        _read([malformed])
 
 
 def test_S10_images_link_only_through_the_map(tmp_path):
@@ -464,6 +468,16 @@ def test_a_bulk_export_is_read_as_ndjson(tmp_path):
         '{"resourceType": "Observation"}\n\n{', encoding="utf-8"
     )
     with pytest.raises(MEDH5ValidationError, match="line 3 of .* is not JSON"):
+        augment_cohort_from_fhir(broken, {"Patient/p1": sample}, **BULK)
+    (broken / "Observation.ndjson").write_text(
+        '{"resourceType": "Observation"}\n'
+        '{"resourceType": "Observation", "subject": "Patient/p1"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        MEDH5ValidationError,
+        match="Observation on line 2 of .* has a subject that is not a FHIR Reference",
+    ):
         augment_cohort_from_fhir(broken, {"Patient/p1": sample}, **BULK)
     (broken / "Observation.ndjson").write_text("[1]\n", encoding="utf-8")
     with pytest.raises(

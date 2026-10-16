@@ -581,7 +581,7 @@ def read_fhir(
         if kind not in _KINDS:
             others[kind] += 1
             continue
-        if (resource.get("subject") or {}).get("reference") != subject:
+        if _subject_of(resource, f"a {kind}") != subject:
             elsewhere += 1
             continue
         if not resource.get("id"):
@@ -727,6 +727,19 @@ def augment_from_fhir(
     return result, report
 
 
+def _subject_of(resource: Mapping[str, Any], what: str) -> Any:
+    """The reference of *resource*'s ``subject``, or ``None`` without one; a
+    ``subject`` that is not a Reference (an object) is refused."""
+    found = resource.get("subject")
+    if not found:
+        return None
+    if not isinstance(found, Mapping):
+        raise MEDH5ValidationError(
+            f"{what} has a subject that is not a FHIR Reference: {found!r}"
+        )
+    return found.get("reference")
+
+
 def _bulk_files(export_dir: Path) -> list[Path]:
     """The NDJSON files of a FHIR Bulk Data export, in name order."""
     if not export_dir.is_dir():
@@ -861,7 +874,9 @@ class _BulkIndex:
                 if kind not in _KINDS:
                     self._others[kind] += 1
                     continue
-                reference = (resource.get("subject") or {}).get("reference")
+                reference = _subject_of(
+                    resource, f"the {kind} on line {line_number} of {path}"
+                )
                 subject = (
                     self._subjects.get(reference)
                     if isinstance(reference, str)

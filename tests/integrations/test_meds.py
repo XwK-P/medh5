@@ -706,6 +706,12 @@ def test_clinical_augment_cohort_from_meds(tmp_path, capsys):
     in_place = [*argv[:-4], "--report", str(tmp_path / "s1.medh5")]
     assert main(in_place) == EXIT_ERROR
     assert "which this command amends" in capsys.readouterr().err
+    # A sample not yet written, named in another case: one file on macOS.
+    fresh = tmp_path / "fresh"
+    cased = [*argv[:-4], "--out-dir", str(fresh), "--report", str(fresh / "S1.medh5")]
+    assert main(cased) == EXIT_ERROR
+    assert "which this command writes" in capsys.readouterr().err
+    assert not fresh.exists()
     with open_sample(tmp_path / "s1.medh5") as s:
         assert s.clinical is None
     # One source, and a mapping.
