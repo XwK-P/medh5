@@ -13,7 +13,9 @@ use ndarray::{Array2, ArrayD, Axis, IxDyn};
 use serde_json::{json, Map, Value};
 
 use super::depth;
-use super::encode_geometric::{check_scope, check_slice_index, check_space, degenerate_axis, Polygon, CONTOUR_ROLES};
+use super::encode_geometric::{
+    check_scope, check_slice_index, check_space, degenerate_axis, Polygon, Polyline, CONTOUR_ROLES,
+};
 use super::read::{Annotation, GridRef};
 use crate::array::{Index, Slice};
 use crate::geometry::affine::{box_corners, box_to_slices};
@@ -224,13 +226,14 @@ impl Annotation {
     }
 
     /// The number of objects (§8): boxes, oriented boxes, keypoint sets,
-    /// points, polygons or faces.
+    /// points, polygons, polylines (1.2 §3) or faces.
     pub fn n_items(&self) -> Result<usize> {
         let rows = |name: &str| -> Result<usize> { Ok(self.dataset_shape(name)?.first().copied().unwrap_or(0)) };
         match self.kind() {
             "obb" => rows("centers"),
             "keypoints" | "points" => rows("points"),
             "contours" => Ok(rows("contour_offsets")?.saturating_sub(1)),
+            "polylines" => Ok(rows("polyline_offsets")?.saturating_sub(1)),
             "mesh" => rows("faces"),
             "classification" => rows("class_ids"),
             "boxes" => rows("class_ids"),
@@ -606,6 +609,73 @@ impl Annotation {
         Ok(out)
     }
 
+    // -- polylines (1.2 §3) -----------------------------------------------------
+
+    /// The `n + 1` offsets into `vertices`.
+    pub fn polyline_offsets(&self) -> Result<Vec<i64>> {
+        Ok(self.read_as::<i64>("polyline_offsets")?.iter().copied().collect())
+    }
+
+    /// `(n, 2)` `(axis, index)` per polyline; `(-1, 0)` --- in no plane --- when
+    /// not stored.
+    pub fn polyline_planes(&self) -> Result<Array2<i32>> {
+        match self.read_optional::<i32>("polyline_plane")? {
+            Some(p) => {
+                let n = p.shape().first().copied().unwrap_or(0);
+                Ok(p.into_shape_with_order((n, 2))?)
+            }
+            None => {
+                let mut planes = Array2::zeros((self.n_items()?, 2));
+                planes.column_mut(0).fill(-1);
+                Ok(planes)
+            }
+        }
+    }
+
+    /// One polyline's `(V, S)` vertices, in order: only its rows of
+    /// `vertices` are read.
+    pub fn polyline(&self, index: usize) -> Result<ArrayD<f32>> {
+        let offsets = self.polyline_offsets()?;
+        if index + 1 >= offsets.len() {
+            return Err(Error::Index(format!(
+                "polyline {index} is out of range for {} polylines",
+                offsets.len().saturating_sub(1)
+            )));
+        }
+        let ds = self.dataset("vertices")?;
+        let (a, b) = polygon_rows(&offsets, index, ds.shape().first().copied().unwrap_or(0));
+        Ok(data::read_region(&ds, &[Index::Slice(Slice::new(a as i64, b as i64))])?.cast::<f32>())
+    }
+
+    /// Every polyline, decoded from one read of `vertices`, with its class,
+    /// plane and instance id.
+    pub fn polylines(&self) -> Result<Vec<Polyline>> {
+        let classes = self.object_class_ids()?;
+        let planes = self.polyline_planes()?;
+        let offsets = self.polyline_offsets()?;
+        let ids = self.instance_ids()?;
+        let vertices = self.read_as::<f32>("vertices")?;
+        let n = vertices.shape().first().copied().unwrap_or(0);
+        (0..self.n_items()?)
+            .map(|i| {
+                if i + 1 >= offsets.len() {
+                    return Err(Error::Index(format!(
+                        "polyline {i} is out of range for {} polylines",
+                        offsets.len().saturating_sub(1)
+                    )));
+                }
+                let (a, b) = polygon_rows(&offsets, i, n);
+                let rows = vertices.slice_axis(Axis(0), ndarray::Slice::from(a..b)).mapv(f64::from);
+                let mut line = Polyline::new(rows, i64::from(classes[i]))
+                    .plane(i64::from(planes[[i, 0]]), i64::from(planes[[i, 1]]));
+                if let Some(id) = ids.as_ref().and_then(|ids| ids.get(i)) {
+                    line = line.instance_id(*id);
+                }
+                Ok(line)
+            })
+            .collect()
+    }
+
     // -- mesh (§8.7) ------------------------------------------------------------
 
     /// The number of sub-meshes.
@@ -894,7 +964,7 @@ impl Annotation {
     }
 }
 
-/// Polygon `index`'s rows of `vertices` --- `n` of them --- from its offsets,
+/// Polygon (or polyline) `index`'s rows of `vertices` --- `n` of them --- from its offsets,
 /// clipped to the rows there are: offsets the validator refuses (E408) read
 /// as fewer vertices, never past the end.
 fn polygon_rows(offsets: &[i64], index: usize, n: usize) -> (usize, usize) {

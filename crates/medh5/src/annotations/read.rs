@@ -424,6 +424,7 @@ impl Annotation {
             "keypoints" => "KeypointsAnnotation",
             "points" => "PointsAnnotation",
             "contours" => "ContoursAnnotation",
+            "polylines" => "PolylinesAnnotation",
             "mesh" => "MeshAnnotation",
             _ => "ClassificationAnnotation",
         }
@@ -1638,6 +1639,7 @@ impl Annotation {
                 None => Ok(vec![0; self.dataset_shape("points")?.first().copied().unwrap_or(0)]),
             },
             "contours" => Ok(self.read_as::<u16>("contour_class_ids")?.iter().copied().collect()),
+            "polylines" => Ok(self.read_as::<u16>("polyline_class_ids")?.iter().copied().collect()),
             "mesh" => match self.read_optional::<u16>("mesh_class_ids")? {
                 Some(a) => Ok(a.iter().copied().collect()),
                 None => Ok(self.class_ids().iter().map(|c| *c as u16).collect()),
@@ -1645,7 +1647,7 @@ impl Annotation {
             k if is_geometric_kind(k) => Ok(self.read_as::<u16>("class_ids")?.iter().copied().collect()),
             _ => self
                 .require_kind(
-                    &["instances", "boxes", "obb", "keypoints", "points", "contours", "mesh"],
+                    &["instances", "boxes", "obb", "keypoints", "points", "contours", "polylines", "mesh"],
                     "object_class_ids",
                 )
                 .map(|_| unreachable!()),

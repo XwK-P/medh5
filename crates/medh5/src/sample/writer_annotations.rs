@@ -12,7 +12,7 @@ use crate::annotations::encode::{
 };
 use crate::annotations::encode_geometric::{
     check_slice_index, check_space, encode_boxes, encode_classification, encode_contours, encode_keypoints,
-    encode_mesh, encode_obb, encode_points, Assertions, ObjectColumns, Polygon,
+    encode_mesh, encode_obb, encode_points, encode_polylines, Assertions, ObjectColumns, Polygon, Polyline,
 };
 use crate::annotations::header::{AnnotationHeader, VOXEL_KINDS};
 use crate::annotations::labelmap_input::{analyse_labelmap, encode_labelmap_input, Values};
@@ -1026,6 +1026,22 @@ impl SampleWriter {
         let payload = encode_contours(polygons, ndim)?;
         let space = placement.space.clone().unwrap_or_else(|| "index".into());
         self.add_object_annotation(ann_id, payload, &placement, Some(&space), &options, "segmentation", Vec::new())
+    }
+
+    /// Write open curves (1.2 §3): centrelines, catheter and applicator
+    /// paths, RTSTRUCT's open contours.  `space` defaults to `index`, `task`
+    /// to `other`.  A sample holding one is written at format 1.2 (1.2 §2.1).
+    pub fn add_polylines(
+        &mut self,
+        ann_id: &str,
+        polylines: &[Polyline],
+        placement: &Placement,
+        options: &AnnotationOptions,
+    ) -> Result<hdf5::Group> {
+        let ndim = placement.grid.as_ref().and_then(|g| self.grids.get(g)).map(Grid::n_spatial);
+        let payload = encode_polylines(polylines, ndim)?;
+        let space = placement.space.clone().unwrap_or_else(|| "index".into());
+        self.add_object_annotation(ann_id, payload, placement, Some(&space), options, "other", Vec::new())
     }
 
     /// Write a triangle surface mesh (§8.7); `space` defaults to `world`.

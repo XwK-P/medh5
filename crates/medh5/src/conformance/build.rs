@@ -14,7 +14,7 @@ use ndarray::{Array2, ArrayD, IxDyn, Slice};
 use serde_json::{json, Map, Value};
 
 use super::Case;
-use crate::annotations::{Assertions, InstanceInput, Polygon};
+use crate::annotations::{Assertions, InstanceInput, Polygon, Polyline};
 use crate::array::{DType, NdArray};
 use crate::collection::{pack, SAMPLES_GROUP};
 use crate::geometry::multiscale::derive_level_grid;
@@ -1466,7 +1466,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(172);
+    let mut cases = Vec::with_capacity(175);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -1482,7 +1482,85 @@ pub(super) fn registry() -> Vec<Case> {
     seventh_batch(&mut cases);
     // 2.1: revision 2 of the code table, and the clauses its errata settle.
     cases_2_1(&mut cases);
+    // 2.2 / format 1.2: the polylines kind.
+    cases_2_2(&mut cases);
     cases
+}
+
+/// Open curves (1.2 §3): a vessel centreline of two segments in index space,
+/// one drawn on a plane and one through the volume, each tracing an object,
+/// and a catheter path in world coordinates.
+fn polylines_base(path: &Path) -> Result<()> {
+    let mut rng = Rng::new(SEED);
+    let shape = [12, 16, 16];
+    let planar = matrix(&[&[4.0, 2.0, 2.0], &[4.0, 5.5, 3.0], &[4.0, 9.0, 6.5]])?;
+    let through = matrix(&[&[1.0, 8.0, 8.0], &[3.5, 8.5, 8.0], &[6.0, 9.0, 8.5], &[9.0, 9.0, 9.0]])?;
+    let catheter = matrix(&[&[0.5, 1.0, 1.0], &[2.0, 3.0, 4.0]])?;
+    write(path, None, |w| {
+        w.add_timepoint("tp0", Map::new())?;
+        w.label_set(label_set()?);
+        w.add_grid(
+            "ct",
+            &dims(&shape),
+            &[1.0, 1.0, 1.0],
+            GridOptions { timepoint: Some("tp0".into()), frame_uid: Some(FRAME0.into()), ..Default::default() },
+        )?;
+        w.add_image("CT", &ct_volume(&mut rng, &shape)?, "ct", "CT", quantitative(None))?;
+        w.add_polylines(
+            "centreline",
+            &[Polyline::new(planar, 4).plane(0, 4).instance_id(1), Polyline::new(through, 4).instance_id(2)],
+            &Placement { grid: Some("ct".into()), space: None, frame_uid: None },
+            &AnnotationOptions::default(),
+        )?;
+        w.add_polylines(
+            "catheter",
+            &[Polyline::new(catheter, 1)],
+            &Placement { grid: Some("ct".into()), space: Some("world".into()), frame_uid: Some(FRAME0.into()) },
+            &AnnotationOptions::default(),
+        )?;
+        w.deidentification(psi())?;
+        Ok(())
+    })
+}
+
+fn cases_2_2(cases: &mut Vec<Case>) {
+    let offsets = |values: [f64; 3]| {
+        move |f: &hdf5::Group| {
+            edit_values(f, "annotations/centreline/polyline_offsets", |o| {
+                for (i, v) in values.iter().enumerate() {
+                    o[IxDyn(&[i])] = *v;
+                }
+            })
+        }
+    };
+    cases.extend([
+        case(
+            "shapes-polylines",
+            "Open curves: a centreline of a planar and a through-plane segment, each tracing an object, and a \
+             catheter path in world coordinates.",
+            "§3 (1.2)",
+            polylines_base,
+        )
+        .warnings(&["W912"]),
+        invalid(
+            "E408-polyline-offsets",
+            "Polyline offsets that do not end at the vertex count.",
+            "§3 (1.2)",
+            &["E408"],
+            polylines_base,
+            offsets([0.0, 3.0, 6.0]),
+        )
+        .warnings(&["W912"]),
+        invalid(
+            "E404-polyline-one-vertex",
+            "A polyline of one vertex, which joins nothing.",
+            "§3 (1.2)",
+            &["E404"],
+            polylines_base,
+            offsets([0.0, 1.0, 7.0]),
+        )
+        .warnings(&["W912"]),
+    ]);
 }
 
 fn valid_cases(cases: &mut Vec<Case>) {
@@ -2620,11 +2698,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 172);
+        assert_eq!(cases.len(), 175);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 172);
+        assert_eq!(names.len(), 175);
     }
 
     #[test]

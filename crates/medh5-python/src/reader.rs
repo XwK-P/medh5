@@ -849,6 +849,30 @@ impl AnnotationHandle {
         Ok(out)
     }
     #[getter]
+    fn polyline_offsets<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
+        let v = self.inner.polyline_offsets()?;
+        Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[v.len()]), v)?))
+    }
+    #[getter]
+    fn polyline_planes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
+        Ok(array_to_py(py, self.inner.polyline_planes()?.into_dyn()))
+    }
+    fn polyline<'py>(&self, py: Python<'py>, index: usize) -> R<Bound<'py, PyAny>> {
+        self.live()?;
+        Ok(array_to_py(py, self.inner.polyline(index)?))
+    }
+    /// Every polyline as `(vertices, class_id, (axis, index))` (1.2 §3).
+    fn polylines<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyList>> {
+        self.live()?;
+        let out = PyList::empty(py);
+        for p in self.inner.polylines()? {
+            out.append((array_to_py(py, p.vertices), p.class_id, p.plane))?;
+        }
+        Ok(out)
+    }
+    #[getter]
     fn n_submeshes(&self) -> R<usize> {
         self.live()?;
         Ok(self.inner.n_submeshes()?)

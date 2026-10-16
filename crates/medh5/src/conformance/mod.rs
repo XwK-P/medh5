@@ -86,14 +86,20 @@ impl Case {
     }
 
     /// The format version the case is addressed to: the latest `since` among
-    /// the codes it expects, and `1.1` for a clause of 1.1 (marked `(1.1)`).
+    /// the codes it expects, and a later minor's for a clause of it (marked
+    /// `(1.1)` or `(1.2)`).
     ///
     /// What a file declares is not it: the E009 and E011 cases declare 1.0
-    /// and expect 1.1's answers, the W913 case declares 1.2.  A 1.0-only
+    /// and expect 1.1's answers, the W913 case declares 1.3.  A 1.0-only
     /// implementation is scored on the cases addressed to 1.0
     /// ([`suite::ScoreOptions`]).
     pub fn format_version(&self) -> String {
-        let floor = if self.clause.contains("(1.1)") { "1.1" } else { "1.0" };
+        let floor = crate::version::format_versions()
+            .iter()
+            .rev()
+            .find(|v| self.clause.contains(&format!("({v})")))
+            .copied()
+            .unwrap_or(crate::version::BASE_VERSION);
         latest_version(floor, self.errors.iter().chain(&self.warnings).filter_map(|c| crate::codes::since(c)))
     }
 
@@ -325,4 +331,65 @@ pub fn run_corpus(outdir: &Path, names: Option<&[String]>) -> Result<Vec<CaseRes
         results.push(result);
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build::{mutate, restamp, set_str};
+    use super::*;
+
+    fn codes_at(report: &crate::validate::Report, location: &str) -> Vec<String> {
+        report.diagnostics.iter().filter(|d| d.location == location).map(|d| d.code.clone()).collect()
+    }
+
+    /// 1.2 §2.2: a 1.2 file is read by a 1.1 implementation --- the reader
+    /// medh5 2.1.0 is --- as its projection, the version W913 at `/` and
+    /// nothing else wrong, and fully by this one.
+    #[test]
+    fn v1_2_s2_2_a_1_1_reader_projects_a_1_2_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("minimal.medh5");
+        case_by_name("core-minimal").unwrap().build.as_ref().unwrap()(&path).unwrap();
+        mutate(&path, |root| set_str(root, "", "medh5_version", "1.2")).unwrap();
+        restamp(&path).unwrap();
+        let here = validate_file(&path, "integrity", None).unwrap();
+        assert!(here.ok() && codes_at(&here, "/").is_empty(), "{:?}", here.diagnostics);
+        let earlier = crate::version::read_as("1.1", || validate_file(&path, "integrity", None)).unwrap();
+        assert_eq!(codes_at(&earlier, "/"), ["W913"], "{:?}", earlier.diagnostics);
+        assert!(earlier.ok(), "{:?}", earlier.diagnostics);
+        assert_eq!(
+            crate::version::read_as("1.1", || crate::version::support("1.2")),
+            crate::version::Support::Projection
+        );
+    }
+
+    /// 1.2 §2.2, §3: a 1.1 reader leaves each polylines annotation out as
+    /// W913, recomputes the `content_id` and finds it matches, and validates
+    /// the rest; this engine reads them as the 1.2 they are.
+    #[test]
+    fn v1_2_s3_a_1_1_reader_projects_polylines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("polylines.medh5");
+        let case = case_by_name("shapes-polylines").unwrap();
+        assert_eq!(case.format_version(), "1.2");
+        case.build.as_ref().unwrap()(&path).unwrap();
+        let here = validate_file(&path, "integrity", None).unwrap();
+        assert_eq!(here.codes(), ["W912"], "{:?}", here.diagnostics);
+        let earlier = crate::version::read_as("1.1", || validate_file(&path, "integrity", None)).unwrap();
+        assert!(earlier.ok(), "{:?}", earlier.diagnostics);
+        for at in ["/", "/annotations/catheter", "/annotations/centreline"] {
+            assert_eq!(codes_at(&earlier, at), ["W913"], "{at}: {:?}", earlier.diagnostics);
+        }
+        let (mut warned, mut expected): (Vec<String>, Vec<&str>) = (earlier.codes(), vec!["W912", "W913"]);
+        warned.dedup();
+        expected.sort();
+        assert_eq!(warned, expected, "{:?}", earlier.diagnostics);
+        let sample = crate::version::read_as("1.1", || crate::sample::open_sample(&path)).unwrap();
+        let listed = crate::version::read_as("1.1", || sample.annotations().map(|a| a.len())).unwrap();
+        assert_eq!(listed, 0);
+        let sample = crate::sample::open_sample(&path).unwrap();
+        let mut ids: Vec<&String> = sample.annotations().unwrap().keys().collect();
+        ids.sort();
+        assert_eq!(ids, ["catheter", "centreline"]);
+    }
 }

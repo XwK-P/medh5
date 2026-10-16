@@ -5,9 +5,9 @@ makes "conforming MEDH5 file" a claim somebody else can test.
 
 ## The corpus
 
-172 cases, each a file plus the **exact set of diagnostic codes** a conforming
-validator must emit for it. 58 are valid files an implementation must accept,
-38 of them with specific warnings; 114 are invalid ones it must reject with
+175 cases, each a file plus the **exact set of diagnostic codes** a conforming
+validator must emit for it. 59 are valid files an implementation must accept,
+39 of them with specific warnings; 116 are invalid ones it must reject with
 specific errors. Between them they hold at least one case for every code in
 the specification's tables: 1.0 §15.2, and the codes [1.1](medh5-1.1.md) §11.2
 adds.
@@ -22,6 +22,11 @@ at least per clinical code. The cases of 1.0 are unchanged, and a 1.0 file stays
 1.0 file: nothing in the suite asks an implementation of 1.0 to read clinical
 content.
 
+3 are format 1.2's, for the `polylines` kind ([1.2](medh5-1.2.md) §4): open
+curves in index and world space, offsets that do not delimit the vertices, and a
+polyline of one vertex. Each states `format_version` `1.2`, so an implementation
+of 1.1 is scored without them, and the higher-minor case declares 1.3.
+
 Invalid cases are built by mutating a valid one, because the writer refuses to
 produce them. That is the point: the writer and the validator are checked
 against each other.
@@ -29,7 +34,7 @@ against each other.
 ```
 $ medh5 conformance list
 $ medh5 conformance run /tmp/corpus
-172/172 cases pass
+175/175 cases pass
 ```
 
 A test in this repository asserts that the specification's tables (1.0 §15.2
@@ -40,12 +45,12 @@ code the other lacks.
 
 ```
 $ medh5 conformance publish suite/
-wrote the suite to suite/: 172 cases, see suite/README.md
+wrote the suite to suite/: 175 cases, see suite/README.md
 ```
 
 | File | |
 |---|---|
-| `*.medh5`, `*.medh5c` | the cases: 166 samples and six collections |
+| `*.medh5`, `*.medh5c` | the cases: 169 samples and six collections |
 | `expected.json` | per case: the clause, the level, and the expected codes |
 | `codes.json` | the diagnostic code table as data (1.0 §15.2 and 1.1 §11.2) |
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |

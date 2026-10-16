@@ -2,7 +2,8 @@
 
 :mod:`~medh5.annotations.base` is the header and the contract every kind
 shares (§6); :mod:`~medh5.annotations.voxel` the voxel encodings (§7),
-:mod:`~medh5.annotations.geometric` the geometric kinds (§8) and
+:mod:`~medh5.annotations.geometric` the geometric kinds (§8, and 1.2's
+``polylines``) and
 :mod:`~medh5.annotations.classification` label assertions (§9).
 """
 
@@ -39,6 +40,8 @@ from medh5.annotations.geometric import (
     ObbAnnotation,
     PointsAnnotation,
     Polygon,
+    Polyline,
+    PolylinesAnnotation,
     encode_boxes,
     encode_contours,
     encode_keypoints,
@@ -87,6 +90,8 @@ __all__ = [
     "ObbAnnotation",
     "PointsAnnotation",
     "Polygon",
+    "Polyline",
+    "PolylinesAnnotation",
     "VoxelAnnotation",
     "encode_boxes",
     "encode_classification",
