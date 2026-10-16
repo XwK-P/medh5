@@ -19,9 +19,11 @@
 
 - **A CT's units follow its `RescaleType`.** Every CT was written as
   quantitative HU, though DICOM lets a derived or multi-energy CT rescale to
-  another quantity. `value_units` is now the stated `RescaleType` (`HU` when
-  none is stated), `US` gives `intensity` with no units, and a series whose
-  slices state different types (an omitted one counting as `HU`) is refused.
+  another quantity. `value_units` is now the stated `RescaleType`. An omitted
+  type is `HU` in a classic CT and in an original, non-localizer,
+  single-energy enhanced frame, and unknown elsewhere. `US` or an unknown type
+  gives `intensity` with no units, and a series whose slices state different
+  types is refused.
 - **Acquisition attributes are recorded only where the slices agree.** A
   series recorded its first slice's `XRayTubeCurrent`, `ExposureTime` or
   `EchoTime` for the whole volume, even where the slices stated different

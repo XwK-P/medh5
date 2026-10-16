@@ -1518,6 +1518,40 @@ class TestEnhancedMultiFrame:
             image = sample.images[f"{modality}_tp0"]
             assert (image.value_type, image.value_units) == expected
 
+    @pytest.mark.parametrize(
+        ("image_type", "multienergy", "expected"),
+        [
+            (["ORIGINAL", "PRIMARY", "AXIAL"], None, ("quantitative", "HU")),
+            (["DERIVED", "PRIMARY", "AXIAL"], None, ("intensity", None)),
+            (["ORIGINAL", "PRIMARY", "LOCALIZER"], None, ("intensity", None)),
+            (["ORIGINAL", "PRIMARY", "AXIAL"], "YES", ("intensity", None)),
+        ],
+    )
+    @pytest.mark.parametrize("frame_type", [True, False])
+    def test_an_enhanced_ct_stating_no_rescale_type_is_hu_only_where_dicom_says(
+        self, tmp_path, image_type, multienergy, expected, frame_type
+    ):
+        """An enhanced CT must state its ``RescaleType``, which must be HU only
+        for an original, non-localizer, single-energy image (C.8.15.3.10):
+        where it is omitted, HU is read only in that case, and otherwise the
+        image has no units rather than units it may not have."""
+        classic = self._classic(tmp_path)
+        enhanced = _enhanced(classic["paths"])
+        enhanced.ImageType = [*image_type, "NONE"]
+        shared = enhanced.SharedFunctionalGroupsSequence[0]
+        if frame_type:
+            shared.CTImageFrameTypeSequence[0].FrameType = [*image_type, "NONE"]
+        else:
+            del shared.CTImageFrameTypeSequence
+        del shared.PixelValueTransformationSequence[0].RescaleType
+        if multienergy is not None:
+            enhanced.MultienergyCTAcquisition = multienergy
+        _save(enhanced, tmp_path / "enhanced" / "ct.dcm")
+        out = self._imported(tmp_path / "enhanced", tmp_path / "out.medh5")
+        with medh5.open(out) as sample:
+            image = sample.images["CT_tp0"]
+            assert (image.value_type, image.value_units) == expected
+
     def test_frames_of_different_rescale_types_are_refused(self, tmp_path):
         from copy import deepcopy
 

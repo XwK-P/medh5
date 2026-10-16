@@ -441,6 +441,34 @@ def _number(header: Any, keyword: str) -> int:
         return 0
 
 
+def _ct_rescale_type(slice_: Any, *, enhanced: bool) -> str:
+    """The ``RescaleType`` of a CT slice or frame, read where it is omitted.
+
+    A classic CT omits it only when it is HU (C.8.2.1, Type 1C).  An enhanced
+    CT must state it, and it must be HU only for an original, non-localizer,
+    single-energy frame (C.8.15.3.10): omitted there, HU is what it had to
+    be; omitted anywhere else, it is unknown, read as ``US`` (no units)
+    rather than as a unit the values may not have.
+    """
+    stated = _text(getattr(slice_, "RescaleType", None))
+    if stated is not None:
+        return stated
+    if not enhanced:
+        return "HU"
+    # The frame's own type, else the object's (a legacy-converted object
+    # need not carry the frame type group).
+    stated_kind = getattr(slice_, "FrameType", None) or getattr(
+        slice_, "ImageType", None
+    )
+    kind = [str(v).upper() for v in (stated_kind or [])]
+    multienergy = _text(getattr(slice_, "MultienergyCTAcquisition", None))
+    original = bool(kind) and kind[0] == "ORIGINAL"
+    localizer = len(kind) > 2 and kind[2] == "LOCALIZER"
+    if original and not localizer and (multienergy or "").upper() != "YES":
+        return "HU"
+    return "US"
+
+
 def _values(modality: str, rescale_type: str | None) -> dict[str, Any]:
     """An image's ``value_type`` and ``value_units`` from its modality and
     ``RescaleType``.
@@ -619,12 +647,12 @@ def _plan_series(
         )
     rescale, rescales = _series_rescale(slices, uids, series, report, per_slice_rescale)
     # What the rescale gives: one quantity for the volume, so one type.  Only
-    # a CT's is read (:func:`_values`), and an omitted one is HU, so slices
-    # stating ``HU`` agree with slices stating nothing.
+    # a CT's is read (:func:`_values`), and one omitted is read as what DICOM
+    # makes it (:func:`_ct_rescale_type`) before the slices are compared.
     rescale_type = (
         _agreed(
             slices,
-            lambda s: _text(getattr(s, "RescaleType", None)) or "HU",
+            lambda s: _ct_rescale_type(s, enhanced=bool(series.frames)),
             "RescaleType",
             series,
         )
@@ -723,6 +751,9 @@ def _frame_headers(series: Series) -> list[Any]:
             "RescaleSlope",
             "RescaleIntercept",
             "RescaleType",
+            "FrameType",
+            "ImageType",
+            "MultienergyCTAcquisition",
             *STORED_TAGS,
         ):
             value = _group_value(group, shared, dataset, keyword)

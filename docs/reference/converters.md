@@ -201,9 +201,12 @@ become the image's `rescale`, so `read(physical=True)` gives HU and `read()`
 gives what the scanner stored. A CT's `value_units` is HU unless its
 `RescaleType` names another quantity — a derived or multi-energy CT may hold
 `MGML` or `Z_EFF` — and then it is that; `US` (unspecified) makes the image
-`intensity` with no units. A CT's slices or frames stating different types
-are refused, an omitted type counting as `HU`; other modalities' types are not
-read.
+`intensity` with no units. A classic CT omits its type only when it is HU,
+so an omitted one is `HU`. An enhanced CT must state it, and it must be HU only
+for an original, non-localizer, single-energy frame: an omitted type is `HU`
+there, and anywhere else unknown, so the image is `intensity` with no units. A
+CT's slices or frames whose types still differ are refused; other modalities'
+types are not read.
 
 **A per-slice rescale is refused, or applied when asked.** An image stores one
 modality LUT (§4.2), and a PET series often states one per slice; taking the
