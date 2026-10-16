@@ -1192,13 +1192,40 @@ fn constant(dtype: DType, lanes: usize, n: usize, fill: f64) -> Result<NdArray> 
 /// Nearest-neighbour values from a stored `(lanes…, crop…)` block, in its own
 /// type, laid out `(lanes, n)`; `None` rows take `fill`.  Converted to `dtype`
 /// only when it is not the stored type, so a nearest resample keeps every
-/// stored value exactly, 64-bit integers included.
+/// stored value exactly, 64-bit integers included; and from one integer type
+/// to another through `i128`, clipped, never through `f64`.
 fn gather(stored: &NdArray, lanes: usize, rows: &[Option<Vec<usize>>], fill: f64, dtype: DType) -> Result<NdArray> {
     let n = rows.len();
     let crop: Vec<usize> = stored.shape()[stored.ndim() - rows.iter().flatten().next().map_or(0, Vec::len)..].to_vec();
     let mut flat_shape = vec![lanes];
     flat_shape.extend(&crop);
     let same = stored.dtype() == dtype;
+    if let (false, Some(_), Some((lo, hi))) = (same, stored.dtype().int_range(), dtype.int_range()) {
+        // `check_fill` has made the fill an integer the target holds.
+        let fill = fill as i128;
+        let exact: Vec<i128> = crate::with_array!(stored, a => {
+            let a = a.view().into_shape_with_order(IxDyn(&flat_shape))?;
+            let mut out = Vec::with_capacity(lanes * n);
+            let mut index = vec![0usize; crop.len() + 1];
+            for lane in 0..lanes {
+                index[0] = lane;
+                for row in rows {
+                    out.push(match row {
+                        Some(at) => {
+                            index[1..].copy_from_slice(at);
+                            crate::array::Element::to_i128(a[IxDyn(&index)]).clamp(lo, hi)
+                        }
+                        None => fill,
+                    });
+                }
+            }
+            out
+        });
+        return Ok(crate::with_dtype!(dtype, T => NdArray::from_vec(
+            &[lanes, n],
+            exact.into_iter().map(<T as crate::array::Element>::from_i128).collect::<Vec<T>>()
+        )?));
+    }
     crate::with_array!(stored, a => {
         let a = a.view().into_shape_with_order(IxDyn(&flat_shape))?;
         let fill_value = crate::array::Element::from_f64(fill);
@@ -1457,6 +1484,19 @@ mod tests {
         let fine: Vec<_> = blocks(&[2, 3], &[1, 2]).collect();
         assert_eq!(fine, vec![vec![(0, 1), (0, 2)], vec![(0, 1), (2, 3)], vec![(1, 2), (0, 2)], vec![(1, 2), (2, 3)]]);
         assert_eq!(blocks(&[0, 3], &[1, 1]).count(), 0);
+    }
+
+    /// A nearest gather from one integer type to another keeps every value
+    /// the target holds exactly, beyond 2^53 too, and clips the rest.
+    #[test]
+    fn integers_change_type_without_a_float_between() {
+        let big = (1u64 << 53) + 1;
+        let stored = NdArray::from_vec(&[3], vec![big, u64::MAX, 7]).unwrap();
+        let rows = vec![Some(vec![0]), Some(vec![1]), None, Some(vec![2])];
+        let out = gather(&stored, 1, &rows, -4.0, DType::I64).unwrap();
+        assert_eq!(out.cast::<i64>().iter().copied().collect::<Vec<_>>(), vec![big as i64, i64::MAX, -4, 7]);
+        let small = gather(&stored, 1, &rows, 0.0, DType::U8).unwrap();
+        assert_eq!(small.cast::<u8>().iter().copied().collect::<Vec<_>>(), vec![255, 255, 0, 7]);
     }
 
     #[test]
